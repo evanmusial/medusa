@@ -1,0 +1,64 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: medusa
+      POSTGRES_PASSWORD: medusa
+      POSTGRES_DB: medusa
+    volumes:
+      - medusa-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medusa -d medusa"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://medusa:medusa@db:5432/medusa
+      MEDUSA_DATA_DIR: /app/data
+      MEDUSA_LOCAL_STORAGE_DIR: /app/data/originals
+    volumes:
+      - ./data:/app/data
+      - ./data/secrets:/app/data/secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build:
+      context: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://medusa:medusa@db:5432/medusa
+      MEDUSA_DATA_DIR: /app/data
+      MEDUSA_LOCAL_STORAGE_DIR: /app/data/originals
+    volumes:
+      - ./data:/app/data
+      - ./data/secrets:/app/data/secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python -m app.worker
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      MEDUSA_API_PROXY: http://backend:8000
+    ports:
+      - "3737:3737"
+    depends_on:
+      - backend
+    command: npm run dev
+
+volumes:
+  medusa-postgres:

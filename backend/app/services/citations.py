@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
+
+def normalize_author_name(author: dict[str, Any] | str) -> dict[str, str]:
+    if isinstance(author, dict):
+        given = str(author.get("given") or author.get("first") or "").strip()
+        family = str(author.get("family") or author.get("last") or author.get("name") or "").strip()
+        if not family and given:
+            parts = given.split()
+            given = " ".join(parts[:-1])
+            family = parts[-1]
+        return {"given": given, "family": family}
+    parts = str(author).strip().split()
+    if not parts:
+        return {"given": "", "family": ""}
+    if len(parts) == 1:
+        return {"given": "", "family": parts[0]}
+    return {"given": " ".join(parts[:-1]), "family": parts[-1]}
+
+
+def apa_author(author: dict[str, Any] | str) -> str:
+    normalized = normalize_author_name(author)
+    family = normalized["family"]
+    initials = " ".join(f"{part[0]}." for part in normalized["given"].replace("-", " ").split() if part)
+    return f"{family}, {initials}".strip().rstrip(",")
+
+
+def apa_author_list(authors: list[dict[str, Any]] | list[str]) -> str:
+    cleaned = [apa_author(author) for author in authors if apa_author(author)]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) <= 20:
+        return ", ".join(cleaned[:-1]) + f", & {cleaned[-1]}"
+    return ", ".join(cleaned[:19]) + f", ... {cleaned[-1]}"
+
+
+def sentence_case_title(title: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title:
+        return title
+    return title[0].upper() + title[1:]
+
+
+def format_apa_citation(metadata: dict[str, Any]) -> str:
+    authors = apa_author_list(metadata.get("authors") or [])
+    year = metadata.get("publication_year") or metadata.get("year") or "n.d."
+    title = sentence_case_title(str(metadata.get("title") or "Untitled work"))
+    journal = metadata.get("journal")
+    publisher = metadata.get("publisher")
+    doi = metadata.get("doi")
+    source_url = metadata.get("source_url")
+
+    head = f"{authors} " if authors else ""
+    citation = f"{head}({year}). {title}."
+    if journal:
+        citation += f" {journal}."
+    elif publisher:
+        citation += f" {publisher}."
+    if doi:
+        doi_text = str(doi)
+        if not doi_text.startswith("http"):
+            doi_text = "https://doi.org/" + doi_text.removeprefix("doi:").strip()
+        citation += f" {doi_text}"
+    elif source_url:
+        citation += f" {source_url}"
+    return re.sub(r"\s+", " ", citation).strip()
+
+
+def citation_key(metadata: dict[str, Any]) -> str:
+    authors = metadata.get("authors") or []
+    first = normalize_author_name(authors[0])["family"] if authors else "unknown"
+    year = metadata.get("publication_year") or metadata.get("year") or "nd"
+    title_words = re.findall(r"[A-Za-z0-9]+", str(metadata.get("title") or "work").lower())
+    suffix = "".join(title_words[:3]) or "work"
+    return re.sub(r"[^A-Za-z0-9_:-]", "", f"{first}{year}{suffix}")
+
+
+def format_bibtex(metadata: dict[str, Any]) -> str:
+    key = citation_key(metadata)
+    authors = metadata.get("authors") or []
+    author_text = " and ".join(
+        " ".join(filter(None, [normalize_author_name(author)["given"], normalize_author_name(author)["family"]]))
+        for author in authors
+    )
+    fields = {
+        "title": metadata.get("title"),
+        "author": author_text or None,
+        "year": metadata.get("publication_year") or metadata.get("year"),
+        "journal": metadata.get("journal"),
+        "publisher": metadata.get("publisher"),
+        "doi": metadata.get("doi"),
+        "url": metadata.get("source_url"),
+    }
+    lines = [f"@article{{{key},"]
+    for field, value in fields.items():
+        if value:
+            lines.append(f"  {field} = {{{value}}},")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def format_ris(metadata: dict[str, Any]) -> str:
+    lines = ["TY  - JOUR"]
+    for author in metadata.get("authors") or []:
+        normalized = normalize_author_name(author)
+        if normalized["family"]:
+            lines.append(f"AU  - {normalized['family']}, {normalized['given']}".rstrip())
+    field_map = {
+        "TI": metadata.get("title"),
+        "PY": metadata.get("publication_year") or metadata.get("year"),
+        "JO": metadata.get("journal"),
+        "PB": metadata.get("publisher"),
+        "DO": metadata.get("doi"),
+        "UR": metadata.get("source_url"),
+    }
+    for tag, value in field_map.items():
+        if value:
+            lines.append(f"{tag}  - {value}")
+    lines.append("ER  -")
+    return "\n".join(lines)
+
+
+def to_csl_json(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": citation_key(metadata),
+        "type": "article-journal" if metadata.get("journal") else "book",
+        "title": metadata.get("title"),
+        "author": [
+            {
+                "given": normalize_author_name(author)["given"],
+                "family": normalize_author_name(author)["family"],
+            }
+            for author in metadata.get("authors") or []
+        ],
+        "issued": {"date-parts": [[metadata.get("publication_year") or metadata.get("year")]]},
+        "container-title": metadata.get("journal"),
+        "publisher": metadata.get("publisher"),
+        "DOI": metadata.get("doi"),
+        "URL": metadata.get("source_url"),
+    }
