@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DragEvent } from "react";
+import type { CSSProperties, DragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -48,6 +48,94 @@ function authorLine(document: DocumentSummary | DocumentDetail) {
 
 function StatusPill({ value, tone = "neutral" }: { value: string; tone?: "neutral" | "good" | "warn" | "blue" }) {
   return <span className={`pill ${tone}`}>{value.replaceAll("_", " ")}</span>;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function useStoredPaneSize(key: string, defaultValue: number, min: number, max: number) {
+  const [value, setValue] = useState(() => {
+    const stored = Number(localStorage.getItem(key));
+    return Number.isFinite(stored) && stored > 0 ? clamp(stored, min, max) : defaultValue;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(key, String(value));
+  }, [key, value]);
+
+  return [value, setValue] as const;
+}
+
+function ResizeHandle({
+  label,
+  value,
+  setValue,
+  min,
+  max,
+  invert = false,
+  className = "",
+}: {
+  label: string;
+  value: number;
+  setValue: (value: number) => void;
+  min: number;
+  max: number;
+  invert?: boolean;
+  className?: string;
+}) {
+  const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startValue = value;
+    document.body.classList.add("resizing-pane");
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX;
+      setValue(clamp(startValue + (invert ? -delta : delta), min, max));
+    };
+    const stopResize = () => {
+      document.body.classList.remove("resizing-pane");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  };
+
+  const nudge = (direction: -1 | 1) => {
+    setValue(clamp(value + (invert ? -direction : direction) * 16, min, max));
+  };
+
+  return (
+    <button
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemax={max}
+      aria-valuemin={min}
+      aria-valuenow={Math.round(value)}
+      className={`resize-handle ${className}`}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          nudge(-1);
+        }
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          nudge(1);
+        }
+      }}
+      onPointerDown={startResize}
+      role="separator"
+      type="button"
+    >
+      <span />
+    </button>
+  );
 }
 
 function Login() {
@@ -192,8 +280,15 @@ function LibraryView({
   tags: Tag[];
   loading: boolean;
 }) {
+  const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", 248, 184, 360);
+  const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
+  const paneStyle = {
+    "--filter-pane-width": `${filterWidth}px`,
+    "--detail-pane-width": `${detailWidth}px`,
+  } as CSSProperties;
+
   return (
-    <section className="library-grid">
+    <section className="library-grid" style={paneStyle}>
       <aside className="filter-pane">
         <div className="pane-heading">
           <FolderTree size={17} />
@@ -210,6 +305,14 @@ function LibraryView({
           ))}
         </div>
       </aside>
+      <ResizeHandle
+        className="filter-resizer"
+        label="Resize filters pane"
+        max={360}
+        min={184}
+        setValue={setFilterWidth}
+        value={filterWidth}
+      />
       <section className="document-list">
         <div className="list-toolbar">
           <strong>{loading ? "Searching..." : `${documents.length} documents`}</strong>
@@ -233,6 +336,15 @@ function LibraryView({
           ))}
         </div>
       </section>
+      <ResizeHandle
+        className="detail-resizer"
+        invert
+        label="Resize document detail pane"
+        max={560}
+        min={300}
+        setValue={setDetailWidth}
+        value={detailWidth}
+      />
       <DocumentPanel document={document} />
     </section>
   );
@@ -497,6 +609,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
+  const [sidebarWidth, setSidebarWidth] = useStoredPaneSize("medusa-sidebar-width", 220, 168, 304);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -534,10 +647,20 @@ export default function App() {
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) return <Login />;
 
+  const shellStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties;
+
   return (
-    <div className="app-shell">
+    <div className="app-shell" style={shellStyle}>
       <Header query={query} setQuery={setQuery} theme={theme} setTheme={setTheme} onLogout={() => logout.mutate()} />
       <Sidebar activeView={activeView} setActiveView={setActiveView} queuedJobs={dashboard.data?.queued_jobs || 0} />
+      <ResizeHandle
+        className="sidebar-resizer"
+        label="Resize navigation pane"
+        max={304}
+        min={168}
+        setValue={setSidebarWidth}
+        value={sidebarWidth}
+      />
       <main className="content">
         <section className="metrics">
           <div>

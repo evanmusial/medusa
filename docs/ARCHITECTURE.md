@@ -27,11 +27,11 @@ Medusa should feel like a serious research cockpit: dense, calm, polished, and f
 Current UI architecture:
 
 - Fixed top header with temporary `M` wordmark, global search, theme toggle, and session action.
-- Left sidebar navigation: Library, Domains, Projects, Review Queue, Notes, Import, Settings.
+- Resizable left sidebar navigation: Library, Domains, Projects, Review Queue, Notes, Import, Settings.
 - Main Library view uses a tri-pane layout:
-  - Left filter pane for domains and tags.
+  - Resizable left filter pane for domains and tags.
   - Center dense document results.
-  - Right document detail pane for PDF placeholder, citation, summary, tags, and evidence.
+  - Resizable right document detail pane for PDF placeholder, citation, summary, tags, and evidence.
 - Import view centers immediate drag/drop upload plus shared defaults, active drop-target feedback, and live job status.
 - Projects view supports project creation and bibliography generation.
 - Review Queue shows citation candidates that need human attention.
@@ -43,6 +43,7 @@ Visual decisions:
 - Avoid loud gradients, marketing-style hero layouts, decorative blobs, or oversized display typography inside the work surface.
 - Use icons for actions and navigation where they improve scanning.
 - Keep cards for framed tools or repeated items; do not nest cards.
+- Keep cockpit spacing dense and practical; panes should prioritize scanning and repeated work over airy presentation.
 
 ## Architecture Snapshot
 
@@ -342,3 +343,16 @@ Consequences:
 - The entire dropzone surface, including the icon area, is the file target.
 - Priority and read-status controls define defaults for the immediate batch.
 - The UI must show an unmistakable drag-over state before drop and live upload/submission status after drop.
+
+### 2026-06-17: Modular resizable panes
+
+Decision: Make the main cockpit panes modular and resizable with draggable splitters. Persist user-adjusted widths locally in the browser.
+
+Why: Research work shifts between browsing, triage, metadata review, and reading. Fixed panes force the user into one layout, while resizable panes let the interface adapt to the current task without introducing separate modes.
+
+Consequences:
+
+- The sidebar, Library filter pane, and Library detail pane should be resizable on desktop.
+- Splitters should remain subtle, keyboard-accessible, and visually consistent with the quiet cockpit style.
+- Small screens should collapse to a single-column layout and hide drag splitters.
+- Default spacing should stay dense enough for research scanning, with stable dimensions so text and controls do not jump while resizing.
