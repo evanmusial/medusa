@@ -32,7 +32,7 @@ Current UI architecture:
   - Left filter pane for domains and tags.
   - Center dense document results.
   - Right document detail pane for PDF placeholder, citation, summary, tags, and evidence.
-- Import view centers drag/drop upload plus shared defaults and live job status.
+- Import view centers immediate drag/drop upload plus shared defaults, active drop-target feedback, and live job status.
 - Projects view supports project creation and bibliography generation.
 - Review Queue shows citation candidates that need human attention.
 
@@ -330,3 +330,15 @@ Consequences:
 - New document-processing features should define both import-time behavior and Concordance behavior.
 - Capability versions are needed so Medusa can identify stale or missing derived artifacts.
 - Concordance Runs should be durable jobs with review-safe output, progress events, retry semantics, and filters for whole-library, domain, project, saved-search, and selected-document scopes.
+
+### 2026-06-17: Immediate import drop target
+
+Decision: The Import dropzone should start uploads as soon as PDF files are dropped or selected, and the whole drop panel should visibly switch into an active acceptance state while files are dragged over it.
+
+Why: Import is a high-frequency workflow. The target should feel physically obvious and should not require a second confirmation click after the user drops files in the right place.
+
+Consequences:
+
+- The entire dropzone surface, including the icon area, is the file target.
+- Priority and read-status controls define defaults for the immediate batch.
+- The UI must show an unmistakable drag-over state before drop and live upload/submission status after drop.

@@ -52,6 +52,7 @@ from app.schemas import (
 )
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.citations import format_bibtex, format_ris, to_csl_json
+from app.services.processing import refresh_import_batch_progress
 from app.services.storage import get_storage_service
 
 
@@ -442,6 +443,7 @@ async def create_import_batch(
 
         db.add(ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored"))
 
+    refresh_import_batch_progress(db, batch)
     db.commit()
     db.refresh(batch)
     return batch

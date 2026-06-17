@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { DragEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -293,32 +294,89 @@ function DocumentPanel({ document }: { document?: DocumentDetail }) {
 }
 
 function ImportView({ jobs }: { jobs: ImportJob[] }) {
-  const [files, setFiles] = useState<File[]>([]);
   const [priority, setPriority] = useState("normal");
   const [readStatus, setReadStatus] = useState("unread");
+  const [dragDepth, setDragDepth] = useState(0);
+  const [dropMessage, setDropMessage] = useState("Ready");
   const queryClient = useQueryClient();
   const upload = useMutation({
-    mutationFn: () => api.uploadBatch(files, { priority, read_status: readStatus }),
-    onSuccess: () => {
-      setFiles([]);
+    mutationFn: (incomingFiles: File[]) => api.uploadBatch(incomingFiles, { priority, read_status: readStatus }),
+    onMutate: (incomingFiles) => {
+      setDropMessage(`Importing ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
+    },
+    onSuccess: (_batch, incomingFiles) => {
+      setDropMessage(`Queued ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
+    onError: (error) => {
+      setDropMessage(error instanceof Error ? error.message : "Import failed");
+    },
   });
+  const isDraggingFiles = dragDepth > 0;
+
+  const hasDraggedFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
+  const importFiles = (incomingFiles: FileList | File[]) => {
+    const allFiles = Array.from(incomingFiles);
+    const pdfs = allFiles.filter((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
+    if (upload.isPending) {
+      setDropMessage("Import already running");
+      return;
+    }
+    if (!pdfs.length) {
+      setDropMessage(allFiles.length ? "PDFs only" : "No files selected");
+      return;
+    }
+    const rejectedCount = allFiles.length - pdfs.length;
+    if (rejectedCount > 0) {
+      setDropMessage(`Importing ${pdfs.length}; ignored ${rejectedCount}`);
+    }
+    upload.mutate(pdfs);
+  };
 
   return (
     <section className="workbench">
       <div
-        className="dropzone"
-        onDragOver={(event) => event.preventDefault()}
+        className={`dropzone${isDraggingFiles ? " active" : ""}${upload.isPending ? " uploading" : ""}`}
+        onDragEnter={(event) => {
+          if (!hasDraggedFiles(event)) return;
+          event.preventDefault();
+          setDragDepth((depth) => depth + 1);
+        }}
+        onDragOver={(event) => {
+          if (!hasDraggedFiles(event)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(event) => {
+          if (!hasDraggedFiles(event)) return;
+          event.preventDefault();
+          setDragDepth((depth) => Math.max(0, depth - 1));
+        }}
         onDrop={(event) => {
           event.preventDefault();
-          setFiles(Array.from(event.dataTransfer.files).filter((file) => file.type === "application/pdf" || file.name.endsWith(".pdf")));
+          setDragDepth(0);
+          importFiles(event.dataTransfer.files);
         }}
       >
-        <UploadCloud size={42} />
-        <strong>Drop PDFs</strong>
-        <input type="file" multiple accept="application/pdf" onChange={(event) => setFiles(Array.from(event.target.files || []))} />
+        <div className="dropzone-content">
+          <span className="dropzone-icon-shell">
+            <UploadCloud size={42} />
+          </span>
+          <strong>{isDraggingFiles ? "Release to import" : upload.isPending ? "Importing" : "Drop PDFs"}</strong>
+          <span className="dropzone-hint">{isDraggingFiles ? "PDFs will start immediately" : "or click anywhere"}</span>
+          <span className="dropzone-status">{dropMessage}</span>
+        </div>
+        <input
+          aria-label="Import PDFs"
+          type="file"
+          multiple
+          accept="application/pdf"
+          onChange={(event) => {
+            importFiles(event.target.files || []);
+            event.currentTarget.value = "";
+          }}
+        />
       </div>
       <div className="import-controls">
         <label>
@@ -338,10 +396,10 @@ function ImportView({ jobs }: { jobs: ImportJob[] }) {
             <option value="read">Read</option>
           </select>
         </label>
-        <button className="primary-button" disabled={!files.length || upload.isPending} onClick={() => upload.mutate()}>
+        <div className="import-live-status">
           <Cloud size={17} />
-          Import {files.length || ""}
-        </button>
+          <span>{upload.isPending ? "Submitting upload" : "Imports start on drop"}</span>
+        </div>
       </div>
       <section className="job-list">
         <h2>Processing</h2>

@@ -69,6 +69,25 @@ def document_metadata(document: Document) -> dict[str, Any]:
     }
 
 
+def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
+    db.flush()
+    batch.completed_files = db.query(ImportJob).filter(
+        ImportJob.batch_id == batch.id,
+        ImportJob.status == "complete",
+    ).count()
+    batch.failed_files = db.query(ImportJob).filter(
+        ImportJob.batch_id == batch.id,
+        ImportJob.status == "failed",
+    ).count()
+    finished_files = batch.completed_files + batch.failed_files
+    if finished_files >= batch.total_files:
+        batch.status = "complete" if batch.failed_files == 0 else "complete_with_errors"
+    elif finished_files > 0:
+        batch.status = "running"
+    else:
+        batch.status = "queued"
+
+
 class DocumentProcessor:
     def process_job(self, db: Session, job: ImportJob) -> None:
         document = job.document
@@ -96,16 +115,7 @@ class DocumentProcessor:
             document.processing_status = "ready"
             batch = db.get(ImportBatch, job.batch_id)
             if batch:
-                batch.completed_files = db.query(ImportJob).filter(
-                    ImportJob.batch_id == batch.id,
-                    ImportJob.status == "complete",
-                ).count()
-                batch.failed_files = db.query(ImportJob).filter(
-                    ImportJob.batch_id == batch.id,
-                    ImportJob.status == "failed",
-                ).count()
-                if batch.completed_files + batch.failed_files >= batch.total_files:
-                    batch.status = "complete" if batch.failed_files == 0 else "complete_with_errors"
+                refresh_import_batch_progress(db, batch)
             log_event(db, job=job, document=document, event_type="complete", message="Processing complete.")
             db.commit()
         except Exception as exc:

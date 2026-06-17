@@ -555,10 +555,73 @@ pre {
   border-radius: 8px;
   display: grid;
   place-items: center;
-  align-content: center;
-  gap: 10px;
   color: var(--blue);
   position: relative;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.dropzone.active {
+  border-color: var(--teal);
+  background: color-mix(in srgb, var(--teal) 14%, var(--panel));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--teal) 48%, transparent), 0 14px 30px rgb(20 184 166 / 16%);
+  color: var(--teal);
+  transform: translateY(-1px);
+}
+
+.dropzone.uploading {
+  border-style: solid;
+}
+
+.dropzone-content {
+  width: min(420px, calc(100% - 48px));
+  min-height: 154px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.dropzone-icon-shell {
+  width: 68px;
+  height: 68px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line));
+}
+
+.dropzone.active .dropzone-icon-shell {
+  border-color: color-mix(in srgb, var(--teal) 52%, var(--line));
+  background: color-mix(in srgb, var(--teal) 10%, var(--panel));
+}
+
+.dropzone strong {
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.dropzone-hint,
+.dropzone-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dropzone.active .dropzone-hint,
+.dropzone.active .dropzone-status {
+  color: var(--text);
+}
+
+.dropzone-status {
+  min-height: 18px;
 }
 
 .dropzone input {
@@ -576,6 +639,18 @@ pre {
 
 .import-controls label {
   min-width: 180px;
+}
+
+.import-live-status {
+  min-height: 39px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: var(--panel-2);
 }
 
 .job-list,
