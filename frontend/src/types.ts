@@ -9,7 +9,11 @@ export type Dashboard = {
   unread: number;
   needs_review: number;
   queued_jobs: number;
+  active_import_jobs: number;
+  active_concordance_jobs: number;
   failed_jobs: number;
+  failed_import_jobs: number;
+  failed_concordance_jobs: number;
   projects: number;
 };
 
@@ -36,6 +40,7 @@ export type DocumentFilters = {
   read_status?: string;
   priority?: string;
   citation_status?: string;
+  duplicate_status?: string;
 };
 
 export type SavedSearch = {
@@ -126,6 +131,7 @@ export type DocumentSummary = {
   read_status: string;
   priority: string;
   created_at: string;
+  duplicate_count: number;
   tags: Tag[];
   domains: Domain[];
 };
@@ -145,6 +151,7 @@ export type DocumentDetail = DocumentSummary & {
   pages: DocumentPage[];
   figures: Figure[];
   annotations: Annotation[];
+  duplicate_document_ids: string[];
 };
 
 export type DocumentUpdatePayload = Partial<DocumentDetail> & {
@@ -206,12 +213,38 @@ export type ImportJob = {
   id: string;
   batch_id: string;
   document_id?: string | null;
+  document_title?: string | null;
+  original_filename?: string | null;
+  file_size_bytes?: number | null;
   status: string;
   current_step: string;
   attempts: number;
   last_error?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type DuplicateImportStrategy = "skip" | "overwrite" | "import_anyway";
+
+export type ImportDuplicateDocument = {
+  id: string;
+  title: string;
+  original_filename: string;
+  created_at: string;
+  processing_status: string;
+};
+
+export type ImportDuplicateFile = {
+  filename: string;
+  checksum_sha256: string;
+  file_size_bytes: number;
+  existing_documents: ImportDuplicateDocument[];
+  duplicate_in_upload: boolean;
+};
+
+export type ImportDuplicateCheck = {
+  files: ImportDuplicateFile[];
+  duplicate_file_count: number;
 };
 
 export type CitationCandidate = {

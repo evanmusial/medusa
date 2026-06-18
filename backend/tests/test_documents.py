@@ -124,6 +124,33 @@ def test_bulk_update_documents_can_create_custom_tag(monkeypatch, tmp_path):
         assert [tag.name for tag in second.tags] == ["new research thread"]
 
 
+def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_documents
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        first = Document(title="First duplicate", original_filename="first.pdf", checksum_sha256="d" * 64)
+        second = Document(title="Second duplicate", original_filename="second.pdf", checksum_sha256="d" * 64)
+        unique = Document(title="Unique", original_filename="unique.pdf", checksum_sha256="u" * 64)
+        db.add_all([first, second, unique])
+        db.commit()
+
+        all_documents = list_documents(object(), db)
+        duplicate_documents = list_documents(object(), db, duplicate_status="duplicates")
+        unique_documents = list_documents(object(), db, duplicate_status="unique")
+
+        counts = {document.title: document.duplicate_count for document in all_documents}
+        assert counts["First duplicate"] == 1
+        assert counts["Second duplicate"] == 1
+        assert counts["Unique"] == 0
+        assert {document.title for document in duplicate_documents} == {"First duplicate", "Second duplicate"}
+        assert [document.title for document in unique_documents] == ["Unique"]
+
+
 def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

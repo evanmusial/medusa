@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import signal
+import threading
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +77,29 @@ PAGE_TEXT_NORMALIZATION_SCHEMA: dict[str, Any] = {
 }
 
 
+class OpenAIHardTimeoutError(TimeoutError):
+    pass
+
+
+@contextmanager
+def hard_timeout(seconds: float):
+    if seconds <= 0 or threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _raise_timeout(_: int, __: object) -> None:
+        raise OpenAIHardTimeoutError(f"OpenAI request exceeded {seconds:g} seconds")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
 class AiService:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -81,7 +107,10 @@ class AiService:
         if self.settings.openai_api_key:
             from openai import OpenAI
 
-            self.client = OpenAI(api_key=self.settings.openai_api_key)
+            self.client = OpenAI(
+                api_key=self.settings.openai_api_key,
+                timeout=self.settings.openai_request_timeout_seconds,
+            )
 
     def extract_metadata(self, filename: str, text: str, pdf_bytes: bytes | None = None) -> dict[str, Any]:
         if not self.client:
@@ -128,21 +157,23 @@ class AiService:
                 }
             )
         input_content.append({"type": "input_text", "text": f"Filename: {filename}\n\nExtracted PDF text:\n{sample}"})
-        response = self.client.responses.create(
-            model=self.settings.openai_model,
-            input=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": input_content},
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "medusa_document_metadata",
-                    "schema": METADATA_SCHEMA,
-                    "strict": True,
-                }
-            },
-        )
+        with hard_timeout(self.settings.openai_request_timeout_seconds):
+            response = self.client.responses.create(
+                model=self.settings.openai_model,
+                input=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": input_content},
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "medusa_document_metadata",
+                        "schema": METADATA_SCHEMA,
+                        "strict": True,
+                    }
+                },
+                timeout=self.settings.openai_request_timeout_seconds,
+            )
         metadata = json.loads(response.output_text)
         metadata["_openai"] = {
             "model": self.settings.openai_model,
@@ -183,27 +214,29 @@ class AiService:
         )
         sample = fallback[: self.settings.openai_text_normalization_page_max_chars]
         try:
-            response = self.client.responses.create(
-                model=self.settings.openai_model,
-                input=[
-                    {"role": "system", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Filename: {filename}\nPage: {page_number}\n\n"
-                            f"PDF-extracted page text to normalize:\n{sample}"
-                        ),
+            with hard_timeout(self.settings.openai_page_normalization_timeout_seconds):
+                response = self.client.responses.create(
+                    model=self.settings.openai_model,
+                    input=[
+                        {"role": "system", "content": prompt},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Filename: {filename}\nPage: {page_number}\n\n"
+                                f"PDF-extracted page text to normalize:\n{sample}"
+                            ),
+                        },
+                    ],
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "medusa_page_text_normalization",
+                            "schema": PAGE_TEXT_NORMALIZATION_SCHEMA,
+                            "strict": True,
+                        }
                     },
-                ],
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "medusa_page_text_normalization",
-                        "schema": PAGE_TEXT_NORMALIZATION_SCHEMA,
-                        "strict": True,
-                    }
-                },
-            )
+                    timeout=self.settings.openai_page_normalization_timeout_seconds,
+                )
             result = json.loads(response.output_text)
             normalized = normalize_extracted_text(result.get("normalized_text") or fallback) or fallback
             return {
@@ -227,11 +260,13 @@ class AiService:
     def embed(self, text: str) -> list[float] | None:
         if not self.client or not text.strip():
             return None
-        response = self.client.embeddings.create(
-            model=self.settings.openai_embedding_model,
-            input=text[:24_000],
-            encoding_format="float",
-        )
+        with hard_timeout(self.settings.openai_embedding_timeout_seconds):
+            response = self.client.embeddings.create(
+                model=self.settings.openai_embedding_model,
+                input=text[:24_000],
+                encoding_format="float",
+                timeout=self.settings.openai_embedding_timeout_seconds,
+            )
         return response.data[0].embedding
 
 

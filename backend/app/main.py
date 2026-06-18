@@ -11,8 +11,8 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
-from sqlalchemy import func, or_, text
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.database import get_db, init_db, is_postgres, session_scope
@@ -59,6 +59,9 @@ from app.schemas import (
     DomainCreate,
     DomainOut,
     ImportBatchOut,
+    ImportDuplicateCheckOut,
+    ImportDuplicateDocumentOut,
+    ImportDuplicateFileOut,
     ImportJobOut,
     LoginRequest,
     NoteCreate,
@@ -80,7 +83,7 @@ from app.schemas import (
 )
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.concordance import create_concordance_run, current_capabilities
-from app.services.citations import format_apa_citation, format_bibtex, format_ris, to_csl_json
+from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.processing import document_metadata, document_reading_text, refresh_import_batch_progress
 from app.services.storage import get_storage_service
@@ -88,6 +91,8 @@ from app.services.storage import get_storage_service
 
 settings = get_settings()
 app = FastAPI(title="Medusa Research Library", version="0.1.0")
+
+DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -185,6 +190,57 @@ def apply_document_filters(
     if citation_status:
         query = query.filter(Document.citation_status == citation_status)
     return query
+
+
+def duplicate_checksum_select():
+    return (
+        select(Document.checksum_sha256)
+        .where(Document.deleted_at.is_(None))
+        .group_by(Document.checksum_sha256)
+        .having(func.count(Document.id) > 1)
+    )
+
+
+def duplicate_count_by_checksum(db: Session, checksums: list[str]) -> dict[str, int]:
+    if not checksums:
+        return {}
+    rows = (
+        db.query(Document.checksum_sha256, func.count(Document.id))
+        .filter(Document.deleted_at.is_(None), Document.checksum_sha256.in_(checksums))
+        .group_by(Document.checksum_sha256)
+        .all()
+    )
+    return {checksum: max(0, int(count) - 1) for checksum, count in rows}
+
+
+def active_documents_for_checksum(db: Session, checksum: str) -> list[Document]:
+    return (
+        db.query(Document)
+        .filter(Document.deleted_at.is_(None), Document.checksum_sha256 == checksum)
+        .order_by(Document.created_at.desc(), Document.id)
+        .all()
+    )
+
+
+def duplicate_document_out(document: Document) -> ImportDuplicateDocumentOut:
+    return ImportDuplicateDocumentOut(
+        id=document.id,
+        title=document.title,
+        original_filename=document.original_filename,
+        created_at=document.created_at,
+        processing_status=document.processing_status,
+    )
+
+
+def document_summary_out(document: Document, duplicate_count: int = 0) -> DocumentSummary:
+    return DocumentSummary.model_validate(document).model_copy(update={"duplicate_count": duplicate_count})
+
+
+def document_detail_out(document: Document, db: Session) -> DocumentDetail:
+    duplicate_ids = [item.id for item in active_documents_for_checksum(db, document.checksum_sha256) if item.id != document.id]
+    return DocumentDetail.model_validate(document).model_copy(
+        update={"duplicate_count": len(duplicate_ids), "duplicate_document_ids": duplicate_ids}
+    )
 
 
 def normalize_tag_name(name: str) -> str:
@@ -333,14 +389,20 @@ def me(user: Annotated[User, Depends(current_user)]) -> User:
 
 @app.get("/api/dashboard", response_model=DashboardOut)
 def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> DashboardOut:
+    active_import_jobs = db.query(ImportJob).filter(ImportJob.status.in_(["queued", "running"])).count()
+    active_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status.in_(["queued", "running"])).count()
+    failed_import_jobs = db.query(ImportJob).filter(ImportJob.status == "failed").count()
+    failed_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "failed").count()
     return DashboardOut(
         documents=db.query(Document).filter(Document.deleted_at.is_(None)).count(),
         unread=db.query(Document).filter(Document.deleted_at.is_(None), Document.read_status == "unread").count(),
         needs_review=db.query(Document).filter(Document.deleted_at.is_(None), Document.citation_status == "needs_review").count(),
-        queued_jobs=db.query(ImportJob).filter(ImportJob.status.in_(["queued", "running"])).count()
-        + db.query(ConcordanceJob).filter(ConcordanceJob.status.in_(["queued", "running"])).count(),
-        failed_jobs=db.query(ImportJob).filter(ImportJob.status == "failed").count()
-        + db.query(ConcordanceJob).filter(ConcordanceJob.status == "failed").count(),
+        queued_jobs=active_import_jobs + active_concordance_jobs,
+        active_import_jobs=active_import_jobs,
+        active_concordance_jobs=active_concordance_jobs,
+        failed_jobs=failed_import_jobs + failed_concordance_jobs,
+        failed_import_jobs=failed_import_jobs,
+        failed_concordance_jobs=failed_concordance_jobs,
         projects=db.query(Project).filter(Project.deleted_at.is_(None)).count(),
     )
 
@@ -569,8 +631,9 @@ def list_documents(
     read_status: str | None = None,
     priority: str | None = None,
     citation_status: str | None = None,
+    duplicate_status: str | None = None,
     limit: int = 80,
-) -> list[Document]:
+) -> list[DocumentSummary]:
     query = db.query(Document).filter(Document.deleted_at.is_(None))
     query = apply_document_filters(
         query,
@@ -581,7 +644,15 @@ def list_documents(
         priority=priority,
         citation_status=citation_status,
     )
-    return query.order_by(Document.created_at.desc()).limit(limit).all()
+    if duplicate_status:
+        duplicate_checksums = duplicate_checksum_select()
+        if duplicate_status == "duplicates":
+            query = query.filter(Document.checksum_sha256.in_(duplicate_checksums))
+        elif duplicate_status == "unique":
+            query = query.filter(Document.checksum_sha256.notin_(duplicate_checksums))
+    documents = query.order_by(Document.created_at.desc()).limit(limit).all()
+    duplicate_counts = duplicate_count_by_checksum(db, [document.checksum_sha256 for document in documents])
+    return [document_summary_out(document, duplicate_counts.get(document.checksum_sha256, 0)) for document in documents]
 
 
 @app.get("/api/documents/{document_id}", response_model=DocumentDetail)
@@ -589,11 +660,11 @@ def get_document(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> Document:
+) -> DocumentDetail:
     document = db.get(Document, document_id)
     if not document or document.deleted_at:
         raise HTTPException(status_code=404, detail="Document not found")
-    return document
+    return document_detail_out(document, db)
 
 
 @app.post("/api/documents/{document_id}/citation-refresh", response_model=ConcordanceRunOut)
@@ -737,7 +808,7 @@ def patch_document(
     payload: DocumentPatch,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> Document:
+) -> DocumentDetail:
     document = db.get(Document, document_id)
     if not document or document.deleted_at:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -828,7 +899,7 @@ def patch_document(
         )
     db.commit()
     db.refresh(document)
-    return document
+    return document_detail_out(document, db)
 
 
 @app.delete("/api/documents/{document_id}")
@@ -873,6 +944,161 @@ def bulk_update_documents(
     return {"updated": len(documents)}
 
 
+def validate_duplicate_strategy(strategy: str) -> str:
+    if strategy not in DUPLICATE_IMPORT_STRATEGIES:
+        raise HTTPException(status_code=400, detail="Unsupported duplicate import strategy")
+    return strategy
+
+
+def import_storage_key(checksum: str, document_id: str, filename: str) -> str:
+    return f"documents/{checksum[:2]}/{checksum}/{document_id}/{filename}"
+
+
+def import_cache_path(cache_dir: Path, document_id: str) -> Path:
+    return cache_dir / f"{document_id}.pdf"
+
+
+def apply_project_defaults(db: Session, document: Document, projects: list[Project], priority: str) -> None:
+    for project in projects:
+        existing = (
+            db.query(ProjectItem)
+            .filter(ProjectItem.project_id == project.id, ProjectItem.document_id == document.id)
+            .one_or_none()
+        )
+        if not existing:
+            db.add(ProjectItem(project_id=project.id, document_id=document.id, priority=priority))
+
+
+def apply_attribute_defaults(db: Session, document: Document, attributes: dict[str, Any], *, replace: bool = False) -> None:
+    if replace:
+        document.attributes.clear()
+        db.flush()
+    for name, value in attributes.items():
+        definition = db.query(AttributeDefinition).filter(AttributeDefinition.name == name).one_or_none()
+        if not definition:
+            definition = AttributeDefinition(name=name, value_type="markdown")
+            db.add(definition)
+            db.flush()
+        existing = (
+            db.query(DocumentAttributeValue)
+            .filter(
+                DocumentAttributeValue.document_id == document.id,
+                DocumentAttributeValue.attribute_definition_id == definition.id,
+            )
+            .one_or_none()
+        )
+        normalized_value = normalize_attribute_value(value)
+        if existing:
+            existing.value = normalized_value
+        else:
+            db.add(
+                DocumentAttributeValue(
+                    document_id=document.id,
+                    attribute_definition_id=definition.id,
+                    value=normalized_value,
+                )
+            )
+
+
+def reset_document_for_overwrite(db: Session, document: Document) -> None:
+    latest_version = (
+        db.query(func.max(DocumentVersion.version_number)).filter(DocumentVersion.document_id == document.id).scalar() or 0
+    )
+    db.add(
+        DocumentVersion(
+            document_id=document.id,
+            version_number=latest_version + 1,
+            change_note="Import overwrite",
+            metadata_snapshot={"before": document_correction_snapshot(document)},
+        )
+    )
+    document.subtitle = None
+    document.authors = []
+    document.universities = []
+    document.publication_year = None
+    document.publisher = None
+    document.journal = None
+    document.doi = None
+    document.source_url = None
+    document.abstract = None
+    document.rich_summary = None
+    document.apa_citation = None
+    document.citation_status = "needs_review"
+    document.metadata_confidence = None
+    document.search_text = None
+    document.page_count = 0
+    document.pages.clear()
+    document.chunks.clear()
+    document.figures.clear()
+    document.capabilities.clear()
+    db.query(CitationCandidate).filter(CitationCandidate.document_id == document.id, CitationCandidate.status == "needs_review").delete(
+        synchronize_session=False
+    )
+    db.flush()
+
+
+def create_skipped_duplicate_job(
+    db: Session,
+    *,
+    batch: ImportBatch,
+    document: Document | None,
+    filename: str,
+    checksum: str,
+    reason: str,
+) -> None:
+    job = ImportJob(
+        batch_id=batch.id,
+        document_id=document.id if document else None,
+        status="complete",
+        current_step="duplicate_skipped",
+    )
+    db.add(job)
+    db.flush()
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=document.id if document else None,
+            level="warning",
+            event_type="duplicate_skipped",
+            message="Duplicate upload skipped by import policy.",
+            payload={"filename": filename, "checksum_sha256": checksum, "reason": reason},
+        )
+    )
+
+
+async def inspect_import_duplicates(files: list[UploadFile], db: Session) -> ImportDuplicateCheckOut:
+    seen_checksums: set[str] = set()
+    rows: list[ImportDuplicateFileOut] = []
+    duplicate_count = 0
+    for upload in files:
+        data = await upload.read()
+        checksum = hashlib.sha256(data).hexdigest()
+        existing = active_documents_for_checksum(db, checksum)
+        duplicate_in_upload = checksum in seen_checksums
+        seen_checksums.add(checksum)
+        if existing or duplicate_in_upload:
+            duplicate_count += 1
+        rows.append(
+            ImportDuplicateFileOut(
+                filename=upload.filename or f"{checksum}.pdf",
+                checksum_sha256=checksum,
+                file_size_bytes=len(data),
+                existing_documents=[duplicate_document_out(document) for document in existing],
+                duplicate_in_upload=duplicate_in_upload,
+            )
+        )
+    return ImportDuplicateCheckOut(files=rows, duplicate_file_count=duplicate_count)
+
+
+@app.post("/api/imports/duplicates", response_model=ImportDuplicateCheckOut)
+async def check_import_duplicates(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    files: Annotated[list[UploadFile], File()],
+) -> ImportDuplicateCheckOut:
+    return await inspect_import_duplicates(files, db)
+
+
 @app.post("/api/imports/batches", response_model=ImportBatchOut)
 async def create_import_batch(
     _: Annotated[User, Depends(current_user)],
@@ -885,7 +1111,9 @@ async def create_import_batch(
     priority: Annotated[str, Form()] = "normal",
     read_status: Annotated[str, Form()] = "unread",
     attributes: Annotated[str | None, Form()] = None,
+    duplicate_strategy: Annotated[str, Form()] = "skip",
 ) -> ImportBatch:
+    duplicate_strategy = validate_duplicate_strategy(duplicate_strategy)
     parsed_domain_ids = parse_json_form(domain_ids, [])
     parsed_tag_ids = parse_json_form(tag_ids, [])
     parsed_project_ids = parse_json_form(project_ids, [])
@@ -912,58 +1140,80 @@ async def create_import_batch(
     cache_dir = settings.data_dir / "processing-cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    batch_documents_by_checksum: dict[str, Document] = {}
     for upload in files:
         data = await upload.read()
         checksum = hashlib.sha256(data).hexdigest()
-        existing = db.query(Document).filter(Document.checksum_sha256 == checksum).one_or_none()
-        if existing:
-            job = ImportJob(batch_id=batch.id, document_id=existing.id, status="complete", current_step="duplicate")
-            db.add(job)
-            db.add(
-                ProcessingEvent(
-                    import_job_id=job.id,
-                    document_id=existing.id,
-                    level="warning",
-                    event_type="duplicate",
-                    message="Duplicate upload matched an existing checksum.",
-                    payload={"filename": upload.filename},
-                )
+        filename = upload.filename or f"{checksum}.pdf"
+        existing_documents = active_documents_for_checksum(db, checksum)
+        already_handled_document = batch_documents_by_checksum.get(checksum)
+        if already_handled_document and duplicate_strategy != "import_anyway":
+            create_skipped_duplicate_job(
+                db,
+                batch=batch,
+                document=already_handled_document,
+                filename=filename,
+                checksum=checksum,
+                reason="duplicate_in_current_batch",
             )
             continue
 
-        filename = upload.filename or f"{checksum}.pdf"
-        key = f"documents/{checksum[:2]}/{checksum}/{filename}"
+        if existing_documents and duplicate_strategy == "skip":
+            create_skipped_duplicate_job(
+                db,
+                batch=batch,
+                document=existing_documents[0],
+                filename=filename,
+                checksum=checksum,
+                reason="matched_existing_document",
+            )
+            continue
+
+        duplicate_source_ids = [document.id for document in existing_documents]
+        if existing_documents and duplicate_strategy == "overwrite":
+            document = existing_documents[0]
+            reset_document_for_overwrite(db, document)
+        else:
+            document = Document(
+                title=Path(filename).stem.replace("_", " ").replace("-", " "),
+                original_filename=filename,
+                content_type=upload.content_type or "application/pdf",
+                checksum_sha256=checksum,
+                priority=priority,
+                read_status=read_status,
+            )
+            db.add(document)
+            db.flush()
+
+        key = import_storage_key(checksum, document.id, filename)
         stored = storage.put_bytes(key, data, upload.content_type or "application/pdf")
-        cache_path = cache_dir / f"{checksum}.pdf"
+        cache_path = import_cache_path(cache_dir, document.id)
         cache_path.write_bytes(data)
-        document = Document(
-            title=Path(filename).stem.replace("_", " ").replace("-", " "),
-            original_filename=filename,
-            content_type=upload.content_type or "application/pdf",
-            checksum_sha256=checksum,
-            gcs_uri=stored.uri,
-            storage_status=stored.backend,
-            priority=priority,
-            read_status=read_status,
-            metadata_evidence={"local_cache_path": str(cache_path), "import_defaults": batch.shared_defaults},
-        )
+        document.title = Path(filename).stem.replace("_", " ").replace("-", " ")
+        document.original_filename = filename
+        document.content_type = upload.content_type or "application/pdf"
+        document.checksum_sha256 = checksum
+        document.gcs_uri = stored.uri
+        document.storage_status = stored.backend
+        document.processing_status = "queued"
+        document.priority = priority
+        document.read_status = read_status
+        document.metadata_evidence = {
+            "file_size_bytes": len(data),
+            "local_cache_path": str(cache_path),
+            "import_defaults": batch.shared_defaults,
+            "duplicate_import": {
+                "strategy": duplicate_strategy,
+                "matched_document_ids": duplicate_source_ids,
+            },
+        }
         document.domains = domains.copy()
         document.tags = tags.copy()
-        db.add(document)
-        db.flush()
-
-        for project in projects:
-            db.add(ProjectItem(project_id=project.id, document_id=document.id, priority=priority))
-
-        for name, value in parsed_attributes.items():
-            definition = db.query(AttributeDefinition).filter(AttributeDefinition.name == name).one_or_none()
-            if not definition:
-                definition = AttributeDefinition(name=name, value_type="markdown")
-                db.add(definition)
-                db.flush()
-            db.add(DocumentAttributeValue(document_id=document.id, attribute_definition_id=definition.id, value={"value": value}))
+        apply_project_defaults(db, document, projects, priority)
+        apply_attribute_defaults(db, document, parsed_attributes, replace=duplicate_strategy == "overwrite")
 
         db.add(ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored"))
+        batch_documents_by_checksum[checksum] = document
 
     refresh_import_batch_progress(db, batch)
     db.commit()
@@ -976,9 +1226,45 @@ def list_import_batches(_: Annotated[User, Depends(current_user)], db: Annotated
     return db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(50).all()
 
 
+def import_job_file_size(document: Document | None) -> int | None:
+    if not document:
+        return None
+    metadata_evidence = document.metadata_evidence or {}
+    stored_size = metadata_evidence.get("file_size_bytes")
+    if isinstance(stored_size, int):
+        return stored_size
+    candidate_paths = [metadata_evidence.get("local_cache_path")]
+    if document.gcs_uri and not document.gcs_uri.startswith("gs://"):
+        candidate_paths.append(document.gcs_uri)
+    for raw_path in candidate_paths:
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        path = Path(raw_path)
+        if path.exists() and path.is_file():
+            return path.stat().st_size
+    return None
+
+
 @app.get("/api/imports/jobs", response_model=list[ImportJobOut])
-def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[ImportJob]:
-    return db.query(ImportJob).order_by(ImportJob.created_at.desc()).limit(100).all()
+def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+    jobs = db.query(ImportJob).options(joinedload(ImportJob.document)).order_by(ImportJob.created_at.desc()).limit(100).all()
+    return [
+        {
+            "id": job.id,
+            "batch_id": job.batch_id,
+            "document_id": job.document_id,
+            "document_title": job.document.title if job.document else None,
+            "original_filename": job.document.original_filename if job.document else None,
+            "file_size_bytes": import_job_file_size(job.document),
+            "status": job.status,
+            "current_step": job.current_step,
+            "attempts": job.attempts,
+            "last_error": job.last_error,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+        }
+        for job in jobs
+    ]
 
 
 @app.get("/api/exports/metadata")
@@ -1081,7 +1367,7 @@ def patch_citation_candidate(
                 setattr(document, field, value)
                 changed_fields.add(field)
         if candidate.citation_text:
-            document.apa_citation = candidate.citation_text
+            document.apa_citation = decode_html_entities(candidate.citation_text)
             changed_fields.add("apa_citation")
         document.citation_status = "verified"
         changed_fields.add("citation_status")

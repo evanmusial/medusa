@@ -165,7 +165,7 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
 
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_type: Mapped[str] = mapped_column(String(160), default="application/pdf", nullable=False)
-    checksum_sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     gcs_uri: Mapped[str | None] = mapped_column(Text)
     storage_status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False)
@@ -388,6 +388,21 @@ class ImportJob(Base, TimestampMixin):
     batch: Mapped[ImportBatch] = relationship(back_populates="jobs")
     document: Mapped[Document | None] = relationship()
     events: Mapped[list["ProcessingEvent"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+
+    @property
+    def document_title(self) -> str | None:
+        return self.document.title if self.document else None
+
+    @property
+    def original_filename(self) -> str | None:
+        return self.document.original_filename if self.document else None
+
+    @property
+    def file_size_bytes(self) -> int | None:
+        if not self.document:
+            return None
+        value = self.document.metadata_evidence.get("file_size_bytes")
+        return value if isinstance(value, int) else None
 
 
 class ProcessingEvent(Base, TimestampMixin):

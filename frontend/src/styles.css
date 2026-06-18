@@ -128,9 +128,10 @@ button {
 
 .brand-name {
   color: var(--ink);
-  font-family: Georgia, Cambria, "Times New Roman", Times, serif;
+  font-family: "Century Schoolbook", "Century Schoolbook L", "New Century Schoolbook", Georgia, Cambria, "Times New Roman", Times, serif;
   font-size: 50px;
-  font-weight: 800;
+  font-weight: 700;
+  font-kerning: normal;
   letter-spacing: 0;
   line-height: 0.92;
   text-transform: lowercase;
@@ -216,21 +217,42 @@ textarea {
   cursor: not-allowed;
 }
 
+.text-button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--blue);
+  padding: 0 4px;
+  font-weight: 750;
+}
+
+.text-button:hover {
+  color: var(--ink);
+}
+
 .form-error {
   color: var(--amber);
   margin: 0;
+}
+
+.field-error {
+  margin: 0;
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .app-shell {
   min-height: 100vh;
   display: grid;
   grid-template-columns: var(--sidebar-width, 220px) var(--sidebar-resizer-width, 8px) minmax(0, 1fr);
-  grid-template-rows: 58px 1fr;
+  grid-template-rows: 98px 1fr;
 }
 
 .topbar {
   grid-column: 1 / -1;
-  height: 58px;
+  height: 98px;
   display: grid;
   grid-template-columns: max(300px, calc(var(--sidebar-width, 220px) + var(--sidebar-resizer-width, 8px) + 286px)) minmax(220px, 720px) auto;
   align-items: center;
@@ -242,21 +264,16 @@ textarea {
 
 .topbar-brand-area {
   min-width: 0;
+  align-self: stretch;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 25px 12px;
 }
 
 .brand {
   gap: 10px;
   min-width: 0;
-}
-
-.nav-toggle {
-  width: 36px;
-  height: 36px;
-  min-height: 36px;
-  padding: 0;
 }
 
 .global-search {
@@ -288,11 +305,16 @@ textarea {
   background: var(--panel);
   padding: 10px 8px;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .sidebar nav {
   display: grid;
   gap: 3px;
+  align-content: start;
 }
 
 .sidebar button {
@@ -324,6 +346,29 @@ textarea {
   color: white;
   border-radius: 999px;
   padding: 2px 6px;
+}
+
+.sidebar .sidebar-toggle {
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  grid-template-columns: none;
+  justify-content: center;
+  gap: 0;
+  margin-top: auto;
+  padding: 0;
+  border: 1px solid var(--button-line);
+  background: var(--panel-2);
+}
+
+.sidebar.collapsed {
+  align-items: center;
+  padding: 10px 7px;
+}
+
+.sidebar.collapsed .sidebar-toggle {
+  margin-top: auto;
 }
 
 .content {
@@ -614,6 +659,7 @@ textarea {
   align-items: center;
   text-align: left;
   padding: 10px 12px;
+  cursor: pointer;
 }
 
 .doc-row input {
@@ -710,6 +756,14 @@ textarea {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+}
+
+.detail-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .detail-head h2 {
@@ -1297,20 +1351,234 @@ pre {
   margin: 12px 0;
 }
 
-.import-controls label {
-  min-width: 172px;
-}
-
-.import-live-status {
-  min-height: 39px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
+.import-defaults {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 10px;
+  background: var(--panel);
+}
+
+.import-defaults-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.import-defaults-head h2,
+.import-defaults-head p,
+.import-picker h3,
+.import-picker p {
+  margin: 0;
+}
+
+.import-defaults-head h2 {
+  font-size: 18px;
+}
+
+.import-defaults-head p,
+.import-picker p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.import-default-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(150px, 0.55fr) minmax(150px, 0.55fr);
+  gap: 10px;
+}
+
+.import-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.import-picker {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: var(--panel-2);
+}
+
+.import-picker-head {
+  min-height: 52px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.import-picker h3 {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.selected-chips {
+  min-height: 33px;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.selected-chips > span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.selected-chips button {
+  max-width: 100%;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--line));
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--ink);
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.selected-chips button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-options {
+  min-height: 108px;
+  max-height: 170px;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  overflow: auto;
+}
+
+.picker-options button {
+  min-width: 0;
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  padding: 0 8px;
+  text-align: left;
+}
+
+.picker-options button:hover,
+.picker-options button:focus-visible {
+  border-color: var(--button-line);
+  background: var(--panel);
+  outline: 0;
+}
+
+.picker-options button span,
+.picker-options button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-options button small,
+.picker-empty {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.picker-empty {
+  padding: 7px 8px;
+}
+
+.inline-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.duplicate-panel {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber-soft) 54%, var(--panel));
+}
+
+.duplicate-panel h2,
+.duplicate-panel p {
+  margin: 0;
+}
+
+.duplicate-panel p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.duplicate-list {
+  display: grid;
+  gap: 7px;
+}
+
+.duplicate-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.duplicate-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.duplicate-row strong,
+.duplicate-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duplicate-row small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.duplicate-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-controls label {
+  min-width: 172px;
 }
 
 .job-list,
@@ -1358,6 +1626,26 @@ pre {
 
 .job-row {
   justify-content: space-between;
+  gap: 12px;
+}
+
+.job-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.job-copy > span,
+.job-copy > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-copy > small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .inline-form {
@@ -1791,12 +2079,15 @@ pre {
   .settings-grid,
   .editor-grid,
   .scope-grid,
+  .import-default-controls,
+  .import-picker-grid,
   .note-link-grid {
     grid-template-columns: 1fr;
   }
 
   .list-toolbar,
-  .bulk-bar {
+  .bulk-bar,
+  .import-defaults-head {
     align-items: stretch;
     flex-direction: column;
   }

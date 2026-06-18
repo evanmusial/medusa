@@ -20,7 +20,7 @@ from app.models import (
     utc_now,
 )
 from app.services.ai import get_ai_service
-from app.services.citations import format_apa_citation, merge_citation_metadata
+from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
 from app.services.figures import process_document_figures_from_storage
 from app.services.processing import (
     document_metadata,
@@ -475,7 +475,7 @@ class ConcordanceProcessor:
                     CitationCandidate(
                         document_id=document.id,
                         source="openai-apa",
-                        citation_text=metadata.get("apa_citation"),
+                        citation_text=decode_html_entities(metadata.get("apa_citation")),
                         source_metadata=document_metadata(document),
                         confidence=metadata.get("confidence"),
                         status="needs_review",

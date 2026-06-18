@@ -50,6 +50,8 @@ import type {
   DocumentSummary,
   DocumentUpdatePayload,
   Domain,
+  DuplicateImportStrategy,
+  ImportDuplicateCheck,
   ImportJob,
   Note,
   NotePayload,
@@ -88,6 +90,10 @@ function StatusPill({ value, tone = "neutral" }: { value: string; tone?: "neutra
   return <span className={`pill ${tone}`}>{value.replaceAll("_", " ")}</span>;
 }
 
+function uniqueValues(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
 function authorsToText(document: DocumentSummary | DocumentDetail) {
   return (document.authors || [])
     .map((author) => {
@@ -123,7 +129,7 @@ function splitCommaList(value: string) {
 }
 
 function emptyFilters(): DocumentFilters {
-  return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "" };
+  return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "", duplicate_status: "" };
 }
 
 function cleanFilters(filters: DocumentFilters): DocumentFilters {
@@ -133,6 +139,35 @@ function cleanFilters(filters: DocumentFilters): DocumentFilters {
 function attributeDisplayValue(value: Record<string, unknown>) {
   if ("value" in value) return String(value.value ?? "");
   return JSON.stringify(value);
+}
+
+function decodeHtmlEntities(value: string) {
+  if (!value) return value;
+  const textarea = window.document.createElement("textarea");
+  textarea.innerHTML = value;
+  return textarea.value;
+}
+
+function decodeHtmlEntitiesDeep(value: unknown): unknown {
+  if (typeof value === "string") return decodeHtmlEntities(value);
+  if (Array.isArray(value)) return value.map((item) => decodeHtmlEntitiesDeep(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, decodeHtmlEntitiesDeep(item)]));
+  }
+  return value;
+}
+
+function formatFileSize(bytes?: number | null) {
+  if (!bytes || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -210,7 +245,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 }
 
 function markdownExcerpt(markdown: string, maxChars = 360): string {
-  const lines = markdown
+  const lines = decodeHtmlEntities(markdown)
     .replace(/\r/g, "")
     .split("\n")
     .map((line) => line.trim())
@@ -233,7 +268,7 @@ function MarkdownBlock({
   empty: string;
   compact?: boolean;
 }) {
-  const source = (content || "").trim();
+  const source = decodeHtmlEntities(content || "").trim();
   if (!source) return <p className="markdown-empty">{empty}</p>;
 
   const blocks: ReactNode[] = [];
@@ -425,16 +460,12 @@ function Login() {
 }
 
 function Header({
-  sidebarCollapsed,
-  onToggleSidebar,
   query,
   setQuery,
   theme,
   setTheme,
   onLogout,
 }: {
-  sidebarCollapsed: boolean;
-  onToggleSidebar: () => void;
   query: string;
   setQuery: (query: string) => void;
   theme: "day" | "night";
@@ -444,14 +475,6 @@ function Header({
   return (
     <header className="topbar">
       <div className="topbar-brand-area">
-        <button
-          className="icon-button nav-toggle"
-          title={sidebarCollapsed ? "Show navigation" : "Hide navigation"}
-          onClick={onToggleSidebar}
-          type="button"
-        >
-          {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-        </button>
         <div className="brand">
           <div className="brand-mark compact">
             <img className="brand-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
@@ -477,21 +500,43 @@ function Header({
   );
 }
 
-function Sidebar({ activeView, setActiveView, queuedJobs }: { activeView: View; setActiveView: (view: View) => void; queuedJobs: number }) {
+function Sidebar({
+  activeView,
+  collapsed,
+  activeImportJobs,
+  onToggleSidebar,
+  setActiveView,
+}: {
+  activeView: View;
+  collapsed: boolean;
+  activeImportJobs: number;
+  onToggleSidebar: () => void;
+  setActiveView: (view: View) => void;
+}) {
   return (
-    <aside className="sidebar">
-      <nav>
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button key={item.id} className={activeView === item.id ? "active" : ""} onClick={() => setActiveView(item.id)}>
-              <Icon size={18} />
-              <span>{item.label}</span>
-              {item.id === "import" && queuedJobs > 0 ? <small>{queuedJobs}</small> : null}
-            </button>
-          );
-        })}
-      </nav>
+    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
+      {!collapsed ? (
+        <nav>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button key={item.id} className={activeView === item.id ? "active" : ""} onClick={() => setActiveView(item.id)}>
+                <Icon size={18} />
+                <span>{item.label}</span>
+                {item.id === "import" && activeImportJobs > 0 ? <small>{activeImportJobs}</small> : null}
+              </button>
+            );
+          })}
+        </nav>
+      ) : null}
+      <button
+        className="icon-button sidebar-toggle"
+        title={collapsed ? "Show navigation" : "Hide navigation"}
+        onClick={onToggleSidebar}
+        type="button"
+      >
+        {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+      </button>
     </aside>
   );
 }
@@ -630,7 +675,12 @@ function LibraryView({
     setFilters({ ...emptyFilters(), ...savedSearch.filters });
   };
 
+  const activateDocument = (id: string) => {
+    setSelectedId(id);
+  };
+
   const toggleSelected = (id: string) => {
+    activateDocument(id);
     setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   };
 
@@ -709,6 +759,14 @@ function LibraryView({
               <option value="rejected">Rejected</option>
             </select>
           </label>
+          <label>
+            Duplicates
+            <select value={filters.duplicate_status || ""} onChange={(event) => setFilterValue("duplicate_status", event.target.value)}>
+              <option value="">Any duplicate status</option>
+              <option value="duplicates">Has duplicates</option>
+              <option value="unique">No exact duplicates</option>
+            </select>
+          </label>
           <button className="secondary-button" onClick={() => setFilters(emptyFilters())}>
             <X size={15} />
             Clear
@@ -771,7 +829,14 @@ function LibraryView({
             <input
               type="checkbox"
               checked={allVisibleSelected}
-              onChange={() => setSelectedIds(allVisibleSelected ? [] : documents.map((item) => item.id))}
+              onChange={() => {
+                if (allVisibleSelected) {
+                  setSelectedIds([]);
+                  return;
+                }
+                setSelectedIds(documents.map((item) => item.id));
+                if (documents[0]) activateDocument(documents[0].id);
+              }}
             />
             <strong>{loading ? "Searching..." : `${documents.length} documents`}</strong>
           </label>
@@ -838,20 +903,28 @@ function LibraryView({
         </div>
         <div className="rows">
           {documents.map((item) => (
-            <div key={item.id} className={`doc-row ${selectedId === item.id ? "selected" : ""}`}>
+            <div
+              key={item.id}
+              className={`doc-row ${selectedId === item.id ? "selected" : ""}`}
+              onClick={() => activateDocument(item.id)}
+              onPointerDown={() => activateDocument(item.id)}
+            >
               <input
                 aria-label={`Select ${item.title}`}
                 checked={selectedIds.includes(item.id)}
+                onClick={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
                 onChange={() => toggleSelected(item.id)}
                 type="checkbox"
               />
-              <button className="doc-row-main" onClick={() => setSelectedId(item.id)} type="button">
+              <button className="doc-row-main" onClick={() => activateDocument(item.id)} type="button">
                 <strong>{item.title}</strong>
                 <span>
                   {authorLine(item)} {item.publication_year ? `• ${item.publication_year}` : ""}
                 </span>
               </button>
               <div className="row-meta">
+                {item.duplicate_count > 0 ? <StatusPill value={`Duplicate ${item.duplicate_count + 1}`} tone="warn" /> : null}
                 <StatusPill value={item.processing_status} tone={item.processing_status === "ready" ? "good" : "blue"} />
                 <StatusPill value={item.citation_status} tone={item.citation_status === "verified" ? "good" : "warn"} />
               </div>
@@ -1083,7 +1156,7 @@ function DocumentPanelContent({
   }, [document.id]);
 
   const copyCitation = () => {
-    if (document.apa_citation) void copyToClipboard("citation", document.apa_citation);
+    if (document.apa_citation) void copyToClipboard("citation", decodeHtmlEntities(document.apa_citation));
   };
   const pages = useMemo(
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
@@ -1184,7 +1257,10 @@ function DocumentPanelContent({
           <h2>{document.title}</h2>
           <p>{authorLine(document)}</p>
         </div>
-        <StatusPill value={document.priority} tone="blue" />
+        <div className="detail-status">
+          {document.duplicate_count > 0 ? <StatusPill value={`Duplicate ${document.duplicate_count + 1}`} tone="warn" /> : null}
+          <StatusPill value={document.priority} tone="blue" />
+        </div>
       </div>
       <div className="detail-actions">
         <button className="secondary-button" onClick={() => setEditing((value) => !value)}>
@@ -1568,39 +1644,231 @@ function DocumentPanelContent({
       </section>
       <section className="detail-section">
         <h3>Evidence</h3>
-        <pre>{JSON.stringify(document.metadata_evidence, null, 2)}</pre>
+        <pre>{JSON.stringify(decodeHtmlEntitiesDeep(document.metadata_evidence), null, 2)}</pre>
       </section>
     </aside>
   );
 }
 
-function ImportView({ jobs }: { jobs: ImportJob[] }) {
+type ImportPickerItem = {
+  id: string;
+  name: string;
+  meta?: string;
+};
+
+function ImportDefaultPicker({
+  title,
+  hint,
+  items,
+  selectedIds,
+  onChange,
+  createLabel,
+  onCreate,
+}: {
+  title: string;
+  hint: string;
+  items: ImportPickerItem[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  createLabel: string;
+  onCreate?: (name: string) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [createName, setCreateName] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const selected = items.filter((item) => selectedIds.includes(item.id));
+  const normalizedQuery = query.trim().toLowerCase();
+  const options = items
+    .filter((item) => !selectedIds.includes(item.id))
+    .filter((item) => {
+      if (!normalizedQuery) return true;
+      return [item.name, item.meta].filter(Boolean).join(" ").toLowerCase().includes(normalizedQuery);
+    })
+    .slice(0, 12);
+  const canCreate = Boolean(onCreate && createName.trim());
+
+  const addItem = (id: string) => onChange(uniqueValues([...selectedIds, id]));
+  const removeItem = (id: string) => onChange(selectedIds.filter((selectedId) => selectedId !== id));
+  const handleCreate = async () => {
+    if (!onCreate || !createName.trim()) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      await onCreate(createName.trim());
+      setCreateName("");
+      setQuery("");
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : "Could not create item");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <section className="import-picker">
+      <div className="import-picker-head">
+        <div>
+          <h3>{title}</h3>
+          <p>{hint}</p>
+        </div>
+        {selectedIds.length ? (
+          <button className="text-button" type="button" onClick={() => onChange([])}>
+            Clear
+          </button>
+        ) : null}
+      </div>
+      <div className="selected-chips" aria-label={`${title} selected defaults`}>
+        {selected.length ? (
+          selected.map((item) => (
+            <button key={item.id} type="button" onClick={() => removeItem(item.id)} title={`Remove ${item.name}`}>
+              <span>{item.name}</span>
+              <X size={13} />
+            </button>
+          ))
+        ) : (
+          <span>No default</span>
+        )}
+      </div>
+      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Find ${title.toLowerCase()}`} />
+      <div className="picker-options">
+        {options.map((item) => (
+          <button key={item.id} type="button" onClick={() => addItem(item.id)}>
+            <span>{item.name}</span>
+            {item.meta ? <small>{item.meta}</small> : null}
+          </button>
+        ))}
+        {!options.length ? <span className="picker-empty">No matches</span> : null}
+      </div>
+      {onCreate ? (
+        <div className="inline-create">
+          <input value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createLabel} />
+          <button className="secondary-button" disabled={!canCreate || creating} onClick={handleCreate} type="button">
+            <Plus size={14} />
+            Add
+          </button>
+        </div>
+      ) : null}
+      {createError ? <p className="field-error">{createError}</p> : null}
+    </section>
+  );
+}
+
+function domainPickerItems(domains: Domain[]): ImportPickerItem[] {
+  const byId = new Map(domains.map((domain) => [domain.id, domain]));
+  const labelFor = (domain: Domain): string => {
+    const parents: string[] = [];
+    let current: Domain | undefined = domain;
+    while (current) {
+      parents.unshift(current.name);
+      current = current.parent_id ? byId.get(current.parent_id) : undefined;
+    }
+    return parents.join(" / ");
+  };
+  return domains
+    .map((domain) => ({ id: domain.id, name: labelFor(domain), meta: `${domain.document_count} documents` }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; domains: Domain[]; tags: Tag[]; projects: Project[] }) {
+  const [batchLabel, setBatchLabel] = useState("");
   const [priority, setPriority] = useState("normal");
   const [readStatus, setReadStatus] = useState("unread");
+  const [selectedDomainIds, setSelectedDomainIds] = useState<string[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [dragDepth, setDragDepth] = useState(0);
   const [dropMessage, setDropMessage] = useState("Ready");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [duplicateCheck, setDuplicateCheck] = useState<ImportDuplicateCheck | null>(null);
   const queryClient = useQueryClient();
+  const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
+  const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
+  const domainItems = useMemo(() => domainPickerItems(domains), [domains]);
+  const tagItems = useMemo<ImportPickerItem[]>(
+    () => sortedTags.map((tag) => ({ id: tag.id, name: tag.name, meta: tag.kind })),
+    [sortedTags],
+  );
+  const projectItems = useMemo<ImportPickerItem[]>(
+    () => sortedProjects.map((project) => ({ id: project.id, name: project.name, meta: `${project.item_count} resources` })),
+    [sortedProjects],
+  );
+  const selectedDefaultCount = selectedDomainIds.length + selectedTagIds.length + selectedProjectIds.length;
+  const importDefaults = () => ({
+    label: batchLabel.trim(),
+    priority,
+    read_status: readStatus,
+    domain_ids: selectedDomainIds,
+    tag_ids: selectedTagIds,
+    project_ids: selectedProjectIds,
+  });
+  const createAndSelectDomain = async (name: string) => {
+    const existing = domains.find((domain) => domain.name.toLowerCase() === name.toLowerCase() && !domain.parent_id);
+    const domain = existing || (await api.createDomain(name));
+    setSelectedDomainIds((current) => uniqueValues([...current, domain.id]));
+    void queryClient.invalidateQueries({ queryKey: ["domains"] });
+  };
+  const createAndSelectTag = async (name: string) => {
+    const existing = tags.find((tag) => tag.name.toLowerCase() === name.toLowerCase());
+    const tag = existing || (await api.createTag(name));
+    setSelectedTagIds((current) => uniqueValues([...current, tag.id]));
+    void queryClient.invalidateQueries({ queryKey: ["tags"] });
+  };
+  const createAndSelectProject = async (name: string) => {
+    const existing = projects.find((project) => project.name.toLowerCase() === name.toLowerCase());
+    const project = existing || (await api.createProject(name));
+    setSelectedProjectIds((current) => uniqueValues([...current, project.id]));
+    void queryClient.invalidateQueries({ queryKey: ["projects"] });
+  };
   const upload = useMutation({
-    mutationFn: (incomingFiles: File[]) => api.uploadBatch(incomingFiles, { priority, read_status: readStatus }),
-    onMutate: (incomingFiles) => {
+    mutationFn: ({ incomingFiles, strategy }: { incomingFiles: File[]; strategy: DuplicateImportStrategy }) =>
+      api.uploadBatch(incomingFiles, { ...importDefaults(), duplicate_strategy: strategy }),
+    onMutate: ({ incomingFiles }) => {
+      setDuplicateCheck(null);
+      setPendingFiles([]);
       setDropMessage(`Importing ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
     },
-    onSuccess: (_batch, incomingFiles) => {
+    onSuccess: (_batch, { incomingFiles }) => {
       setDropMessage(`Queued ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => {
       setDropMessage(error instanceof Error ? error.message : "Import failed");
     },
   });
+  const duplicatePreflight = useMutation({
+    mutationFn: (incomingFiles: File[]) => api.checkImportDuplicates(incomingFiles),
+    onMutate: (incomingFiles) => {
+      setDuplicateCheck(null);
+      setPendingFiles(incomingFiles);
+      setDropMessage(`Checking ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
+    },
+    onSuccess: (result, incomingFiles) => {
+      if (result.duplicate_file_count > 0) {
+        setDuplicateCheck(result);
+        setPendingFiles(incomingFiles);
+        setDropMessage(`${result.duplicate_file_count} duplicate ${result.duplicate_file_count === 1 ? "file" : "files"} found`);
+        return;
+      }
+      upload.mutate({ incomingFiles, strategy: "skip" });
+    },
+    onError: (error) => {
+      setDuplicateCheck(null);
+      setPendingFiles([]);
+      setDropMessage(error instanceof Error ? error.message : "Duplicate check failed");
+    },
+  });
   const isDraggingFiles = dragDepth > 0;
+  const importBusy = upload.isPending || duplicatePreflight.isPending;
+  const duplicateFiles = duplicateCheck?.files.filter((file) => file.duplicate_in_upload || file.existing_documents.length > 0) || [];
 
   const hasDraggedFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
   const importFiles = (incomingFiles: FileList | File[]) => {
     const allFiles = Array.from(incomingFiles);
     const pdfs = allFiles.filter((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
-    if (upload.isPending) {
+    if (importBusy) {
       setDropMessage("Import already running");
       return;
     }
@@ -1612,13 +1880,28 @@ function ImportView({ jobs }: { jobs: ImportJob[] }) {
     if (rejectedCount > 0) {
       setDropMessage(`Importing ${pdfs.length}; ignored ${rejectedCount}`);
     }
-    upload.mutate(pdfs);
+    duplicatePreflight.mutate(pdfs);
+  };
+  const applyDuplicateStrategy = (strategy: DuplicateImportStrategy) => {
+    if (!pendingFiles.length) return;
+    upload.mutate({ incomingFiles: pendingFiles, strategy });
+  };
+
+  const jobLabel = (job: ImportJob) => {
+    const name = job.original_filename || job.document_title || job.current_step || "Import";
+    const size = formatFileSize(job.file_size_bytes);
+    return `${name}${size ? ` (${size})` : ""}${job.status === "complete" ? " (done)" : ""}`;
+  };
+  const jobStepLabel = (job: ImportJob) => {
+    if (job.status === "complete") return "complete";
+    if (job.status === "failed") return job.last_error || "failed";
+    return job.current_step.replaceAll("_", " ");
   };
 
   return (
     <section className="workbench">
       <div
-        className={`dropzone${isDraggingFiles ? " active" : ""}${upload.isPending ? " uploading" : ""}`}
+        className={`dropzone${isDraggingFiles ? " active" : ""}${importBusy ? " uploading" : ""}`}
         onDragEnter={(event) => {
           if (!hasDraggedFiles(event)) return;
           event.preventDefault();
@@ -1644,8 +1927,8 @@ function ImportView({ jobs }: { jobs: ImportJob[] }) {
           <span className="dropzone-icon-shell">
             <UploadCloud size={42} />
           </span>
-          <strong>{isDraggingFiles ? "Release to import" : upload.isPending ? "Importing" : "Drop PDFs"}</strong>
-          <span className="dropzone-hint">{isDraggingFiles ? "PDFs will start immediately" : "or click anywhere"}</span>
+          <strong>{isDraggingFiles ? "Release to check" : importBusy ? "Working" : "Drop PDFs"}</strong>
+          <span className="dropzone-hint">{isDraggingFiles ? "PDFs will be checked for duplicates" : "or click anywhere"}</span>
           <span className="dropzone-status">{dropMessage}</span>
         </div>
         <input
@@ -1659,34 +1942,114 @@ function ImportView({ jobs }: { jobs: ImportJob[] }) {
           }}
         />
       </div>
-      <div className="import-controls">
-        <label>
-          Priority
-          <select value={priority} onChange={(event) => setPriority(event.target.value)}>
-            <option value="urgent">Urgent</option>
-            <option value="high">High</option>
-            <option value="normal">Normal</option>
-            <option value="low">Low</option>
-          </select>
-        </label>
-        <label>
-          Read status
-          <select value={readStatus} onChange={(event) => setReadStatus(event.target.value)}>
-            <option value="unread">Unread</option>
-            <option value="skimmed">Skimmed</option>
-            <option value="read">Read</option>
-          </select>
-        </label>
-        <div className="import-live-status">
-          <Cloud size={17} />
-          <span>{upload.isPending ? "Submitting upload" : "Imports start on drop"}</span>
+      {duplicateCheck ? (
+        <section className="duplicate-panel">
+          <div>
+            <h2>Duplicate files</h2>
+            <p>{duplicateFiles.length} exact checksum {duplicateFiles.length === 1 ? "match" : "matches"} need a decision.</p>
+          </div>
+          <div className="duplicate-list">
+            {duplicateFiles.slice(0, 8).map((file, index) => (
+              <div key={`${file.checksum_sha256}-${file.filename}-${index}`} className="duplicate-row">
+                <span>
+                  <strong>{file.filename}</strong>
+                  <small>
+                    {formatFileSize(file.file_size_bytes)}
+                    {file.duplicate_in_upload ? " / duplicate in this drop" : ""}
+                    {file.existing_documents.length ? ` / matches ${file.existing_documents[0].title}` : ""}
+                  </small>
+                </span>
+                <StatusPill value={file.existing_documents.length ? "In library" : "In batch"} tone="warn" />
+              </div>
+            ))}
+          </div>
+          <div className="duplicate-actions">
+            <button className="secondary-button" disabled={upload.isPending} onClick={() => applyDuplicateStrategy("skip")} type="button">
+              <X size={15} />
+              Skip duplicates
+            </button>
+            <button className="secondary-button" disabled={upload.isPending} onClick={() => applyDuplicateStrategy("overwrite")} type="button">
+              <RefreshCw size={15} />
+              Overwrite
+            </button>
+            <button className="primary-button" disabled={upload.isPending} onClick={() => applyDuplicateStrategy("import_anyway")} type="button">
+              <Plus size={15} />
+              Import anyway
+            </button>
+          </div>
+        </section>
+      ) : null}
+      <section className="import-defaults">
+        <div className="import-defaults-head">
+          <div>
+            <h2>Apply to this batch</h2>
+            <p>
+              Defaults are optional. Selected domains, tags, projects, priority, and read state will be applied to every queued PDF.
+            </p>
+          </div>
+          <StatusPill value={selectedDefaultCount ? `${selectedDefaultCount} defaults` : "No organization defaults"} tone={selectedDefaultCount ? "blue" : "neutral"} />
         </div>
-      </div>
+        <div className="import-default-controls">
+          <label>
+            Batch label
+            <input value={batchLabel} onChange={(event) => setBatchLabel(event.target.value)} placeholder="Optional import label" />
+          </label>
+          <label>
+            Priority
+            <select value={priority} onChange={(event) => setPriority(event.target.value)}>
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="normal">Normal</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label>
+            Read status
+            <select value={readStatus} onChange={(event) => setReadStatus(event.target.value)}>
+              <option value="unread">Unread</option>
+              <option value="skimmed">Skimmed</option>
+              <option value="read">Read</option>
+            </select>
+          </label>
+        </div>
+        <div className="import-picker-grid">
+          <ImportDefaultPicker
+            createLabel="New top-level domain"
+            hint="Select knowledge domains or add a new top-level domain."
+            items={domainItems}
+            onChange={setSelectedDomainIds}
+            onCreate={createAndSelectDomain}
+            selectedIds={selectedDomainIds}
+            title="Domains"
+          />
+          <ImportDefaultPicker
+            createLabel="New tag"
+            hint="Apply known keywords or create a tag before dropping files."
+            items={tagItems}
+            onChange={setSelectedTagIds}
+            onCreate={createAndSelectTag}
+            selectedIds={selectedTagIds}
+            title="Tags"
+          />
+          <ImportDefaultPicker
+            createLabel="New project"
+            hint="Attach imports to run sheets as candidate resources."
+            items={projectItems}
+            onChange={setSelectedProjectIds}
+            onCreate={createAndSelectProject}
+            selectedIds={selectedProjectIds}
+            title="Projects"
+          />
+        </div>
+      </section>
       <section className="job-list">
         <h2>Processing</h2>
         {jobs.slice(0, 20).map((job) => (
           <div key={job.id} className="job-row">
-            <span>{job.current_step}</span>
+            <span className="job-copy">
+              <span>{jobLabel(job)}</span>
+              <small>{jobStepLabel(job)}</small>
+            </span>
             <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
           </div>
         ))}
@@ -1889,7 +2252,7 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
             className="secondary-button"
             disabled={!bibliographyText}
             onClick={() => {
-              void copyToClipboard("bibliography", bibliographyText);
+              void copyToClipboard("bibliography", decodeHtmlEntities(bibliographyText));
             }}
           >
             {copiedKey === "bibliography" ? <CheckCircle2 size={16} /> : <Clipboard size={16} />}
@@ -2411,33 +2774,35 @@ export default function App() {
   if (me.error || !me.data) return <Login />;
 
   const shellStyle = {
-    "--sidebar-width": sidebarCollapsed ? "0px" : `${sidebarWidth}px`,
+    "--sidebar-width": sidebarCollapsed ? "52px" : `${sidebarWidth}px`,
     "--sidebar-resizer-width": sidebarCollapsed ? "0px" : "8px",
   } as CSSProperties;
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={shellStyle}>
       <Header
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
         query={query}
         setQuery={setQuery}
         theme={theme}
         setTheme={setTheme}
         onLogout={() => logout.mutate()}
       />
+      <Sidebar
+        activeView={activeView}
+        collapsed={sidebarCollapsed}
+        activeImportJobs={dashboard.data?.active_import_jobs || 0}
+        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+        setActiveView={setActiveView}
+      />
       {!sidebarCollapsed ? (
-        <>
-          <Sidebar activeView={activeView} setActiveView={setActiveView} queuedJobs={dashboard.data?.queued_jobs || 0} />
-          <ResizeHandle
-            className="sidebar-resizer"
-            label="Resize navigation pane"
-            max={304}
-            min={168}
-            setValue={setSidebarWidth}
-            value={sidebarWidth}
-          />
-        </>
+        <ResizeHandle
+          className="sidebar-resizer"
+          label="Resize navigation pane"
+          max={304}
+          min={168}
+          setValue={setSidebarWidth}
+          value={sidebarWidth}
+        />
       ) : null}
       <main className="content">
         <section className="metrics">
@@ -2476,7 +2841,9 @@ export default function App() {
             loading={documents.isFetching}
           />
         ) : null}
-        {activeView === "import" ? <ImportView jobs={jobs.data || []} /> : null}
+        {activeView === "import" ? (
+          <ImportView domains={domains.data || []} jobs={jobs.data || []} projects={projects.data || []} tags={tags.data || []} />
+        ) : null}
         {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
         {activeView === "review" ? <ReviewView items={review.data || []} /> : null}
         {activeView === "notes" ? (

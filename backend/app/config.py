@@ -49,10 +49,17 @@ class Settings(BaseSettings):
         default=14_000,
         validation_alias="MEDUSA_OPENAI_TEXT_NORMALIZATION_PAGE_MAX_CHARS",
     )
+    openai_request_timeout_seconds: float = Field(default=180.0, validation_alias="MEDUSA_OPENAI_REQUEST_TIMEOUT_SECONDS")
+    openai_page_normalization_timeout_seconds: float = Field(
+        default=90.0,
+        validation_alias="MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS",
+    )
+    openai_embedding_timeout_seconds: float = Field(default=60.0, validation_alias="MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS")
 
     enable_google_vision: bool = Field(default=True, validation_alias="MEDUSA_ENABLE_GOOGLE_VISION")
     low_text_page_threshold: int = 120
     worker_poll_seconds: float = 2.0
+    worker_stale_job_seconds: int = Field(default=900, validation_alias="MEDUSA_WORKER_STALE_JOB_SECONDS")
 
     cors_origins: list[str] = [
         "http://localhost:3737",

@@ -33,7 +33,9 @@ Current UI architecture:
   - Center dense document results with selected-document bulk edit and batch Concordance controls.
   - Resizable right document detail/correction pane for authenticated original PDF preview, normalized one-page parsed text reading, annotations, citation, summary, extracted figures, tags, domains, attributes, history, and evidence.
 - Library Reader mode can expand the selected document to the whole lower work area while preserving document controls, PDF/Text tabs, citation actions, notes, and metadata sections.
-- Import view centers immediate drag/drop upload plus shared defaults, active drop-target feedback, and live job status.
+- Import view centers immediate drag/drop upload plus a batch-defaults intake panel for optional label, priority, read status, domains, tags, and projects. Domains, tags, and projects use searchable chip pickers with restrained inline creation so bulk uploads can be organized before files are dropped.
+- Import view also provides active drop-target feedback, duplicate-decision handling, and live job status with per-file step labels.
+- The sidebar Import badge shows active import jobs only; the top-level Jobs metric may include imports plus Concordance work.
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation.
 - Review Queue shows citation candidates that need human attention and supports accepting or rejecting them.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
@@ -42,8 +44,10 @@ Current UI architecture:
 
 Visual decisions:
 
-- The header brand uses the user-provided transparent Medusa emblem SVG plus a large lowercase `medusa` wordmark in a bold serif face. The emblem is borderless and sized to visually match the wordmark height.
+- The header brand uses the user-provided transparent Medusa emblem SVG plus a large lowercase `medusa` wordmark in Century Schoolbook Bold, falling back to compatible local serif faces. The emblem is borderless and sized to visually match the wordmark height.
+- The header brand lockup should have restrained, generous top/bottom padding plus modest side padding so the emblem and wordmark breathe without turning the header into a hero element.
 - The emblem source remains black with transparency; night mode inverts it with CSS so the glyph reads light while keeping the transparent background intact. The same SVG is used as the browser favicon.
+- The sidebar owns its collapse/expand control. The control belongs at the bottom of the navigation column, and collapsed navigation should retain a narrow restore rail instead of moving that control back into the header.
 - Day mode uses cool white surfaces, ink text, restrained blue primary actions, teal success, amber warnings.
 - Night mode uses charcoal surfaces, high-contrast text, blue/teal accents, and soft borders.
 - Avoid loud gradients, marketing-style hero layouts, decorative blobs, or oversized display typography inside the work surface.
@@ -82,7 +86,7 @@ Backend modules:
 - `backend/app/worker.py`: long-running durable job loop.
 - `backend/app/services/storage.py`: GCS/local storage adapter.
 - `backend/app/services/extraction.py`: layout-aware PDF text extraction, deterministic page text cleanup, table normalization, and chunking.
-- `backend/app/services/ai.py`: OpenAI Responses API structured metadata, PDF-file context, APA candidate, summary/topic, page text normalization, and embedding adapter.
+- `backend/app/services/ai.py`: OpenAI Responses API structured metadata, PDF-file context, APA candidate, summary/topic, page text normalization with bounded fallback, and embedding adapter.
 - `backend/app/services/ocr.py`: Google Vision adapter placeholder.
 - `backend/app/services/processing.py`: import processing orchestration.
 - `backend/app/services/concordance.py`: retroactive capability registry, run creation, and Concordance job processing.
@@ -125,13 +129,16 @@ Current core entities:
 Important modeling decisions:
 
 - Documents are soft-deleted via `deleted_at`.
-- Duplicate detection starts with SHA-256 checksum.
+- Duplicate detection starts with SHA-256 checksum, but checksum is not unique in the data model because the user can deliberately import an exact duplicate.
+- Import duplicate decisions are explicit: skip duplicates, overwrite an existing matching document, or import anyway as a separate document.
+- Library views surface exact checksum duplicates with duplicate counts and a duplicate-status filter.
 - Citation status is explicit, with `needs_review` as the safe uncertain state.
 - Accepted citation candidates apply their metadata/citation to the document, set citation status to `verified`, and create a `DocumentVersion` audit snapshot.
 - Metadata evidence is stored as JSON so extraction, Crossref, OpenAI, and future sources can be audited.
 - Title-only citation evidence must pass a strong normalized-title match before it is stored as Crossref evidence.
 - Crossref evidence may fill missing citation fields such as authors, year, venue, DOI, publisher, and source URL; it should not silently overwrite existing user-corrected fields.
 - APA citations should favor DOI links whenever a DOI can be located and verified. If no DOI can be verified, the citation should prefer a direct stable source link, ideally a PDF or other static document, over a transient search or generic landing page.
+- Citation and metadata text from Crossref, OpenAI, PDFs, or user review candidates should be normalized for display and exports, including decoding HTML entities such as `&amp;`, `&quot;`, and numeric character references into their actual characters.
 - Full-text search data is stored on `Document.search_text`; chunk embeddings live on `TextChunk.embedding`.
 - Search and reader copy prefer `DocumentPage.normalized_text` when present and fall back to raw extracted `DocumentPage.text`.
 - Document annotations contribute their body text to `Document.search_text`; deleted annotations are excluded from active document detail and search rebuilds.
@@ -142,30 +149,36 @@ Important modeling decisions:
 Current import path:
 
 1. User uploads one or more PDFs through `/api/imports/batches`.
-2. Backend hashes each file and checks for exact duplicates.
-3. Original is written to GCS when configured, otherwise to local storage.
-4. A local processing cache copy is saved under `data/processing-cache`.
-5. `Document`, `ImportBatch`, and `ImportJob` records are committed.
-6. Worker claims queued jobs and moves them through extraction, enrichment, indexing, and completion.
-7. PDF text and pages are extracted with PyMuPDF using layout-aware block ordering.
-8. Two-column pages should read down the left column before crossing to the right column, while full-width headers/sections remain in vertical order.
-9. Detected tables are converted to Markdown and included in page text so table content is searchable and available to metadata/summarization.
-10. Page text is normalized into readable paragraph flow. If `OPENAI_API_KEY` and `MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true` are configured, OpenAI conforms the text while preserving wording/order; otherwise local cleanup removes common spacing and hyphenation artifacts.
-11. Embedded PDF figures/images are extracted with PyMuPDF, stored through the configured storage adapter, and recorded as `Figure` rows.
-12. Normalized text is chunked for search/embedding, falling back to raw extracted text when needed.
-13. OpenAI metadata extraction runs only when `OPENAI_API_KEY` exists; otherwise a low-confidence review record is produced.
-14. Async document-intelligence work defaults to `OPENAI_MODEL=gpt-5.5` because import/Concordance quality matters more than latency.
-15. When `MEDUSA_OPENAI_SEND_PDF=true`, Medusa sends the original PDF as a Responses API file input alongside extracted text when the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`.
-16. Crossref lookup is attempted by DOI/title. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
-17. APA citation is generated. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
-18. Uncertain citations create `CitationCandidate` review records.
-19. Successful jobs delete their local processing-cache PDF copy after indexing.
+2. Frontend calls `/api/imports/duplicates` to hash the proposed upload set and detect exact checksum matches against the library and within the same drop.
+3. If duplicates are found, the user chooses skip, overwrite, or import anyway before `/api/imports/batches` queues the batch.
+4. The upload request includes current batch defaults: optional label, domain IDs, tag IDs, project IDs, priority, read status, and attributes.
+5. Backend applies the duplicate strategy. Skip creates a completed `duplicate_skipped` job, overwrite reuses and reprocesses the selected existing document record, and import-anyway creates another document with the same checksum.
+6. Backend applies batch defaults to each imported document and creates project run-sheet items for selected projects.
+7. Original is written to GCS when configured, otherwise to local storage.
+8. A document-specific local processing cache copy is saved under `data/processing-cache`.
+9. `Document`, `ImportBatch`, and `ImportJob` records are committed.
+10. Worker claims queued jobs and moves them through extraction, enrichment, indexing, and completion.
+11. PDF text and pages are extracted with PyMuPDF using layout-aware block ordering.
+12. Two-column pages should read down the left column before crossing to the right column, while full-width headers/sections remain in vertical order.
+13. Detected tables are converted to Markdown and included in page text so table content is searchable and available to metadata/summarization.
+14. Page text is normalized into readable paragraph flow. If `OPENAI_API_KEY` and `MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true` are configured, OpenAI conforms the text while preserving wording/order; otherwise local cleanup removes common spacing and hyphenation artifacts. Page-normalization requests use `MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS` and fall back locally on timeout/error.
+15. Embedded PDF figures/images are extracted with PyMuPDF, stored through the configured storage adapter, and recorded as `Figure` rows.
+16. Normalized text is chunked for search/embedding, falling back to raw extracted text when needed.
+17. OpenAI metadata extraction runs only when `OPENAI_API_KEY` exists; otherwise a low-confidence review record is produced.
+18. Async document-intelligence work defaults to `OPENAI_MODEL=gpt-5.5` because import/Concordance quality matters more than latency.
+19. When `MEDUSA_OPENAI_SEND_PDF=true`, Medusa sends the original PDF as a Responses API file input alongside extracted text when the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`.
+20. Crossref lookup is attempted by DOI/title. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
+21. APA citation is generated. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
+22. Uncertain citations create `CitationCandidate` review records.
+23. Successful jobs delete their local processing-cache PDF copy after indexing.
 
 Durability decisions:
 
 - Jobs are database-backed and step-oriented.
 - Processing events are appended for auditability.
 - The app must tolerate stop/start without losing queued jobs.
+- Worker startup immediately requeues `running` imports and Concordance jobs from the previous worker process. Worker claims also use `locked_at` and `MEDUSA_WORKER_STALE_JOB_SECONDS` as a stale-lock recovery guard.
+- Import jobs checkpoint visible steps before long phases (`extracting`, `normalizing_pages`, `extracting_figures`, `enriching`, `indexing`, `cleaning_cache`) so the Import screen does not appear frozen at `stored` during real processing.
 - Import processors should stay idempotent where possible and avoid duplicating pages/chunks when a step reruns.
 - Completed jobs should not leave durable document copies in `data/processing-cache`; originals are retained in GCS or the configured local fallback store.
 - Failed jobs may keep their processing-cache copy to support retry and debugging.

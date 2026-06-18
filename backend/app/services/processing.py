@@ -19,10 +19,30 @@ from app.models import (
     utc_now,
 )
 from app.services.ai import get_ai_service
-from app.services.citations import format_apa_citation, merge_citation_metadata
+from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
 from app.services.extraction import extract_pdf_text, split_text_into_chunks
 from app.services.figures import process_document_figures
 from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
+
+
+IMPORT_STEP_ORDER = {
+    "stored": 0,
+    "extracting": 0,
+    "normalizing_pages": 0,
+    "extracted": 1,
+    "extracting_figures": 1,
+    "figures": 2,
+    "enriching": 2,
+    "enriched": 3,
+    "indexing": 3,
+    "indexed": 4,
+    "cleaning_cache": 4,
+    "complete": 5,
+}
+
+
+def job_step_at_least(job: ImportJob, step: str) -> bool:
+    return IMPORT_STEP_ORDER.get(job.current_step, 0) >= IMPORT_STEP_ORDER[step]
 
 
 def log_event(
@@ -45,6 +65,14 @@ def log_event(
             payload=payload or {},
         )
     )
+
+
+def checkpoint_job_step(db: Session, job: ImportJob, document: Document, step: str, message: str) -> None:
+    if job.current_step == step:
+        return
+    job.current_step = step
+    log_event(db, job=job, document=document, event_type=step, message=message)
+    db.commit()
 
 
 def get_or_create_tag(db: Session, name: str, kind: str = "keyword") -> Tag:
@@ -159,11 +187,13 @@ def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
 
 class DocumentProcessor:
     def process_job(self, db: Session, job: ImportJob) -> None:
+        job_id = job.id
         document = job.document
         if not document:
             job.status = "failed"
             job.last_error = "Document record is missing."
             return
+        document_id = document.id
 
         try:
             job.status = "running"
@@ -189,24 +219,35 @@ class DocumentProcessor:
             log_event(db, job=job, document=document, event_type="complete", message="Processing complete.")
             db.commit()
         except Exception as exc:
+            db.rollback()
+            job = db.get(ImportJob, job_id)
+            document = db.get(Document, document_id)
+            if not job:
+                return
             job.status = "failed"
             job.locked_at = None
             job.last_error = str(exc)
-            document.processing_status = "failed"
+            if document:
+                document.processing_status = "failed"
+            batch = db.get(ImportBatch, job.batch_id)
+            if batch:
+                refresh_import_batch_progress(db, batch)
             log_event(db, job=job, document=document, event_type="failed", message=str(exc), level="error")
             db.commit()
 
     def _extract(self, db: Session, job: ImportJob, document: Document) -> None:
-        if job.current_step in {"extracted", "figures", "enriched", "indexed", "complete"}:
+        if job_step_at_least(job, "extracted"):
             return
         local_path = document.metadata_evidence.get("local_cache_path")
         if not local_path or not Path(local_path).exists():
             raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
 
+        checkpoint_job_step(db, job, document, "extracting", "Extracting PDF text.")
         extracted = extract_pdf_text(Path(local_path))
         ai = get_ai_service()
         document.page_count = extracted.page_count
         document.pages.clear()
+        db.flush()
         for page in extracted.pages:
             document.pages.append(
                 DocumentPage(
@@ -218,6 +259,7 @@ class DocumentProcessor:
                 )
             )
         db.flush()
+        checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing extracted page text.")
         normalization_summary = normalize_document_pages(document, ai=ai)
         reading_text = rebuild_document_text_chunks(db, document)
         document.metadata_evidence = {
@@ -240,11 +282,12 @@ class DocumentProcessor:
         db.commit()
 
     def _extract_figures(self, db: Session, job: ImportJob, document: Document) -> None:
-        if job.current_step in {"figures", "enriched", "indexed", "complete"}:
+        if job_step_at_least(job, "figures"):
             return
         local_path = document.metadata_evidence.get("local_cache_path")
         if not local_path or not Path(local_path).exists():
             raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
+        checkpoint_job_step(db, job, document, "extracting_figures", "Extracting embedded figures.")
         result = process_document_figures(db, document, Path(local_path))
         job.current_step = "figures"
         log_event(
@@ -258,8 +301,9 @@ class DocumentProcessor:
         db.commit()
 
     def _enrich(self, db: Session, job: ImportJob, document: Document) -> None:
-        if job.current_step in {"enriched", "indexed", "complete"}:
+        if job_step_at_least(job, "enriched"):
             return
+        checkpoint_job_step(db, job, document, "enriching", "Enriching metadata, citation, summary, and topics.")
         ai = get_ai_service()
         local_path = document.metadata_evidence.get("local_cache_path")
         pdf_bytes = Path(local_path).read_bytes() if local_path and Path(local_path).exists() else None
@@ -295,7 +339,11 @@ class DocumentProcessor:
                 document.metadata_evidence["crossref_filled_fields"] = filled_fields
 
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
-        document.apa_citation = format_apa_citation(citation_metadata) if crossref else metadata.get("apa_citation") or format_apa_citation(citation_metadata)
+        document.apa_citation = (
+            format_apa_citation(citation_metadata)
+            if crossref
+            else decode_html_entities(metadata.get("apa_citation")) or format_apa_citation(citation_metadata)
+        )
         if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref):
             document.citation_status = "verified"
         else:
@@ -333,8 +381,9 @@ class DocumentProcessor:
         db.commit()
 
     def _index(self, db: Session, job: ImportJob, document: Document) -> None:
-        if job.current_step in {"indexed", "complete"}:
+        if job_step_at_least(job, "indexed"):
             return
+        checkpoint_job_step(db, job, document, "indexing", "Indexing searchable text and embeddings.")
         ai = get_ai_service()
         for chunk in document.chunks[:20]:
             if chunk.embedding is None:
@@ -357,6 +406,7 @@ class DocumentProcessor:
         db.commit()
 
     def _cleanup_processing_cache(self, db: Session, job: ImportJob, document: Document) -> None:
+        checkpoint_job_step(db, job, document, "cleaning_cache", "Cleaning temporary processing cache.")
         evidence = dict(document.metadata_evidence or {})
         cache_path = evidence.get("local_cache_path")
         if not cache_path:

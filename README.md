@@ -8,7 +8,7 @@ Medusa is a local-first research library, document aggregator, and intelligent t
 - React research cockpit UI with day/night modes
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs
-- Batch PDF upload with checksum duplicate detection
+- Batch PDF upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, checksum duplicate detection, and explicit skip/overwrite/import-anyway choices
 - GCS storage adapter with local fallback when credentials are not configured
 - PDF extraction via PyMuPDF
 - Authenticated original PDF preview/open route in the document detail pane and expanded Reader mode
@@ -21,7 +21,7 @@ Medusa is a local-first research library, document aggregator, and intelligent t
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, and bibliography generation
 - Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
-- Document correction pane for metadata, tags, domains, custom attributes, rendered Markdown summaries/citations, and correction history
+- Document correction pane for metadata, tags, domains, custom attributes, rendered Markdown summaries/citations, duplicate visibility, and correction history
 - Document annotations/highlights with page, color, note body, soft delete, and search indexing
 - Notes and reminders attached to documents, domains, projects, or the general library
 - Authenticated JSON backup exports for metadata and storage manifests, excluding secrets and session tokens
@@ -79,11 +79,22 @@ MEDUSA_OPENAI_SEND_PDF=true
 MEDUSA_OPENAI_PDF_FILE_MAX_MB=24
 MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true
 MEDUSA_OPENAI_TEXT_NORMALIZATION_PAGE_MAX_CHARS=14000
+MEDUSA_OPENAI_REQUEST_TIMEOUT_SECONDS=180
+MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS=90
+MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS=60
 ```
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
-OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5`, sends the original PDF as file context when the file is below the configured size cap, and normalizes extracted page text into readable paragraph flow. If OpenAI is unavailable, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
+OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5`, sends the original PDF as file context when the file is below the configured size cap, and normalizes extracted page text into readable paragraph flow. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
+
+Worker recovery:
+
+```bash
+MEDUSA_WORKER_STALE_JOB_SECONDS=900
+```
+
+Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
 
 ## Development
 
@@ -140,6 +151,10 @@ The restore command validates schema/safety flags, rejects secret-bearing keys, 
 ## Safety Model
 
 Imports are durable jobs stored in PostgreSQL. Each processing step records events and checkpoints, so stopping the app mid-import leaves work queued or resumable. Original files are checksum-addressed and duplicate uploads are detected before processing.
+
+Duplicate uploads are checked before queueing. When an exact checksum match is found, the Import view asks whether to skip the duplicate, overwrite the matching document record, or import anyway as a separate document. Library filters can also show exact checksum duplicates already in the collection.
+
+If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint.
 
 Settings includes backup export controls. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. Exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 

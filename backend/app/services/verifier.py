@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from app.services.citations import decode_html_entities
+
 
 def enough_metadata_for_verified_citation(metadata: dict[str, Any]) -> bool:
     return bool(metadata.get("title") and metadata.get("authors") and metadata.get("publication_year"))
@@ -13,8 +15,8 @@ def enough_metadata_for_verified_citation(metadata: dict[str, Any]) -> bool:
 def normalized_title_similarity(left: str | None, right: str | None) -> float:
     if not left or not right:
         return 0.0
-    left_normalized = " ".join(left.lower().split())
-    right_normalized = " ".join(right.lower().split())
+    left_normalized = " ".join(decode_html_entities(left).lower().split())
+    right_normalized = " ".join(decode_html_entities(right).lower().split())
     if not left_normalized or not right_normalized:
         return 0.0
     return SequenceMatcher(None, left_normalized, right_normalized).ratio()
@@ -28,18 +30,18 @@ def crossref_to_citation_metadata(crossref: dict[str, Any] | None) -> dict[str, 
     doi = crossref.get("DOI")
     source_url = (crossref.get("resource") or {}).get("primary", {}).get("URL") or crossref.get("URL")
     return {
-        "title": title,
+        "title": decode_html_entities(title),
         "authors": [_crossref_author(author) for author in crossref.get("author") or []],
         "publication_year": _crossref_year(crossref),
-        "journal": container,
-        "publisher": crossref.get("publisher"),
-        "doi": doi,
-        "source_url": source_url,
+        "journal": decode_html_entities(container),
+        "publisher": decode_html_entities(crossref.get("publisher")),
+        "doi": decode_html_entities(doi),
+        "source_url": decode_html_entities(source_url),
         "type": crossref.get("type"),
-        "volume": crossref.get("volume"),
-        "issue": crossref.get("issue"),
-        "page": crossref.get("page"),
-        "article_number": crossref.get("article-number"),
+        "volume": decode_html_entities(crossref.get("volume")),
+        "issue": decode_html_entities(crossref.get("issue")),
+        "page": decode_html_entities(crossref.get("page")),
+        "article_number": decode_html_entities(crossref.get("article-number")),
     }
 
 
@@ -90,8 +92,8 @@ def _crossref_year(crossref: dict[str, Any]) -> int | None:
 
 
 def _crossref_author(author: dict[str, Any]) -> dict[str, Any]:
-    given = str(author.get("given") or "").strip()
-    family = str(author.get("family") or "").strip()
+    given = decode_html_entities(author.get("given"))
+    family = decode_html_entities(author.get("family"))
     if family and not given and len(family.split()) > 1:
         parts = family.split()
         given = " ".join(parts[:-1])

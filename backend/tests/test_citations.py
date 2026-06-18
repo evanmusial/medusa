@@ -53,6 +53,26 @@ def test_format_apa_includes_journal_volume_issue_and_pages_as_markdown():
     )
 
 
+def test_format_apa_decodes_html_entities():
+    citation = format_apa_citation(
+        {
+            "title": "A canonical analysis of &quot;intentional&quot; information security breaches by insiders",
+            "authors": [{"given": "James", "family": "Shropshire"}],
+            "publication_year": 2009,
+            "journal": "Information Management &amp; Computer Security",
+            "volume": "17",
+            "issue": "4",
+            "page": "296-310",
+            "doi": "10.1108/09685220910993962",
+        }
+    )
+
+    assert "&amp;" not in citation
+    assert "&quot;" not in citation
+    assert "Information Management & Computer Security" in citation
+    assert '"intentional"' in citation
+
+
 def test_exports_include_expected_identifiers():
     metadata = {
         "title": "The Cyborg Manifesto",

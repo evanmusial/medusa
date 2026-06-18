@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 
 
+def decode_html_entities(value: Any) -> str:
+    return html.unescape(str(value or "")).strip()
+
+
 def normalize_author_name(author: dict[str, Any] | str) -> dict[str, str]:
     if isinstance(author, dict):
-        given = str(author.get("given") or author.get("first") or "").strip()
-        family = str(author.get("family") or author.get("last") or author.get("name") or "").strip()
+        given = decode_html_entities(author.get("given") or author.get("first") or "")
+        family = decode_html_entities(author.get("family") or author.get("last") or author.get("name") or "")
         if not family and given:
             parts = given.split()
             given = " ".join(parts[:-1])
             family = parts[-1]
         return {"given": given, "family": family}
-    parts = str(author).strip().split()
+    parts = decode_html_entities(author).split()
     if not parts:
         return {"given": "", "family": ""}
     if len(parts) == 1:
@@ -40,7 +45,7 @@ def apa_author_list(authors: list[dict[str, Any]] | list[str]) -> str:
 
 
 def sentence_case_title(title: str) -> str:
-    title = re.sub(r"\s+", " ", title).strip()
+    title = re.sub(r"\s+", " ", decode_html_entities(title)).strip()
     if not title:
         return title
     return title[0].upper() + title[1:]
@@ -66,18 +71,18 @@ def merge_citation_metadata(*metadata_items: dict[str, Any] | None) -> dict[str,
 
 
 def _strip_terminal_period(value: str) -> str:
-    return value.strip().rstrip(".")
+    return decode_html_entities(value).rstrip(".")
 
 
 def _with_period(value: str) -> str:
-    value = value.strip()
+    value = decode_html_entities(value)
     if not value:
         return value
     return value if value.endswith((".", "?", "!")) else f"{value}."
 
 
 def _doi_url(doi: Any) -> str:
-    doi_text = str(doi or "").strip()
+    doi_text = decode_html_entities(doi)
     if not doi_text:
         return ""
     if doi_text.startswith("http"):
@@ -108,7 +113,7 @@ def format_apa_citation(metadata: dict[str, Any]) -> str:
     journal = metadata.get("journal")
     publisher = _strip_terminal_period(str(metadata.get("publisher") or ""))
     doi = metadata.get("doi")
-    source_url = metadata.get("source_url")
+    source_url = decode_html_entities(metadata.get("source_url"))
 
     head = f"{authors} " if authors else ""
     if journal:
@@ -141,13 +146,13 @@ def format_bibtex(metadata: dict[str, Any]) -> str:
         for author in authors
     )
     fields = {
-        "title": metadata.get("title"),
+        "title": decode_html_entities(metadata.get("title")),
         "author": author_text or None,
-        "year": metadata.get("publication_year") or metadata.get("year"),
-        "journal": metadata.get("journal"),
-        "publisher": metadata.get("publisher"),
-        "doi": metadata.get("doi"),
-        "url": metadata.get("source_url"),
+        "year": decode_html_entities(metadata.get("publication_year") or metadata.get("year")),
+        "journal": decode_html_entities(metadata.get("journal")),
+        "publisher": decode_html_entities(metadata.get("publisher")),
+        "doi": decode_html_entities(metadata.get("doi")),
+        "url": decode_html_entities(metadata.get("source_url")),
     }
     lines = [f"@article{{{key},"]
     for field, value in fields.items():
@@ -164,12 +169,12 @@ def format_ris(metadata: dict[str, Any]) -> str:
         if normalized["family"]:
             lines.append(f"AU  - {normalized['family']}, {normalized['given']}".rstrip())
     field_map = {
-        "TI": metadata.get("title"),
-        "PY": metadata.get("publication_year") or metadata.get("year"),
-        "JO": metadata.get("journal"),
-        "PB": metadata.get("publisher"),
-        "DO": metadata.get("doi"),
-        "UR": metadata.get("source_url"),
+        "TI": decode_html_entities(metadata.get("title")),
+        "PY": decode_html_entities(metadata.get("publication_year") or metadata.get("year")),
+        "JO": decode_html_entities(metadata.get("journal")),
+        "PB": decode_html_entities(metadata.get("publisher")),
+        "DO": decode_html_entities(metadata.get("doi")),
+        "UR": decode_html_entities(metadata.get("source_url")),
     }
     for tag, value in field_map.items():
         if value:
@@ -182,7 +187,7 @@ def to_csl_json(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": citation_key(metadata),
         "type": "article-journal" if metadata.get("journal") else "book",
-        "title": metadata.get("title"),
+        "title": decode_html_entities(metadata.get("title")),
         "author": [
             {
                 "given": normalize_author_name(author)["given"],
@@ -191,8 +196,8 @@ def to_csl_json(metadata: dict[str, Any]) -> dict[str, Any]:
             for author in metadata.get("authors") or []
         ],
         "issued": {"date-parts": [[metadata.get("publication_year") or metadata.get("year")]]},
-        "container-title": metadata.get("journal"),
-        "publisher": metadata.get("publisher"),
-        "DOI": metadata.get("doi"),
-        "URL": metadata.get("source_url"),
+        "container-title": decode_html_entities(metadata.get("journal")),
+        "publisher": decode_html_entities(metadata.get("publisher")),
+        "DOI": decode_html_entities(metadata.get("doi")),
+        "URL": decode_html_entities(metadata.get("source_url")),
     }

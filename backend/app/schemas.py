@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import unescape
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+def decode_html_entity_text(value: Any) -> Any:
+    return unescape(value) if isinstance(value, str) else value
 
 
 class LoginRequest(BaseModel):
@@ -195,8 +200,14 @@ class DocumentSummary(ApiModel):
     read_status: str
     priority: str
     created_at: datetime
+    duplicate_count: int = 0
     tags: list[TagOut] = Field(default_factory=list)
     domains: list[DomainOut] = Field(default_factory=list)
+
+    @field_validator("title", "journal", "rich_summary", "apa_citation", mode="before")
+    @classmethod
+    def decode_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
 
 
 class DocumentDetail(DocumentSummary):
@@ -214,6 +225,33 @@ class DocumentDetail(DocumentSummary):
     pages: list[DocumentPageOut] = Field(default_factory=list)
     figures: list[FigureOut] = Field(default_factory=list)
     annotations: list[AnnotationOut] = Field(default_factory=list)
+    duplicate_document_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("subtitle", "publisher", "source_url", "abstract", "search_text", mode="before")
+    @classmethod
+    def decode_detail_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class ImportDuplicateDocumentOut(BaseModel):
+    id: str
+    title: str
+    original_filename: str
+    created_at: datetime
+    processing_status: str
+
+
+class ImportDuplicateFileOut(BaseModel):
+    filename: str
+    checksum_sha256: str
+    file_size_bytes: int
+    existing_documents: list[ImportDuplicateDocumentOut] = Field(default_factory=list)
+    duplicate_in_upload: bool = False
+
+
+class ImportDuplicateCheckOut(BaseModel):
+    files: list[ImportDuplicateFileOut]
+    duplicate_file_count: int
 
 
 class ProjectItemOut(ApiModel):
@@ -270,6 +308,9 @@ class ImportJobOut(ApiModel):
     id: str
     batch_id: str
     document_id: str | None = None
+    document_title: str | None = None
+    original_filename: str | None = None
+    file_size_bytes: int | None = None
     status: str
     current_step: str
     attempts: int
@@ -332,6 +373,11 @@ class CitationCandidateOut(ApiModel):
     status: str
     created_at: datetime
 
+    @field_validator("citation_text", mode="before")
+    @classmethod
+    def decode_citation_text(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
 
 class CitationCandidatePatch(BaseModel):
     status: str | None = None
@@ -343,7 +389,11 @@ class DashboardOut(BaseModel):
     unread: int
     needs_review: int
     queued_jobs: int
+    active_import_jobs: int
+    active_concordance_jobs: int
     failed_jobs: int
+    failed_import_jobs: int
+    failed_concordance_jobs: int
     projects: int
 
 
@@ -353,6 +403,11 @@ class BibliographyOut(BaseModel):
     bibtex: str
     ris: str
     csl_json: list[dict[str, Any]]
+
+    @field_validator("apa", "bibtex", "ris", mode="before")
+    @classmethod
+    def decode_bibliography_text(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
 
 
 class ConcordanceCapabilityOut(BaseModel):

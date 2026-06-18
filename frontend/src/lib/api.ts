@@ -12,6 +12,8 @@ import type {
   DocumentSummary,
   DocumentUpdatePayload,
   Domain,
+  DuplicateImportStrategy,
+  ImportDuplicateCheck,
   ImportJob,
   Note,
   NotePayload,
@@ -43,6 +45,8 @@ export const api = {
   me: () => request<User>("/api/me"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   domains: () => request<Domain[]>("/api/domains"),
+  createDomain: (name: string, parentId?: string | null) =>
+    request<Domain>("/api/domains", { method: "POST", body: JSON.stringify({ name, parent_id: parentId || null }) }),
   tags: () => request<Tag[]>("/api/tags"),
   createTag: (name: string, kind = "keyword") =>
     request<Tag>("/api/tags", { method: "POST", body: JSON.stringify({ name, kind }) }),
@@ -103,6 +107,11 @@ export const api = {
     request<Note>(`/api/notes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
+  checkImportDuplicates: (files: File[]) => {
+    const form = new FormData();
+    files.forEach((file) => form.append("files", file));
+    return request<ImportDuplicateCheck>("/api/imports/duplicates", { method: "POST", body: form });
+  },
   concordanceCapabilities: () => request<ConcordanceCapability[]>("/api/concordance/capabilities"),
   concordanceRuns: () => request<ConcordanceRun[]>("/api/concordance/runs"),
   concordanceJobs: () => request<ConcordanceJob[]>("/api/concordance/jobs"),
@@ -118,7 +127,7 @@ export const api = {
     request<CitationCandidate>(`/api/review-queue/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   bibliography: (projectId: string, usedOnly = false) =>
     request<Bibliography>(`/api/projects/${projectId}/bibliography${usedOnly ? "?used_only=true" : ""}`),
-  uploadBatch: (files: File[], defaults: Record<string, unknown>) => {
+  uploadBatch: (files: File[], defaults: Record<string, unknown> & { duplicate_strategy?: DuplicateImportStrategy }) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
     form.append("label", String(defaults.label || ""));
@@ -128,6 +137,7 @@ export const api = {
     form.append("priority", String(defaults.priority || "normal"));
     form.append("read_status", String(defaults.read_status || "unread"));
     form.append("attributes", JSON.stringify(defaults.attributes || {}));
+    form.append("duplicate_strategy", defaults.duplicate_strategy || "skip");
     return request<{ id: string }>("/api/imports/batches", { method: "POST", body: form });
   },
 };
