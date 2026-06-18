@@ -42,6 +42,13 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         validation_alias="OPENAI_EMBEDDING_MODEL",
     )
+    openai_send_pdf_file: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_SEND_PDF")
+    openai_pdf_file_max_mb: int = Field(default=24, validation_alias="MEDUSA_OPENAI_PDF_FILE_MAX_MB")
+    openai_normalize_page_text: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT")
+    openai_text_normalization_page_max_chars: int = Field(
+        default=14_000,
+        validation_alias="MEDUSA_OPENAI_TEXT_NORMALIZATION_PAGE_MAX_CHARS",
+    )
 
     enable_google_vision: bool = Field(default=True, validation_alias="MEDUSA_ENABLE_GOOGLE_VISION")
     low_text_page_threshold: int = 120

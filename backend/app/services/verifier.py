@@ -20,6 +20,29 @@ def normalized_title_similarity(left: str | None, right: str | None) -> float:
     return SequenceMatcher(None, left_normalized, right_normalized).ratio()
 
 
+def crossref_to_citation_metadata(crossref: dict[str, Any] | None) -> dict[str, Any]:
+    if not crossref:
+        return {}
+    title = _first(crossref.get("title"))
+    container = _first(crossref.get("container-title"))
+    doi = crossref.get("DOI")
+    source_url = (crossref.get("resource") or {}).get("primary", {}).get("URL") or crossref.get("URL")
+    return {
+        "title": title,
+        "authors": [_crossref_author(author) for author in crossref.get("author") or []],
+        "publication_year": _crossref_year(crossref),
+        "journal": container,
+        "publisher": crossref.get("publisher"),
+        "doi": doi,
+        "source_url": source_url,
+        "type": crossref.get("type"),
+        "volume": crossref.get("volume"),
+        "issue": crossref.get("issue"),
+        "page": crossref.get("page"),
+        "article_number": crossref.get("article-number"),
+    }
+
+
 def crossref_lookup(doi: str | None, title: str | None) -> dict[str, Any] | None:
     if doi:
         url = f"https://api.crossref.org/works/{doi.strip().removeprefix('https://doi.org/')}"
@@ -46,3 +69,31 @@ def crossref_lookup(doi: str | None, title: str | None) -> dict[str, Any] | None
         return message or None
     except Exception:
         return None
+
+
+def _first(value: Any) -> Any:
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _crossref_year(crossref: dict[str, Any]) -> int | None:
+    for key in ("published-print", "published-online", "published", "issued"):
+        date_parts = (crossref.get(key) or {}).get("date-parts") or []
+        if date_parts and date_parts[0]:
+            year = date_parts[0][0]
+            if isinstance(year, int):
+                return year
+            if isinstance(year, str) and year.isdigit():
+                return int(year)
+    return None
+
+
+def _crossref_author(author: dict[str, Any]) -> dict[str, Any]:
+    given = str(author.get("given") or "").strip()
+    family = str(author.get("family") or "").strip()
+    if family and not given and len(family.split()) > 1:
+        parts = family.split()
+        given = " ".join(parts[:-1])
+        family = parts[-1]
+    return {"given": given, "family": family, "affiliation": None}

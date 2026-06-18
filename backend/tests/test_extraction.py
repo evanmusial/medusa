@@ -1,4 +1,4 @@
-from app.services.extraction import LayoutBlock, blocks_to_text, rows_to_markdown, split_text_into_chunks
+from app.services.extraction import LayoutBlock, blocks_to_text, normalize_extracted_text, rows_to_markdown, split_text_into_chunks
 
 
 def test_split_text_into_chunks_preserves_paragraphs():
@@ -46,3 +46,14 @@ def test_rows_to_markdown_preserves_table_shape_and_escapes_pipes():
             "| gamma |  |",
         ]
     )
+
+
+def test_normalize_extracted_text_conforms_line_wraps_and_spacing():
+    text = "B a y e s i a n Network Model for Predicting Insider Threats\n\nThe model com-\npares insider threat signals .\nIt preserves paragraph flow ."
+
+    normalized = normalize_extracted_text(text)
+
+    assert "Bayesian Network Model" in normalized
+    assert "compares insider threat signals." in normalized
+    assert "paragraph flow." in normalized
+    assert "com-\npares" not in normalized

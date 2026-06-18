@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,17 @@ class ExtractedDocument:
     page_count: int
     pages: list[ExtractedPage]
     full_text: str
+
+
+@dataclass
+class ExtractedFigure:
+    page_number: int
+    index: int
+    extension: str
+    content_type: str
+    data: bytes
+    width: int
+    height: int
 
 
 def _block_area(block: LayoutBlock) -> float:
@@ -167,6 +180,72 @@ def blocks_to_text(blocks: list[LayoutBlock], page_width: float) -> str:
     return "\n\n".join(block.text for block in order_blocks_for_reading(blocks, page_width) if block.text).strip()
 
 
+_SPACED_LETTERS_RE = re.compile(r"\b(?:[A-Za-z]\s+){2,}[A-Za-z]\b")
+_SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"\s+([,.;:!?%\]\)])")
+_SPACE_AFTER_OPEN_RE = re.compile(r"([\[\(])\s+")
+_BROKEN_HYPHEN_RE = re.compile(r"(\w)-\s+(\w)")
+
+
+def _join_spaced_letters(match: re.Match[str]) -> str:
+    return match.group(0).replace(" ", "")
+
+
+def _normalize_inline_spacing(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = normalized.replace("\u00ad", "")
+    normalized = normalized.replace("\u200b", "")
+    normalized = normalized.replace("\u200c", "")
+    normalized = normalized.replace("\u200d", "")
+    normalized = normalized.replace("\ufeff", "")
+    normalized = normalized.replace("\t", " ")
+    normalized = _SPACED_LETTERS_RE.sub(_join_spaced_letters, normalized)
+    normalized = _BROKEN_HYPHEN_RE.sub(r"\1\2", normalized)
+    normalized = re.sub(r"[ ]{2,}", " ", normalized)
+    normalized = _SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", normalized)
+    normalized = _SPACE_AFTER_OPEN_RE.sub(r"\1", normalized)
+    return normalized.strip()
+
+
+def _join_paragraph_lines(lines: list[str]) -> str:
+    joined = ""
+    for line in lines:
+        clean = _normalize_inline_spacing(line)
+        if not clean:
+            continue
+        if not joined:
+            joined = clean
+            continue
+        if joined.endswith("-") and clean[:1].islower():
+            joined = f"{joined[:-1]}{clean}"
+        else:
+            joined = f"{joined} {clean}"
+    return _normalize_inline_spacing(joined)
+
+
+def _is_markdown_table(lines: list[str]) -> bool:
+    table_lines = [line for line in lines if line.strip().startswith("|") and line.strip().endswith("|")]
+    return len(table_lines) >= 2
+
+
+def normalize_extracted_text(text: str | None) -> str:
+    """Turn layout-oriented PDF text into readable paragraph-oriented text."""
+    if not text:
+        return ""
+    source = text.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n+", source):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if _is_markdown_table(lines):
+            paragraphs.append("\n".join(_normalize_inline_spacing(line) for line in lines))
+            continue
+        paragraph = _join_paragraph_lines(lines)
+        if paragraph:
+            paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs).strip()
+
+
 def extract_pdf_text(path: Path) -> ExtractedDocument:
     settings = get_settings()
     try:
@@ -182,6 +261,46 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
             pages.append(ExtractedPage(page_number=index, text=text, low_text=low_text))
     full_text = "\n\n".join(page.text for page in pages if page.text)
     return ExtractedDocument(page_count=len(pages), pages=pages, full_text=full_text)
+
+
+def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80, min_bytes: int = 1500) -> list[ExtractedFigure]:
+    try:
+        import fitz
+    except Exception as exc:  # pragma: no cover - exercised only without optional dependency
+        raise RuntimeError("PyMuPDF is required for figure extraction") from exc
+
+    figures: list[ExtractedFigure] = []
+    seen: set[tuple[int, int]] = set()
+    with fitz.open(path) as pdf:
+        for page_index, page in enumerate(pdf, start=1):
+            for image_index, image in enumerate(page.get_images(full=True), start=1):
+                xref = int(image[0])
+                if (page_index, xref) in seen:
+                    continue
+                seen.add((page_index, xref))
+                try:
+                    extracted = pdf.extract_image(xref)
+                except Exception:
+                    continue
+                data = extracted.get("image") or b""
+                width = int(extracted.get("width") or 0)
+                height = int(extracted.get("height") or 0)
+                if width < min_width or height < min_height or len(data) < min_bytes:
+                    continue
+                extension = str(extracted.get("ext") or "png").lower()
+                content_type = "image/jpeg" if extension in {"jpg", "jpeg"} else f"image/{extension}"
+                figures.append(
+                    ExtractedFigure(
+                        page_number=page_index,
+                        index=image_index,
+                        extension=extension,
+                        content_type=content_type,
+                        data=data,
+                        width=width,
+                        height=height,
+                    )
+                )
+    return figures
 
 
 def split_text_into_chunks(text: str, target_chars: int = 3200) -> list[str]:

@@ -24,7 +24,33 @@ def test_format_apa_prefers_doi_url():
         }
     )
 
-    assert citation == "Haraway, D. (1988). Situated knowledges. Feminist Studies. https://doi.org/10.2307/3178066"
+    assert citation == "Haraway, D. (1988). Situated knowledges. *Feminist Studies*. https://doi.org/10.2307/3178066"
+
+
+def test_format_apa_includes_journal_volume_issue_and_pages_as_markdown():
+    citation = format_apa_citation(
+        {
+            "title": "A Bayesian network model for predicting insider threats",
+            "authors": [
+                {"given": "Elise T.", "family": "Axelrad"},
+                {"given": "Paul J.", "family": "Sticha"},
+                {"given": "Oliver", "family": "Brdiczka"},
+            ],
+            "publication_year": 2013,
+            "journal": "2013 IEEE Security and Privacy Workshops",
+            "volume": "1",
+            "issue": "2",
+            "page": "82-89",
+            "doi": "10.1109/spw.2013.35",
+        }
+    )
+
+    assert citation == (
+        "Axelrad, E. T., Sticha, P. J., & Brdiczka, O. (2013). "
+        "A Bayesian network model for predicting insider threats. "
+        "*2013 IEEE Security and Privacy Workshops, 1*(2), 82-89. "
+        "https://doi.org/10.1109/spw.2013.35"
+    )
 
 
 def test_exports_include_expected_identifiers():

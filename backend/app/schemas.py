@@ -51,6 +51,27 @@ class TagOut(ApiModel):
     color: str | None = None
 
 
+class SavedSearchCreate(BaseModel):
+    name: str
+    query: str | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class SavedSearchPatch(BaseModel):
+    name: str | None = None
+    query: str | None = None
+    filters: dict[str, Any] | None = None
+
+
+class SavedSearchOut(ApiModel):
+    id: str
+    name: str
+    query: str | None = None
+    filters: dict[str, Any]
+    sort_order: int
+    created_at: datetime
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: str | None = None
@@ -66,6 +87,21 @@ class ProjectOut(ApiModel):
     item_count: int = 0
 
 
+class ProjectItemCreate(BaseModel):
+    document_ids: list[str]
+    status: str = "candidate"
+    priority: str = "normal"
+    used_in_output: bool = False
+    note: str | None = None
+
+
+class ProjectItemPatch(BaseModel):
+    status: str | None = None
+    priority: str | None = None
+    used_in_output: bool | None = None
+    note: str | None = None
+
+
 class AttributeDefinitionCreate(BaseModel):
     name: str
     value_type: str = "markdown"
@@ -77,6 +113,68 @@ class AttributeDefinitionOut(ApiModel):
     name: str
     value_type: str
     description: str | None = None
+
+
+class DocumentAttributeValueOut(ApiModel):
+    id: str
+    attribute_definition_id: str
+    value: dict[str, Any]
+    definition: AttributeDefinitionOut
+
+
+class DocumentVersionOut(ApiModel):
+    id: str
+    version_number: int
+    change_note: str | None = None
+    metadata_snapshot: dict[str, Any]
+    created_at: datetime
+
+
+class FigureOut(ApiModel):
+    id: str
+    page_number: int | None = None
+    figure_label: str | None = None
+    caption: str | None = None
+    gist: str | None = None
+    asset_uri: str | None = None
+
+
+class DocumentPageOut(ApiModel):
+    id: str
+    page_number: int
+    text: str | None = None
+    normalized_text: str | None = None
+    text_source: str
+    low_text: bool
+    image_uri: str | None = None
+
+
+class AnnotationCreate(BaseModel):
+    page_number: int | None = None
+    kind: str = "highlight"
+    body: str | None = None
+    geometry: dict[str, Any] = Field(default_factory=dict)
+    color: str | None = None
+
+
+class AnnotationPatch(BaseModel):
+    page_number: int | None = None
+    kind: str | None = None
+    body: str | None = None
+    geometry: dict[str, Any] | None = None
+    color: str | None = None
+
+
+class AnnotationOut(ApiModel):
+    id: str
+    document_id: str
+    page_number: int | None = None
+    kind: str
+    body: str | None = None
+    geometry: dict[str, Any]
+    color: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class DocumentSummary(ApiModel):
@@ -111,6 +209,28 @@ class DocumentDetail(DocumentSummary):
     gcs_uri: str | None = None
     storage_status: str
     search_text: str | None = None
+    attributes: list[DocumentAttributeValueOut] = Field(default_factory=list)
+    versions: list[DocumentVersionOut] = Field(default_factory=list)
+    pages: list[DocumentPageOut] = Field(default_factory=list)
+    figures: list[FigureOut] = Field(default_factory=list)
+    annotations: list[AnnotationOut] = Field(default_factory=list)
+
+
+class ProjectItemOut(ApiModel):
+    id: str
+    project_id: str
+    document_id: str
+    status: str
+    priority: str
+    used_in_output: bool
+    note: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    document: DocumentSummary | None = None
+
+
+class ProjectDetail(ProjectOut):
+    items: list[ProjectItemOut] = Field(default_factory=list)
 
 
 class DocumentPatch(BaseModel):
@@ -130,7 +250,9 @@ class DocumentPatch(BaseModel):
     read_status: str | None = None
     priority: str | None = None
     tag_ids: list[str] | None = None
+    tag_names: list[str] | None = None
     domain_ids: list[str] | None = None
+    attribute_values: dict[str, Any] | None = None
 
 
 class ImportBatchOut(ApiModel):
@@ -167,6 +289,39 @@ class ProcessingEventOut(ApiModel):
     created_at: datetime
 
 
+class NoteCreate(BaseModel):
+    title: str
+    body: str
+    kind: str = "note"
+    document_id: str | None = None
+    domain_id: str | None = None
+    project_id: str | None = None
+    reminder_at: datetime | None = None
+
+
+class NotePatch(BaseModel):
+    title: str | None = None
+    body: str | None = None
+    kind: str | None = None
+    document_id: str | None = None
+    domain_id: str | None = None
+    project_id: str | None = None
+    reminder_at: datetime | None = None
+
+
+class NoteOut(ApiModel):
+    id: str
+    title: str
+    body: str
+    kind: str
+    document_id: str | None = None
+    domain_id: str | None = None
+    project_id: str | None = None
+    reminder_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class CitationCandidateOut(ApiModel):
     id: str
     document_id: str
@@ -176,6 +331,11 @@ class CitationCandidateOut(ApiModel):
     confidence: float | None = None
     status: str
     created_at: datetime
+
+
+class CitationCandidatePatch(BaseModel):
+    status: str | None = None
+    apply_to_document: bool = False
 
 
 class DashboardOut(BaseModel):
@@ -193,3 +353,45 @@ class BibliographyOut(BaseModel):
     bibtex: str
     ris: str
     csl_json: list[dict[str, Any]]
+
+
+class ConcordanceCapabilityOut(BaseModel):
+    key: str
+    label: str
+    version: int
+    description: str
+
+
+class ConcordanceRunCreate(BaseModel):
+    label: str | None = None
+    scope_type: str = "library"
+    scope_data: dict[str, Any] = Field(default_factory=dict)
+    capability_keys: list[str] | None = None
+    force: bool = False
+
+
+class ConcordanceRunOut(ApiModel):
+    id: str
+    label: str | None = None
+    scope_type: str
+    scope_data: dict[str, Any]
+    capability_keys: list[str]
+    status: str
+    total_jobs: int
+    completed_jobs: int
+    failed_jobs: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConcordanceJobOut(ApiModel):
+    id: str
+    run_id: str
+    document_id: str
+    capability_key: str
+    target_version: int
+    status: str
+    attempts: int
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime

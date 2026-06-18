@@ -1,12 +1,24 @@
 import type {
+  Annotation,
+  AnnotationPayload,
   Bibliography,
   CitationCandidate,
+  ConcordanceCapability,
+  ConcordanceJob,
+  ConcordanceRun,
   Dashboard,
   DocumentDetail,
+  DocumentFilters,
   DocumentSummary,
+  DocumentUpdatePayload,
   Domain,
   ImportJob,
+  Note,
+  NotePayload,
   Project,
+  ProjectDetail,
+  ProjectItem,
+  SavedSearch,
   Tag,
   User,
 } from "../types";
@@ -32,16 +44,80 @@ export const api = {
   dashboard: () => request<Dashboard>("/api/dashboard"),
   domains: () => request<Domain[]>("/api/domains"),
   tags: () => request<Tag[]>("/api/tags"),
+  createTag: (name: string, kind = "keyword") =>
+    request<Tag>("/api/tags", { method: "POST", body: JSON.stringify({ name, kind }) }),
+  savedSearches: () => request<SavedSearch[]>("/api/saved-searches"),
+  createSavedSearch: (body: { name: string; query?: string | null; filters?: DocumentFilters }) =>
+    request<SavedSearch>("/api/saved-searches", { method: "POST", body: JSON.stringify(body) }),
+  updateSavedSearch: (id: string, body: Partial<SavedSearch>) =>
+    request<SavedSearch>(`/api/saved-searches/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteSavedSearch: (id: string) => request<{ status: string }>(`/api/saved-searches/${id}`, { method: "DELETE" }),
   projects: () => request<Project[]>("/api/projects"),
   createProject: (name: string, description?: string) =>
     request<Project>("/api/projects", { method: "POST", body: JSON.stringify({ name, description }) }),
-  documents: (query: string) => request<DocumentSummary[]>(`/api/documents${query ? `?q=${encodeURIComponent(query)}` : ""}`),
+  project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
+  addProjectItems: (projectId: string, documentIds: string[], defaults: Record<string, unknown> = {}) =>
+    request<ProjectDetail>(`/api/projects/${projectId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ document_ids: documentIds, ...defaults }),
+    }),
+  updateProjectItem: (projectId: string, itemId: string, body: Partial<ProjectItem>) =>
+    request<ProjectItem>(`/api/projects/${projectId}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteProjectItem: (projectId: string, itemId: string) =>
+    request<{ status: string }>(`/api/projects/${projectId}/items/${itemId}`, { method: "DELETE" }),
+  documents: (query: string, filters: DocumentFilters = {}) => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    const suffix = params.toString();
+    return request<DocumentSummary[]>(`/api/documents${suffix ? `?${suffix}` : ""}`);
+  },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),
-  updateDocument: (id: string, body: Partial<DocumentDetail>) =>
+  updateDocument: (id: string, body: DocumentUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  refreshDocumentCitation: (id: string) =>
+    request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
+  annotations: (documentId: string) => request<Annotation[]>(`/api/documents/${documentId}/annotations`),
+  createAnnotation: (documentId: string, body: AnnotationPayload) =>
+    request<Annotation>(`/api/documents/${documentId}/annotations`, { method: "POST", body: JSON.stringify(body) }),
+  updateAnnotation: (id: string, body: AnnotationPayload) =>
+    request<Annotation>(`/api/annotations/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteAnnotation: (id: string) => request<{ status: string }>(`/api/annotations/${id}`, { method: "DELETE" }),
+  bulkUpdateDocuments: (documentIds: string[], updates: Record<string, unknown>) =>
+    request<{ updated: number }>("/api/documents/bulk", {
+      method: "POST",
+      body: JSON.stringify({ document_ids: documentIds, updates }),
+    }),
+  notes: (filters: { document_id?: string; domain_id?: string; project_id?: string } = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    const suffix = params.toString();
+    return request<Note[]>(`/api/notes${suffix ? `?${suffix}` : ""}`);
+  },
+  createNote: (body: NotePayload) => request<Note>("/api/notes", { method: "POST", body: JSON.stringify(body) }),
+  updateNote: (id: string, body: Partial<NotePayload>) =>
+    request<Note>(`/api/notes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
+  concordanceCapabilities: () => request<ConcordanceCapability[]>("/api/concordance/capabilities"),
+  concordanceRuns: () => request<ConcordanceRun[]>("/api/concordance/runs"),
+  concordanceJobs: () => request<ConcordanceJob[]>("/api/concordance/jobs"),
+  createConcordanceRun: (body: {
+    label?: string;
+    scope_type?: string;
+    scope_data?: Record<string, unknown>;
+    capability_keys?: string[];
+    force?: boolean;
+  }) => request<ConcordanceRun>("/api/concordance/runs", { method: "POST", body: JSON.stringify(body) }),
   reviewQueue: () => request<CitationCandidate[]>("/api/review-queue"),
-  bibliography: (projectId: string) => request<Bibliography>(`/api/projects/${projectId}/bibliography`),
+  updateCitationCandidate: (id: string, body: { status?: string; apply_to_document?: boolean }) =>
+    request<CitationCandidate>(`/api/review-queue/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  bibliography: (projectId: string, usedOnly = false) =>
+    request<Bibliography>(`/api/projects/${projectId}/bibliography${usedOnly ? "?used_only=true" : ""}`),
   uploadBatch: (files: File[], defaults: Record<string, unknown>) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));

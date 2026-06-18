@@ -46,26 +46,79 @@ def sentence_case_title(title: str) -> str:
     return title[0].upper() + title[1:]
 
 
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    return True
+
+
+def merge_citation_metadata(*metadata_items: dict[str, Any] | None) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for metadata in metadata_items:
+        for key, value in (metadata or {}).items():
+            if _has_value(value):
+                merged[key] = value
+    return merged
+
+
+def _strip_terminal_period(value: str) -> str:
+    return value.strip().rstrip(".")
+
+
+def _with_period(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return value
+    return value if value.endswith((".", "?", "!")) else f"{value}."
+
+
+def _doi_url(doi: Any) -> str:
+    doi_text = str(doi or "").strip()
+    if not doi_text:
+        return ""
+    if doi_text.startswith("http"):
+        return doi_text
+    return "https://doi.org/" + doi_text.removeprefix("doi:").strip()
+
+
+def _journal_publication_part(metadata: dict[str, Any]) -> str:
+    journal = _strip_terminal_period(str(metadata.get("journal") or ""))
+    if not journal:
+        return ""
+    volume = _strip_terminal_period(str(metadata.get("volume") or ""))
+    issue = _strip_terminal_period(str(metadata.get("issue") or ""))
+    pages = _strip_terminal_period(str(metadata.get("page") or metadata.get("pages") or metadata.get("article_number") or ""))
+    journal_volume = f"{journal}, {volume}" if volume else journal
+    publication = f"*{journal_volume}*"
+    if issue:
+        publication += f"({issue})"
+    if pages:
+        publication += f", {pages}"
+    return _with_period(publication)
+
+
 def format_apa_citation(metadata: dict[str, Any]) -> str:
     authors = apa_author_list(metadata.get("authors") or [])
     year = metadata.get("publication_year") or metadata.get("year") or "n.d."
     title = sentence_case_title(str(metadata.get("title") or "Untitled work"))
     journal = metadata.get("journal")
-    publisher = metadata.get("publisher")
+    publisher = _strip_terminal_period(str(metadata.get("publisher") or ""))
     doi = metadata.get("doi")
     source_url = metadata.get("source_url")
 
     head = f"{authors} " if authors else ""
-    citation = f"{head}({year}). {title}."
     if journal:
-        citation += f" {journal}."
+        citation = f"{head}({year}). {_with_period(title)} {_journal_publication_part(metadata)}"
     elif publisher:
-        citation += f" {publisher}."
+        citation = f"{head}({year}). *{_with_period(title).rstrip('.')}*. {publisher}."
+    else:
+        citation = f"{head}({year}). {_with_period(title)}"
     if doi:
-        doi_text = str(doi)
-        if not doi_text.startswith("http"):
-            doi_text = "https://doi.org/" + doi_text.removeprefix("doi:").strip()
-        citation += f" {doi_text}"
+        citation += f" {_doi_url(doi)}"
     elif source_url:
         citation += f" {source_url}"
     return re.sub(r"\s+", " ", citation).strip()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from app.config import get_settings
 
@@ -16,6 +17,9 @@ class StorageService:
     def put_bytes(self, key: str, data: bytes, content_type: str) -> StoredObject:
         raise NotImplementedError
 
+    def get_bytes(self, uri: str) -> bytes:
+        raise NotImplementedError
+
 
 class LocalStorageService(StorageService):
     def __init__(self, root: Path):
@@ -28,6 +32,9 @@ class LocalStorageService(StorageService):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return StoredObject(uri=str(path.resolve()), backend="local")
+
+    def get_bytes(self, uri: str) -> bytes:
+        return Path(uri).read_bytes()
 
 
 class GcsStorageService(StorageService):
@@ -44,6 +51,14 @@ class GcsStorageService(StorageService):
         blob = self.bucket.blob(object_name)
         blob.upload_from_string(data, content_type=content_type)
         return StoredObject(uri=f"gs://{self.bucket_name}/{object_name}", backend="gcs")
+
+    def get_bytes(self, uri: str) -> bytes:
+        parsed = urlparse(uri)
+        if parsed.scheme != "gs":
+            return Path(uri).read_bytes()
+        bucket = self.client.bucket(parsed.netloc)
+        blob = bucket.blob(parsed.path.lstrip("/"))
+        return blob.download_as_bytes()
 
 
 def get_storage_service() -> StorageService:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import text
@@ -23,9 +24,7 @@ def is_postgres() -> bool:
     return settings.database_url.startswith("postgresql")
 
 
-def init_db() -> None:
-    from app import models  # noqa: F401
-
+def create_schema_from_metadata() -> None:
     if is_postgres():
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
@@ -57,6 +56,32 @@ def init_db() -> None:
                     """
                 )
             )
+
+
+def run_migrations() -> None:
+    try:
+        from alembic import command
+        from alembic.config import Config
+    except ModuleNotFoundError as exc:
+        if exc.name == "alembic":
+            create_schema_from_metadata()
+            return
+        raise
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    config.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(config, "head")
+
+
+def init_db() -> None:
+    from app import models  # noqa: F401
+
+    if is_postgres():
+        run_migrations()
+        return
+    create_schema_from_metadata()
 
 
 def get_db() -> Iterator[Session]:

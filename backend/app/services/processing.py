@@ -19,9 +19,10 @@ from app.models import (
     utc_now,
 )
 from app.services.ai import get_ai_service
-from app.services.citations import format_apa_citation
+from app.services.citations import format_apa_citation, merge_citation_metadata
 from app.services.extraction import extract_pdf_text, split_text_into_chunks
-from app.services.verifier import crossref_lookup, enough_metadata_for_verified_citation
+from app.services.figures import process_document_figures
+from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
 
 
 def log_event(
@@ -69,6 +70,74 @@ def document_metadata(document: Document) -> dict[str, Any]:
     }
 
 
+def fill_missing_document_metadata(document: Document, metadata: dict[str, Any]) -> list[str]:
+    changed: list[str] = []
+    for field in ("title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"):
+        value = metadata.get(field)
+        current = getattr(document, field)
+        if _has_metadata_value(current) or not _has_metadata_value(value):
+            continue
+        setattr(document, field, value)
+        changed.append(field)
+    return changed
+
+
+def _has_metadata_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    return True
+
+
+def preferred_page_text(page: DocumentPage) -> str:
+    return (page.normalized_text or page.text or "").strip()
+
+
+def document_reading_text(document: Document) -> str:
+    return "\n\n".join(
+        text
+        for text in (preferred_page_text(page) for page in sorted(document.pages, key=lambda page: page.page_number))
+        if text
+    )
+
+
+def normalize_document_pages(document: Document, *, ai: Any | None = None) -> dict[str, Any]:
+    ai = ai or get_ai_service()
+    source_counts: dict[str, int] = {}
+    changed_pages = 0
+    failed_notes: list[str] = []
+    for page in sorted(document.pages, key=lambda page: page.page_number):
+        before = page.normalized_text or ""
+        result = ai.normalize_page_text(document.original_filename, page.page_number, page.text)
+        page.normalized_text = result.get("normalized_text") or None
+        source = result.get("source") or "unknown"
+        source_counts[source] = source_counts.get(source, 0) + 1
+        if (page.normalized_text or "") != before:
+            changed_pages += 1
+        failed_notes.extend(note for note in result.get("notes") or [] if "failed" in note.lower())
+    summary = {
+        "pages": len(document.pages),
+        "changed_pages": changed_pages,
+        "sources": source_counts,
+    }
+    if failed_notes:
+        summary["warnings"] = failed_notes[:5]
+    return summary
+
+
+def rebuild_document_text_chunks(db: Session, document: Document) -> str:
+    reading_text = document_reading_text(document)
+    document.search_text = reading_text
+    document.chunks.clear()
+    db.flush()
+    for chunk in split_text_into_chunks(reading_text):
+        db.add(TextChunk(document_id=document.id, text=chunk, token_count=max(1, len(chunk) // 4)))
+    return reading_text
+
+
 def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
     db.flush()
     batch.completed_files = db.query(ImportJob).filter(
@@ -105,6 +174,7 @@ class DocumentProcessor:
             db.commit()
 
             self._extract(db, job, document)
+            self._extract_figures(db, job, document)
             self._enrich(db, job, document)
             self._index(db, job, document)
             self._cleanup_processing_cache(db, job, document)
@@ -127,18 +197,18 @@ class DocumentProcessor:
             db.commit()
 
     def _extract(self, db: Session, job: ImportJob, document: Document) -> None:
-        if job.current_step in {"extracted", "enriched", "indexed", "complete"}:
+        if job.current_step in {"extracted", "figures", "enriched", "indexed", "complete"}:
             return
         local_path = document.metadata_evidence.get("local_cache_path")
         if not local_path or not Path(local_path).exists():
             raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
 
         extracted = extract_pdf_text(Path(local_path))
+        ai = get_ai_service()
         document.page_count = extracted.page_count
-        document.search_text = extracted.full_text
         document.pages.clear()
         for page in extracted.pages:
-            db.add(
+            document.pages.append(
                 DocumentPage(
                     document_id=document.id,
                     page_number=page.page_number,
@@ -147,9 +217,13 @@ class DocumentProcessor:
                     text_source="pdf" if not page.low_text else "pdf_low_text",
                 )
             )
-        document.chunks.clear()
-        for chunk in split_text_into_chunks(extracted.full_text):
-            db.add(TextChunk(document_id=document.id, text=chunk, token_count=max(1, len(chunk) // 4)))
+        db.flush()
+        normalization_summary = normalize_document_pages(document, ai=ai)
+        reading_text = rebuild_document_text_chunks(db, document)
+        document.metadata_evidence = {
+            **(document.metadata_evidence or {}),
+            "page_text_normalization": normalization_summary,
+        }
         job.current_step = "extracted"
         log_event(
             db,
@@ -157,7 +231,29 @@ class DocumentProcessor:
             document=document,
             event_type="extracted",
             message=f"Extracted {extracted.page_count} pages.",
-            payload={"low_text_pages": [page.page_number for page in extracted.pages if page.low_text]},
+            payload={
+                "low_text_pages": [page.page_number for page in extracted.pages if page.low_text],
+                "readable_characters": len(reading_text),
+                "page_text_normalization": normalization_summary,
+            },
+        )
+        db.commit()
+
+    def _extract_figures(self, db: Session, job: ImportJob, document: Document) -> None:
+        if job.current_step in {"figures", "enriched", "indexed", "complete"}:
+            return
+        local_path = document.metadata_evidence.get("local_cache_path")
+        if not local_path or not Path(local_path).exists():
+            raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
+        result = process_document_figures(db, document, Path(local_path))
+        job.current_step = "figures"
+        log_event(
+            db,
+            job=job,
+            document=document,
+            event_type="figures_extracted",
+            message=f"Extracted {result['figures']} figures.",
+            payload=result,
         )
         db.commit()
 
@@ -165,7 +261,9 @@ class DocumentProcessor:
         if job.current_step in {"enriched", "indexed", "complete"}:
             return
         ai = get_ai_service()
-        metadata = ai.extract_metadata(document.original_filename, document.search_text or "")
+        local_path = document.metadata_evidence.get("local_cache_path")
+        pdf_bytes = Path(local_path).read_bytes() if local_path and Path(local_path).exists() else None
+        metadata = ai.extract_metadata(document.original_filename, document.search_text or "", pdf_bytes=pdf_bytes)
         document.title = metadata.get("title") or document.title
         document.subtitle = metadata.get("subtitle")
         document.authors = metadata.get("authors") or []
@@ -182,15 +280,22 @@ class DocumentProcessor:
             "ai": {
                 "confidence": metadata.get("confidence"),
                 "needs_review_reasons": metadata.get("needs_review_reasons") or [],
+                "citation_warnings": metadata.get("citation_warnings") or [],
+                **(metadata.get("_openai") or {}),
             },
         }
 
         crossref = crossref_lookup(document.doi, document.title)
+        crossref_metadata: dict[str, Any] = {}
         if crossref:
             document.metadata_evidence["crossref"] = crossref
+            crossref_metadata = crossref_to_citation_metadata(crossref)
+            filled_fields = fill_missing_document_metadata(document, crossref_metadata)
+            if filled_fields:
+                document.metadata_evidence["crossref_filled_fields"] = filled_fields
 
-        citation_metadata = document_metadata(document)
-        document.apa_citation = format_apa_citation(citation_metadata)
+        citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
+        document.apa_citation = format_apa_citation(citation_metadata) if crossref else metadata.get("apa_citation") or format_apa_citation(citation_metadata)
         if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref):
             document.citation_status = "verified"
         else:
@@ -242,6 +347,7 @@ class DocumentProcessor:
                 document.abstract,
                 document.rich_summary,
                 document.search_text,
+                " ".join(figure.gist or "" for figure in document.figures),
                 " ".join(tag.name for tag in document.tags),
             ]
             if part
