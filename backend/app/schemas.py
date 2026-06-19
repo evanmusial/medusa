@@ -551,6 +551,50 @@ class DashboardOut(BaseModel):
     projects: int
 
 
+class BackupRunOut(ApiModel):
+    id: str
+    kind: str
+    reason: str | None = None
+    status: str
+    phase: str
+    progress: int
+    status_detail: str | None = None
+    hostname: str | None = None
+    filename: str | None = None
+    object_key: str | None = None
+    gcs_uri: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    source_kind: str | None = None
+    source_filename: str | None = None
+    source_uri: str | None = None
+    safety_backup_id: str | None = None
+    backup_metadata: dict[str, Any]
+    last_error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class BackupArtifactOut(BaseModel):
+    id: str
+    filename: str
+    object_key: str
+    gcs_uri: str
+    size_bytes: int
+    sha256: str | None = None
+    created_at: str | None = None
+    completed_at: str | None = None
+    hostname: str | None = None
+    verified: bool = False
+    manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class RestoreDatabaseCreate(BaseModel):
+    gcs_uri: str
+
+
 class ModelOptionGroupOut(BaseModel):
     label: str
     options: list[str]

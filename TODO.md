@@ -129,11 +129,11 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Operations, Safety, And Portability
 
-- [ ] Add browser-based backup restore controls.
-  - Acceptance: Settings can validate and dry-run a metadata export restore, show conflicts/skipped records, and require explicit confirmation before applying.
+- [x] Add browser-based full database backup and restore controls.
+  - Acceptance: Settings can start a full PostgreSQL backup to GCS, show backup/restore phase progress in the header, list GCS backups for restore, accept an inline dump upload, and require a fresh verified pre-restore backup before applying any restore.
 
-- [ ] Add backup scheduling/export command.
-  - Acceptance: metadata export and storage manifest can be produced from CLI or scheduled job without using the browser.
+- [ ] Add backup scheduling, retention, and drill automation.
+  - Acceptance: full database backups can run on a schedule, old GCS backups can be pruned by a visible retention policy, and a dry restore drill can validate the latest backup without replacing the live database.
 
 - [ ] Add original object cleanup and restore workflow.
   - Acceptance: soft-deleted documents can be restored, and permanent deletion can optionally remove original/assets after confirmation.
@@ -162,7 +162,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Testing And QA
 
 - [ ] Add Playwright smoke tests.
-  - Acceptance: login, import defaults, library search, document correction, citation copy, Queue actions, project bibliography, backup export, annotations, and day/night modes are covered.
+  - Acceptance: login, import defaults, library search, document correction, citation copy, Queue actions, project bibliography, backup/restore controls, annotations, and day/night modes are covered.
 
 - [ ] Add import end-to-end tests with mocked GCS/OpenAI/OCR adapters.
   - Acceptance: upload through processed/searchable states is tested without real cloud calls.

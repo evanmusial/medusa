@@ -57,6 +57,8 @@ import { api } from "./lib/api";
 import type {
   AccessorySummary,
   AppPreferences,
+  BackupArtifact,
+  BackupRun,
   Bibliography,
   CitationCandidate,
   ConcordanceCapability,
@@ -101,6 +103,7 @@ type BackgroundJob = {
   capabilityKey?: string;
   completedJobs?: number;
   failedJobs?: number;
+  progress?: number;
   totalJobs?: number;
   error?: string;
   createdAt: number;
@@ -517,8 +520,58 @@ function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], ex
   };
 }
 
+function backupRunStatus(run: BackupRun): BackgroundJobStatus {
+  if (run.status === "complete") return "complete";
+  if (run.status === "failed") return "failed";
+  if (run.status === "queued") return "queued";
+  return "running";
+}
+
+function backupPhaseLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function backupDateLabel(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "";
+  return date.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+}
+
+function backupArtifactLabel(artifact: BackupArtifact) {
+  const pieces = [
+    artifact.filename,
+    backupDateLabel(artifact.completed_at || artifact.created_at),
+    artifact.hostname || "",
+    formatFileSize(artifact.size_bytes),
+  ].filter(Boolean);
+  return pieces.join(" - ");
+}
+
+function backgroundJobFromBackupRun(run: BackupRun): BackgroundJob {
+  const status = backupRunStatus(run);
+  const terminal = isTerminalBackgroundStatus(status);
+  const label =
+    run.kind === "restore"
+      ? "Database restore"
+      : run.reason === "pre_restore"
+        ? "Safety backup"
+        : "Database backup";
+  return {
+    id: run.id,
+    label,
+    detail: run.status_detail || backupPhaseLabel(run.phase),
+    status,
+    progress: Math.max(0, Math.min(100, run.progress || 0)),
+    error: run.last_error || undefined,
+    createdAt: new Date(run.created_at).getTime() || Date.now(),
+    completedAt: terminal ? new Date(run.completed_at || run.updated_at).getTime() || Date.now() : undefined,
+  };
+}
+
 function backgroundProgress(job: BackgroundJob) {
   if (job.status === "complete" || job.status === "failed") return 100;
+  if (job.progress !== undefined) return Math.max(0, Math.min(100, job.progress));
   if (job.status === "starting") return 10;
   const total = job.totalJobs || 0;
   if (!total) return job.status === "running" ? 35 : 18;
@@ -5142,6 +5195,7 @@ function BudgetView() {
 }
 
 function SettingsView({
+  backupRuns,
   capabilities,
   runs,
   jobs,
@@ -5154,6 +5208,7 @@ function SettingsView({
   startConcordanceRun,
   query,
 }: {
+  backupRuns: BackupRun[];
   capabilities: ConcordanceCapability[];
   runs: ConcordanceRun[];
   jobs: ConcordanceJob[];
@@ -5179,11 +5234,24 @@ function SettingsView({
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
+  const [selectedBackupUri, setSelectedBackupUri] = useState("");
+  const [restoreUploadFile, setRestoreUploadFile] = useState<File | null>(null);
+  const [restoreDropActive, setRestoreDropActive] = useState(false);
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
+  const restoreUploadInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
   const serviceAccountUploadFeedback = useAsyncActionFeedback();
+  const backupFeedback = useAsyncActionFeedback();
+  const restoreFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const gcsBackupArtifacts = useQuery({
+    queryKey: ["gcs-backups"],
+    queryFn: api.gcsBackups,
+    enabled: Boolean(preferences?.gcs_bucket),
+    refetchInterval: 15000,
+    retry: false,
+  });
 
   useEffect(() => {
     if (preferences) {
@@ -5200,6 +5268,15 @@ function SettingsView({
   useEffect(() => {
     setSelectedCapabilityKeys((current) => (current.length ? current : capabilities.map((capability) => capability.key)));
   }, [capabilities]);
+
+  useEffect(() => {
+    const artifacts = gcsBackupArtifacts.data || [];
+    if (!artifacts.length && selectedBackupUri) setSelectedBackupUri("");
+    if (!selectedBackupUri && artifacts.length) setSelectedBackupUri(artifacts[0].gcs_uri);
+    if (selectedBackupUri && artifacts.length && !artifacts.some((artifact) => artifact.gcs_uri === selectedBackupUri)) {
+      setSelectedBackupUri(artifacts[0].gcs_uri);
+    }
+  }, [gcsBackupArtifacts.data, selectedBackupUri]);
 
   const scopeData = () => {
     if (scopeType === "documents") return { document_ids: selectedDocument ? [selectedDocument.id] : [] };
@@ -5270,6 +5347,31 @@ function SettingsView({
       if (serviceAccountInputRef.current) serviceAccountInputRef.current.value = "";
     },
   });
+  const startBackup = useMutation({
+    mutationFn: api.startDatabaseBackup,
+    onSuccess: () => {
+      backupFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+    },
+    onError: (error) => {
+      backupFeedback.showError(actionFailureMessage("Could not start backup", error));
+    },
+  });
+  const startRestore = useMutation({
+    mutationFn: () =>
+      restoreUploadFile ? api.startDatabaseRestoreUpload(restoreUploadFile) : api.startDatabaseRestore(selectedBackupUri),
+    onSuccess: () => {
+      restoreFeedback.showSuccess();
+      setRestoreUploadFile(null);
+      if (restoreUploadInputRef.current) restoreUploadInputRef.current.value = "";
+      void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+    },
+    onError: (error) => {
+      restoreFeedback.showError(actionFailureMessage("Could not start restore", error));
+    },
+  });
   const latestRun = runs[0];
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
   const progressTotal = latestRun?.total_jobs || 0;
@@ -5295,9 +5397,35 @@ function SettingsView({
     preferences?.google_service_account_name || "None, please upload a service account JSON";
   const serviceAccountStatus =
     preferences?.google_service_account_source === "uploaded" ? "Uploaded" : "Missing";
+  const backupArtifacts = gcsBackupArtifacts.data || [];
+  const activeBackupRun = backupRuns.find((run) => run.status === "queued" || run.status === "running");
+  const latestBackupRun = backupRuns[0];
+  const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
+  const restoreDisabled =
+    Boolean(activeBackupRun) || startRestore.isPending || (!restoreUploadFile && !selectedBackupUri);
   const handleServiceAccountUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) uploadServiceAccount.mutate(file);
+  };
+  const handleRestoreFile = (file?: File | null) => {
+    if (!file) return;
+    setRestoreUploadFile(file);
+    setSelectedBackupUri("");
+  };
+  const handleRestoreUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    handleRestoreFile(event.target.files?.[0]);
+  };
+  const handleRestoreDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setRestoreDropActive(false);
+    handleRestoreFile(event.dataTransfer.files?.[0]);
+  };
+  const handleRestoreDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setRestoreDropActive(true);
+  };
+  const handleRestoreDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRestoreDropActive(false);
   };
   const renderSaveAllButton = (placement: "top" | "bottom") => (
     <AsyncActionSlot feedback={savePreferencesFeedback.feedback}>
@@ -5572,29 +5700,6 @@ function SettingsView({
           )}
         </div>
       </div>
-      <div className="export-panel">
-        <div className="panel-title-row">
-          <div>
-            <h2>Backup Export</h2>
-            <span>Metadata plus durable asset manifest</span>
-          </div>
-          <Archive size={20} />
-        </div>
-        <p>
-          Exports include documents, organization, notes, corrections, processing history, and storage URIs. Secrets, sessions, and
-          password hashes stay out.
-        </p>
-        <div className="export-actions">
-          <a className="primary-button" href="/api/exports/metadata" download>
-            <Download size={16} />
-            Full metadata
-          </a>
-          <a className="secondary-button" href="/api/exports/storage-manifest" download>
-            <Download size={16} />
-            Asset manifest
-          </a>
-        </div>
-      </div>
       <div className="concordance-panel">
         <div className="panel-title-row">
           <div>
@@ -5730,6 +5835,115 @@ function SettingsView({
           )}
         </div>
       </div>
+      <div className="database-backup-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Database Backup & Restore</h2>
+            <span>{activeBackupRun ? `${backupPhaseLabel(activeBackupRun.phase)} - ${activeBackupRun.progress}%` : "Full PostgreSQL backups in GCS"}</span>
+          </div>
+          <Archive size={20} />
+        </div>
+        <div className="backup-restore-grid">
+          <div className="backup-action-block">
+            <div>
+              <strong>Backup Database</strong>
+              <span>{preferences?.gcs_bucket ? `gs://${preferences.gcs_bucket}` : "Save a GCS bucket first"}</span>
+            </div>
+            <AsyncActionSlot busy={startBackup.isPending} feedback={backupFeedback.feedback} label="Database backup request in progress">
+              <button
+                className={asyncFeedbackClass("primary-button", backupFeedback.feedback, startBackup.isPending)}
+                disabled={backupDisabled}
+                onClick={() => startBackup.mutate()}
+                type="button"
+              >
+                <Archive className={startBackup.isPending ? "spin" : ""} size={16} />
+                {startBackup.isPending ? "Starting" : "Backup Database"}
+              </button>
+            </AsyncActionSlot>
+          </div>
+          <div className="restore-action-block">
+            <div className="restore-source-grid">
+              <label>
+                GCS backup
+                <select
+                  disabled={Boolean(restoreUploadFile) || !backupArtifacts.length || startRestore.isPending}
+                  onChange={(event) => {
+                    setRestoreUploadFile(null);
+                    setSelectedBackupUri(event.target.value);
+                  }}
+                  value={selectedBackupUri}
+                >
+                  {backupArtifacts.length ? (
+                    backupArtifacts.map((artifact) => (
+                      <option key={artifact.gcs_uri} value={artifact.gcs_uri}>
+                        {backupArtifactLabel(artifact)}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">No GCS backups found</option>
+                  )}
+                </select>
+              </label>
+              <div
+                className={`restore-drop-zone${restoreDropActive ? " active" : ""}${restoreUploadFile ? " has-file" : ""}`}
+                onClick={() => restoreUploadInputRef.current?.click()}
+                onDragLeave={handleRestoreDragLeave}
+                onDragOver={handleRestoreDragOver}
+                onDrop={handleRestoreDrop}
+                role="button"
+                tabIndex={0}
+              >
+                <UploadCloud size={17} />
+                <span>{restoreUploadFile ? restoreUploadFile.name : "Drop dump or browse"}</span>
+                {restoreUploadFile ? <button type="button" onClick={(event) => { event.stopPropagation(); setRestoreUploadFile(null); }}>Clear</button> : null}
+              </div>
+              <input
+                ref={restoreUploadInputRef}
+                className="hidden-file-input"
+                disabled={startRestore.isPending}
+                onChange={handleRestoreUpload}
+                type="file"
+              />
+            </div>
+            <AsyncActionSlot busy={startRestore.isPending} feedback={restoreFeedback.feedback} label="Database restore request in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, startRestore.isPending)}
+                disabled={restoreDisabled}
+                onClick={() => startRestore.mutate()}
+                type="button"
+              >
+                <RotateCcw className={startRestore.isPending ? "spin" : ""} size={16} />
+                {startRestore.isPending ? "Starting" : "Restore Database"}
+              </button>
+            </AsyncActionSlot>
+          </div>
+        </div>
+        <div className="backup-status-grid">
+          <div>
+            <span>Latest run</span>
+            <strong>{latestBackupRun ? `${latestBackupRun.kind} - ${backupPhaseLabel(latestBackupRun.phase)}` : "None"}</strong>
+          </div>
+          <div>
+            <span>Status</span>
+            <strong>{latestBackupRun ? latestBackupRun.status.replaceAll("_", " ") : "Idle"}</strong>
+          </div>
+          <div>
+            <span>Verified backup</span>
+            <strong>{latestBackupRun?.gcs_uri && latestBackupRun.status === "complete" ? latestBackupRun.filename || "Complete" : "Waiting"}</strong>
+          </div>
+        </div>
+        {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}
+        <div className="legacy-export-actions">
+          <a href="/api/exports/metadata" download>
+            <Download size={15} />
+            Metadata JSON
+          </a>
+          <a href="/api/exports/storage-manifest" download>
+            <Download size={15} />
+            Asset manifest
+          </a>
+        </div>
+      </div>
       <footer className="settings-save-row bottom">{renderSaveAllButton("bottom")}</footer>
     </section>
   );
@@ -5759,6 +5973,12 @@ export default function App() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
+  const backupRuns = useQuery({
+    queryKey: ["backup-runs"],
+    queryFn: api.backupRuns,
+    enabled: Boolean(me.data),
+    refetchInterval: 4000,
+  });
   const openaiUsage = useQuery({ queryKey: ["openai-usage"], queryFn: () => api.openaiUsage(), enabled: Boolean(me.data), refetchInterval: 10000 });
   const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data), refetchInterval: 10000 });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data) });
@@ -5948,7 +6168,11 @@ export default function App() {
     )
     .filter((job) => job.status === "queued" || job.status === "running")
     .slice(0, 3);
-  const visibleBackgroundJobs = [...backgroundJobs, ...activeServerBackgroundJobs].sort(
+  const activeBackupBackgroundJobs = (backupRuns.data || [])
+    .map(backgroundJobFromBackupRun)
+    .filter((job) => job.status === "queued" || job.status === "running")
+    .slice(0, 3);
+  const visibleBackgroundJobs = [...activeBackupBackgroundJobs, ...backgroundJobs, ...activeServerBackgroundJobs].sort(
     (left, right) =>
       Number(isTerminalBackgroundStatus(left.status)) - Number(isTerminalBackgroundStatus(right.status)) ||
       right.createdAt - left.createdAt,
@@ -6012,6 +6236,7 @@ export default function App() {
             jobs={concordanceJobs.data || []}
             openaiUsage={openaiUsage.data}
             preferences={preferences.data}
+            backupRuns={backupRuns.data || []}
             projects={projects.data || []}
             query={query}
             runs={concordanceRuns.data || []}

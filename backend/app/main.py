@@ -19,6 +19,7 @@ from app.database import get_db, init_db, is_postgres, session_scope
 from app.models import (
     Annotation,
     AttributeDefinition,
+    BackupRun,
     CitationCandidate,
     ConcordanceJob,
     ConcordanceRun,
@@ -55,6 +56,8 @@ from app.schemas import (
     AppPreferencesPatch,
     AttributeDefinitionCreate,
     AttributeDefinitionOut,
+    BackupArtifactOut,
+    BackupRunOut,
     BibliographyOut,
     CitationCandidatePatch,
     CitationCandidateOut,
@@ -92,6 +95,7 @@ from app.schemas import (
     ProjectItemOut,
     ProjectItemPatch,
     ProjectOut,
+    RestoreDatabaseCreate,
     RuntimeLocationOut,
     SavedSearchCreate,
     SavedSearchOut,
@@ -110,6 +114,15 @@ from app.services.analysis_models import (
     MODEL_RAW_TEXT_EXTRACTION,
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
+)
+from app.services.backups import (
+    create_database_backup_run,
+    create_restore_run,
+    launch_database_backup,
+    launch_database_restore,
+    list_backup_runs,
+    list_gcs_backup_artifacts,
+    save_restore_upload,
 )
 from app.services.concordance import create_concordance_run, current_capabilities
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_manual_edit
@@ -1996,6 +2009,89 @@ def export_storage_manifest(
     db: Annotated[Session, Depends(get_db)],
 ) -> FastAPIResponse:
     return json_download(build_storage_manifest(db), "medusa-storage-manifest")
+
+
+@app.get("/api/backups/runs", response_model=list[BackupRunOut])
+def read_backup_runs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[BackupRun]:
+    return list_backup_runs(db)
+
+
+@app.post("/api/backups/database", response_model=BackupRunOut)
+def start_database_backup(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> BackupRun:
+    try:
+        run = create_database_backup_run(db, reason="manual")
+        db.commit()
+        db.refresh(run)
+        launch_database_backup(run.id)
+        return run
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/backups/gcs", response_model=list[BackupArtifactOut])
+def read_gcs_backups(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, Any]]:
+    try:
+        return list_gcs_backup_artifacts(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/restores/database", response_model=BackupRunOut)
+def start_database_restore(
+    payload: RestoreDatabaseCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> BackupRun:
+    try:
+        run = create_restore_run(
+            db,
+            source_kind="gcs",
+            source_filename=Path(payload.gcs_uri).name,
+            source_uri=payload.gcs_uri,
+        )
+        db.commit()
+        db.refresh(run)
+        launch_database_restore(run.id)
+        return run
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/restores/database/upload", response_model=BackupRunOut)
+async def start_database_restore_from_upload(
+    file: Annotated[UploadFile, File()],
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> BackupRun:
+    content = await file.read()
+    try:
+        upload = save_restore_upload(content, file.filename)
+        run = create_restore_run(
+            db,
+            source_kind="upload",
+            source_filename=upload["filename"],
+            source_local_path=upload["local_path"],
+            source_sha256=upload["sha256"],
+        )
+        run.size_bytes = upload["size_bytes"]
+        db.commit()
+        db.refresh(run)
+        launch_database_restore(run.id)
+        return run
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/concordance/capabilities", response_model=list[ConcordanceCapabilityOut])

@@ -3260,6 +3260,7 @@ pre {
 
 .settings-tile h2,
 .export-panel h2,
+.database-backup-panel h2,
 .preferences-panel h2,
 .storage-settings-panel h2,
 .model-settings-panel h2,
@@ -3272,6 +3273,7 @@ pre {
 
 .settings-tile p,
 .export-panel p,
+.database-backup-panel p,
 .preferences-panel p,
 .storage-settings-panel p,
 .model-settings-panel p,
@@ -3775,6 +3777,12 @@ pre {
   gap: 12px;
 }
 
+.database-backup-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+
 .export-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3782,6 +3790,159 @@ pre {
 }
 
 .export-actions a {
+  text-decoration: none;
+}
+
+.backup-restore-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.65fr) minmax(360px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.backup-action-block,
+.restore-action-block {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+}
+
+.backup-action-block > div:first-child,
+.restore-action-block > div:first-child {
+  min-width: 0;
+}
+
+.backup-action-block strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.backup-action-block span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.restore-source-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.55fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.restore-source-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.restore-source-grid select {
+  min-width: 0;
+  width: 100%;
+  min-height: 38px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: none;
+}
+
+.restore-drop-zone {
+  min-width: 0;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 1px dashed var(--button-line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 9px;
+}
+
+.restore-drop-zone.active,
+.restore-drop-zone.has-file {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--ink);
+}
+
+.restore-drop-zone span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.restore-drop-zone button {
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 0;
+}
+
+.backup-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  border-block: 1px solid var(--line);
+  padding-block: 10px;
+}
+
+.backup-status-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.backup-status-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.backup-status-grid strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legacy-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.legacy-export-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
   text-decoration: none;
 }
 
@@ -4002,12 +4163,16 @@ pre {
   .openai-usage-panel,
   .budget-panel,
   .export-panel,
+  .database-backup-panel,
   .concordance-panel {
     grid-column: 1;
   }
 
   .accent-settings,
   .storage-settings-grid,
+  .backup-restore-grid,
+  .restore-source-grid,
+  .backup-status-grid,
   .model-task-row,
   .budget-metric-grid,
   .usage-metric-grid,

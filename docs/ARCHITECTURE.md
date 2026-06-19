@@ -41,8 +41,8 @@ Current UI architecture:
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation, with run-sheet controls constrained to their pane so long document titles cannot spill into bibliography controls.
 - Queue shows queued/running import jobs with per-job stage progress and compact bounded citation-review cards. Citation cards use the owning document title, source/provenance chips, a constrained citation preview, and attached accept/reject actions so long titles and provider labels cannot collide.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
-- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, GCS bucket configuration, managed Google service-account upload/status, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls. Settings places Save All controls at both the top and bottom of the view, and each Save All action persists all preference groups together; uploaded service-account JSON is saved through its own authenticated file action.
-- Metadata restore is CLI-first: dry-run by default, explicit `--apply`, and intended for backup drills or fresh-database recovery.
+- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, GCS bucket configuration, managed Google service-account upload/status, document cache budget controls, full database backup/restore controls, legacy metadata JSON/storage-manifest export links, and Concordance controls. Settings places Save All controls at both the top and bottom of the view, and each Save All action persists all preference groups together; uploaded service-account JSON is saved through its own authenticated file action.
+- Full database backup and restore are browser-driven from Settings. Legacy metadata restore remains CLI-first: dry-run by default, explicit `--apply`, and intended for JSON export drills or partial fresh-database recovery.
 
 Visual decisions:
 
@@ -104,6 +104,7 @@ Backend modules:
 - `backend/app/services/concordance.py`: retroactive capability registry, run creation, and Concordance job processing.
 - `backend/app/services/figures.py`: embedded PDF figure extraction, durable asset storage, and figure row creation.
 - `backend/app/services/exports.py`: authenticated metadata export and durable storage manifest builders.
+- `backend/app/services/backups.py`: full PostgreSQL backup/restore orchestration, `pg_dump`/`pg_restore` subprocess handling, zstd compression/decompression, GCS backup object listing/upload/download, checksum verification, and restore safety backup gating.
 - `backend/app/services/restore.py`: metadata export validation, dry-run planning, and fresh-database restore logic.
 - `backend/app/services/citations.py`: APA/BibTeX/RIS/CSL formatting utilities.
 - `backend/app/services/verifier.py`: Crossref lookup and verification helpers.
@@ -144,6 +145,7 @@ Current core entities:
 - `DocumentCapability`: per-document completion state for versioned import/concordance capabilities.
 - `OpenAIUsageRecord`: per-call OpenAI Responses/embeddings/Gemini usage ledger with document/job/run context, model, task, token counts, cached input tokens, PDF/file-context bytes, status, and recent error text.
 - `DocumentCompositionRecord`: per-document provenance and cost ledger for imports and edits. Rows record local stage durations, synced model/embedding usage costs, provider/model/method, status, stage ordering, processing warnings/errors, and pipeline metadata. The optional `usage_record_id` links back to the raw AI usage row when available.
+- `BackupRun`: durable full database backup/restore progress rows with kind, reason, status, phase, progress, GCS object URI, zstd dump checksum, restore source metadata, safety-backup linkage, and error/completion timestamps.
 - `DocumentRecommendation`: cached DOI/title-based related-paper recommendations for a source document, including provider/relation evidence, DOI, title, authors, venue, description, open PDF/source URLs, existing-library/import matches, and import status.
 - `DocumentAccessorySummary`: user-prompted focused summaries owned by a document, with prompt, optional title, selected model, generated Markdown body, status/attempt/lock fields, completion timestamp, and model/evidence metadata.
 - `DocumentPage`: raw extracted per-page text, normalized reader text, source, low-text flags, and optional page image URI; the document detail API exposes these pages for the full-text reader.
@@ -303,7 +305,7 @@ Operational settings:
 - `MEDUSA_DOCUMENT_CACHE_SIZE_MB` sets the startup default for the bounded local document cache. The built-in default is 1,000 MB, and Settings can change the active value without affecting GCS/local original storage writes.
 - `MEDUSA_RAW_TEXT_EXTRACTION_TIMEOUT_SECONDS` bounds local raw extraction tools such as Marker before falling back or failing the current extraction attempt.
 - `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE` controls page-normalization spend. `auto` is the default local-first mode; `always` sends every page through the configured OpenAI page-normalization model; `never` keeps page normalization local. `MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES` caps auto-mode cloud escalations per document.
-- Docker sets `HOME`, `XDG_CACHE_HOME`, `HF_HOME`, `TORCH_HOME`, and `MPLCONFIGDIR` under `/app/data` so local ML model downloads and ADC config survive container recreation through the existing `./data:/app/data` volume instead of entering the image.
+- Docker sets `HOME`, `XDG_CACHE_HOME`, `HF_HOME`, `TORCH_HOME`, and `MPLCONFIGDIR` under `/app/data` so local ML model downloads and ADC config survive container recreation through the existing `./data:/app/data` volume instead of entering the image. The backend image also installs PostgreSQL 16 client tools plus `zstd` so `pg_dump`, `pg_restore`, and zstd compression match the PostgreSQL 16 server used by Compose.
 - The active import concurrency, Library alternate-row shading preference, accent color preferences, saved GCS bucket, managed service-account display/path metadata, document cache size, and model selections are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`; private credential JSON remains outside PostgreSQL and outside exports.
 
 Safe deletion:
@@ -311,7 +313,13 @@ Safe deletion:
 - Documents use soft delete. Original object cleanup is intentionally not automatic yet.
 - Original PDFs are served through authenticated `/api/documents/{document_id}/original` responses and should not require public GCS objects.
 - Parsed pages are served as part of authenticated `/api/documents/{document_id}` detail responses for the in-app full-text reader.
-- Backup/export routes are authenticated and intentionally omit API keys, service-account credentials, password hashes, and session tokens.
+- Full database backup/restore routes are authenticated and tracked through `BackupRun`. A manual backup creates a PostgreSQL custom-format dump with `pg_dump`, compresses it with `zstd`, uploads it under `<GCS_PREFIX>/backups/` in the saved/active GCS bucket, then downloads/streams the uploaded object to validate its SHA-256 checksum before marking the run complete.
+- Backup object names use `medusa-postgres-YYYYMMDD-HHMM-<short-hostname>.dump.zst`; a sibling `.manifest.json` records backup id, object key, GCS URI, size, SHA-256, hostname, compression/dump format, database identity without password, selected non-secret runtime settings, and safety flags.
+- The reserved header active-work control includes backup and restore progress. Backup phases are `initializing`, `dumping`, `compressing`, `uploading`, `verifying`, and `complete`/`failed`; restore phases include `safety_backup`, `fetching`, `checking`, `restoring`, `migrating`, and terminal state.
+- `/api/backups/gcs` lists available GCS `.dump.zst` artifacts from the backup folder using manifests and object metadata. `/api/backups/database` starts a new full backup. `/api/restores/database` starts restore from a selected GCS backup, and `/api/restores/database/upload` accepts an inline dump file.
+- Every restore must first create a new full pre-restore safety backup and verify its upload/checksum before the target dump is fetched, checked, decompressed, and applied. Restore uses `pg_restore --clean --if-exists --no-owner --no-privileges`, then runs Alembic migrations so older dumps can be brought to the current schema. A full database restore can replace session rows, so the browser may need to sign in again after restore.
+- Full database backups are true PostgreSQL snapshots and therefore include auth tables such as password hashes and session rows. API keys and service-account JSON are not stored in PostgreSQL and are not written into backup manifests; managed Google key files remain in ignored local data paths and must exist on the restored machine for GCS/Google integrations.
+- Legacy backup/export routes are authenticated and intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 - `/api/exports/metadata` returns full metadata JSON with organization state, extracted text, notes, correction history, jobs, Concordance history, and an embedded storage manifest.
 - `/api/exports/storage-manifest` returns the durable original/page/figure asset URI manifest by itself.
 - `/api/openai/usage` returns authenticated usage totals, task/model rollups, recent OpenAI call records, and conservative estimated costs for a requested period (`last_day`, `last_month`, `last_3_months`, or `all_time`). Unknown models are counted as unpriced rather than guessed.
@@ -344,7 +352,7 @@ Known gaps:
 - Saved searches, smart filters, and bulk edit controls are implemented; richer multi-condition filter builders are still future work.
 - Metadata correction UI exists for core identity fields, citation status, read/priority state, tags, domains, summaries, custom attributes, and reader text cleanup. Correction history is captured as `DocumentVersion` snapshots and can be restored as the current document state; a fuller field-by-field diff viewer is still future work.
 - Auth is single-user only; no roles or sharing model.
-- Backup/export is implemented as authenticated JSON downloads. Metadata restore from those exports is implemented as a CLI-first dry-run/apply workflow; browser-based restore controls and scheduled backup drills remain future work.
+- Full database backup/restore is implemented as authenticated Settings controls backed by GCS, zstd, checksum verification, and mandatory pre-restore safety backups. Legacy metadata JSON exports remain available, and scheduled backup drills/retention policy remain future work.
 - Accessory Summaries are implemented for current-document Library detail runs. Batch Accessory Summary prompts across selected documents, saved searches, or Concordance scopes remain future work.
 
 High-value next steps:
@@ -361,7 +369,7 @@ High-value next steps:
 - Add real PDF viewer with highlights/notes.
 - Add geometric PDF highlight overlays on top of the current annotation records.
 - Add richer multi-condition filter builders.
-- Add browser-based restore controls for metadata exports.
+- Add scheduled full-database backup drills and retention controls.
 - Add Playwright smoke tests for login, import, library search, citation copy, project bibliography, and day/night modes.
 
 ## Decision Log
@@ -702,7 +710,23 @@ Consequences:
 - `backend/app/services/exports.py` owns export construction so future restore tooling can share the schema.
 - Metadata exports include documents, extracted text, tags, domains, annotations, notes, attributes, correction history, projects, jobs, Concordance state, citation candidates, and storage URI references.
 - Exports intentionally omit service-account credentials, API keys, password hashes, and session tokens.
-- Restore/import from an export is still future work and should validate export schema version before writing data.
+- JSON metadata restore later became the CLI `restore_export` workflow; full disaster recovery is handled by the 2026-06-19 PostgreSQL backup/restore workflow.
+
+### 2026-06-19: Full database backup and restore through GCS
+
+Decision: Add Settings-driven full PostgreSQL backup and restore backed by GCS, zstd compression, checksum verification, visible header progress, and mandatory pre-restore safety backups.
+
+Why: Metadata JSON exports are useful for inspection and partial recovery, but they are not a complete local-first disaster-recovery path. Medusa's system of record is PostgreSQL, so a reversible restore workflow should snapshot the whole database and make the safety backup impossible to skip.
+
+Consequences:
+
+- `BackupRun` rows track manual backups, pre-restore safety backups, and restore runs with status, phase, progress, GCS object details, checksums, source metadata, and errors.
+- Manual backup phases are `initializing`, `dumping`, `compressing`, `uploading`, and `verifying`; the header active-work slot shows those phases and percent progress next to import/Concordance work.
+- Backups use `pg_dump --format=custom`, zstd compression, object names shaped like `medusa-postgres-YYYYMMDD-HHMM-<short-hostname>.dump.zst`, and sibling JSON manifests under `<GCS_PREFIX>/backups/`.
+- Upload verification computes a SHA-256 over the local compressed file, uploads it to GCS, then reads the uploaded object back and compares the checksum before completion.
+- Restore from a selected GCS backup or uploaded dump always creates and verifies a fresh full GCS backup first. Only after that safety backup is complete does Medusa fetch/check/decompress the selected dump, apply it with `pg_restore --clean --if-exists`, and run migrations.
+- Full database dumps include auth tables because they are complete database snapshots; API keys and service-account JSON remain outside PostgreSQL and outside backup manifests.
+- The old authenticated metadata JSON and storage manifest downloads remain as legacy inspection/export tools at the bottom of Settings, while the primary Backup Database and Restore Database controls now use the full database workflow.
 
 ### 2026-06-18: Project run-sheet management
 

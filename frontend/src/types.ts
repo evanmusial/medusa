@@ -55,6 +55,46 @@ export type AppPreferences = {
   model_options: Record<string, string[]>;
 };
 
+export type BackupRun = {
+  id: string;
+  kind: "backup" | "restore" | string;
+  reason?: string | null;
+  status: "queued" | "running" | "complete" | "failed" | string;
+  phase: string;
+  progress: number;
+  status_detail?: string | null;
+  hostname?: string | null;
+  filename?: string | null;
+  object_key?: string | null;
+  gcs_uri?: string | null;
+  size_bytes?: number | null;
+  sha256?: string | null;
+  source_kind?: string | null;
+  source_filename?: string | null;
+  source_uri?: string | null;
+  safety_backup_id?: string | null;
+  backup_metadata: Record<string, unknown>;
+  last_error?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BackupArtifact = {
+  id: string;
+  filename: string;
+  object_key: string;
+  gcs_uri: string;
+  size_bytes: number;
+  sha256?: string | null;
+  created_at?: string | null;
+  completed_at?: string | null;
+  hostname?: string | null;
+  verified: boolean;
+  manifest: Record<string, unknown>;
+};
+
 export type AnalysisModelTask = {
   key: string;
   label: string;

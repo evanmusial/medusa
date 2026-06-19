@@ -30,6 +30,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
 - Stored document annotations/highlights with page, color, note body, soft delete, and search indexing; Library creation controls are deferred for a quieter redesign
 - Notes and reminders attached to documents, domains, projects, or the general library
+- Full PostgreSQL database backup/restore from Settings, using GCS, zstd compression, SHA-256 upload verification, header progress, and mandatory pre-restore safety backups
 - Authenticated JSON backup exports for metadata and storage manifests, excluding secrets and session tokens
 - CLI restore tooling for metadata exports, with dry-run validation by default and parked restored job queues
 
@@ -180,7 +181,11 @@ Tests:
 pytest
 ```
 
-Restore drill:
+Full database backup and restore:
+
+Use Settings at the bottom of the app for the normal backup workflow. Backup Database creates a `pg_dump` custom-format snapshot, compresses it with zstd, uploads it to the active GCS bucket under `GCS_PREFIX/backups`, and verifies the uploaded checksum. Restore Database can use a listed GCS backup or an uploaded dump file; it always completes and verifies a fresh safety backup before applying the restore.
+
+Legacy metadata JSON restore drill:
 
 ```bash
 cd backend
@@ -202,6 +207,8 @@ The Import screen can also rescue failed imports or stale locked imports by requ
 
 Concordance Runs and citation checks are also safe to leave in progress from the UI. Once the backend accepts the request, the durable database run continues through the worker queue independently of the currently open page, and the shell-level progress shelf reconciles with refreshed run/job state.
 
-Settings includes backup export controls. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. Exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
+Settings includes full database backup and restore controls. Backups are named with `YYYYMMDD-HHMM` plus the short hostname, compressed with zstd, uploaded to GCS, and checksum-verified after upload. Restore from GCS or an uploaded dump is gated by a fresh verified safety backup, then applies with `pg_restore` and runs migrations. A full database restore may replace session rows, so the browser may need to sign in again afterward.
+
+Settings also keeps legacy metadata export links. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. These JSON exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 
 Metadata exports can be restored with the CLI restore tool. Restores are dry-run by default, preserve export IDs by default, skip password/session state, restore document/storage URI references, and park active job queues so a fresh worker does not unexpectedly reprocess restored history.

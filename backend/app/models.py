@@ -112,6 +112,34 @@ class AppPreference(Base, TimestampMixin):
     value: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
 
 
+class BackupRun(Base, TimestampMixin):
+    __tablename__ = "backup_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(40), default="backup", nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False, index=True)
+    phase: Mapped[str] = mapped_column(String(80), default="initializing", nullable=False, index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status_detail: Mapped[str | None] = mapped_column(Text)
+    hostname: Mapped[str | None] = mapped_column(String(120))
+    filename: Mapped[str | None] = mapped_column(String(512))
+    object_key: Mapped[str | None] = mapped_column(Text)
+    gcs_uri: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    source_kind: Mapped[str | None] = mapped_column(String(40))
+    source_filename: Mapped[str | None] = mapped_column(String(512))
+    source_uri: Mapped[str | None] = mapped_column(Text)
+    source_local_path: Mapped[str | None] = mapped_column(Text)
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    safety_backup_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("backup_runs.id", ondelete="SET NULL"))
+    backup_metadata: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class OpenAIUsageRecord(Base, TimestampMixin):
     __tablename__ = "openai_usage_records"
 

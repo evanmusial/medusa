@@ -4,6 +4,8 @@ import type {
   Annotation,
   AnnotationPayload,
   AppPreferences,
+  BackupArtifact,
+  BackupRun,
   Bibliography,
   CitationCandidate,
   ConcordanceCapability,
@@ -59,6 +61,16 @@ export const api = {
     request<RuntimeLocation>(`/api/runtime-location?browser_host=${encodeURIComponent(browserHost)}`),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
+  backupRuns: () => request<BackupRun[]>("/api/backups/runs"),
+  gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
+  startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),
+  startDatabaseRestore: (gcsUri: string) =>
+    request<BackupRun>("/api/restores/database", { method: "POST", body: JSON.stringify({ gcs_uri: gcsUri }) }),
+  startDatabaseRestoreUpload: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<BackupRun>("/api/restores/database/upload", { method: "POST", body: form });
+  },
   openaiUsage: (period: OpenAIUsagePeriod = "all_time") => request<OpenAIUsage>(`/api/openai/usage?period=${period}`),
   updatePreferences: (
     body: Partial<
