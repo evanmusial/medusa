@@ -265,6 +265,212 @@ def test_document_detail_schema_includes_parsed_pages(monkeypatch, tmp_path):
         assert detail.pages[0].normalized_text == "Readable page text."
 
 
+def test_patch_document_page_records_history_and_updates_search_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import patch_document_page
+    from app.models import Document, DocumentPage, DocumentVersion
+    from app.schemas import DocumentPagePatch
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Editable Text Paper",
+            original_filename="editable.pdf",
+            checksum_sha256="e" * 64,
+            search_text="Editable Text Paper old OCR",
+        )
+        db.add(document)
+        db.flush()
+        page = DocumentPage(
+            document_id=document.id,
+            page_number=2,
+            text="Raw OCR text.",
+            normalized_text="Old extracted text.",
+            text_source="pdf",
+        )
+        db.add(page)
+        db.commit()
+
+        updated = patch_document_page(
+            document.id,
+            page.id,
+            DocumentPagePatch(normalized_text="Corrected extracted text."),
+            object(),
+            db,
+        )
+        version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+        db.refresh(page)
+        db.refresh(document)
+
+        assert updated.pages[0].normalized_text == "Corrected extracted text."
+        assert page.text_source == "manual"
+        assert "Corrected extracted text" in (document.search_text or "")
+        assert "Old extracted text" not in (document.search_text or "")
+        assert version.change_note == "Edited extracted text page 2"
+        assert version.metadata_snapshot["page_before"]["normalized_text"] == "Old extracted text."
+        assert version.metadata_snapshot["page_after"]["normalized_text"] == "Corrected extracted text."
+        assert "page_2_normalized_text" in version.metadata_snapshot["changed_fields"]
+
+
+def test_scrub_document_text_removes_matches_across_pages(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import scrub_document_text
+    from app.models import Document, DocumentPage, DocumentVersion
+    from app.schemas import DocumentTextScrub
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Scrub Paper",
+            original_filename="scrub.pdf",
+            checksum_sha256="s" * 64,
+            search_text="Scrub Paper Copyright 2026",
+        )
+        db.add(document)
+        db.flush()
+        first = DocumentPage(
+            document_id=document.id,
+            page_number=1,
+            text="Raw page.",
+            normalized_text="Copyright 2026\nBody text.\nCopyright 2026",
+            text_source="pdf",
+        )
+        second = DocumentPage(
+            document_id=document.id,
+            page_number=2,
+            text="Copyright 2026\nSecond page.",
+            normalized_text=None,
+            text_source="pdf",
+        )
+        db.add_all([first, second])
+        db.commit()
+
+        updated = scrub_document_text(document.id, DocumentTextScrub(text="Copyright 2026"), object(), db)
+        versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).all()
+        db.refresh(first)
+        db.refresh(second)
+        db.refresh(document)
+
+        assert "Copyright 2026" not in (first.normalized_text or "")
+        assert "Copyright 2026" not in (second.normalized_text or "")
+        assert second.text == "Copyright 2026\nSecond page."
+        assert first.text_source == "manual"
+        assert second.text_source == "manual"
+        assert "Copyright 2026" not in (document.search_text or "")
+        assert updated.pages[0].normalized_text == "\nBody text.\n"
+        assert len(versions) == 1
+        assert versions[0].metadata_snapshot["scrub_count"] == 3
+        assert len(versions[0].metadata_snapshot["pages"]) == 2
+
+
+def test_restore_document_version_creates_current_version(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import restore_document_version
+    from app.models import AttributeDefinition, Document, DocumentAttributeValue, DocumentPage, DocumentVersion, Tag
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Current Title",
+            authors=[{"given": "Current", "family": "Author"}],
+            publication_year=2026,
+            original_filename="restore.pdf",
+            checksum_sha256="r" * 64,
+            search_text="Current Title current page text",
+        )
+        db.add(document)
+        db.flush()
+        page = DocumentPage(
+            document_id=document.id,
+            page_number=1,
+            text="Raw page text.",
+            normalized_text="Current page text.",
+            text_source="manual",
+        )
+        tag = Tag(name="current tag")
+        definition = AttributeDefinition(name="Current field", value_type="markdown")
+        db.add_all([page, tag, definition])
+        db.flush()
+        document.tags = [tag]
+        db.add(
+            DocumentAttributeValue(
+                document_id=document.id,
+                attribute_definition_id=definition.id,
+                value={"value": "current"},
+            )
+        )
+        db.flush()
+        version = DocumentVersion(
+            document_id=document.id,
+            version_number=1,
+            change_note="Preferred cleanup",
+            metadata_snapshot={
+                "after": {
+                    "title": "Restored Title",
+                    "subtitle": None,
+                    "authors": [{"given": "Ada", "family": "Lovelace"}],
+                    "universities": [],
+                    "publication_year": 1843,
+                    "publisher": None,
+                    "journal": "Scientific Memoirs",
+                    "doi": "10.0000/restored",
+                    "source_url": None,
+                    "abstract": "Restored abstract.",
+                    "rich_summary": "Restored summary.",
+                    "apa_citation": "Lovelace, A. (1843). Restored.",
+                    "apa_citation_model": None,
+                    "apa_citation_source": "user",
+                    "apa_in_text_citation": "(Lovelace, 1843)",
+                    "apa_in_text_citation_model": None,
+                    "apa_in_text_citation_source": "user",
+                    "citation_status": "verified",
+                    "read_status": "read",
+                    "priority": "high",
+                    "tags": ["restored tag"],
+                    "domains": [],
+                    "attributes": {"Restored field": {"value": "restored"}},
+                },
+                "page_after": {
+                    "id": page.id,
+                    "page_number": 1,
+                    "text": "Raw page text.",
+                    "normalized_text": "Restored page text.",
+                    "text_source": "manual",
+                    "low_text": False,
+                    "image_uri": None,
+                },
+            },
+        )
+        db.add(version)
+        db.commit()
+
+        updated = restore_document_version(document.id, version.id, object(), db)
+        versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).order_by(DocumentVersion.version_number).all()
+        db.refresh(document)
+        db.refresh(page)
+
+        assert updated.title == "Restored Title"
+        assert updated.authors == [{"given": "Ada", "family": "Lovelace"}]
+        assert updated.priority == "high"
+        assert [tag.name for tag in updated.tags] == ["restored tag"]
+        assert {value.definition.name: value.value for value in updated.attributes} == {
+            "Restored field": {"value": "restored"}
+        }
+        assert page.normalized_text == "Restored page text."
+        assert "Restored Title" in (document.search_text or "")
+        assert "Restored page text" in (document.search_text or "")
+        assert len(versions) == 2
+        assert versions[-1].change_note == "Restored v1 as current"
+        assert versions[-1].metadata_snapshot["restored_version_number"] == 1
+        assert versions[-1].metadata_snapshot["restored_pages"][0]["after"]["normalized_text"] == "Restored page text."
+
+
 def test_refresh_document_citation_queues_citation_concordance(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

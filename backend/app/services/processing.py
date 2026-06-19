@@ -11,7 +11,6 @@ from app.models import (
     CitationCandidate,
     Document,
     DocumentPage,
-    DocumentVersion,
     ImportBatch,
     ImportJob,
     ProcessingEvent,
@@ -45,6 +44,7 @@ from app.services.document_cache import (
 )
 from app.services.extraction import extract_pdf_text, normalize_extracted_text, sanitize_extracted_text, split_text_into_chunks
 from app.services.figures import process_document_figures
+from app.services.history import document_correction_snapshot, record_document_version
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.verifier import (
@@ -204,7 +204,7 @@ def _has_metadata_value(value: Any) -> bool:
 
 
 def preferred_page_text(page: DocumentPage) -> str:
-    return sanitize_extracted_text(page.normalized_text or page.text or "").strip()
+    return sanitize_extracted_text(page.normalized_text if page.normalized_text is not None else page.text or "").strip()
 
 
 def document_reading_text(document: Document) -> str:
@@ -598,6 +598,7 @@ class DocumentProcessor:
             return
         started_at, started_perf = stage_timer()
         checkpoint_job_step(db, job, document, "enriching", "Enriching metadata, citation, summary, and topics.")
+        before = document_correction_snapshot(document)
         ai = get_ai_service()
         local_path = ensure_document_cache_file(db, document, source="metadata_enrichment")
         pdf_bytes = local_path.read_bytes() if local_path and local_path.exists() else None
@@ -709,13 +710,30 @@ class DocumentProcessor:
             if tag not in document.tags:
                 document.tags.append(tag)
 
-        db.add(
-            DocumentVersion(
-                document_id=document.id,
-                version_number=len(document.versions) + 1,
-                change_note="Metadata enrichment",
-                metadata_snapshot=citation_metadata,
-            )
+        record_document_version(
+            db,
+            document=document,
+            change_note="Metadata enrichment",
+            changed_fields=[
+                "title",
+                "subtitle",
+                "authors",
+                "universities",
+                "publication_year",
+                "publisher",
+                "journal",
+                "doi",
+                "source_url",
+                "abstract",
+                "rich_summary",
+                "apa_citation",
+                "apa_in_text_citation",
+                "citation_status",
+                "tags",
+            ],
+            before=before,
+            after=document_correction_snapshot(document),
+            extra={"citation_metadata": citation_metadata},
         )
         record_import_stage(
             db,

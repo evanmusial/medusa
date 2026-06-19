@@ -14,6 +14,7 @@ import {
   Cloud,
   Download,
   Edit3,
+  Eraser,
   ExternalLink,
   FileSearch,
   FileText,
@@ -30,6 +31,7 @@ import {
   PieChart,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Search,
   Settings,
@@ -205,6 +207,97 @@ function isQueueImportJob(job: ImportJob) {
 function actionFailureMessage(action: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return detail ? `${action}: ${detail}` : action;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function countOccurrences(text: string, needle: string) {
+  if (!needle) return 0;
+  let count = 0;
+  let index = 0;
+  while (index <= text.length) {
+    const next = text.indexOf(needle, index);
+    if (next < 0) break;
+    count += 1;
+    index = next + needle.length;
+  }
+  return count;
+}
+
+const restorableDocumentKeys = new Set([
+  "title",
+  "subtitle",
+  "authors",
+  "universities",
+  "publication_year",
+  "publisher",
+  "journal",
+  "doi",
+  "source_url",
+  "abstract",
+  "rich_summary",
+  "apa_citation",
+  "apa_in_text_citation",
+  "citation_status",
+  "metadata_confidence",
+  "metadata_evidence",
+  "read_status",
+  "priority",
+  "tags",
+  "domains",
+  "attributes",
+]);
+
+function versionSnapshot(version: DocumentDetail["versions"][number]) {
+  return isRecord(version.metadata_snapshot) ? version.metadata_snapshot : {};
+}
+
+function changedFieldsForVersion(version: DocumentDetail["versions"][number]) {
+  const changedFields = versionSnapshot(version).changed_fields;
+  return Array.isArray(changedFields) ? changedFields.filter((field): field is string => typeof field === "string") : [];
+}
+
+function versionDocumentTarget(version: DocumentDetail["versions"][number]) {
+  const snapshot = versionSnapshot(version);
+  if (isRecord(snapshot.after)) return snapshot.after;
+  return [...restorableDocumentKeys].some((key) => key in snapshot) ? snapshot : null;
+}
+
+function versionPageTargets(version: DocumentDetail["versions"][number]) {
+  const snapshot = versionSnapshot(version);
+  const pages: Record<string, unknown>[] = [];
+  if (isRecord(snapshot.page_after)) pages.push(snapshot.page_after);
+  if (Array.isArray(snapshot.pages)) {
+    snapshot.pages.forEach((entry) => {
+      if (!isRecord(entry)) return;
+      if (isRecord(entry.after)) pages.push(entry.after);
+    });
+  }
+  return pages;
+}
+
+function versionIsRestorable(version: DocumentDetail["versions"][number]) {
+  return Boolean(versionDocumentTarget(version) || versionPageTargets(version).length);
+}
+
+function versionPreviewLines(version: DocumentDetail["versions"][number]) {
+  const target = versionDocumentTarget(version);
+  const pages = versionPageTargets(version);
+  const lines: string[] = [];
+  if (target) {
+    if (typeof target.title === "string" && target.title.trim()) lines.push(target.title.trim());
+    const year = target.publication_year;
+    if (typeof year === "number" || typeof year === "string") lines.push(`Year ${year}`);
+    if (Array.isArray(target.tags) && target.tags.length) lines.push(`${target.tags.length} tags`);
+    if (isRecord(target.attributes) && Object.keys(target.attributes).length) lines.push(`${Object.keys(target.attributes).length} attributes`);
+  }
+  if (pages.length === 1 && typeof pages[0].page_number === "number") lines.push(`Page ${pages[0].page_number}`);
+  else if (pages.length > 1) lines.push(`${pages.length} pages`);
+  const scrubCount = versionSnapshot(version).scrub_count;
+  if (typeof scrubCount === "number") lines.push(`${scrubCount} scrubbed`);
+  return lines;
 }
 
 function useAsyncActionFeedback(options: { successMs?: number; errorMs?: number } = {}) {
@@ -655,6 +748,27 @@ function importJobStepLabel(job: ImportJob) {
   if (job.status === "complete") return "complete";
   if (job.status === "failed") return job.last_error || "failed";
   return importJobStage(job);
+}
+
+function importJobStatusLabel(job: ImportJob) {
+  if (job.status === "complete") return "complete";
+  if (job.status === "failed") return "failed";
+  if (job.status === "queued") return "queued";
+  if (job.status === "restored_paused") return "restored paused";
+  return importJobStage(job);
+}
+
+function ImportJobStatusDetail({ job }: { job: ImportJob }) {
+  const status = importJobStatusLabel(job);
+  const model = modelDisplayName(job.current_model);
+  const cost = formatUsd(job.estimated_cost_usd ?? 0);
+  return (
+    <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : undefined}>
+      <strong>{status}</strong>
+      {model ? ` (${model})` : ""}
+      {` (${cost})`}
+    </small>
+  );
 }
 
 function canRescueImportJob(job: ImportJob) {
@@ -1680,7 +1794,7 @@ type DocumentDraft = {
   attributes: AttributeDraft[];
 };
 
-type ReaderMode = "pdf" | "text";
+type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
 
 function draftFromDocument(document: DocumentDetail): DocumentDraft {
@@ -2143,8 +2257,16 @@ function DocumentPanelContent({
   const [editing, setEditing] = useState(false);
   const [recommendationsOpen, setRecommendationsOpen] = useState(false);
   const [compositionOpen, setCompositionOpen] = useState(false);
-  const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "text" : "pdf"));
+  const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "compare" : "pdf"));
   const [readerPageIndex, setReaderPageIndex] = useState(0);
+  const comparePdfRef = useRef<HTMLIFrameElement | null>(null);
+  const compareTextRef = useRef<HTMLElement | null>(null);
+  const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
+  const [editingPageId, setEditingPageId] = useState<string | null>(null);
+  const [pageTextDraft, setPageTextDraft] = useState("");
+  const [pageTextError, setPageTextError] = useState<string | null>(null);
+  const [pageTextSelection, setPageTextSelection] = useState("");
+  const [pdfScrollListenerTick, setPdfScrollListenerTick] = useState(0);
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
   const accessorySummaryTask = preferences?.analysis_model_tasks.find((task) => task.key === ACCESSORY_SUMMARIES_MODEL_KEY);
   const accessorySummaryDefaultModel =
@@ -2164,6 +2286,8 @@ function DocumentPanelContent({
     "in-text": document.apa_in_text_citation || "",
   });
   const [citationEditError, setCitationEditError] = useState<string | null>(null);
+  const [selectedHistoryVersionId, setSelectedHistoryVersionId] = useState<string | null>(null);
+  const [historyRestoreError, setHistoryRestoreError] = useState<string | null>(null);
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
@@ -2187,6 +2311,47 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setSaveError(error instanceof Error ? error.message : "Could not save correction"),
+  });
+  const updatePageText = useMutation({
+    mutationFn: ({ pageId, normalizedText }: { pageId: string; normalizedText: string }) =>
+      api.updateDocumentPageText(document.id, pageId, { normalized_text: normalizedText }),
+    onSuccess: () => {
+      setEditingPageId(null);
+      setPageTextError(null);
+      setPageTextSelection("");
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setPageTextError(actionFailureMessage("Could not save extracted text", error)),
+  });
+  const scrubText = useMutation({
+    mutationFn: (text: string) => api.scrubDocumentText(document.id, { text }),
+    onSuccess: (updatedDocument) => {
+      setPageTextError(null);
+      setPageTextSelection("");
+      const updatedPage = updatedDocument.pages.find((page) => page.id === currentPage?.id);
+      if (updatedPage) setPageTextDraft(updatedPage.normalized_text ?? updatedPage.text ?? "");
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setPageTextError(actionFailureMessage("Could not scrub extracted text", error)),
+  });
+  const restoreHistoryVersion = useMutation({
+    mutationFn: (versionId: string) => api.restoreDocumentVersion(document.id, versionId),
+    onSuccess: () => {
+      setHistoryRestoreError(null);
+      setSelectedHistoryVersionId(null);
+      setEditingPageId(null);
+      setPageTextSelection("");
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setHistoryRestoreError(actionFailureMessage("Could not restore history version", error)),
   });
   const runConcordance = useMutation({
     mutationFn: () =>
@@ -2297,12 +2462,18 @@ function DocumentPanelContent({
     setAccessoryTitleDrafts({});
     setTrackedAccessorySummaryId(null);
     setSaveError(null);
+    setEditingPageId(null);
+    setPageTextDraft("");
+    setPageTextError(null);
+    setPageTextSelection("");
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
     setCitationRefreshTarget(null);
     setEditingCitation(null);
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
     setCitationEditError(null);
+    setSelectedHistoryVersionId(null);
+    setHistoryRestoreError(null);
   }, [document.id]);
 
   useEffect(() => {
@@ -2322,11 +2493,40 @@ function DocumentPanelContent({
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
     [document.pages],
   );
-  const pageReadableText = (page: (typeof pages)[number]) => page.normalized_text || page.text || "";
+  const pageReadableText = (page: (typeof pages)[number]) => page.normalized_text ?? page.text ?? "";
   const fullText = pages.map(pageReadableText).filter(Boolean).join("\n\n");
   const currentPageIndex = pages.length ? Math.min(readerPageIndex, pages.length - 1) : 0;
   const currentPage = pages[currentPageIndex];
-  const currentPageText = currentPage ? pageReadableText(currentPage).trim() : "";
+  const currentPageText = currentPage ? pageReadableText(currentPage) : "";
+  const pageTextEditing = Boolean(currentPage && editingPageId === currentPage.id);
+  const currentPageSource = currentPage
+    ? currentPage.normalized_text !== null && currentPage.normalized_text !== undefined
+      ? currentPage.text_source === "manual"
+        ? "manual"
+        : "normalized"
+      : currentPage.text_source
+    : "";
+  const pageTextBusy = updatePageText.isPending || scrubText.isPending;
+  const scrubNeedle = pageTextSelection.trim() ? pageTextSelection : "";
+  const scrubMatchCount = useMemo(
+    () => (scrubNeedle ? pages.reduce((count, page) => count + countOccurrences(pageReadableText(page), scrubNeedle), 0) : 0),
+    [pages, scrubNeedle],
+  );
+  const scrubButtonLabel = scrubMatchCount > 0 ? `Scrub (${scrubMatchCount})` : "Scrub";
+  const historyRows = useMemo(
+    () => [...(document.versions || [])].sort((left, right) => right.version_number - left.version_number),
+    [document.versions],
+  );
+  const selectedHistoryIndex = historyRows.length
+    ? Math.max(
+        0,
+        selectedHistoryVersionId ? historyRows.findIndex((version) => version.id === selectedHistoryVersionId) : 0,
+      )
+    : -1;
+  const selectedHistoryVersion = selectedHistoryIndex >= 0 ? historyRows[selectedHistoryIndex] : undefined;
+  const selectedHistoryChangedFields = selectedHistoryVersion ? changedFieldsForVersion(selectedHistoryVersion) : [];
+  const selectedHistoryPreviewLines = selectedHistoryVersion ? versionPreviewLines(selectedHistoryVersion) : [];
+  const selectedHistoryRestorable = selectedHistoryVersion ? versionIsRestorable(selectedHistoryVersion) : false;
   const citationRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && isActiveConcordanceStatus(job.status),
   );
@@ -2436,8 +2636,117 @@ function DocumentPanelContent({
     trackedAccessorySummary,
     trackedAccessorySummaryId,
   ]);
+
+  useEffect(() => {
+    if (!currentPage || editingPageId === currentPage.id) return;
+    setPageTextDraft(currentPageText);
+    setPageTextError(null);
+    setPageTextSelection("");
+  }, [currentPage?.id, currentPageText, editingPageId]);
+
+  const scrollRatioFor = (element: Element | null) => {
+    if (!element) return 0;
+    const maximum = element.scrollHeight - element.clientHeight;
+    return maximum > 0 ? element.scrollTop / maximum : 0;
+  };
+
+  const applyScrollRatio = (element: Element | null, ratio: number) => {
+    if (!element) return;
+    const maximum = element.scrollHeight - element.clientHeight;
+    element.scrollTop = maximum > 0 ? maximum * ratio : 0;
+  };
+
+  const pdfScrollElement = () => {
+    try {
+      const frameDocument = comparePdfRef.current?.contentDocument;
+      return frameDocument?.scrollingElement || frameDocument?.documentElement || frameDocument?.body || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const releaseScrollSync = () => {
+    window.requestAnimationFrame(() => {
+      syncScrollSourceRef.current = null;
+    });
+  };
+
+  const handleCompareTextScroll = () => {
+    if (readerMode !== "compare" || syncScrollSourceRef.current === "pdf") return;
+    const target = pdfScrollElement();
+    if (!target) return;
+    syncScrollSourceRef.current = "text";
+    applyScrollRatio(target, scrollRatioFor(compareTextRef.current));
+    releaseScrollSync();
+  };
+
+  const handleComparePdfScroll = useCallback(() => {
+    if (readerMode !== "compare" || syncScrollSourceRef.current === "text") return;
+    const source = pdfScrollElement();
+    if (!source) return;
+    syncScrollSourceRef.current = "pdf";
+    applyScrollRatio(compareTextRef.current, scrollRatioFor(source));
+    releaseScrollSync();
+  }, [readerMode]);
+
+  useEffect(() => {
+    if (readerMode !== "compare") return;
+    const frameWindow = comparePdfRef.current?.contentWindow;
+    const frameDocument = comparePdfRef.current?.contentDocument;
+    if (!frameWindow && !frameDocument) return;
+    frameWindow?.addEventListener("scroll", handleComparePdfScroll, { passive: true });
+    frameDocument?.addEventListener("scroll", handleComparePdfScroll, { passive: true });
+    return () => {
+      frameWindow?.removeEventListener("scroll", handleComparePdfScroll);
+      frameDocument?.removeEventListener("scroll", handleComparePdfScroll);
+    };
+  }, [document.id, readerMode, currentPage?.id, handleComparePdfScroll, pdfScrollListenerTick]);
+
   const copyFullText = () => {
     if (fullText) void copyToClipboard("full-text", fullText);
+  };
+
+  const startPageTextEdit = () => {
+    if (!currentPage) return;
+    setEditingPageId(currentPage.id);
+    setPageTextDraft(currentPageText);
+    setPageTextError(null);
+    setPageTextSelection("");
+  };
+
+  const cancelPageTextEdit = () => {
+    setEditingPageId(null);
+    setPageTextDraft(currentPageText);
+    setPageTextError(null);
+    setPageTextSelection("");
+  };
+
+  const savePageTextEdit = () => {
+    if (!currentPage || !pageTextEditing) return;
+    updatePageText.mutate({ pageId: currentPage.id, normalizedText: pageTextDraft });
+  };
+
+  const updatePageTextSelection = (textarea: HTMLTextAreaElement) => {
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    setPageTextSelection(start === end ? "" : textarea.value.slice(Math.min(start, end), Math.max(start, end)));
+  };
+
+  const scrubSelectedText = () => {
+    if (!scrubNeedle || scrubMatchCount <= 0 || pageTextBusy) return;
+    scrubText.mutate(scrubNeedle);
+  };
+
+  const selectHistoryOffset = (offset: number) => {
+    if (!historyRows.length || selectedHistoryIndex < 0) return;
+    const nextIndex = Math.min(historyRows.length - 1, Math.max(0, selectedHistoryIndex + offset));
+    setSelectedHistoryVersionId(historyRows[nextIndex].id);
+    setHistoryRestoreError(null);
+  };
+
+  const restoreSelectedHistoryVersion = () => {
+    if (!selectedHistoryVersion || !selectedHistoryRestorable || restoreHistoryVersion.isPending) return;
+    restoreHistoryVersion.mutate(selectedHistoryVersion.id);
   };
 
   const startCitationEdit = (kind: CitationKind) => {
@@ -2595,6 +2904,133 @@ function DocumentPanelContent({
       </section>
     );
   };
+  const renderPdfPreview = (compare = false) => {
+    const fragment = compare && currentPage ? `#page=${currentPage.page_number}&toolbar=0&navpanes=0` : "#toolbar=0&navpanes=0";
+    return (
+      <div className={`pdf-preview ${compare ? "compare-pane" : ""}`}>
+        <iframe
+          ref={compare ? comparePdfRef : undefined}
+          title={`PDF preview for ${document.title}`}
+          src={`/api/documents/${document.id}/original${fragment}`}
+          onLoad={
+            compare
+              ? () => {
+                  setPdfScrollListenerTick((value) => value + 1);
+                  handleCompareTextScroll();
+                }
+              : undefined
+          }
+        />
+        <div className="pdf-preview-meta">
+          <FileSearch size={16} />
+          <span>{document.page_count || "?"} pages</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTextReader = (compare = false) => (
+    <section className={`text-reader ${compare ? "compare-pane" : ""}`}>
+      <div className="text-reader-head">
+        <div>
+          <strong>Parsed text</strong>
+          <span>{pages.length ? `Page ${currentPageIndex + 1} of ${pages.length}` : `${document.page_count || "?"} pages`}</span>
+        </div>
+        <div className="reader-actions">
+          <button
+            className="icon-button reader-arrow"
+            type="button"
+            title="Previous page"
+            disabled={!pages.length || currentPageIndex === 0 || pageTextBusy}
+            onClick={() => setReaderPageIndex((index) => Math.max(0, index - 1))}
+          >
+            <ChevronLeft size={18} />
+          </button>
+          <span className="page-counter">{pages.length ? `${currentPage?.page_number ?? currentPageIndex + 1} / ${pages.length}` : "0 / 0"}</span>
+          <button
+            className="icon-button reader-arrow"
+            type="button"
+            title="Next page"
+            disabled={!pages.length || currentPageIndex >= pages.length - 1 || pageTextBusy}
+            onClick={() => setReaderPageIndex((index) => Math.min(pages.length - 1, index + 1))}
+          >
+            <ChevronRight size={18} />
+          </button>
+          <button className="secondary-button compact" onClick={copyFullText} disabled={!fullText || pageTextBusy} type="button">
+            {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
+            {copiedKey === "full-text" ? "Copied" : "Copy"}
+          </button>
+          {!pageTextEditing ? (
+            <button className="secondary-button compact" disabled={!currentPage || pageTextBusy} onClick={startPageTextEdit} type="button">
+              <Edit3 size={14} />
+              Edit
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {currentPage ? (
+        <article
+          className={`reader-page ${currentPage.low_text ? "low-text" : ""}`}
+          ref={compare ? compareTextRef : undefined}
+          onScroll={compare ? handleCompareTextScroll : undefined}
+        >
+          <header>
+            <div>
+              <strong>Page {currentPage.page_number}</strong>
+              <span>
+                {currentPageSource}
+                {currentPage.low_text ? " / low text" : ""}
+              </span>
+            </div>
+          </header>
+          {pageTextEditing ? (
+            <div className="reader-page-editor">
+              <textarea
+                aria-label={`Extracted text for page ${currentPage.page_number}`}
+                disabled={pageTextBusy}
+                onChange={(event) => {
+                  setPageTextDraft(event.target.value);
+                  updatePageTextSelection(event.currentTarget);
+                }}
+                onKeyUp={(event) => updatePageTextSelection(event.currentTarget)}
+                onMouseUp={(event) => updatePageTextSelection(event.currentTarget)}
+                onSelect={(event) => updatePageTextSelection(event.currentTarget)}
+                value={pageTextDraft}
+              />
+              <div className="reader-editor-tools">
+                <button
+                  className="secondary-button compact"
+                  disabled={!scrubNeedle || scrubMatchCount <= 0 || pageTextBusy}
+                  onClick={scrubSelectedText}
+                  type="button"
+                >
+                  <Eraser size={14} />
+                  {scrubButtonLabel}
+                </button>
+                <span className="reader-tool-spacer" />
+                <button className="primary-button compact" disabled={pageTextBusy} onClick={savePageTextEdit} type="button">
+                  <Save size={14} />
+                  Save
+                </button>
+                <button className="secondary-button compact" disabled={pageTextBusy} onClick={cancelPageTextEdit} type="button">
+                  <X size={14} />
+                  Cancel
+                </button>
+              </div>
+              {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
+            </div>
+          ) : (
+            <pre>{currentPageText.trim() || "No extracted text."}</pre>
+          )}
+        </article>
+      ) : (
+        <div className="empty-inline">
+          <FileText size={17} />
+          <span>No parsed pages yet.</span>
+        </div>
+      )}
+    </section>
+  );
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
@@ -2671,68 +3107,20 @@ function DocumentPanelContent({
           <FileText size={15} />
           Text
         </button>
+        <button className={readerMode === "compare" ? "selected" : ""} type="button" onClick={() => setReaderMode("compare")}>
+          <BookOpen size={15} />
+          Compare
+        </button>
       </div>
       {readerMode === "pdf" ? (
-        <div className="pdf-preview">
-          <iframe title={`PDF preview for ${document.title}`} src={`/api/documents/${document.id}/original#toolbar=0&navpanes=0`} />
-          <div className="pdf-preview-meta">
-            <FileSearch size={16} />
-            <span>{document.page_count || "?"} pages</span>
-          </div>
+        renderPdfPreview()
+      ) : readerMode === "compare" ? (
+        <div className="reader-compare">
+          {renderPdfPreview(true)}
+          {renderTextReader(true)}
         </div>
       ) : (
-        <section className="text-reader">
-          <div className="text-reader-head">
-            <div>
-              <strong>Parsed text</strong>
-              <span>{pages.length ? `Page ${currentPageIndex + 1} of ${pages.length}` : `${document.page_count || "?"} pages`}</span>
-            </div>
-            <div className="reader-actions">
-              <button
-                className="icon-button reader-arrow"
-                type="button"
-                title="Previous page"
-                disabled={!pages.length || currentPageIndex === 0}
-                onClick={() => setReaderPageIndex((index) => Math.max(0, index - 1))}
-              >
-                <ChevronLeft size={18} />
-              </button>
-              <span className="page-counter">{pages.length ? `${currentPage?.page_number ?? currentPageIndex + 1} / ${pages.length}` : "0 / 0"}</span>
-              <button
-                className="icon-button reader-arrow"
-                type="button"
-                title="Next page"
-                disabled={!pages.length || currentPageIndex >= pages.length - 1}
-                onClick={() => setReaderPageIndex((index) => Math.min(pages.length - 1, index + 1))}
-              >
-                <ChevronRight size={18} />
-              </button>
-              <button className="secondary-button compact" onClick={copyFullText} disabled={!fullText}>
-                {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
-                {copiedKey === "full-text" ? "Copied" : "Copy"}
-              </button>
-            </div>
-          </div>
-          {currentPage ? (
-            <article className={`reader-page ${currentPage.low_text ? "low-text" : ""}`}>
-              <header>
-                <div>
-                  <strong>Page {currentPage.page_number}</strong>
-                  <span>
-                    {currentPage.normalized_text ? "normalized" : currentPage.text_source}
-                    {currentPage.low_text ? " / low text" : ""}
-                  </span>
-                </div>
-              </header>
-              <pre>{currentPageText || "No extracted text."}</pre>
-            </article>
-          ) : (
-            <div className="empty-inline">
-              <FileText size={17} />
-              <span>No parsed pages yet.</span>
-            </div>
-          )}
-        </section>
+        renderTextReader()
       )}
       {editing ? (
         <form
@@ -3047,12 +3435,81 @@ function DocumentPanelContent({
       </section>
       <section className="detail-section">
         <h3>History</h3>
-        {document.versions.slice(0, 4).map((version) => (
-          <div key={version.id} className="history-row">
-            <strong>v{version.version_number}</strong>
-            <span>{version.change_note || "Snapshot"}</span>
+        {historyRows.length ? (
+          <div className="history-browser">
+            {selectedHistoryVersion ? (
+              <div className="history-toolbar">
+                <button
+                  className="secondary-button compact"
+                  disabled={selectedHistoryIndex <= 0 || restoreHistoryVersion.isPending}
+                  onClick={() => selectHistoryOffset(-1)}
+                  type="button"
+                >
+                  <ChevronLeft size={14} />
+                  Newer
+                </button>
+                <span className="history-current">v{selectedHistoryVersion.version_number}</span>
+                <button
+                  className="secondary-button compact"
+                  disabled={selectedHistoryIndex >= historyRows.length - 1 || restoreHistoryVersion.isPending}
+                  onClick={() => selectHistoryOffset(1)}
+                  type="button"
+                >
+                  Older
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  className="primary-button compact"
+                  disabled={!selectedHistoryRestorable || restoreHistoryVersion.isPending}
+                  onClick={restoreSelectedHistoryVersion}
+                  type="button"
+                >
+                  <RotateCcw size={14} />
+                  Restore as Current
+                </button>
+              </div>
+            ) : null}
+            {selectedHistoryVersion ? (
+              <div className="history-preview">
+                <strong>{selectedHistoryVersion.change_note || "Snapshot"}</strong>
+                <span>
+                  {selectedHistoryPreviewLines.length
+                    ? selectedHistoryPreviewLines.join(" / ")
+                    : selectedHistoryRestorable
+                      ? `v${selectedHistoryVersion.version_number}`
+                      : "No restorable fields"}
+                </span>
+                {selectedHistoryChangedFields.length ? <small>{selectedHistoryChangedFields.join(", ")}</small> : null}
+              </div>
+            ) : null}
+            {historyRestoreError ? <p className="form-error">{historyRestoreError}</p> : null}
+            <div className="history-list">
+              {historyRows.map((version) => {
+                const changedFields = changedFieldsForVersion(version);
+                const selected = selectedHistoryVersion?.id === version.id;
+                return (
+                  <button
+                    key={version.id}
+                    className={`history-row ${selected ? "selected" : ""}`}
+                    onClick={() => {
+                      setSelectedHistoryVersionId(version.id);
+                      setHistoryRestoreError(null);
+                    }}
+                    type="button"
+                  >
+                    <strong>v{version.version_number}</strong>
+                    <span>
+                      {version.change_note || "Snapshot"}
+                      {changedFields.length ? ` / ${changedFields.join(", ")}` : ""}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        ))}
+        ) : (
+          <p>No edit history yet.</p>
+        )}
       </section>
       <section className="detail-section">
         <h3>Evidence</h3>
@@ -3461,30 +3918,38 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
       </section>
       <section className="job-list">
         <h2>Processing</h2>
-        {jobs.slice(0, 20).map((job) => (
-          <div key={job.id} className="job-row">
-            <span className="job-copy">
-              <span>{importJobLabel(job)}</span>
-              <small>{importJobStepLabel(job)}</small>
-            </span>
-            <span className="job-actions">
-              <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
-              {canRescueImportJob(job) ? (
-                <AsyncActionSlot feedback={rescueFeedback.feedbackFor(job.id)}>
-                  <button
-                    className={asyncFeedbackClass("icon-button compact", rescueFeedback.feedbackFor(job.id))}
-                    disabled={rescueJob.isPending}
-                    onClick={() => rescueJob.mutate(job.id)}
-                    title="Requeue this import job"
-                    type="button"
-                  >
-                    <RefreshCw size={15} />
-                  </button>
-                </AsyncActionSlot>
-              ) : null}
-            </span>
-          </div>
-        ))}
+        {jobs.slice(0, 20).map((job) => {
+          const progress = importJobProgress(job);
+          return (
+            <div
+              key={job.id}
+              className={`job-row ${job.status}`}
+              style={{ "--job-progress": `${progress}%` } as CSSProperties}
+              title={`${importJobStatusLabel(job)}: ${progress}%`}
+            >
+              <span className="job-copy">
+                <span>{importJobLabel(job)}</span>
+                <ImportJobStatusDetail job={job} />
+              </span>
+              <span className="job-actions">
+                <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
+                {canRescueImportJob(job) ? (
+                  <AsyncActionSlot feedback={rescueFeedback.feedbackFor(job.id)}>
+                    <button
+                      className={asyncFeedbackClass("icon-button compact", rescueFeedback.feedbackFor(job.id))}
+                      disabled={rescueJob.isPending}
+                      onClick={() => rescueJob.mutate(job.id)}
+                      title="Requeue this import job"
+                      type="button"
+                    >
+                      <RefreshCw size={15} />
+                    </button>
+                  </AsyncActionSlot>
+                ) : null}
+              </span>
+            </div>
+          );
+        })}
       </section>
     </section>
   );
@@ -4077,11 +4542,21 @@ function InfoPopup({ text }: { text: string }) {
   );
 }
 
-function modelDisplayName(model: string) {
-  if (model === "docling") return "Docling";
-  if (model === "marker") return "Marker";
-  if (model === "pymupdf") return "PyMuPDF";
-  return model;
+function modelDisplayName(model?: string | null): string {
+  const value = (model || "").trim();
+  if (!value) return "";
+  if (value.includes("+")) {
+    return value
+      .split(/\s*\+\s*/)
+      .map((part) => modelDisplayName(part))
+      .filter(Boolean)
+      .join(" + ");
+  }
+  if (value === "docling") return "Docling";
+  if (value === "marker") return "Marker";
+  if (value === "pymupdf") return "PyMuPDF";
+  if (value === "local") return "Local";
+  return value;
 }
 
 function ModelSelect({

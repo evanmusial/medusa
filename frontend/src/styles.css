@@ -208,23 +208,15 @@ textarea {
   --async-feedback-base-color: var(--ink);
   width: fit-content;
   max-width: 100%;
-  border-radius: 10px;
-  border: 2px solid transparent;
+  border-radius: 6px;
+  border: 1px solid transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 0 16px;
+  min-height: 38px;
+  padding: 0 12px;
   color: var(--ink);
-  font-size: 14px;
-  font-weight: 800;
-  line-height: 1;
-  transition:
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease,
-    box-shadow 140ms ease;
 }
 
 .primary-button svg,
@@ -240,36 +232,24 @@ textarea {
 
 .primary-button {
   --async-feedback-base-bg: var(--blue);
-  --async-feedback-base-border: var(--blue);
+  --async-feedback-base-border: transparent;
   --async-feedback-base-color: white;
   background: var(--blue);
-  border-color: var(--blue);
   color: white;
 }
 
 .secondary-button,
 .icon-button {
-  --async-feedback-base-bg: var(--panel);
+  --async-feedback-base-bg: var(--panel-2);
   --async-feedback-base-border: var(--button-line);
   --async-feedback-base-color: var(--ink);
-  background: var(--panel);
+  background: var(--panel-2);
   border-color: var(--button-line);
 }
 
-.primary-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--blue) 88%, #0f172a);
-  border-color: color-mix(in srgb, var(--blue) 88%, #0f172a);
-}
-
-.secondary-button:hover:not(:disabled),
-.icon-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--blue-soft) 42%, var(--panel));
-  border-color: color-mix(in srgb, var(--blue) 46%, var(--button-line));
-}
-
 .icon-button {
-  width: 42px;
-  min-width: 42px;
+  width: 38px;
+  min-width: 38px;
   padding: 0;
 }
 
@@ -441,10 +421,10 @@ textarea {
 }
 
 .icon-button.compact {
-  width: 32px;
-  min-width: 32px;
-  min-height: 32px;
-  border-radius: 8px;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 6px;
   padding: 0;
 }
 
@@ -1510,7 +1490,7 @@ textarea {
 
 .reader-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-top: 12px;
 }
@@ -1560,6 +1540,29 @@ textarea {
 }
 
 .reader-detail .pdf-preview iframe {
+  min-height: 620px;
+}
+
+.reader-compare {
+  margin: 12px 0;
+  min-height: min(76vh, 960px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.reader-compare .pdf-preview,
+.reader-compare .text-reader {
+  margin: 0;
+  min-height: min(76vh, 960px);
+  max-height: none;
+}
+
+.reader-compare .pdf-preview {
+  grid-template-rows: minmax(620px, 1fr) auto;
+}
+
+.reader-compare .pdf-preview iframe {
   min-height: 620px;
 }
 
@@ -1695,6 +1698,35 @@ textarea {
   font-size: 15px;
   line-height: 1.68;
   background: var(--panel);
+}
+
+.reader-page-editor {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel);
+}
+
+.reader-page-editor textarea {
+  min-height: 420px;
+  resize: vertical;
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-size: 15px;
+  line-height: 1.68;
+}
+
+.reader-editor-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.reader-tool-spacer {
+  flex: 1;
+  min-width: 8px;
 }
 
 .detail-section {
@@ -2123,10 +2155,8 @@ textarea {
 
 .secondary-button.compact,
 .primary-button.compact {
-  min-height: 32px;
-  border-radius: 8px;
-  padding: 0 10px;
-  font-size: 12px;
+  min-height: 30px;
+  padding: 0 9px;
 }
 
 .compact-checklist {
@@ -2183,8 +2213,62 @@ textarea {
   padding: 8px;
 }
 
+button.history-row {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-row.selected {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--line));
+  background: color-mix(in srgb, var(--primary) 8%, var(--panel-2));
+}
+
 .attribute-list span,
 .history-row span {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.history-browser,
+.history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-current {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.history-preview {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px;
+  background: var(--panel);
+}
+
+.history-preview span,
+.history-preview small {
   color: var(--muted);
   line-height: 1.4;
 }
@@ -2575,17 +2659,47 @@ pre {
 }
 
 .job-row {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-width: 0;
   justify-content: space-between;
   gap: 12px;
 }
 
+.job-row::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 0;
+  width: var(--job-progress, 0%);
+  background: color-mix(in srgb, var(--blue) 14%, transparent);
+  pointer-events: none;
+  transition: width 180ms ease;
+}
+
+.job-row.complete::before {
+  background: color-mix(in srgb, var(--teal) 14%, transparent);
+}
+
+.job-row.failed::before {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.job-row > * {
+  position: relative;
+  z-index: 1;
+}
+
 .job-copy {
+  flex: 1 1 auto;
   min-width: 0;
   display: grid;
   gap: 3px;
 }
 
 .job-actions {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -2603,6 +2717,15 @@ pre {
   color: var(--muted);
   font-size: 12px;
   font-weight: 650;
+}
+
+.job-copy > .job-status-detail {
+  font-weight: 500;
+}
+
+.job-status-detail strong {
+  color: var(--ink);
+  font-weight: 800;
 }
 
 .inline-form {
@@ -3601,9 +3724,10 @@ pre {
   .project-workbench,
   .workbench.split,
   .settings-grid,
-  .editor-grid,
-  .scope-grid,
-  .import-default-controls,
+	  .editor-grid,
+	  .scope-grid,
+	  .reader-compare,
+	  .import-default-controls,
   .import-picker-grid,
   .note-link-grid {
     grid-template-columns: 1fr;

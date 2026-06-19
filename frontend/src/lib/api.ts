@@ -13,10 +13,12 @@ import type {
   DocumentDetail,
   DocumentComposition,
   DocumentFilters,
+  DocumentPageUpdatePayload,
   DocumentRecommendation,
   DocumentRecommendationDownload,
   DocumentRecommendationRefresh,
   DocumentSummary,
+  DocumentTextScrubPayload,
   DocumentUpdatePayload,
   Domain,
   DuplicateImportStrategy,
@@ -110,6 +112,12 @@ export const api = {
   documentComposition: (id: string) => request<DocumentComposition>(`/api/documents/${id}/composition`),
   updateDocument: (id: string, body: DocumentUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  updateDocumentPageText: (documentId: string, pageId: string, body: DocumentPageUpdatePayload) =>
+    request<DocumentDetail>(`/api/documents/${documentId}/pages/${pageId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  scrubDocumentText: (documentId: string, body: DocumentTextScrubPayload) =>
+    request<DocumentDetail>(`/api/documents/${documentId}/pages/scrub`, { method: "POST", body: JSON.stringify(body) }),
+  restoreDocumentVersion: (documentId: string, versionId: string) =>
+    request<DocumentDetail>(`/api/documents/${documentId}/versions/${versionId}/restore`, { method: "POST" }),
   refreshDocumentCitation: (id: string) =>
     request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
   createAccessorySummary: (documentId: string, body: AccessorySummaryPayload) =>

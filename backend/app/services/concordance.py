@@ -29,6 +29,12 @@ from app.services.analysis_models import (
 from app.services.citations import decode_html_entities, merge_citation_metadata
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.figures import process_document_figures_from_storage
+from app.services.history import (
+    changed_snapshot_fields,
+    document_correction_snapshot,
+    document_page_snapshot,
+    record_document_version,
+)
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.processing import (
@@ -398,6 +404,8 @@ class ConcordanceProcessor:
 
     def _normalize_page_text(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
         pdf_bytes = self._document_pdf_bytes(db, document)
+        before = document_correction_snapshot(document)
+        page_before = {page.id: document_page_snapshot(page) for page in document.pages}
         summary = normalize_document_pages(
             document,
             db=db,
@@ -410,6 +418,24 @@ class ConcordanceProcessor:
         evidence["page_text_normalization"] = summary
         document.metadata_evidence = evidence
         search_evidence = self._rebuild_search_index(document)
+        changed_pages = [
+            {
+                "before": page_before[page.id],
+                "after": document_page_snapshot(page),
+            }
+            for page in document.pages
+            if page.id in page_before and page_before[page.id] != document_page_snapshot(page)
+        ]
+        if changed_pages:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance page text normalization",
+                changed_fields={"pages", "search_text"},
+                before=before,
+                after=document_correction_snapshot(document),
+                extra={"pages": changed_pages},
+            )
         return {
             **summary,
             "readable_characters": len(reading_text),
@@ -430,6 +456,7 @@ class ConcordanceProcessor:
         }
 
     def _refresh_citation(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        before = document_correction_snapshot(document)
         evidence = dict(document.metadata_evidence or {})
         if not document.doi:
             document.doi = extract_doi_from_text(document.search_text)
@@ -502,6 +529,18 @@ class ConcordanceProcessor:
                         status="needs_review",
                     )
                 )
+        after = document_correction_snapshot(document)
+        changed_fields = changed_snapshot_fields(before, after)
+        if changed_fields:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance citation refresh",
+                changed_fields=changed_fields,
+                before=before,
+                after=after,
+                extra={"run_id": job.run_id, "concordance_job_id": job.id},
+            )
         return {
             "verified": verified,
             "crossref_evidence": bool(crossref),
@@ -511,6 +550,7 @@ class ConcordanceProcessor:
         }
 
     def _refresh_summary_topics(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        before = document_correction_snapshot(document)
         ai = get_ai_service()
         pdf_bytes = self._document_pdf_bytes(db, document)
         model_preferences = get_analysis_models(db)
@@ -578,6 +618,18 @@ class ConcordanceProcessor:
             if tag not in document.tags:
                 document.tags.append(tag)
                 added_tags += 1
+        after = document_correction_snapshot(document)
+        changed_fields = changed_snapshot_fields(before, after)
+        if changed_fields:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance summary and topics refresh",
+                changed_fields=changed_fields,
+                before=before,
+                after=after,
+                extra={"run_id": job.run_id, "concordance_job_id": job.id},
+            )
         return {
             "confidence": metadata.get("confidence"),
             "tags_added": added_tags,

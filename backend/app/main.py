@@ -26,6 +26,7 @@ from app.models import (
     DocumentAccessorySummary,
     DocumentCompositionRecord,
     DocumentAttributeValue,
+    DocumentPage,
     DocumentRecommendation,
     DocumentVersion,
     Domain,
@@ -33,6 +34,7 @@ from app.models import (
     ImportBatch,
     ImportJob,
     Note,
+    OpenAIUsageRecord,
     ProcessingEvent,
     Project,
     ProjectBibliography,
@@ -64,10 +66,12 @@ from app.schemas import (
     DocumentDetail,
     DocumentCompositionOut,
     DocumentPatch,
+    DocumentPagePatch,
     DocumentRecommendationDownloadCreate,
     DocumentRecommendationDownloadOut,
     DocumentRecommendationOut,
     DocumentRecommendationRefreshOut,
+    DocumentTextScrub,
     DocumentSummary,
     DomainCreate,
     DomainOut,
@@ -98,19 +102,28 @@ from app.schemas import (
 )
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.accessory_summaries import create_accessory_summary
-from app.services.analysis_models import MODEL_APA_CITATION
+from app.services.analysis_models import (
+    MODEL_APA_CITATION,
+    MODEL_KEYWORDS_TOPICS,
+    MODEL_METADATA,
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_RAW_TEXT_EXTRACTION,
+    MODEL_SUMMARY,
+    MODEL_TEXT_CHUNK_ENCODING,
+)
 from app.services.concordance import create_concordance_run, current_capabilities
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
 from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
+from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
     refresh_import_batch_progress,
 )
-from app.services.preferences import get_analysis_model, get_app_preferences, update_app_preferences
-from app.services.openai_usage import openai_usage_summary
+from app.services.preferences import get_analysis_model, get_analysis_models, get_app_preferences, update_app_preferences
+from app.services.openai_usage import estimated_cost_usd_for_record, openai_usage_summary
 from app.services.recommendations import (
     list_document_recommendations,
     queue_recommendation_imports,
@@ -328,32 +341,156 @@ def normalize_attribute_value(value: Any) -> dict[str, Any]:
     return {"value": value}
 
 
-def document_correction_snapshot(document: Document) -> dict[str, Any]:
-    return {
-        "title": document.title,
-        "subtitle": document.subtitle,
-        "authors": document.authors,
-        "universities": document.universities,
-        "publication_year": document.publication_year,
-        "publisher": document.publisher,
-        "journal": document.journal,
-        "doi": document.doi,
-        "source_url": document.source_url,
-        "abstract": document.abstract,
-        "rich_summary": document.rich_summary,
-        "apa_citation": document.apa_citation,
-        "apa_citation_model": document.apa_citation_model,
-        "apa_citation_source": document.apa_citation_source,
-        "apa_in_text_citation": document.apa_in_text_citation,
-        "apa_in_text_citation_model": document.apa_in_text_citation_model,
-        "apa_in_text_citation_source": document.apa_in_text_citation_source,
-        "citation_status": document.citation_status,
-        "read_status": document.read_status,
-        "priority": document.priority,
-        "tags": [tag.name for tag in document.tags],
-        "domains": [domain.id for domain in document.domains],
-        "attributes": {value.definition.name: value.value for value in document.attributes if value.definition},
-    }
+RESTORABLE_DOCUMENT_FIELDS = (
+    "title",
+    "subtitle",
+    "authors",
+    "universities",
+    "publication_year",
+    "publisher",
+    "journal",
+    "doi",
+    "source_url",
+    "abstract",
+    "rich_summary",
+    "apa_citation",
+    "apa_citation_model",
+    "apa_citation_source",
+    "apa_in_text_citation",
+    "apa_in_text_citation_model",
+    "apa_in_text_citation_source",
+    "citation_status",
+    "metadata_confidence",
+    "metadata_evidence",
+    "read_status",
+    "priority",
+)
+RESTORABLE_PAGE_FIELDS = ("text", "normalized_text", "text_source", "low_text", "image_uri")
+
+
+def sanitize_snapshot_string(value: Any) -> Any:
+    return value.replace("\x00", "") if isinstance(value, str) else value
+
+
+def restorable_document_snapshot(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    after = snapshot.get("after")
+    if isinstance(after, dict):
+        return after
+    if any(field in snapshot for field in (*RESTORABLE_DOCUMENT_FIELDS, "tags", "domains", "attributes")):
+        return snapshot
+    return None
+
+
+def restorable_page_snapshots(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    page_after = snapshot.get("page_after")
+    if isinstance(page_after, dict):
+        pages.append(page_after)
+    page_entries = snapshot.get("pages")
+    if isinstance(page_entries, list):
+        for entry in page_entries:
+            if not isinstance(entry, dict):
+                continue
+            after = entry.get("after")
+            if isinstance(after, dict):
+                pages.append(after)
+            elif any(field in entry for field in RESTORABLE_PAGE_FIELDS):
+                pages.append(entry)
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    for page in pages:
+        key = (page.get("id"), page.get("page_number"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(page)
+    return deduped
+
+
+def apply_document_snapshot(db: Session, document: Document, snapshot: dict[str, Any]) -> set[str]:
+    changed_fields: set[str] = set()
+    for field in RESTORABLE_DOCUMENT_FIELDS:
+        if field not in snapshot:
+            continue
+        value = sanitize_snapshot_string(snapshot[field])
+        if getattr(document, field) != value:
+            setattr(document, field, value)
+            changed_fields.add(field)
+
+    if "tags" in snapshot:
+        tag_names = [name for name in snapshot.get("tags") or [] if isinstance(name, str)]
+        tags = []
+        for name in tag_names:
+            tag = get_or_create_tag_by_name(db, name)
+            if tag and tag not in tags:
+                tags.append(tag)
+        if sorted(tag.name for tag in document.tags) != sorted(tag.name for tag in tags):
+            document.tags = tags
+            changed_fields.add("tags")
+
+    if "domains" in snapshot:
+        domain_ids = [domain_id for domain_id in snapshot.get("domains") or [] if isinstance(domain_id, str)]
+        domains = db.query(Domain).filter(Domain.id.in_(domain_ids)).all() if domain_ids else []
+        if sorted(domain.id for domain in document.domains) != sorted(domain.id for domain in domains):
+            document.domains = domains
+            changed_fields.add("domains")
+
+    if "attributes" in snapshot and isinstance(snapshot["attributes"], dict):
+        target_attributes = {
+            key: normalize_attribute_value(value)
+            for key, value in snapshot["attributes"].items()
+            if isinstance(key, str) and key.strip() and value not in (None, "")
+        }
+        current_attributes = {value.definition.name: value.value for value in document.attributes if value.definition}
+        if current_attributes != target_attributes:
+            document.attributes.clear()
+            db.flush()
+            for key, value in target_attributes.items():
+                definition = get_or_create_attribute_definition(db, key)
+                if not definition:
+                    continue
+                document.attributes.append(
+                    DocumentAttributeValue(
+                        document_id=document.id,
+                        attribute_definition_id=definition.id,
+                        value=value,
+                    )
+                )
+            changed_fields.add("attributes")
+
+    return changed_fields
+
+
+def document_page_for_snapshot(db: Session, document: Document, snapshot: dict[str, Any]) -> DocumentPage | None:
+    page_id = snapshot.get("id")
+    if isinstance(page_id, str):
+        page = (
+            db.query(DocumentPage)
+            .filter(DocumentPage.id == page_id, DocumentPage.document_id == document.id)
+            .one_or_none()
+        )
+        if page:
+            return page
+    page_number = snapshot.get("page_number")
+    if isinstance(page_number, int):
+        return (
+            db.query(DocumentPage)
+            .filter(DocumentPage.document_id == document.id, DocumentPage.page_number == page_number)
+            .one_or_none()
+        )
+    return None
+
+
+def apply_document_page_snapshot(page: DocumentPage, snapshot: dict[str, Any]) -> set[str]:
+    changed_fields: set[str] = set()
+    for field in RESTORABLE_PAGE_FIELDS:
+        if field not in snapshot:
+            continue
+        value = sanitize_snapshot_string(snapshot[field])
+        if getattr(page, field) != value:
+            setattr(page, field, value)
+            changed_fields.add(f"page_{page.page_number}_{field}")
+    return changed_fields
 
 
 def json_download(payload: dict[str, Any], filename_prefix: str) -> FastAPIResponse:
@@ -1122,23 +1259,13 @@ def patch_document(
         document.search_text = rebuild_document_search_text(document)
         db.flush()
         after = document_correction_snapshot(document)
-        latest_version = (
-            db.query(func.max(DocumentVersion.version_number))
-            .filter(DocumentVersion.document_id == document.id)
-            .scalar()
-            or 0
-        )
-        db.add(
-            DocumentVersion(
-                document_id=document.id,
-                version_number=latest_version + 1,
-                change_note="Manual correction",
-                metadata_snapshot={
-                    "changed_fields": sorted(changed_fields),
-                    "before": before,
-                    "after": after,
-                },
-            )
+        record_document_version(
+            db,
+            document=document,
+            change_note="Manual correction",
+            changed_fields=changed_fields,
+            before=before,
+            after=after,
         )
         record_manual_edit(
             db,
@@ -1146,6 +1273,193 @@ def patch_document(
             message="Manual correction",
             metadata={"changed_fields": sorted(changed_fields)},
         )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.patch("/api/documents/{document_id}/pages/{page_id}", response_model=DocumentDetail)
+def patch_document_page(
+    document_id: str,
+    page_id: str,
+    payload: DocumentPagePatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    page = (
+        db.query(DocumentPage)
+        .filter(DocumentPage.id == page_id, DocumentPage.document_id == document.id)
+        .one_or_none()
+    )
+    if not page:
+        raise HTTPException(status_code=404, detail="Document page not found")
+
+    next_text = payload.normalized_text.replace("\x00", "")
+    before = document_correction_snapshot(document)
+    page_before = document_page_snapshot(page)
+    if page.normalized_text != next_text or page.text_source != "manual":
+        page.normalized_text = next_text
+        page.text_source = "manual"
+        document.search_text = rebuild_document_search_text(document)
+        db.flush()
+        page_after = document_page_snapshot(page)
+        record_document_version(
+            db,
+            document=document,
+            change_note=f"Edited extracted text page {page.page_number}",
+            changed_fields={"pages", f"page_{page.page_number}_normalized_text"},
+            before=before,
+            after=document_correction_snapshot(document),
+            extra={
+                "page_id": page.id,
+                "page_number": page.page_number,
+                "page_before": page_before,
+                "page_after": page_after,
+            },
+        )
+        record_manual_edit(
+            db,
+            document=document,
+            message=f"Edited extracted text page {page.page_number}",
+            metadata={"page_id": page.id, "page_number": page.page_number},
+        )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.post("/api/documents/{document_id}/pages/scrub", response_model=DocumentDetail)
+def scrub_document_text(
+    document_id: str,
+    payload: DocumentTextScrub,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    needle = payload.text.replace("\x00", "")
+    if not needle.strip():
+        raise HTTPException(status_code=400, detail="Scrub text cannot be blank")
+
+    before = document_correction_snapshot(document)
+    changed_fields: set[str] = set()
+    scrubbed_pages: list[dict[str, Any]] = []
+    scrub_count = 0
+    pages = sorted(document.pages, key=lambda page: page.page_number)
+    for page in pages:
+        current_text = page.normalized_text if page.normalized_text is not None else page.text or ""
+        page_count = current_text.count(needle)
+        if page_count == 0:
+            continue
+        page_before = document_page_snapshot(page)
+        page.normalized_text = current_text.replace(needle, "")
+        page.text_source = "manual"
+        scrub_count += page_count
+        changed_fields.update({"pages", f"page_{page.page_number}_normalized_text", f"page_{page.page_number}_text_source"})
+        scrubbed_pages.append(
+            {
+                "count": page_count,
+                "before": page_before,
+                "after": document_page_snapshot(page),
+            }
+        )
+
+    if scrub_count:
+        document.search_text = rebuild_document_search_text(document)
+        changed_fields.add("search_text")
+        db.flush()
+        record_document_version(
+            db,
+            document=document,
+            change_note=f"Scrubbed extracted text ({scrub_count} matches)",
+            changed_fields=changed_fields,
+            before=before,
+            after=document_correction_snapshot(document),
+            extra={
+                "scrub_text": needle,
+                "scrub_count": scrub_count,
+                "pages": scrubbed_pages,
+            },
+        )
+        record_manual_edit(
+            db,
+            document=document,
+            message="Scrubbed extracted text",
+            metadata={"scrub_count": scrub_count, "page_count": len(scrubbed_pages)},
+        )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.post("/api/documents/{document_id}/versions/{version_id}/restore", response_model=DocumentDetail)
+def restore_document_version(
+    document_id: str,
+    version_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    version = db.get(DocumentVersion, version_id)
+    if not version or version.document_id != document.id:
+        raise HTTPException(status_code=404, detail="Document version not found")
+
+    snapshot = version.metadata_snapshot or {}
+    target_document = restorable_document_snapshot(snapshot)
+    target_pages = restorable_page_snapshots(snapshot)
+    if not target_document and not target_pages:
+        raise HTTPException(status_code=400, detail="Document version does not contain a restorable snapshot")
+
+    before = document_correction_snapshot(document)
+    changed_fields: set[str] = set()
+    if target_document:
+        changed_fields.update(apply_document_snapshot(db, document, target_document))
+
+    restored_pages: list[dict[str, Any]] = []
+    for target_page in target_pages:
+        page = document_page_for_snapshot(db, document, target_page)
+        if not page:
+            continue
+        page_before = document_page_snapshot(page)
+        page_changed_fields = apply_document_page_snapshot(page, target_page)
+        if not page_changed_fields:
+            continue
+        changed_fields.update({"pages", *page_changed_fields})
+        restored_pages.append({"before": page_before, "after": document_page_snapshot(page)})
+
+    after = document_correction_snapshot(document)
+    changed_fields.update(changed_snapshot_fields(before, after))
+    if changed_fields:
+        document.search_text = rebuild_document_search_text(document)
+        changed_fields.add("search_text")
+        db.flush()
+        after = document_correction_snapshot(document)
+
+    record_document_version(
+        db,
+        document=document,
+        change_note=f"Restored v{version.version_number} as current",
+        changed_fields=changed_fields or {"restore"},
+        before=before,
+        after=after,
+        extra={
+            "restored_version_id": version.id,
+            "restored_version_number": version.version_number,
+            "restored_pages": restored_pages,
+        },
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=f"Restored v{version.version_number} as current",
+        metadata={"restored_version_id": version.id, "restored_version_number": version.version_number},
+    )
     db.commit()
     db.refresh(document)
     return document_detail_out(document, db)
@@ -1253,17 +1567,7 @@ def apply_attribute_defaults(db: Session, document: Document, attributes: dict[s
 
 
 def reset_document_for_overwrite(db: Session, document: Document) -> None:
-    latest_version = (
-        db.query(func.max(DocumentVersion.version_number)).filter(DocumentVersion.document_id == document.id).scalar() or 0
-    )
-    db.add(
-        DocumentVersion(
-            document_id=document.id,
-            version_number=latest_version + 1,
-            change_note="Import overwrite",
-            metadata_snapshot={"before": document_correction_snapshot(document)},
-        )
-    )
+    before = document_correction_snapshot(document)
     db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).delete(synchronize_session=False)
     document.subtitle = None
     document.authors = []
@@ -1293,6 +1597,36 @@ def reset_document_for_overwrite(db: Session, document: Document) -> None:
         synchronize_session=False
     )
     db.flush()
+    record_document_version(
+        db,
+        document=document,
+        change_note="Import overwrite",
+        changed_fields={
+            "subtitle",
+            "authors",
+            "universities",
+            "publication_year",
+            "publisher",
+            "journal",
+            "doi",
+            "source_url",
+            "abstract",
+            "rich_summary",
+            "apa_citation",
+            "apa_in_text_citation",
+            "citation_status",
+            "metadata_confidence",
+            "search_text",
+            "page_count",
+            "pages",
+            "chunks",
+            "figures",
+            "capabilities",
+            "citation_candidates",
+        },
+        before=before,
+        after=document_correction_snapshot(document),
+    )
 
 
 def create_skipped_duplicate_job(
@@ -1504,7 +1838,46 @@ def import_job_file_size(document: Document | None) -> int | None:
     return None
 
 
-def import_job_out(job: ImportJob) -> dict[str, Any]:
+def import_job_costs_usd(db: Session, import_job_ids: list[str]) -> dict[str, float]:
+    if not import_job_ids:
+        return {}
+    costs: dict[str, float] = {job_id: 0.0 for job_id in import_job_ids}
+    usage_rows = db.query(OpenAIUsageRecord).filter(OpenAIUsageRecord.import_job_id.in_(import_job_ids)).all()
+    for usage in usage_rows:
+        if usage.import_job_id:
+            costs[usage.import_job_id] = costs.get(usage.import_job_id, 0.0) + (estimated_cost_usd_for_record(usage) or 0.0)
+    return {job_id: round(cost, 6) for job_id, cost in costs.items()}
+
+
+def import_job_step_model(current_step: str, model_preferences: dict[str, str]) -> str | None:
+    step = current_step or "stored"
+    if step in {"stored", "extracting"}:
+        return model_preferences.get(MODEL_RAW_TEXT_EXTRACTION)
+    if step == "normalizing_pages" or step.startswith("normalizing_page_"):
+        return model_preferences.get(MODEL_PAGE_TEXT_NORMALIZATION)
+    if step in {"extracted", "extracting_figures", "figures", "cleaning_cache", "duplicate_skipped"}:
+        return "local"
+    if step in {"enriching", "enriched"}:
+        models = [
+            model_preferences.get(MODEL_METADATA),
+            model_preferences.get(MODEL_SUMMARY),
+            model_preferences.get(MODEL_APA_CITATION),
+            model_preferences.get(MODEL_KEYWORDS_TOPICS),
+        ]
+        unique_models = [model for index, model in enumerate(models) if model and model not in models[:index]]
+        return " + ".join(unique_models) if unique_models else None
+    if step in {"indexing", "indexed"}:
+        return model_preferences.get(MODEL_TEXT_CHUNK_ENCODING)
+    return None
+
+
+def import_job_out(
+    job: ImportJob,
+    *,
+    model_preferences: dict[str, str] | None = None,
+    estimated_cost_usd: float = 0.0,
+) -> dict[str, Any]:
+    model_preferences = model_preferences or {}
     return {
         "id": job.id,
         "batch_id": job.batch_id,
@@ -1515,6 +1888,8 @@ def import_job_out(job: ImportJob) -> dict[str, Any]:
         "document_page_count": job.document.page_count if job.document else None,
         "status": job.status,
         "current_step": job.current_step,
+        "current_model": import_job_step_model(job.current_step, model_preferences),
+        "estimated_cost_usd": round(estimated_cost_usd, 6),
         "attempts": job.attempts,
         "last_error": job.last_error,
         "locked_at": job.locked_at,
@@ -1526,7 +1901,9 @@ def import_job_out(job: ImportJob) -> dict[str, Any]:
 @app.get("/api/imports/jobs", response_model=list[ImportJobOut])
 def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
     jobs = db.query(ImportJob).options(joinedload(ImportJob.document)).order_by(ImportJob.created_at.desc()).limit(100).all()
-    return [import_job_out(job) for job in jobs]
+    model_preferences = get_analysis_models(db)
+    costs = import_job_costs_usd(db, [job.id for job in jobs])
+    return [import_job_out(job, model_preferences=model_preferences, estimated_cost_usd=costs.get(job.id, 0.0)) for job in jobs]
 
 
 @app.post("/api/imports/jobs/{job_id}/rescue", response_model=ImportJobOut)
@@ -1574,7 +1951,9 @@ def rescue_import_job(
     )
     db.commit()
     db.refresh(job)
-    return import_job_out(job)
+    model_preferences = get_analysis_models(db)
+    costs = import_job_costs_usd(db, [job.id])
+    return import_job_out(job, model_preferences=model_preferences, estimated_cost_usd=costs.get(job.id, 0.0))
 
 
 @app.get("/api/exports/metadata")
@@ -1702,24 +2081,14 @@ def patch_citation_candidate(
         document.search_text = rebuild_document_search_text(document)
         db.flush()
         after = document_correction_snapshot(document)
-        latest_version = (
-            db.query(func.max(DocumentVersion.version_number))
-            .filter(DocumentVersion.document_id == document.id)
-            .scalar()
-            or 0
-        )
-        db.add(
-            DocumentVersion(
-                document_id=document.id,
-                version_number=latest_version + 1,
-                change_note="Accepted citation candidate",
-                metadata_snapshot={
-                    "candidate_id": candidate.id,
-                    "changed_fields": sorted(changed_fields),
-                    "before": before,
-                    "after": after,
-                },
-            )
+        record_document_version(
+            db,
+            document=document,
+            change_note="Accepted citation candidate",
+            changed_fields=changed_fields,
+            before=before,
+            after=after,
+            extra={"candidate_id": candidate.id},
         )
         record_manual_edit(
             db,

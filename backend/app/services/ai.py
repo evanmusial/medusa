@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
+import inspect
 import signal
 import threading
 import json
@@ -844,14 +846,18 @@ class AiService:
         response = None
         cache_key = self._normalize_prompt_cache_key(prompt_cache_key)
         cache_retention = self._normalize_prompt_cache_retention(self.settings.openai_prompt_cache_retention)
+        create_response = self.client.responses.create
         cache_params: dict[str, Any] = {}
-        if cache_key:
+        if cache_key and self._responses_create_accepts(create_response, "prompt_cache_key"):
             cache_params["prompt_cache_key"] = cache_key
-        if cache_key and cache_retention:
+        if cache_key and cache_retention and self._responses_create_accepts(
+            create_response,
+            "prompt_cache_retention",
+        ):
             cache_params["prompt_cache_retention"] = cache_retention
         try:
             with hard_timeout(timeout):
-                response = self.client.responses.create(
+                response = create_response(
                     model=model,
                     input=[
                         {"role": "system", "content": prompt},
@@ -1062,7 +1068,11 @@ class AiService:
         if not isinstance(value, str):
             return None
         normalized = re.sub(r"[^A-Za-z0-9._:-]+", "-", value.strip())
-        return normalized[:128] or None
+        if not normalized:
+            return None
+        if len(normalized) <= 64:
+            return normalized
+        return f"medusa:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:57]}"
 
     @staticmethod
     def _normalize_prompt_cache_retention(value: str | None) -> str | None:
@@ -1070,6 +1080,16 @@ class AiService:
             return None
         normalized = value.strip().lower()
         return normalized if normalized in {"in_memory", "24h"} else None
+
+    @staticmethod
+    def _responses_create_accepts(create_response: Any, parameter: str) -> bool:
+        try:
+            signature = inspect.signature(create_response)
+        except (TypeError, ValueError):
+            return True
+        if parameter in signature.parameters:
+            return True
+        return any(item.kind == inspect.Parameter.VAR_KEYWORD for item in signature.parameters.values())
 
     @staticmethod
     def _citation_evidence_text(text: str | None) -> str:

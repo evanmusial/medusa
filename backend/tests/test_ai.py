@@ -68,6 +68,27 @@ def test_strip_standalone_summary_heading():
     )
 
 
+def test_ai_prompt_cache_key_uses_api_safe_length_for_document_checksums(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import AiService
+
+    get_settings.cache_clear()
+    service = AiService()
+
+    short_key = service._normalize_prompt_cache_key("medusa-doc:abc123")
+    long_key = service._normalize_prompt_cache_key(f"medusa-doc:{'a' * 64}:apa")
+
+    assert short_key == "medusa-doc:abc123"
+    assert long_key is not None
+    assert long_key.startswith("medusa:")
+    assert len(long_key) == 64
+    assert long_key == service._normalize_prompt_cache_key(f"medusa-doc:{'a' * 64}:apa")
+
+
 def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only_models(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -183,6 +204,61 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
     assert usage_records[0]["cached_input_tokens"] == 25
     assert usage_records[0]["input_file_bytes"] == len(b"%PDF-1.4")
     assert all(record["input_file_bytes"] == 0 for record in usage_records[1:])
+
+
+def test_ai_responses_cache_retention_is_omitted_when_sdk_lacks_parameter(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("MEDUSA_OPENAI_PROMPT_CACHE_RETENTION", "24h")
+
+    from app.config import get_settings
+    from app.services.ai import METADATA_IDENTITY_SCHEMA, METADATA_EXTRACTION_PROMPT, AiService
+
+    class FakeResponses:
+        def __init__(self):
+            self.cache_key = None
+
+        def create(self, *, model, input, text, timeout, prompt_cache_key=None):
+            del model, input, text, timeout
+            self.cache_key = prompt_cache_key
+            return SimpleNamespace(
+                id="resp_metadata",
+                output_text=json.dumps(
+                    {
+                        "title": "Paper",
+                        "subtitle": None,
+                        "authors": [],
+                        "universities": [],
+                        "publication_year": None,
+                        "journal": None,
+                        "publisher": None,
+                        "doi": None,
+                        "abstract": None,
+                        "confidence": 0.8,
+                        "needs_review_reasons": [],
+                    }
+                ),
+                usage=SimpleNamespace(input_tokens=10, output_tokens=2, total_tokens=12),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service._responses_json(
+        model="gpt-5.5",
+        schema_name="medusa_document_metadata",
+        schema=METADATA_IDENTITY_SCHEMA,
+        prompt=METADATA_EXTRACTION_PROMPT,
+        input_content=[{"type": "input_text", "text": "Extracted text"}],
+        timeout=12,
+        prompt_cache_key="medusa-doc:abc123",
+    )
+
+    assert result["title"] == "Paper"
+    assert responses.cache_key == "medusa-doc:abc123"
 
 
 def test_ai_metadata_extraction_can_use_legacy_combined_call(monkeypatch, tmp_path):

@@ -392,6 +392,14 @@ class DocumentPatch(BaseModel):
     attribute_values: dict[str, Any] | None = None
 
 
+class DocumentPagePatch(BaseModel):
+    normalized_text: str
+
+
+class DocumentTextScrub(BaseModel):
+    text: str = Field(min_length=1)
+
+
 class ImportBatchOut(ApiModel):
     id: str
     label: str | None = None
@@ -413,6 +421,8 @@ class ImportJobOut(ApiModel):
     document_page_count: int | None = None
     status: str
     current_step: str
+    current_model: str | None = None
+    estimated_cost_usd: float = 0.0
     attempts: int
     last_error: str | None = None
     locked_at: datetime | None = None

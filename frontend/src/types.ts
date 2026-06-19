@@ -254,6 +254,14 @@ export type DocumentPage = {
   image_uri?: string | null;
 };
 
+export type DocumentPageUpdatePayload = {
+  normalized_text: string;
+};
+
+export type DocumentTextScrubPayload = {
+  text: string;
+};
+
 export type Annotation = {
   id: string;
   document_id: string;
@@ -449,6 +457,8 @@ export type ImportJob = {
   document_page_count?: number | null;
   status: string;
   current_step: string;
+  current_model?: string | null;
+  estimated_cost_usd: number;
   attempts: number;
   last_error?: string | null;
   locked_at?: string | null;
