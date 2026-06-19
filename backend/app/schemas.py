@@ -142,6 +142,7 @@ class FigureOut(ApiModel):
     caption: str | None = None
     gist: str | None = None
     asset_uri: str | None = None
+    geometry: dict[str, Any] = Field(default_factory=dict)
 
 
 class DocumentPageOut(ApiModel):

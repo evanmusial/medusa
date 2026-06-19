@@ -42,6 +42,17 @@ class ExtractedFigure:
     data: bytes
     width: int
     height: int
+    bbox: tuple[float, float, float, float] | None = None
+    label: str | None = None
+    caption: str | None = None
+    source: str = "image"
+
+
+@dataclass(frozen=True)
+class CaptionCandidate:
+    bbox: tuple[float, float, float, float]
+    text: str
+    label: str
 
 
 def _block_area(block: LayoutBlock) -> float:
@@ -56,6 +67,63 @@ def _intersection_ratio(block: LayoutBlock, bbox: tuple[float, float, float, flo
     intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
     area = _block_area(block)
     return intersection / area if area else 0.0
+
+
+def _bbox_width(bbox: tuple[float, float, float, float]) -> float:
+    return max(0.0, bbox[2] - bbox[0])
+
+
+def _bbox_height(bbox: tuple[float, float, float, float]) -> float:
+    return max(0.0, bbox[3] - bbox[1])
+
+
+def _bbox_area(bbox: tuple[float, float, float, float]) -> float:
+    return _bbox_width(bbox) * _bbox_height(bbox)
+
+
+def _bbox_intersection_area(left: tuple[float, float, float, float], right: tuple[float, float, float, float]) -> float:
+    x0 = max(left[0], right[0])
+    y0 = max(left[1], right[1])
+    x1 = min(left[2], right[2])
+    y1 = min(left[3], right[3])
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
+
+
+def _bbox_overlap_ratio(left: tuple[float, float, float, float], right: tuple[float, float, float, float]) -> float:
+    smaller = min(_bbox_area(left), _bbox_area(right))
+    return _bbox_intersection_area(left, right) / smaller if smaller else 0.0
+
+
+def _bbox_union(left: tuple[float, float, float, float], right: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    return (
+        min(left[0], right[0]),
+        min(left[1], right[1]),
+        max(left[2], right[2]),
+        max(left[3], right[3]),
+    )
+
+
+def _expanded_bbox(
+    bbox: tuple[float, float, float, float],
+    amount: float,
+    page_width: float,
+    page_height: float,
+) -> tuple[float, float, float, float]:
+    return (
+        max(0.0, bbox[0] - amount),
+        max(0.0, bbox[1] - amount),
+        min(page_width, bbox[2] + amount),
+        min(page_height, bbox[3] + amount),
+    )
+
+
+def _is_usable_graphic_bbox(
+    bbox: tuple[float, float, float, float],
+    *,
+    min_width: int,
+    min_height: int,
+) -> bool:
+    return _bbox_width(bbox) >= min_width and _bbox_height(bbox) >= min_height
 
 
 def _cell(value: Any) -> str:
@@ -127,6 +195,159 @@ def extract_layout_blocks(page: Any) -> list[LayoutBlock]:
             continue
         blocks.append(block)
     return [*blocks, *table_blocks]
+
+
+_FIGURE_LABEL_RE = re.compile(
+    r"^\s*(?P<label>(?:fig(?:ure)?\.?|chart|photo|plate|image)\s*[A-Z0-9][A-Z0-9.\-]*)\s*[:.\-]?\s*(?P<caption>.*)$",
+    re.IGNORECASE,
+)
+
+
+def _caption_candidates(page: Any) -> list[CaptionCandidate]:
+    candidates: list[CaptionCandidate] = []
+    for raw in page.get_text("blocks"):
+        if len(raw) < 5:
+            continue
+        block_type = raw[6] if len(raw) > 6 else 0
+        if block_type != 0:
+            continue
+        text = " ".join(str(raw[4]).split())
+        if not text:
+            continue
+        match = _FIGURE_LABEL_RE.match(text)
+        if not match:
+            continue
+        candidates.append(
+            CaptionCandidate(
+                bbox=(float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3])),
+                text=text,
+                label=match.group("label").strip().rstrip(".:-"),
+            )
+        )
+    return candidates
+
+
+def _horizontal_overlap_ratio(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    overlap = max(0.0, min(left[2], right[2]) - max(left[0], right[0]))
+    smaller = min(_bbox_width(left), _bbox_width(right))
+    return overlap / smaller if smaller else 0.0
+
+
+def _nearest_caption(
+    captions: list[CaptionCandidate],
+    bbox: tuple[float, float, float, float],
+) -> CaptionCandidate | None:
+    best: tuple[float, CaptionCandidate] | None = None
+    for caption in captions:
+        if _horizontal_overlap_ratio(caption.bbox, bbox) < 0.25:
+            continue
+        gap_below = caption.bbox[1] - bbox[3]
+        gap_above = bbox[1] - caption.bbox[3]
+        if 0 <= gap_below <= 140:
+            score = gap_below
+        elif 0 <= gap_above <= 100:
+            score = gap_above + 35
+        else:
+            continue
+        if best is None or score < best[0]:
+            best = (score, caption)
+    return best[1] if best else None
+
+
+def _rect_to_bbox(rect: Any) -> tuple[float, float, float, float] | None:
+    try:
+        x0, y0, x1, y1 = float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
+    except AttributeError:
+        try:
+            x0, y0, x1, y1 = (float(part) for part in rect)
+        except Exception:
+            return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _image_bboxes(page: Any) -> list[tuple[float, float, float, float]]:
+    try:
+        blocks = page.get_text("dict").get("blocks", [])
+    except Exception:
+        return []
+    bboxes: list[tuple[float, float, float, float]] = []
+    for block in blocks:
+        if block.get("type") != 1:
+            continue
+        bbox = _rect_to_bbox(block.get("bbox"))
+        if bbox:
+            bboxes.append(bbox)
+    return bboxes
+
+
+def _close_enough(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+    *,
+    gap: float,
+    page_width: float,
+    page_height: float,
+) -> bool:
+    return _bbox_intersection_area(
+        _expanded_bbox(left, gap, page_width, page_height),
+        _expanded_bbox(right, gap, page_width, page_height),
+    ) > 0
+
+
+def _cluster_bboxes(
+    bboxes: list[tuple[float, float, float, float]],
+    *,
+    gap: float,
+    page_width: float,
+    page_height: float,
+) -> list[tuple[float, float, float, float]]:
+    clusters = bboxes[:]
+    changed = True
+    while changed:
+        changed = False
+        next_clusters: list[tuple[float, float, float, float]] = []
+        while clusters:
+            current = clusters.pop(0)
+            index = 0
+            while index < len(clusters):
+                candidate = clusters[index]
+                if _close_enough(current, candidate, gap=gap, page_width=page_width, page_height=page_height):
+                    current = _bbox_union(current, candidate)
+                    clusters.pop(index)
+                    changed = True
+                else:
+                    index += 1
+            next_clusters.append(current)
+        clusters = next_clusters
+    return clusters
+
+
+def _drawing_bboxes(page: Any, *, min_width: int, min_height: int) -> list[tuple[float, float, float, float]]:
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return []
+    page_width = float(page.rect.width)
+    page_height = float(page.rect.height)
+    raw_bboxes: list[tuple[float, float, float, float]] = []
+    for drawing in drawings:
+        bbox = _rect_to_bbox(drawing.get("rect"))
+        if not bbox:
+            continue
+        if _bbox_width(bbox) < 3 or _bbox_height(bbox) < 3:
+            continue
+        raw_bboxes.append(bbox)
+    clusters = _cluster_bboxes(raw_bboxes, gap=20.0, page_width=page_width, page_height=page_height)
+    return [
+        _expanded_bbox(cluster, 4.0, page_width, page_height)
+        for cluster in clusters
+        if _is_usable_graphic_bbox(cluster, min_width=min_width, min_height=min_height) and _bbox_area(cluster) >= 4_800
+    ]
 
 
 def _column_split(blocks: list[LayoutBlock], page_width: float) -> float | None:
@@ -263,6 +484,66 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
     return ExtractedDocument(page_count=len(pages), pages=pages, full_text=full_text)
 
 
+def _render_page_crop(page: Any, bbox: tuple[float, float, float, float]) -> tuple[bytes, int, int]:
+    import fitz
+
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=fitz.Rect(*bbox), alpha=False)
+    return pixmap.tobytes("png"), int(pixmap.width), int(pixmap.height)
+
+
+def _unique_graphic_candidates(
+    candidates: list[tuple[tuple[float, float, float, float], str]],
+) -> list[tuple[tuple[float, float, float, float], str]]:
+    unique: list[tuple[tuple[float, float, float, float], str]] = []
+    for bbox, source in sorted(candidates, key=lambda item: (item[0][1], item[0][0], item[0][3], item[0][2])):
+        if any(_bbox_overlap_ratio(bbox, existing) > 0.72 for existing, _ in unique):
+            continue
+        unique.append((bbox, source))
+    return unique
+
+
+def _fallback_embedded_images(
+    pdf: Any,
+    page: Any,
+    page_index: int,
+    *,
+    min_width: int,
+    min_height: int,
+    min_bytes: int,
+) -> list[ExtractedFigure]:
+    figures: list[ExtractedFigure] = []
+    seen: set[int] = set()
+    for image_index, image in enumerate(page.get_images(full=True), start=1):
+        xref = int(image[0])
+        if xref in seen:
+            continue
+        seen.add(xref)
+        try:
+            extracted = pdf.extract_image(xref)
+        except Exception:
+            continue
+        data = extracted.get("image") or b""
+        width = int(extracted.get("width") or 0)
+        height = int(extracted.get("height") or 0)
+        if width < min_width or height < min_height or len(data) < min_bytes:
+            continue
+        extension = str(extracted.get("ext") or "png").lower()
+        content_type = "image/jpeg" if extension in {"jpg", "jpeg"} else f"image/{extension}"
+        figures.append(
+            ExtractedFigure(
+                page_number=page_index,
+                index=image_index,
+                extension=extension,
+                content_type=content_type,
+                data=data,
+                width=width,
+                height=height,
+                source="embedded_image",
+            )
+        )
+    return figures
+
+
 def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80, min_bytes: int = 1500) -> list[ExtractedFigure]:
     try:
         import fitz
@@ -270,36 +551,49 @@ def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80
         raise RuntimeError("PyMuPDF is required for figure extraction") from exc
 
     figures: list[ExtractedFigure] = []
-    seen: set[tuple[int, int]] = set()
     with fitz.open(path) as pdf:
         for page_index, page in enumerate(pdf, start=1):
-            for image_index, image in enumerate(page.get_images(full=True), start=1):
-                xref = int(image[0])
-                if (page_index, xref) in seen:
+            captions = _caption_candidates(page)
+            image_candidates = [(bbox, "page_image") for bbox in _image_bboxes(page)]
+            drawing_candidates = [(bbox, "vector_graphic") for bbox in _drawing_bboxes(page, min_width=min_width, min_height=min_height)]
+            candidates = _unique_graphic_candidates([*image_candidates, *drawing_candidates])
+            page_figures: list[ExtractedFigure] = []
+            for figure_index, (bbox, source) in enumerate(candidates, start=1):
+                if not _is_usable_graphic_bbox(bbox, min_width=min_width, min_height=min_height):
                     continue
-                seen.add((page_index, xref))
                 try:
-                    extracted = pdf.extract_image(xref)
+                    data, width, height = _render_page_crop(page, bbox)
                 except Exception:
                     continue
-                data = extracted.get("image") or b""
-                width = int(extracted.get("width") or 0)
-                height = int(extracted.get("height") or 0)
-                if width < min_width or height < min_height or len(data) < min_bytes:
+                if len(data) < min_bytes:
                     continue
-                extension = str(extracted.get("ext") or "png").lower()
-                content_type = "image/jpeg" if extension in {"jpg", "jpeg"} else f"image/{extension}"
-                figures.append(
+                caption = _nearest_caption(captions, bbox)
+                page_figures.append(
                     ExtractedFigure(
                         page_number=page_index,
-                        index=image_index,
-                        extension=extension,
-                        content_type=content_type,
+                        index=figure_index,
+                        extension="png",
+                        content_type="image/png",
                         data=data,
                         width=width,
                         height=height,
+                        bbox=bbox,
+                        label=caption.label if caption else None,
+                        caption=caption.text if caption else None,
+                        source=source,
                     )
                 )
+            figures.extend(
+                page_figures
+                or _fallback_embedded_images(
+                    pdf,
+                    page,
+                    page_index,
+                    min_width=min_width,
+                    min_height=min_height,
+                    min_bytes=min_bytes,
+                )
+            )
     return figures
 
 

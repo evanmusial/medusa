@@ -32,8 +32,10 @@ from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.figures import process_document_figures_from_storage
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.processing import (
+    author_search_text,
     document_metadata,
     document_reading_text,
+    figure_search_text,
     fill_missing_document_metadata,
     get_or_create_tag,
     log_event,
@@ -56,14 +58,14 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="page_text_normalization",
         label="Page text normalization",
-        version=2,
-        description="Conform extracted page text into readable paragraph flow while preserving the original document order.",
+        version=3,
+        description="Conform extracted page text into standard readable flow across columns and around graphics without converting graphics to text.",
     ),
     CapabilityDefinition(
         key="search_index",
         label="Search index",
-        version=2,
-        description="Rebuild full-text search from metadata, normalized page text, summaries, notes, attributes, tags, and domains.",
+        version=3,
+        description="Rebuild full-text search from metadata, author contacts, normalized page text, summaries, figures, notes, attributes, tags, and domains.",
     ),
     CapabilityDefinition(
         key="citation_refresh",
@@ -74,14 +76,14 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="summary_topics",
         label="AI metadata and summary",
-        version=4,
-        description="Use the configured AI adapter with PDF context to fill missing metadata, concise markdown summaries, APA candidates, and topic tags.",
+        version=5,
+        description="Use the configured AI adapter with PDF context to fill missing metadata, author contacts, concise markdown summaries, APA candidates, and topic tags.",
     ),
     CapabilityDefinition(
         key="figure_assets",
         label="Figure assets",
-        version=1,
-        description="Extract embedded PDF figures/images into durable storage and attach them to document records.",
+        version=2,
+        description="Extract image and vector figure/chart/photo crops into durable storage with page geometry, labels, and captions.",
     ),
     CapabilityDefinition(
         key="recommendations",
@@ -379,12 +381,12 @@ class ConcordanceProcessor:
             part
             for part in [
                 document.title,
-                " ".join(" ".join(filter(None, [author.get("given"), author.get("family")])) for author in document.authors or []),
+                author_search_text(document.authors),
                 document.abstract,
                 document.rich_summary,
                 document.apa_citation,
                 page_text,
-                " ".join(figure.gist or "" for figure in document.figures),
+                figure_search_text(document.figures),
                 notes,
                 attributes,
                 " ".join(tag.name for tag in document.tags),

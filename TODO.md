@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-06-18
+Last updated: 2026-06-19
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -24,19 +24,19 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: title, authors, affiliations, abstract, references, and section metadata can be extracted when available and stored with evidence.
 
 - [ ] Add AI figure caption and gist enrichment.
-  - Acceptance: extracted figure assets get captions/gists, confidence/evidence, and searchable text without overwriting user edits.
+  - Acceptance: extracted figure assets get AI-enriched captions/gists, confidence/evidence, and searchable text without overwriting imported labels/captions or user edits.
 
 - [ ] Add Accessory Summaries.
   - Acceptance: users can define custom summary prompts, run them against selected documents or Concordance scopes, and each run uses the original PDF context plus the Settings-selected Accessory Summaries model without overwriting core summaries.
 
-- [ ] Add region-aware figure/table geometry.
-  - Acceptance: figures and tables can be mapped back to page regions for future overlays and source evidence.
+- [ ] Add richer table geometry and layout rendering.
+  - Acceptance: table rows/cells/captions/page regions are stored as structured data, figure geometry can be rendered inline with parsed pages, and source regions can support future overlays/evidence views.
 
 - [ ] Model richer table objects.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data, while Markdown table text remains searchable.
 
 - [ ] Add richer extraction fixtures.
-  - Acceptance: tests cover two-column PDFs, multi-page tables, table-heavy papers, front matter before articles, scanned pages, bad metadata, duplicates, and multi-author papers.
+  - Acceptance: tests cover two-column PDFs, multi-page tables, table-heavy papers, front matter before articles, scanned pages, vector charts/photos, bad metadata, obfuscated author emails, duplicates, and multi-author papers.
 
 - [ ] Add semantic search and embedding refresh as a fuller Concordance capability.
   - Acceptance: embeddings are generated or refreshed for chunks/assets when configured, and search can combine lexical and semantic matches.

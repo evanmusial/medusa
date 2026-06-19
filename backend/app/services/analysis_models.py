@@ -53,7 +53,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_METADATA,
         label="Metadata",
         model_kind="gpt",
-        description="Extracts scholarly identity fields from the original PDF context: title, authors, venue, publisher, DOI, abstract, and review reasons.",
+        description="Extracts scholarly identity fields from the original PDF context: title, authors, affiliations, normalized author emails, venue, publisher, DOI, abstract, and review reasons.",
     ),
     AnalysisModelTask(
         key=MODEL_SUMMARY,
@@ -77,7 +77,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_PAGE_TEXT_NORMALIZATION,
         label="Text on Pages (Normalization)",
         model_kind="gpt",
-        description="Conforms extracted page text into readable paragraph flow while preserving wording, order, citations, equations, headings, and tables.",
+        description="Conforms extracted page text into standard readable flow across columns and graphics while preserving wording, order, citations, equations, headings, labels, captions, and tables.",
     ),
     AnalysisModelTask(
         key=MODEL_TEXT_CHUNK_ENCODING,

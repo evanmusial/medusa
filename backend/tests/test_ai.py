@@ -48,6 +48,14 @@ def test_ai_service_pdf_file_size_gate(monkeypatch, tmp_path):
     assert service._should_send_pdf_file(b"x" * (2 * 1024 * 1024)) is False
 
 
+def test_normalize_obfuscated_email_variants():
+    from app.services.ai import normalize_obfuscated_email
+
+    assert normalize_obfuscated_email("someone{at}university{dot}edu") == "someone@university.edu"
+    assert normalize_obfuscated_email("someone [at] University [dot] EDU") == "someone@university.edu"
+    assert normalize_obfuscated_email("contact: first.last at lab dot example dot org") == "first.last@lab.example.org"
+
+
 def test_ai_metadata_extraction_uses_task_specific_models(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -69,7 +77,14 @@ def test_ai_metadata_extraction_uses_task_specific_models(monkeypatch, tmp_path)
                 "medusa_document_metadata": {
                     "title": "Paper",
                     "subtitle": None,
-                    "authors": [],
+                    "authors": [
+                        {
+                            "given": "Ada",
+                            "family": "Lovelace",
+                            "affiliation": "Example University",
+                            "email": "ada{at}Example{dot}EDU",
+                        }
+                    ],
                     "universities": [],
                     "publication_year": 2026,
                     "journal": None,
@@ -117,9 +132,48 @@ def test_ai_metadata_extraction_uses_task_specific_models(monkeypatch, tmp_path)
     )
 
     assert metadata["title"] == "Paper"
+    assert metadata["authors"][0]["email"] == "ada@example.edu"
     assert metadata["rich_summary"] == "Summary"
     assert metadata["apa_citation"] == "Paper. (2026)."
     assert metadata["topics"] == ["topic"]
     assert metadata["_openai"]["models"][MODEL_METADATA] == "gpt-5.4-mini"
     assert ("medusa_document_metadata", "gpt-5.4-mini") in responses.calls
     assert ("medusa_apa_citation_candidate", "gpt-5.5-pro") in responses.calls
+
+
+def test_ai_page_normalization_prompt_protects_graphic_assets(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT", "true")
+
+    from app.config import get_settings
+    from app.services.ai import AiService
+
+    class FakeResponses:
+        def __init__(self):
+            self.system_prompt = ""
+
+        def create(self, *, model, input, text, timeout):
+            del model, text, timeout
+            self.system_prompt = input[0]["content"]
+            return SimpleNamespace(
+                output_text=json.dumps(
+                    {
+                        "normalized_text": "Figure 1. System diagram.\n\nThe paper describes the system.",
+                        "confidence": 0.9,
+                        "notes": [],
+                    }
+                )
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service.normalize_page_text("paper.pdf", 1, "Figure 1. System diagram.\nThe paper describes the system.")
+
+    assert result["source"] == "openai"
+    assert "Do not convert charts, photos, diagrams, or figure graphics into Markdown" in responses.system_prompt
+    assert "standard readable format" in responses.system_prompt

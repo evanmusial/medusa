@@ -50,6 +50,7 @@ def test_metadata_export_includes_manifest_without_auth_secrets(monkeypatch, tmp
                 figure_label="Figure p2-001",
                 gist="Embedded image extracted from page 2.",
                 asset_uri="gs://musial-medusa-assets/medusa/figures/aa/aaa/page-0002-figure-001.png",
+                geometry={"source": "page_image", "bbox": [10, 20, 200, 180]},
             )
         )
         db.commit()
@@ -69,6 +70,7 @@ def test_metadata_export_includes_manifest_without_auth_secrets(monkeypatch, tmp
         }
         assert "password_hash" not in exported["data"]["users"][0]
         assert exported["data"]["documents"][0]["text_chunks"][0]["text"] == "chunk text"
+        assert exported["data"]["documents"][0]["figures"][0]["geometry"]["source"] == "page_image"
         assert exported["storage_manifest"]["counts"] == {"figure": 1, "original": 1}
 
 

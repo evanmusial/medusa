@@ -854,6 +854,7 @@ def _replace_document_children(
             caption=figure_row.get("caption"),
             gist=figure_row.get("gist"),
             asset_uri=figure_row.get("asset_uri"),
+            geometry=figure_row.get("geometry") or {},
             ),
         )
         _apply_timestamps(figure, figure_row)

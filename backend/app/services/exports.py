@@ -466,6 +466,7 @@ def _figure_export(figure: Figure) -> dict[str, Any]:
         "caption": figure.caption,
         "gist": figure.gist,
         "asset_uri": figure.asset_uri,
+        "geometry": figure.geometry,
         **_timestamps(figure),
     }
 

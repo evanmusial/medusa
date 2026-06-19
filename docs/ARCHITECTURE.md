@@ -1,6 +1,6 @@
 # Medusa Design And Architecture Record
 
-Last updated: 2026-06-18
+Last updated: 2026-06-19
 
 This is the living record of Medusa's product, design, and architecture decisions. Future Codex sessions should read this before changing the app and update it when decisions change. Details matter here because Medusa is meant to become a long-lived research system, not a one-off prototype.
 
@@ -13,9 +13,9 @@ The product is optimized for one primary user on a trusted local network. It sti
 Core workflows:
 
 - Batch import academic PDFs and textbook excerpts.
-- Preserve original files and process them into searchable metadata, text, summaries, figures, and citation candidates.
+- Preserve original files and process them into searchable metadata, text, summaries, cropped graphic assets, figures, and citation candidates.
 - Run Concordance Runs to bring already-imported documents up to the current extraction, enrichment, citation, tagging, OCR, search, and asset feature set.
-- Preserve document layout semantics during processing where they affect meaning, especially two-column articles and tables.
+- Preserve document layout semantics during processing where they affect meaning, especially two-column articles, tables, and figure/photo/chart placement.
 - Organize documents by nested domains, flat tags, read priority, custom attributes, and projects.
 - Discover DOI-based related papers for completed documents, mark which recommendations already exist in the library, and queue open-PDF recommendations through the normal import pipeline.
 - Keep ambiguous metadata and citations visible in Queue instead of pretending uncertain output is verified.
@@ -125,7 +125,7 @@ Current core entities:
 - `DocumentRecommendation`: cached DOI/title-based related-paper recommendations for a source document, including provider/relation evidence, DOI, title, authors, venue, description, open PDF/source URLs, existing-library/import matches, and import status.
 - `DocumentPage`: raw extracted per-page text, normalized reader text, source, low-text flags, and optional page image URI; the document detail API exposes these pages for the full-text reader.
 - `TextChunk`: chunked full text and optional embedding vector.
-- `Figure`: extracted figures/captions/gists with durable asset URIs.
+- `Figure`: extracted figure, chart, photo, and diagram crops with durable asset URIs, page geometry, labels, captions, and searchable gists.
 - `Annotation`: page-aware highlights/notes with color, body, soft delete, and reserved geometry for future PDF overlays.
 - `Note`: document/domain/project notes and reminders.
 - `AttributeDefinition`, `DocumentAttributeValue`: custom per-document attributes.
@@ -143,6 +143,7 @@ Important modeling decisions:
 - Citation status is explicit, with `needs_review` as the safe uncertain state.
 - Accepted citation candidates apply their metadata/citation to the document, set citation status to `verified`, and create a `DocumentVersion` audit snapshot.
 - Metadata evidence is stored as JSON so extraction, Crossref, OpenAI, and future sources can be audited.
+- Author records in `Document.authors` use JSON objects with `given`, `family`, `affiliation`, and `email` when visible. Import and Concordance GPT prompts should normalize semi-obfuscated email forms such as `someone{at}university{dot}edu`, `someone [at] university [dot] edu`, and `someone at university dot edu` into `someone@university.edu`; emails must not be inferred when absent.
 - Title-only citation evidence must pass a strong normalized-title match before it is stored as Crossref evidence.
 - Crossref evidence may fill missing citation fields such as authors, year, venue, DOI, publisher, and source URL; it should not silently overwrite existing user-corrected fields.
 - APA citations should favor DOI links whenever a DOI can be located and verified. If no DOI can be verified, the citation should prefer a direct stable source link, ideally a PDF or other static document, over a transient search or generic landing page.
@@ -171,10 +172,10 @@ Current import path:
 11. PDF text and pages are extracted with PyMuPDF using layout-aware block ordering.
 12. Two-column pages should read down the left column before crossing to the right column, while full-width headers/sections remain in vertical order.
 13. Detected tables are converted to Markdown and included in page text so table content is searchable and available to metadata/summarization.
-14. Page text is normalized into readable paragraph flow. If `OPENAI_API_KEY` and `MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true` are configured, OpenAI conforms the text with the Settings-selected Text on Pages model while preserving wording/order; otherwise local cleanup removes common spacing and hyphenation artifacts. Page-normalization requests use `MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS` and fall back locally on timeout/error.
-15. Embedded PDF figures/images are extracted with PyMuPDF, stored through the configured storage adapter, and recorded as `Figure` rows.
+14. Page text is normalized into standard readable paragraph flow. If `OPENAI_API_KEY` and `MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true` are configured, OpenAI conforms the text with the Settings-selected Text on Pages model while preserving wording/order, headings, labels, captions, citations, equations, lists, tables, and logical flow across multiple columns or around unusually shaped graphics; otherwise local cleanup removes common spacing and hyphenation artifacts. The normalizer must not summarize graphics or convert charts/photos/diagrams into Markdown. Page-normalization requests use `MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS` and fall back locally on timeout/error.
+15. PDF figure/photo/chart assets are extracted with PyMuPDF as cropped page graphics. Embedded raster images, page image blocks, and vector-drawn graphic clusters are stored through the configured storage adapter and recorded as `Figure` rows with page number, crop geometry, source kind, label, and nearby caption when available. Captions and labels such as `Figure 1.` remain text anchors in normalized page text; the actual graphic remains an asset instead of Markdown.
 16. Normalized text is chunked for search/embedding, falling back to raw extracted text when needed.
-17. OpenAI metadata extraction runs only when `OPENAI_API_KEY` exists; otherwise a low-confidence review record is produced.
+17. OpenAI metadata extraction runs only when `OPENAI_API_KEY` exists; otherwise a low-confidence review record is produced. Metadata extraction asks for visible authors, affiliations, and normalized contact emails and stores them in `Document.authors`.
 18. Async document-intelligence work is split into Settings-selectable tasks: Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and future Accessory Summaries. GPT-backed tasks default to `OPENAI_MODEL=gpt-5.5`; Text Chunk Encoding defaults to `OPENAI_EMBEDDING_MODEL`.
 19. When `MEDUSA_OPENAI_SEND_PDF=true`, Medusa sends the original PDF as a Responses API file input alongside extracted text when the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`; Concordance reruns hydrate the original PDF from the local document cache or durable storage.
 20. Crossref lookup is attempted by DOI/title. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
@@ -210,11 +211,11 @@ Implemented foundation:
 
 Current first capabilities:
 
-- `page_text_normalization` v2: conforms raw extracted page text into readable paragraph flow using OpenAI when configured and local cleanup as a fallback; Concordance reruns use the original PDF context when available.
-- `search_index` v2: rebuilds `Document.search_text` from title, authors, abstract, summary, APA citation, normalized pages, notes, custom attributes, tags, and domains.
+- `page_text_normalization` v3: conforms raw extracted page text into standard readable paragraph flow using OpenAI when configured and local cleanup as a fallback; it preserves headings, labels, captions, citations, equations, lists, tables, and reading flow across columns/graphics without converting graphics to Markdown. Concordance reruns use the original PDF context when available.
+- `search_index` v3: rebuilds `Document.search_text` from title, authors, visible author contact emails, abstract, summary, APA citation, normalized pages, figure labels/captions/gists, notes, custom attributes, tags, and domains.
 - `citation_refresh` v2: regenerates Markdown APA 7 text with Crossref-backed fields and refreshes citation status; uncertain output stays in Queue for citation review.
-- `summary_topics` v4: uses the configured AI adapter with extracted text plus original PDF context when available to fill missing metadata, concise Markdown summaries, APA candidates, topics, and keywords without overwriting user-corrected identity metadata.
-- `figure_assets` v1: extracts embedded PDF figures/images into durable storage and attaches them to document records.
+- `summary_topics` v5: uses the configured AI adapter with extracted text plus original PDF context when available to fill missing metadata, visible author contacts, concise Markdown summaries, APA candidates, topics, and keywords without overwriting user-corrected identity metadata.
+- `figure_assets` v2: extracts embedded images plus page-image and vector graphic crops into durable storage and attaches them to document records with geometry, labels, captions, and source kind.
 - `recommendations` v1: refreshes DOI-based related-paper recommendations from OpenAlex, Semantic Scholar, and Crossref, marks already-present library matches, and caches provider evidence without importing full text automatically.
 
 Use Concordance Runs when adding or improving:

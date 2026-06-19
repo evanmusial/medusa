@@ -93,7 +93,13 @@ from app.services.concordance import create_concordance_run, current_capabilitie
 from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
 from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
-from app.services.processing import document_metadata, document_reading_text, refresh_import_batch_progress
+from app.services.processing import (
+    author_search_text,
+    document_metadata,
+    document_reading_text,
+    figure_search_text,
+    refresh_import_batch_progress,
+)
 from app.services.preferences import get_app_preferences, update_app_preferences
 from app.services.recommendations import (
     list_document_recommendations,
@@ -335,12 +341,12 @@ def rebuild_document_search_text(document: Document) -> str:
         part
         for part in [
             document.title,
-            " ".join(" ".join(filter(None, [author.get("given"), author.get("family")])) for author in document.authors or []),
+            author_search_text(document.authors),
             document.abstract,
             document.rich_summary,
             document.apa_citation,
             page_text,
-            " ".join(figure.gist or "" for figure in document.figures),
+            figure_search_text(document.figures),
             notes,
             annotations,
             attributes,

@@ -255,6 +255,7 @@ class Figure(Base, TimestampMixin):
     caption: Mapped[str | None] = mapped_column(Text)
     gist: Mapped[str | None] = mapped_column(Text)
     asset_uri: Mapped[str | None] = mapped_column(Text)
+    geometry: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
 
     document: Mapped[Document] = relationship(back_populates="figures")
 

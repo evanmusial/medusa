@@ -23,14 +23,24 @@ def process_document_figures(db: Session, document: Document, pdf_path: Path) ->
     for index, figure in enumerate(extracted, start=1):
         key = figure_asset_key(document, figure.page_number, index, figure.extension)
         stored = storage.put_bytes(key, figure.data, figure.content_type)
+        label = figure.label or f"Figure {index}"
+        caption = figure.caption
+        gist = caption or f"Extracted {figure.source.replace('_', ' ')} on page {figure.page_number} ({figure.width}x{figure.height})."
         db.add(
             Figure(
                 document_id=document.id,
                 page_number=figure.page_number,
-                figure_label=f"Figure {index}",
-                caption=None,
-                gist=f"Extracted image on page {figure.page_number} ({figure.width}x{figure.height}).",
+                figure_label=label,
+                caption=caption,
+                gist=gist,
                 asset_uri=stored.uri,
+                geometry={
+                    "source": figure.source,
+                    "bbox": list(figure.bbox or []),
+                    "width": figure.width,
+                    "height": figure.height,
+                    "content_type": figure.content_type,
+                },
             )
         )
     return {"figures": len(extracted)}

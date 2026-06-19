@@ -65,7 +65,15 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         source.flush()
         source.add(DocumentPage(document_id=document.id, page_number=1, text="Extracted page text.", normalized_text="Readable page text."))
         source.add(TextChunk(document_id=document.id, page_start=1, page_end=1, text="Extracted page text.", token_count=3))
-        source.add(Figure(document_id=document.id, page_number=1, figure_label="Figure p1-001", asset_uri="gs://bucket/figure.png"))
+        source.add(
+            Figure(
+                document_id=document.id,
+                page_number=1,
+                figure_label="Figure p1-001",
+                asset_uri="gs://bucket/figure.png",
+                geometry={"source": "vector_graphic", "bbox": [20, 30, 200, 180]},
+            )
+        )
         source.add(Annotation(document_id=document.id, page_number=1, body="Important margin note.", color="#60a5fa"))
         source.add(DocumentAttributeValue(document_id=document.id, attribute_definition_id=attribute.id, value={"value": "Machines"}))
         source.add(Note(document_id=document.id, title="Use this", body="Relevant to the introduction."))
@@ -113,6 +121,7 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         assert restored.pages[0].text == "Extracted page text."
         assert restored.pages[0].normalized_text == "Readable page text."
         assert restored.figures[0].asset_uri == "gs://bucket/figure.png"
+        assert restored.figures[0].geometry["source"] == "vector_graphic"
         assert restored.annotations[0].body == "Important margin note."
         assert restored.attributes[0].value == {"value": "Machines"}
         assert restored_project.items[0].document_id == restored.id

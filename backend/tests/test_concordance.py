@@ -16,7 +16,7 @@ def test_create_concordance_run_skips_current_capability(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.models import Document, DocumentCapability
-    from app.services.concordance import create_concordance_run
+    from app.services.concordance import CAPABILITY_BY_KEY, create_concordance_run
 
     Session = make_session()
     with Session() as db:
@@ -27,7 +27,14 @@ def test_create_concordance_run_skips_current_capability(monkeypatch, tmp_path):
         )
         db.add(document)
         db.flush()
-        db.add(DocumentCapability(document_id=document.id, capability_key="search_index", version=2, status="complete"))
+        db.add(
+            DocumentCapability(
+                document_id=document.id,
+                capability_key="search_index",
+                version=CAPABILITY_BY_KEY["search_index"].version,
+                status="complete",
+            )
+        )
         db.commit()
 
         run = create_concordance_run(db, capability_keys=["search_index"])

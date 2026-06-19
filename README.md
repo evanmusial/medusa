@@ -13,8 +13,8 @@ Medusa is a local-first research library, document aggregator, and intelligent t
 - PDF extraction via PyMuPDF
 - Authenticated original PDF preview/open route in the document detail pane and expanded Reader mode
 - Parsed full-text reader with normalized one-page navigation and page note entry
-- Embedded figure/image extraction into durable storage with authenticated asset preview
-- OpenAI adapter for structured metadata, summaries, topics, keywords, page text normalization, and embeddings
+- Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, and page geometry
+- OpenAI adapter for structured metadata, visible author contact emails, summaries, topics, keywords, page text normalization, and embeddings
 - Citation generation in Markdown APA 7, BibTeX, RIS, and CSL JSON
 - Live document-level citation check/refresh controls backed by durable Concordance jobs
 - Queue view for import work and accepting or rejecting ambiguous citations with correction history
@@ -86,7 +86,7 @@ MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS=60
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
-OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5` for GPT-backed document-analysis tasks, lets Settings override models per task, sends the original PDF as file context when the file is below the configured size cap, and normalizes extracted page text into readable paragraph flow. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
+OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5` for GPT-backed document-analysis tasks, lets Settings override models per task, sends the original PDF as file context when the file is below the configured size cap, extracts visible author affiliations/contact emails, and normalizes extracted page text into standard readable flow across columns and around graphics. Graphics are stored as cropped assets with labels/captions rather than converted into Markdown. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
 
 Worker recovery:
 

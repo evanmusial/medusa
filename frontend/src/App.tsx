@@ -1938,7 +1938,7 @@ function DocumentPanelContent({
               <a key={figure.id} href={`/api/figures/${figure.id}/asset`} target="_blank" rel="noreferrer">
                 <img alt={figure.figure_label || "Extracted figure"} src={`/api/figures/${figure.id}/asset`} />
                 <span>{figure.figure_label || `Page ${figure.page_number || "?"}`}</span>
-                <small>{figure.gist || figure.caption || "Extracted figure"}</small>
+                <small>{figure.caption || figure.gist || "Extracted figure"}</small>
               </a>
             ))}
           </div>

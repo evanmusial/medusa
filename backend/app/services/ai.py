@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import html
 import signal
 import threading
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,31 @@ from app.services.analysis_models import (
 from app.services.extraction import normalize_extracted_text
 
 
+METADATA_EXTRACTION_PROMPT = (
+    "Extract scholarly identity metadata from this PDF context. The beginning may contain unrelated cover "
+    "or front matter before the true article/chapter begins. Prefer DOI and publisher metadata when present. "
+    "Extract every visible author, affiliation, and author contact email. Normalize deliberately obfuscated "
+    "email addresses such as someone{at}university{dot}edu, someone [at] university [dot] edu, and "
+    "someone at university dot edu into standard someone@university.edu form. Store an email only when it is "
+    "visible in the PDF context; never infer one. Return cautious confidence and review reasons. If a field "
+    "is uncertain, leave it null or empty."
+)
+
+PAGE_TEXT_NORMALIZATION_PROMPT = (
+    "You normalize PDF-extracted scholarly text for a research reading pane. Preserve the original wording, "
+    "order, citations, equations, section headings, lists, figure/table labels, captions, and tables. Do not "
+    "summarize, paraphrase, omit substantive content, or add facts. Fix extraction artifacts only: strange "
+    "spaces inside words, hyphenated line breaks, line-wrapped paragraphs, inconsistent whitespace, and obvious "
+    "reading-flow breaks. Reconstruct logical reading flow across multiple columns and around unusually shaped "
+    "graphics when the sequence is clear. Use a standard readable format: headings on their own lines, paragraphs "
+    "separated by one blank line, list items on separate lines, and no extra whitespace. Keep paragraph breaks "
+    "where they reflect the document's logical flow. Preserve tables as plain-text or Markdown-style tables when "
+    "a table is evident. Do not convert charts, photos, diagrams, or figure graphics into Markdown or prose; those "
+    "assets are stored separately as cropped page graphics. Keep visible labels/captions such as 'Figure 1.' as "
+    "text anchors near the surrounding discussion."
+)
+
+
 METADATA_IDENTITY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -36,8 +63,9 @@ METADATA_IDENTITY_SCHEMA: dict[str, Any] = {
                     "given": {"type": "string"},
                     "family": {"type": "string"},
                     "affiliation": {"type": ["string", "null"]},
+                    "email": {"type": ["string", "null"]},
                 },
-                "required": ["given", "family", "affiliation"],
+                "required": ["given", "family", "affiliation", "email"],
             },
         },
         "universities": {"type": "array", "items": {"type": "string"}},
@@ -115,6 +143,45 @@ class OpenAIHardTimeoutError(TimeoutError):
     pass
 
 
+_EMAIL_RE = re.compile(r"([A-Z0-9._%+\-]+)@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
+_BRACKETED_AT_RE = re.compile(r"\s*(?:\{|\[|\(|<)\s*at\s*(?:\}|\]|\)|>)\s*", re.IGNORECASE)
+_BRACKETED_DOT_RE = re.compile(r"\s*(?:\{|\[|\(|<)\s*dot\s*(?:\}|\]|\)|>)\s*", re.IGNORECASE)
+_WORD_AT_RE = re.compile(r"(?<=[A-Z0-9._%+\-])\s+at\s+(?=[A-Z0-9._%+\-])", re.IGNORECASE)
+_WORD_DOT_RE = re.compile(r"(?<=[A-Z0-9_\-])\s+dot\s+(?=[A-Z0-9_\-])", re.IGNORECASE)
+
+
+def normalize_obfuscated_email(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = html.unescape(value).strip()
+    if not normalized:
+        return None
+    normalized = _BRACKETED_AT_RE.sub("@", normalized)
+    normalized = _BRACKETED_DOT_RE.sub(".", normalized)
+    normalized = _WORD_AT_RE.sub("@", normalized)
+    normalized = _WORD_DOT_RE.sub(".", normalized)
+    normalized = re.sub(r"\s*@\s*", "@", normalized)
+    normalized = re.sub(r"\s*\.\s*", ".", normalized)
+    match = _EMAIL_RE.search(normalized)
+    if not match:
+        return None
+    local, domain = match.groups()
+    return f"{local}@{domain.lower()}"
+
+
+def normalize_author_contact_details(authors: Any) -> list[dict[str, Any]]:
+    if not isinstance(authors, list):
+        return []
+    normalized_authors: list[dict[str, Any]] = []
+    for author in authors:
+        if not isinstance(author, dict):
+            continue
+        next_author = dict(author)
+        next_author["email"] = normalize_obfuscated_email(next_author.get("email"))
+        normalized_authors.append(next_author)
+    return normalized_authors
+
+
 @contextmanager
 def hard_timeout(seconds: float):
     if seconds <= 0 or threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
@@ -181,14 +248,11 @@ class AiService:
             model=models[MODEL_METADATA],
             schema_name="medusa_document_metadata",
             schema=METADATA_IDENTITY_SCHEMA,
-            prompt=(
-                "Extract scholarly identity metadata from this PDF context. The beginning may contain unrelated cover "
-                "or front matter before the true article/chapter begins. Prefer DOI and publisher metadata when present. "
-                "Return cautious confidence and review reasons. If a field is uncertain, leave it null or empty."
-            ),
+            prompt=METADATA_EXTRACTION_PROMPT,
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
         )
+        identity["authors"] = normalize_author_contact_details(identity.get("authors"))
         summary = self._responses_json(
             model=models[MODEL_SUMMARY],
             schema_name="medusa_document_summary",
@@ -362,14 +426,6 @@ class AiService:
                 "notes": ["OpenAI page text normalization is not configured."],
             }
 
-        prompt = (
-            "You normalize PDF-extracted scholarly text for a research reading pane. Preserve the original "
-            "wording, order, citations, equations, section headings, and tables. Do not summarize, paraphrase, "
-            "omit substantive content, or add facts. Fix extraction artifacts only: strange spaces inside words, "
-            "hyphenated line breaks, line-wrapped paragraphs, inconsistent whitespace, and obvious reading-flow "
-            "breaks. Keep paragraph breaks where they reflect the document's logical flow. Preserve tables as "
-            "plain-text or Markdown-style tables when a table is evident."
-        )
         sample = fallback[: self.settings.openai_text_normalization_page_max_chars]
         input_content, used_pdf_file = self._document_input_content(filename, sample, pdf_bytes, page_number=page_number)
         selected_model = model or default_analysis_models()[MODEL_PAGE_TEXT_NORMALIZATION]
@@ -378,7 +434,7 @@ class AiService:
                 response = self.client.responses.create(
                     model=selected_model,
                     input=[
-                        {"role": "system", "content": prompt},
+                        {"role": "system", "content": PAGE_TEXT_NORMALIZATION_PROMPT},
                         {"role": "user", "content": input_content},
                     ],
                     text={

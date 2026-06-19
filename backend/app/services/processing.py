@@ -117,6 +117,22 @@ def document_metadata(document: Document) -> dict[str, Any]:
     }
 
 
+def author_search_text(authors: list[dict[str, Any]] | None) -> str:
+    return " ".join(
+        " ".join(str(author.get(key) or "") for key in ("given", "family", "affiliation", "email")).strip()
+        for author in authors or []
+        if isinstance(author, dict)
+    )
+
+
+def figure_search_text(figures: list[Any]) -> str:
+    return " ".join(
+        " ".join(filter(None, [figure.figure_label, figure.caption, figure.gist])).strip()
+        for figure in figures
+        if figure
+    )
+
+
 def fill_missing_document_metadata(document: Document, metadata: dict[str, Any]) -> list[str]:
     changed: list[str] = []
     for field in ("title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"):
@@ -490,11 +506,11 @@ class DocumentProcessor:
             part
             for part in [
                 document.title,
-                " ".join(a.get("family", "") for a in document.authors or []),
+                author_search_text(document.authors),
                 document.abstract,
                 document.rich_summary,
                 document.search_text,
-                " ".join(figure.gist or "" for figure in document.figures),
+                figure_search_text(document.figures),
                 " ".join(tag.name for tag in document.tags),
             ]
             if part

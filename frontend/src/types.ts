@@ -109,6 +109,7 @@ export type Figure = {
   caption?: string | null;
   gist?: string | null;
   asset_uri?: string | null;
+  geometry: Record<string, unknown>;
 };
 
 export type DocumentPage = {
