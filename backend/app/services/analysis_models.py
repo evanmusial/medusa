@@ -19,18 +19,25 @@ MODEL_TEXT_CHUNK_ENCODING = "text_chunk_encoding"
 MODEL_ACCESSORY_SUMMARIES = "accessory_summaries"
 
 GPT_MODEL_OPTIONS = (
+    "gpt-4o",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-nano-2025-08-07",
+    "gpt-5-pro",
+    "gpt-5.1",
+    "gpt-5.1-2025-11-13",
+    "gpt-5.2",
+    "gpt-5.2-pro",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro",
+    "gpt-5.4-pro-2026-03-05",
     "gpt-5.5",
     "gpt-5.5-2026-04-23",
     "gpt-5.5-pro",
     "gpt-5.5-pro-2026-04-23",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.4-nano",
-    "gpt-5.4-pro-2026-03-05",
-    "gpt-5",
-    "gpt-5-pro",
-    "gpt-5-nano",
-    "gpt-5-nano-2025-08-07",
 )
 EMBEDDING_MODEL_OPTIONS = (
     "text-embedding-3-small",

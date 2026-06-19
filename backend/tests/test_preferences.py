@@ -84,4 +84,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
 
         payload = get_app_preferences(db)
         assert len(payload["analysis_model_tasks"]) == 7
-        assert payload["model_options"]["gpt"][0] == "gpt-5.5"
+        assert "gpt-4o" in payload["model_options"]["gpt"]
+        assert "gpt-5.1" in payload["model_options"]["gpt"]
+        assert "gpt-5.2-pro" in payload["model_options"]["gpt"]
+        assert "gpt-5.5" in payload["model_options"]["gpt"]

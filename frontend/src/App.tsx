@@ -68,11 +68,13 @@ import type {
 } from "./types";
 
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "settings";
+type SidebarCounts = Partial<Record<View, number>>;
 
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
+const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "restored_paused"]);
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library }> = [
   { id: "library", label: "Library", icon: Library },
@@ -113,6 +115,16 @@ function recommendationProviderLabel(value: string) {
         .replace(/\b\w/g, (letter) => letter.toUpperCase()),
     )
     .join(", ");
+}
+
+function formatSidebarCount(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value)) return "";
+  if (Math.abs(value) < 1000) return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1, notation: "compact" }).format(value);
+}
+
+function isQueueImportJob(job: ImportJob) {
+  return QUEUE_IMPORT_JOB_STATUSES.has(job.status);
 }
 
 function StatusPill({ value, tone = "neutral" }: { value: string; tone?: "neutral" | "good" | "warn" | "blue" }) {
@@ -617,6 +629,7 @@ function Sidebar({
   activeView,
   collapsed,
   activeImportJobs,
+  counts,
   dashboard,
   onOpenQueue,
   onToggleSidebar,
@@ -625,6 +638,7 @@ function Sidebar({
   activeView: View;
   collapsed: boolean;
   activeImportJobs: number;
+  counts: SidebarCounts;
   dashboard?: Dashboard;
   onOpenQueue: () => void;
   onToggleSidebar: () => void;
@@ -636,10 +650,14 @@ function Sidebar({
         <nav>
           {navItems.map((item) => {
             const Icon = item.icon;
+            const count = formatSidebarCount(counts[item.id]);
             return (
               <button key={item.id} className={activeView === item.id ? "active" : ""} onClick={() => setActiveView(item.id)}>
                 <Icon size={18} />
-                <span>{item.label}</span>
+                <span>
+                  {item.label}
+                  {count ? <span className="sidebar-count"> ({count})</span> : null}
+                </span>
                 {item.id === "import" && activeImportJobs > 0 ? <small>{activeImportJobs}</small> : null}
               </button>
             );
@@ -2662,7 +2680,7 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
   });
-  const queueJobs = jobs.filter((job) => ["queued", "running", "failed", "restored_paused"].includes(job.status));
+  const queueJobs = jobs.filter(isQueueImportJob);
 
   return (
     <section className="workbench queue-workbench">
@@ -3366,7 +3384,7 @@ export default function App() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
-  const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data) });
+  const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data), refetchInterval: 10000 });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data) });
   const documents = useQuery({
@@ -3399,7 +3417,7 @@ export default function App() {
     enabled: Boolean(me.data),
     refetchInterval: 4000,
   });
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, enabled: Boolean(me.data) });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, enabled: Boolean(me.data), refetchInterval: 10000 });
   const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data), refetchInterval: 10000 });
   const review = useQuery({ queryKey: ["review"], queryFn: api.reviewQueue, enabled: Boolean(me.data), refetchInterval: 10000 });
   const logout = useMutation({
@@ -3424,6 +3442,13 @@ export default function App() {
     "--accent": activeAccent,
     "--accent-soft": accentSoftColor(activeAccent, theme),
   } as CSSProperties;
+  const sidebarCounts: SidebarCounts = {
+    library: dashboard.data?.documents ?? 0,
+    domains: domains.data?.length ?? 0,
+    projects: projects.data?.length ?? dashboard.data?.projects ?? 0,
+    queue: (jobs.data || []).filter(isQueueImportJob).length + (review.data || []).length,
+    notes: notes.data?.length ?? 0,
+  };
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={shellStyle}>
@@ -3438,6 +3463,7 @@ export default function App() {
         activeView={activeView}
         collapsed={sidebarCollapsed}
         activeImportJobs={dashboard.data?.active_import_jobs || 0}
+        counts={sidebarCounts}
         dashboard={dashboard.data}
         onOpenQueue={() => setActiveView("queue")}
         onToggleSidebar={() => setSidebarCollapsed((value) => !value)}

@@ -28,7 +28,7 @@ Medusa should feel like a serious research cockpit: dense, calm, polished, and f
 Current UI architecture:
 
 - Fixed top header with the Medusa emblem, global search aligned by default to the Library document-list pane, subtle build version stamp, theme toggle, and session action.
-- Resizable/collapsible left sidebar navigation: Library, Domains, Projects, Queue, Notes, Import, Settings.
+- Resizable/collapsible left sidebar navigation: Library, Domains, Projects, Queue, Notes, Import, Settings. Library, Domains, Projects, Queue, and Notes show auto-refreshing parenthesized counts in the expanded sidebar.
 - Main Library view uses a tri-pane layout:
   - Resizable left filter pane for domains, tags, smart filters, and saved searches. The pane has a content-aware minimum so select controls and their affordances remain visible.
   - Center dense document results with selected-document bulk edit and batch Concordance controls.

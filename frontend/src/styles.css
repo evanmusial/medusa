@@ -365,6 +365,12 @@ textarea {
   background: var(--blue-soft);
 }
 
+.sidebar-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .sidebar small {
   min-width: 22px;
   text-align: center;
@@ -1882,6 +1888,7 @@ pre {
 .bibliography-panel,
 .project-resource-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   align-content: start;
 }
@@ -1929,10 +1936,12 @@ pre {
 .inline-form {
   gap: 8px;
   margin-bottom: 10px;
+  min-width: 0;
 }
 
 .inline-form input {
   flex: 1;
+  min-width: 0;
 }
 
 .project-list button {
@@ -1953,11 +1962,17 @@ pre {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .project-add-row select {
-  flex: 1;
-  min-width: 220px;
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.project-add-row .secondary-button {
+  flex: 0 0 auto;
 }
 
 .project-resource-list {
