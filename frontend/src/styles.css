@@ -1087,8 +1087,8 @@ textarea {
 }
 
 .composition-dialog {
-  width: min(980px, 100%);
-  max-height: min(82vh, 860px);
+  width: min(1120px, 100%);
+  max-height: min(90vh, 920px);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1118,10 +1118,11 @@ textarea {
 .composition-head span,
 .composition-section-title span,
 .composition-local-row small,
-.composition-flow-step small,
+.composition-pipeline-node small,
 .composition-empty span,
 .composition-provider-panel p,
-.composition-legend span {
+.composition-legend span,
+.composition-issue-row small {
   color: var(--muted);
 }
 
@@ -1200,7 +1201,7 @@ textarea {
 
 .composition-legend,
 .composition-provider-list,
-.composition-errata-list {
+.composition-issue-list {
   display: grid;
   gap: 8px;
 }
@@ -1222,7 +1223,7 @@ textarea {
 
 .composition-provider-row,
 .composition-local-row,
-.composition-errata-row {
+.composition-issue-row {
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
@@ -1239,42 +1240,128 @@ textarea {
 }
 
 .composition-local-row span,
-.composition-flow-step span,
-.composition-errata-row strong {
+.composition-pipeline-node span,
+.composition-issue-row strong {
   color: var(--ink);
   font-weight: 800;
 }
 
-.composition-flow {
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+.composition-flow-chart {
+  height: clamp(420px, 58vh, 620px);
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 72%, transparent), transparent 56%),
+    var(--panel);
 }
 
-.composition-flow-step {
-  min-width: 178px;
+.composition-flow-chart .react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--muted);
+  --xy-controls-button-background-color: var(--panel);
+  --xy-controls-button-background-color-hover-default: var(--panel-2);
+  --xy-controls-button-color: var(--ink);
+  --xy-controls-button-color-hover-default: var(--primary);
+  --xy-controls-button-border-color: var(--line);
+  --xy-minimap-background-color: var(--panel);
+}
+
+.composition-flow-chart .react-flow__edge-path {
+  stroke: color-mix(in srgb, var(--primary) 54%, var(--muted));
+}
+
+.composition-flow-chart .react-flow__edge .react-flow__edge-path {
+  filter: drop-shadow(0 1px 1px rgb(15 23 42 / 0.12));
+}
+
+.composition-flow-chart .react-flow__controls {
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.composition-pipeline-node {
+  width: 236px;
+  min-height: 116px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--primary);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--primary));
+  box-shadow: 0 12px 24px rgb(15 23 42 / 0.12);
   display: grid;
-  gap: 5px;
-  padding: 10px;
-  position: relative;
+  gap: 6px;
+  padding: 10px 11px;
 }
 
-.composition-flow-step:not(:last-child)::after {
-  content: ">";
-  position: absolute;
-  right: -9px;
-  top: 50%;
-  transform: translateY(-50%);
+.composition-pipeline-node span,
+.composition-pipeline-node strong,
+.composition-pipeline-node small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composition-pipeline-node span {
+  font-size: 11px;
+  text-transform: uppercase;
   color: var(--muted);
-  font-weight: 900;
 }
 
-.composition-flow-step.llm,
-.composition-flow-step.embedding {
-  border-color: color-mix(in srgb, var(--blue) 45%, var(--line));
+.composition-pipeline-node strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.composition-pipeline-node small {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.composition-pipeline-node div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.composition-pipeline-node em {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composition-pipeline-node.llm {
+  border-left-color: var(--blue);
+}
+
+.composition-pipeline-node.embedding {
+  border-left-color: var(--teal);
+}
+
+.composition-pipeline-node.warning {
+  border-left-color: var(--amber);
+}
+
+.composition-pipeline-node.error {
+  border-left-color: var(--danger);
+}
+
+.composition-pipeline-node.edit {
+  border-left-color: var(--muted);
 }
 
 .composition-empty {
@@ -1291,12 +1378,16 @@ textarea {
   font-size: 18px;
 }
 
-.composition-errata-row {
+.composition-empty.compact {
+  min-height: 96px;
+}
+
+.composition-issue-row {
   display: grid;
   gap: 4px;
 }
 
-.composition-errata-row span {
+.composition-issue-row span {
   color: var(--muted);
   line-height: 1.4;
 }
@@ -2651,7 +2742,7 @@ pre {
 
 .job-row,
 .project-list button,
-.review-list article {
+.review-card {
   border: 1px solid var(--line);
   background: var(--panel-2);
   border-radius: 8px;
@@ -2862,26 +2953,11 @@ pre {
   margin: 0;
 }
 
-.review-list article {
-  display: grid;
-  gap: 8px;
-}
-
-.review-list p {
-  margin: 0;
-}
-
-.review-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
 .queue-workbench {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   gap: 12px;
+  align-content: start;
   overflow: auto;
 }
 
@@ -2889,6 +2965,7 @@ pre {
   min-width: 0;
   display: grid;
   gap: 10px;
+  align-content: start;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -2934,6 +3011,96 @@ pre {
   border-radius: inherit;
   background: var(--blue);
   transition: width 160ms ease;
+}
+
+.review-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.review-card-main,
+.review-card-title {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.review-card-title {
+  gap: 4px;
+}
+
+.review-card-title strong,
+.review-card-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-card-title strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.review-card-title small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.review-card-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-card-meta span {
+  max-width: 100%;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.review-card-meta svg {
+  flex: 0 0 auto;
+}
+
+.review-citation {
+  min-width: 0;
+  max-width: 920px;
+  border-left: 3px solid color-mix(in srgb, var(--blue) 38%, var(--line));
+  padding-left: 10px;
+}
+
+.review-citation .markdown-content.compact p {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.review-list p {
+  margin: 0;
+}
+
+.review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .empty-note {
@@ -3729,8 +3896,13 @@ pre {
 	  .reader-compare,
 	  .import-default-controls,
   .import-picker-grid,
-  .note-link-grid {
+  .note-link-grid,
+  .review-card {
     grid-template-columns: 1fr;
+  }
+
+  .review-actions {
+    justify-content: flex-start;
   }
 
   .preferences-panel,

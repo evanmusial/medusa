@@ -625,3 +625,8 @@ class CitationCandidate(Base, TimestampMixin):
     source_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
     confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     status: Mapped[str] = mapped_column(String(40), default="candidate", nullable=False)
+    document: Mapped[Document] = relationship()
+
+    @property
+    def document_title(self) -> str | None:
+        return self.document.title if self.document else None

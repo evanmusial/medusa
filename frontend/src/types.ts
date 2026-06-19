@@ -492,6 +492,7 @@ export type ImportDuplicateCheck = {
 export type CitationCandidate = {
   id: string;
   document_id: string;
+  document_title?: string | null;
   source: string;
   citation_text?: string | null;
   metadata: Record<string, unknown>;

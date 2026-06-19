@@ -17,12 +17,12 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, and page geometry
 - OpenAI adapter for structured metadata, visible author contact emails, summaries, topics, keywords, page text normalization, and embeddings
 - OpenAI usage ledger with Budget rollups for last day/month/3 months/all time, calls, tokens, estimated known-model costs, cached input tokens, PDF/file context bytes, recent errors, and task/model breakdowns
-- Per-document Cost Composition tracking for imports, including stage timings, provider/model spend, local processing duration, errata, and the exact pipeline/method/model path used to generate the document
+- Per-document Cost Composition tracking for imports, including stage timings, provider/model spend, local processing duration, processing issues, and the exact pipeline/method/model path used to generate the document
 - Citation generation in Markdown APA 7 reference-list and in-text forms, with model/provenance tracking, plus BibTeX, RIS, and CSL JSON
 - Live document-level citation check/refresh controls backed by durable Concordance jobs
 - Reserved header progress control for imports, Concordance, and citation-check work, so job feedback continues after navigating away from the page that started the work without shifting the header actions
 - Async action feedback: job-starting buttons turn soft blue with the button icon spinning and a slim progress bar while work is in flight, blend through green on success, flash red on failure, and show a concise error popover when startup or completion fails
-- Queue view for import work and accepting or rejecting ambiguous citations with correction history
+- Queue view for compact import-work status and bounded citation-review cards, with accept/reject actions and correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
@@ -117,7 +117,7 @@ Raw text extraction is controlled separately in Settings. The Raw Text Extractio
 
 Budget records and displays AI usage from completed and failed OpenAI Responses/embeddings calls and Gemini `generateContent` calls: provider, task, model, document/job context, token counts, cached input tokens where reported, output tokens, PDF/file context bytes, and recent errors. Dollar totals are estimates from Medusa's local known-model standard pricing table for OpenAI and Google Gemini text models; unknown models are counted as unpriced because model pricing can change independently of the local app. Budget can group usage by model, task, document, calendar day, or calendar hour.
 
-Document Composition is available from the Library detail actions when a document is selected. Imports now write granular `DocumentCompositionRecord` rows for local stages, synced model usage, errata, and manual edits. The Composition dialog shows a Cost Composition pie chart with dollar values, provider spend, local processing time, and a left-to-right pipeline flow. Older documents without composition rows show "not available." While imports are active, the reserved header progress control includes current known dollar spend so far.
+Document Composition is available from the Library detail actions when a document is selected. Imports now write granular `DocumentCompositionRecord` rows for local stages, synced model usage, processing warnings/errors, and manual edits. The Composition dialog shows a Cost Composition pie chart with dollar values, provider spend, local processing time, a React Flow pipeline chart, and a Processing Issues section when warnings or errors occurred. Older documents without composition rows show "not available." While imports are active, the reserved header progress control includes current known dollar spend so far.
 
 Async document work is started from the app shell, not only from the page-level component that owns the button. Citation checks and Concordance controls immediately turn soft blue with their own icon spinning and a slim in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green success blend or red result flash; failures also surface a concise error message.
 

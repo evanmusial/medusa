@@ -86,3 +86,31 @@ def test_composition_syncs_usage_costs_and_local_duration(monkeypatch, tmp_path)
     assert summary["provider_breakdown"][0]["provider"] == "OpenAI"
     assert summary["local_duration_entries"][0]["duration_ms"] == 120_000
     assert any(item["record_kind"] == "llm" for item in summary["pipeline"])
+
+
+def test_composition_issues_exclude_completed_manual_edits(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import Document, ImportBatch, ImportJob
+    from app.services.composition import document_composition_summary, record_import_erratum, record_manual_edit
+
+    with Session() as db:
+        document = Document(title="Issues", original_filename="issues.pdf", checksum_sha256="c" * 64)
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        job = ImportJob(batch=batch, document=document, status="complete", current_step="complete")
+        db.add_all([document, batch, job])
+        db.flush()
+        record_manual_edit(db, document=document, message="Manual correction", metadata={"changed_fields": ["title"]})
+        record_import_erratum(
+            db,
+            document=document,
+            job=job,
+            stage_key="text_chunk_encoding",
+            message="Embedding request timed out.",
+            level="warning",
+        )
+        db.commit()
+
+        summary = document_composition_summary(db, document)
+
+    assert [item["message"] for item in summary["errata"]] == ["Embedding request timed out."]
+    assert summary["errata"][0]["status"] == "warning"

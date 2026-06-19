@@ -20,6 +20,15 @@ const buildVersion = buildSha ? `${buildDate}+${buildSha}` : buildDate;
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          xyflow: ["@xyflow/react"],
+        },
+      },
+    },
+  },
   define: {
     "import.meta.env.VITE_MEDUSA_BUILD_VERSION": JSON.stringify(buildVersion),
   },

@@ -2026,7 +2026,13 @@ def document_events(
 
 @app.get("/api/review-queue", response_model=list[CitationCandidateOut])
 def review_queue(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[CitationCandidate]:
-    return db.query(CitationCandidate).filter(CitationCandidate.status == "needs_review").order_by(CitationCandidate.created_at.desc()).all()
+    return (
+        db.query(CitationCandidate)
+        .options(joinedload(CitationCandidate.document))
+        .filter(CitationCandidate.status == "needs_review")
+        .order_by(CitationCandidate.created_at.desc())
+        .all()
+    )
 
 
 @app.patch("/api/review-queue/{candidate_id}", response_model=CitationCandidateOut)

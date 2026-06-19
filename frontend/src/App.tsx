@@ -2,6 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Background,
+  Controls,
+  MarkerType,
+  ReactFlow,
+  type Edge,
+  type Node as FlowNode,
+  type NodeProps,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import {
   Archive,
   Bookmark,
   BookOpen,
@@ -702,6 +712,96 @@ function compositionPieGradient(entries: DocumentCompositionEntry[]) {
   return `conic-gradient(${stops.join(", ")})`;
 }
 
+type PipelineNodeData = Record<string, unknown> & {
+  amountUsd: number;
+  callCount: number;
+  durationMs: number;
+  meta: string;
+  status: string;
+  subtitle: string;
+  title: string;
+  tone: string;
+};
+
+type CompositionPipelineNode = FlowNode<PipelineNodeData, "compositionPipeline">;
+
+const compositionPipelineNodeTypes = {
+  compositionPipeline: CompositionPipelineNodeView,
+};
+
+function pipelineTone(entry: DocumentCompositionEntry) {
+  if (entry.status === "failed" || entry.status === "error") return "error";
+  if (entry.status === "warning") return "warning";
+  if (entry.record_kind === "llm") return "llm";
+  if (entry.record_kind === "embedding") return "embedding";
+  if (entry.record_kind === "edit") return "edit";
+  return "local";
+}
+
+function pipelineMeta(entry: DocumentCompositionEntry) {
+  return [
+    entry.provider,
+    entry.amount_usd > 0 ? formatUsd(entry.amount_usd) : "",
+    formatDurationMs(entry.duration_ms),
+    entry.total_tokens ? `${formatMetric(entry.total_tokens)} tokens` : "",
+    entry.call_count > 1 ? `${entry.call_count} calls` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
+  const nodeWidth = 236;
+  const nodeHeight = 126;
+  const horizontalGap = 70;
+  const verticalGap = 90;
+  const columns = Math.max(1, Math.min(3, pipeline.length));
+  const nodes: CompositionPipelineNode[] = pipeline.map((entry, index) => ({
+    id: `pipeline-${index}`,
+    type: "compositionPipeline",
+    position: {
+      x: (index % columns) * (nodeWidth + horizontalGap),
+      y: Math.floor(index / columns) * (nodeHeight + verticalGap),
+    },
+    data: {
+      amountUsd: entry.amount_usd || 0,
+      callCount: entry.call_count || 0,
+      durationMs: entry.duration_ms || 0,
+      meta: pipelineMeta(entry),
+      status: entry.status || "complete",
+      subtitle: compositionLabel(entry),
+      title: entry.stage_label || entry.label || "Pipeline step",
+      tone: pipelineTone(entry),
+    },
+  }));
+  const edges: Edge[] = pipeline.slice(1).map((_, index) => ({
+    id: `pipeline-edge-${index}`,
+    source: `pipeline-${index}`,
+    target: `pipeline-${index + 1}`,
+    type: "smoothstep",
+    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
+    style: { strokeWidth: 2 },
+  }));
+  return { nodes, edges };
+}
+
+function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode>) {
+  const hasSpend = data.amountUsd > 0;
+  const hasDuration = data.durationMs > 0;
+  return (
+    <div className={`composition-pipeline-node ${data.tone}`}>
+      <span>{data.title}</span>
+      <strong>{data.subtitle}</strong>
+      {data.meta ? <small>{data.meta}</small> : null}
+      <div>
+        <em>{data.status}</em>
+        {hasSpend ? <em>{formatUsd(data.amountUsd)}</em> : null}
+        {hasDuration ? <em>{formatDurationMs(data.durationMs)}</em> : null}
+      </div>
+    </div>
+  );
+}
+
 function importJobProgress(job: ImportJob) {
   if (job.status === "complete") return 100;
   if (job.status === "failed") return 100;
@@ -748,6 +848,28 @@ function importJobStepLabel(job: ImportJob) {
   if (job.status === "complete") return "complete";
   if (job.status === "failed") return job.last_error || "failed";
   return importJobStage(job);
+}
+
+function candidateMetadataText(candidate: CitationCandidate, key: string) {
+  const value = candidate.metadata?.[key];
+  if (typeof value === "string") return decodeHtmlEntities(value).trim();
+  if (typeof value === "number") return String(value);
+  return "";
+}
+
+function citationCandidateTitle(candidate: CitationCandidate) {
+  return candidate.document_title || candidateMetadataText(candidate, "title") || "Untitled document";
+}
+
+function citationCandidateSourceLabel(candidate: CitationCandidate) {
+  const source = candidate.source.replaceAll("_", " ").replaceAll("-", " ").trim();
+  return source ? source : "candidate";
+}
+
+function citationCandidateReviewDate(candidate: CitationCandidate) {
+  const date = new Date(candidate.created_at);
+  if (Number.isNaN(date.valueOf())) return "";
+  return date.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 }
 
 function importJobStatusLabel(job: ImportJob) {
@@ -2093,7 +2215,8 @@ function CompositionDialog({
   const providerEntries = composition?.provider_breakdown || [];
   const localEntries = composition?.local_duration_entries || [];
   const pipeline = composition?.pipeline || [];
-  const errata = composition?.errata || [];
+  const issues = composition?.errata || [];
+  const pipelineGraph = useMemo(() => pipelineNodesAndEdges(pipeline), [pipeline]);
   const duration = formatDuration(composition?.total_duration_seconds);
   return (
     <div
@@ -2193,29 +2316,50 @@ function CompositionDialog({
             <section className="composition-section">
               <div className="composition-section-title">
                 <h3>Pipeline</h3>
+                <span>{pipeline.length ? `${pipeline.length} recorded steps` : "No recorded steps"}</span>
               </div>
-              <div className="composition-flow">
-                {pipeline.map((entry, index) => (
-                  <div className={`composition-flow-step ${entry.record_kind || ""}`} key={`${entry.stage_key}-${entry.provider}-${entry.model}-${index}`}>
-                    <span>{entry.stage_label || entry.label}</span>
-                    <strong>{compositionLabel(entry)}</strong>
-                    <small>
-                      {[entry.provider, entry.amount_usd > 0 ? formatUsd(entry.amount_usd) : "", formatDurationMs(entry.duration_ms)].filter(Boolean).join(" - ")}
-                    </small>
-                  </div>
-                ))}
-              </div>
+              {pipeline.length ? (
+                <div className="composition-flow-chart">
+                  <ReactFlow
+                    colorMode="system"
+                    edges={pipelineGraph.edges}
+                    elementsSelectable={false}
+                    defaultViewport={{ x: 24, y: 34, zoom: 1 }}
+                    maxZoom={1.3}
+                    minZoom={0.55}
+                    nodeTypes={compositionPipelineNodeTypes}
+                    nodes={pipelineGraph.nodes}
+                    nodesConnectable={false}
+                    nodesDraggable={false}
+                    onlyRenderVisibleElements
+                    panOnDrag
+                    preventScrolling={false}
+                    proOptions={{ hideAttribution: true }}
+                    zoomOnDoubleClick={false}
+                    zoomOnScroll={false}
+                  >
+                    <Background gap={20} size={1} />
+                    <Controls position="bottom-right" showInteractive={false} />
+                  </ReactFlow>
+                </div>
+              ) : (
+                <div className="composition-empty compact">
+                  <Info size={18} />
+                  <span>No pipeline steps recorded.</span>
+                </div>
+              )}
             </section>
-            {errata.length ? (
+            {issues.length ? (
               <section className="composition-section">
                 <div className="composition-section-title">
-                  <h3>Errata</h3>
+                  <h3>Processing Issues</h3>
                 </div>
-                <div className="composition-errata-list">
-                  {errata.map((entry, index) => (
-                    <div key={`${entry.stage_key}-${index}`} className="composition-errata-row">
+                <div className="composition-issue-list">
+                  {issues.map((entry, index) => (
+                    <div key={`${entry.stage_key}-${index}`} className="composition-issue-row">
                       <strong>{entry.stage_label || entry.label}</strong>
                       <span>{entry.message || entry.status}</span>
+                      <small>{[entry.status, entry.provider, entry.model || entry.method].filter(Boolean).join(" / ")}</small>
                     </div>
                   ))}
                 </div>
@@ -4262,34 +4406,52 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
           <FileSearch size={20} />
         </div>
         <div className="review-list">
-          {items.map((item) => (
-            <article key={item.id}>
-              <div>
-                <strong>{String(item.metadata.title || "Untitled")}</strong>
-                <span>{item.source}</span>
-              </div>
-              <MarkdownBlock content={item.citation_text} empty="No candidate citation." />
-              <div className="review-actions">
-                <StatusPill value={item.status} tone="warn" />
-                <button
-                  className="primary-button"
-                  disabled={updateCandidate.isPending}
-                  onClick={() => updateCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
-                >
-                  <CheckCircle2 size={16} />
-                  Accept
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={updateCandidate.isPending}
-                  onClick={() => updateCandidate.mutate({ id: item.id, status: "rejected" })}
-                >
-                  <X size={16} />
-                  Reject
-                </button>
-              </div>
-            </article>
-          ))}
+          {items.map((item) => {
+            const candidateTitle = candidateMetadataText(item, "title");
+            const documentTitle = citationCandidateTitle(item);
+            const showCandidateTitle = candidateTitle && candidateTitle !== documentTitle;
+            const reviewDate = citationCandidateReviewDate(item);
+            return (
+              <article key={item.id} className="review-card">
+                <div className="review-card-main">
+                  <div className="review-card-title">
+                    <strong title={documentTitle}>{documentTitle}</strong>
+                    <div className="review-card-meta">
+                      <span>
+                        <FileText size={14} />
+                        {citationCandidateSourceLabel(item)}
+                      </span>
+                      {reviewDate ? <span>{reviewDate}</span> : null}
+                      {typeof item.confidence === "number" ? <span>{Math.round(item.confidence * 100)}% confidence</span> : null}
+                    </div>
+                    {showCandidateTitle ? <small>Candidate title: {candidateTitle}</small> : null}
+                  </div>
+                  <div className="review-citation">
+                    <MarkdownBlock compact content={item.citation_text} empty="No candidate citation." />
+                  </div>
+                </div>
+                <div className="review-actions">
+                  <StatusPill value={item.status} tone="warn" />
+                  <button
+                    className="primary-button"
+                    disabled={updateCandidate.isPending}
+                    onClick={() => updateCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
+                  >
+                    <CheckCircle2 size={16} />
+                    Accept
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={updateCandidate.isPending}
+                    onClick={() => updateCandidate.mutate({ id: item.id, status: "rejected" })}
+                  >
+                    <X size={16} />
+                    Reject
+                  </button>
+                </div>
+              </article>
+            );
+          })}
           {!items.length ? <p className="empty-note">Citation review is clear.</p> : null}
         </div>
       </section>

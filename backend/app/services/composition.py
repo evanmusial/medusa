@@ -361,7 +361,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             group["total_tokens"] += record.total_tokens
             group["call_count"] += 1
 
-        if record.record_kind in {"erratum", "edit"} or record.status in {"failed", "error", "warning"}:
+        if record.record_kind == "erratum" or record.status in {"failed", "error", "warning"}:
             errata.append(
                 {
                     "label": record.stage_label,

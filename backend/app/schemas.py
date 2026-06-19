@@ -509,6 +509,7 @@ class NoteOut(ApiModel):
 class CitationCandidateOut(ApiModel):
     id: str
     document_id: str
+    document_title: str | None = None
     source: str
     citation_text: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="source_metadata", serialization_alias="metadata")
@@ -516,7 +517,7 @@ class CitationCandidateOut(ApiModel):
     status: str
     created_at: datetime
 
-    @field_validator("citation_text", mode="before")
+    @field_validator("document_title", "citation_text", mode="before")
     @classmethod
     def decode_citation_text(cls, value: Any) -> Any:
         return decode_html_entity_text(value)
