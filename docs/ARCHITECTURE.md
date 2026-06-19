@@ -41,7 +41,7 @@ Current UI architecture:
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation, with run-sheet controls constrained to their pane so long document titles cannot spill into bibliography controls.
 - Queue shows queued/running import jobs with per-job stage progress and citation candidates that need human attention, and supports accepting or rejecting citation candidates.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
-- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
+- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls. Settings places Save All controls at both the top and bottom of the view, and each Save All action persists all preference groups together.
 - Metadata restore is CLI-first: dry-run by default, explicit `--apply`, and intended for backup drills or fresh-database recovery.
 
 Visual decisions:
@@ -52,11 +52,12 @@ Visual decisions:
 - The header build stamp sits in the action cluster before the theme toggle and uses the frontend build date plus optional short Git SHA (`YYYY.MM.DD+hash`) so the running UI can be identified without opening developer tools. `MEDUSA_BUILD_DATE` and `MEDUSA_BUILD_SHA` can override the stamp for release or CI builds.
 - The emblem source remains black with transparency; night mode inverts it with CSS so the glyph reads light while keeping the transparent background intact. The same SVG is used as the browser favicon.
 - The primary navigation should not consume a persistent left rail. Top-level destinations belong in the quiet horizontal work navigation so the research panes can use the full application width.
-- Day mode uses cool white surfaces, ink text, restrained blue primary actions, teal success, amber warnings.
+- Day mode uses cool white surfaces, slightly darker gray backgrounds/borders for contrast, ink text, restrained blue primary actions, teal success, amber warnings.
 - Night mode uses charcoal surfaces, high-contrast text, blue/teal accents, and soft borders.
 - Avoid loud gradients, marketing-style hero layouts, decorative blobs, or oversized display typography inside the work surface.
 - Use icons for actions and navigation where they improve scanning.
-- Buttons that start background jobs should show a green in-flight state with a small progress bar while work is active, flash green on completion, flash red with a concise error popover on failure, then fade back to their normal button color.
+- Standard action buttons use compact rounded rectangles with icon-left labels, blue filled primary actions, and white secondary actions with visible blue-gray borders. Buttons should size to their content by default rather than stretching across grid panels unless a narrow responsive layout explicitly needs full width.
+- Buttons that start background jobs should show a soft blue in-flight state with the button's own icon spinning and a slim in-button progress bar while work is active. On success, they should blend to green over 0.20 seconds, hold green for 0.5 seconds, then fade back to their normal button color over 0.2 seconds. Failures still flash red with a concise error popover.
 - Top-level navigation and lightweight status should read as quiet text on the work-surface background, not as button-like cards.
 - Keep cards for framed tools or repeated items; do not nest cards.
 - Keep cockpit spacing dense and practical; panes should prioritize scanning and repeated work over airy presentation.
@@ -121,7 +122,7 @@ Frontend async-work contract:
 - The app shell owns user-visible progress for durable Concordance work. Page controls start runs through a shell-level `startConcordanceRun` helper so the request is recorded in shell state before the API call returns.
 - The shell reconciles local "starting" jobs with `/api/concordance/runs` and `/api/concordance/jobs` polling data, then renders active work in the reserved header progress slot while work is starting, queued, or running.
 - Header progress shows imports first when imports are active, otherwise the first active Concordance/citation background run or an active-count summary. It is hidden but width-preserving when idle and opens Queue when clicked.
-- Page-level controls still own their local disabled state, green in-flight button/progress treatment, and transient result flash. Completion flashes green; a failed start or failed watched job flashes red and shows a concise popover error.
+- Page-level controls still own their local disabled state, soft blue in-flight button/icon/progress treatment, and transient result flash. Completion blends through green; a failed start or failed watched job flashes red and shows a concise popover error.
 - The Library citation Check actions queue a forced `citation_refresh` Concordance Run for the current document. The APA Reference List and APA In-Text Citation buttons start the same durable refresh because both citation surfaces are generated from the same citation metadata/model preference. If the user stays on the document pane, the button-level watcher can flash completion/failure; citation success flashes fade quickly while error flashes remain visible longer. If the user navigates away, the app shell still follows the durable run and displays terminal state.
 - Settings, selected-document batch Concordance, and document-level Concordance controls use the same shell-owned starter so navigation away from those pages does not abandon UI reconciliation.
 - Import jobs remain represented by Queue rows and the header active-work progress control because their progress is already dashboard-backed; rescue/requeue buttons use the same transient button-feedback convention.
@@ -774,7 +775,7 @@ Consequences:
 - Citation Check queues a forced `citation_refresh` Concordance Run for both APA citation surfaces instead of relying on a page-local request lifecycle.
 - The app shell records a local "starting" job immediately, reconciles it with persisted Concordance run/job state, and displays starting/queued/running status in the header active-work control.
 - Page-local controls can unmount without losing the shell's progress/error display. If the originating page remains mounted, its button can still flash completion/failure from the watched job.
-- Buttons that start async work use the same restrained feedback language: green plus a slim progress bar while work is in flight, green success flash on completion, red plus a short error popover for failure, then a fade back to the normal button color.
+- Buttons that start async work use the same restrained feedback language: soft blue plus a spinning in-button icon and slim progress bar while work is in flight, a timed green success blend on completion, red plus a short error popover for failure, then a fade back to the normal button color.
 - Import progress shares the header active-work control because imports already have dashboard-backed progress, while import requeue buttons use the same transient feedback convention.
 - Recommendation refresh/download buttons use the same local feedback convention until recommendation downloads become durable background fetch jobs.
 

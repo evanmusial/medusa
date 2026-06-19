@@ -77,7 +77,7 @@ import type {
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "budget" | "settings";
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
-type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number; quick?: boolean };
+type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
 type BackgroundJobStatus = "starting" | "queued" | "running" | "complete" | "failed";
 type BackgroundJob = {
   id: string;
@@ -115,8 +115,8 @@ const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local
 const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "restored_paused"]);
-const ASYNC_ACTION_FEEDBACK_MS = 5000;
-const QUICK_SUCCESS_FEEDBACK_MS = 1200;
+const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
+const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
@@ -211,8 +211,8 @@ function useAsyncActionFeedback(options: { successMs?: number; errorMs?: number 
   const [feedback, setFeedback] = useState<AsyncActionFeedback | null>(null);
   const startTimerRef = useRef<number | null>(null);
   const clearTimerRef = useRef<number | null>(null);
-  const successMs = options.successMs ?? ASYNC_ACTION_FEEDBACK_MS;
-  const errorMs = options.errorMs ?? ASYNC_ACTION_FEEDBACK_MS;
+  const successMs = options.successMs ?? ASYNC_ACTION_SUCCESS_FEEDBACK_MS;
+  const errorMs = options.errorMs ?? ASYNC_ACTION_ERROR_FEEDBACK_MS;
 
   const clearTimers = useCallback(() => {
     if (startTimerRef.current !== null) window.clearTimeout(startTimerRef.current);
@@ -227,7 +227,7 @@ function useAsyncActionFeedback(options: { successMs?: number; errorMs?: number 
       setFeedback(null);
       startTimerRef.current = window.setTimeout(() => {
         const durationMs = tone === "success" ? successMs : errorMs;
-        setFeedback({ tone, message, token: Date.now(), quick: tone === "success" && durationMs < ASYNC_ACTION_FEEDBACK_MS });
+        setFeedback({ tone, message, token: Date.now() });
         clearTimerRef.current = window.setTimeout(() => {
           setFeedback(null);
           clearTimerRef.current = null;
@@ -275,7 +275,7 @@ function useAsyncActionFeedbackMap() {
             return next;
           });
           delete clearTimersRef.current[key];
-        }, ASYNC_ACTION_FEEDBACK_MS);
+        }, tone === "success" ? ASYNC_ACTION_SUCCESS_FEEDBACK_MS : ASYNC_ACTION_ERROR_FEEDBACK_MS);
       }, 0);
     },
     [clearKeyTimers],
@@ -297,7 +297,7 @@ function useAsyncActionFeedbackMap() {
 }
 
 function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | null, busy = false) {
-  return [className, busy ? "async-feedback-progress" : "", feedback ? `async-feedback-${feedback.tone}` : "", feedback?.quick ? "async-feedback-quick" : ""]
+  return [className, busy ? "async-feedback-progress" : "", feedback ? `async-feedback-${feedback.tone}` : ""]
     .filter(Boolean)
     .join(" ");
 }
@@ -2167,8 +2167,8 @@ function DocumentPanelContent({
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
-  const referenceCitationFeedback = useAsyncActionFeedback({ successMs: QUICK_SUCCESS_FEEDBACK_MS });
-  const inTextCitationFeedback = useAsyncActionFeedback({ successMs: QUICK_SUCCESS_FEEDBACK_MS });
+  const referenceCitationFeedback = useAsyncActionFeedback();
+  const inTextCitationFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const composition = useQuery({
     queryKey: ["document-composition", document.id],
@@ -4419,6 +4419,7 @@ function SettingsView({
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
+  const savePreferencesFeedback = useAsyncActionFeedback();
 
   useEffect(() => {
     if (preferences) {
@@ -4481,8 +4482,13 @@ function SettingsView({
         library_alternating_rows: libraryAlternatingRows,
         analysis_models: analysisModels,
       }),
-    onSuccess: () => {
+    onSuccess: (updatedPreferences) => {
+      savePreferencesFeedback.showSuccess();
+      queryClient.setQueryData(["preferences"], updatedPreferences);
       void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+    },
+    onError: (error) => {
+      savePreferencesFeedback.showError(actionFailureMessage("Could not save preferences", error));
     },
   });
   const latestRun = runs[0];
@@ -4503,9 +4509,25 @@ function SettingsView({
         !sameStringMap(preferences.analysis_models, analysisModels)),
   );
   const importCostWarning = importWorkerConcurrency > warningThreshold;
+  const savePreferencesDisabled = !preferences || !preferenceDirty || savePreferences.isPending;
+  const renderSaveAllButton = (placement: "top" | "bottom") => (
+    <AsyncActionSlot feedback={savePreferencesFeedback.feedback}>
+      <button
+        aria-label={`Save all preferences from the ${placement} of Settings`}
+        className={asyncFeedbackClass("primary-button settings-save-all", savePreferencesFeedback.feedback)}
+        disabled={savePreferencesDisabled}
+        onClick={() => savePreferences.mutate()}
+        type="button"
+      >
+        <Save size={16} />
+        {savePreferences.isPending ? "Saving" : "Save All"}
+      </button>
+    </AsyncActionSlot>
+  );
 
   return (
     <section className="workbench settings-grid">
+      <header className="settings-save-row">{renderSaveAllButton("top")}</header>
       <div className="settings-tile">
         <Gauge size={22} />
         <h2>Runtime</h2>
@@ -4580,15 +4602,6 @@ function SettingsView({
             <input type="color" value={accentColorNight} onChange={(event) => setAccentColorNight(event.target.value)} />
           </label>
         </div>
-        <button
-          className="primary-button"
-          disabled={!preferences || !preferenceDirty || savePreferences.isPending}
-          onClick={() => savePreferences.mutate()}
-          type="button"
-        >
-          <Save size={16} />
-          Save
-        </button>
       </div>
       <div className="model-settings-panel">
         <div className="panel-title-row">
@@ -4619,15 +4632,6 @@ function SettingsView({
             </div>
           ))}
         </div>
-        <button
-          className="primary-button"
-          disabled={!preferences || !preferenceDirty || savePreferences.isPending}
-          onClick={() => savePreferences.mutate()}
-          type="button"
-        >
-          <Save size={16} />
-          Save models
-        </button>
       </div>
       <div className="openai-usage-panel">
         <div className="panel-title-row">
@@ -4880,6 +4884,7 @@ function SettingsView({
           )}
         </div>
       </div>
+      <footer className="settings-save-row bottom">{renderSaveAllButton("bottom")}</footer>
     </section>
   );
 }

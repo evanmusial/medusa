@@ -1,12 +1,12 @@
 :root {
   color-scheme: light;
-  --bg: #f6f8fb;
+  --bg: #f2f5f9;
   --panel: #ffffff;
-  --panel-2: #f9fbfd;
+  --panel-2: #f5f7fb;
   --ink: #172033;
-  --muted: #647084;
-  --line: #dce4ef;
-  --button-line: #c7d2e1;
+  --muted: #526074;
+  --line: #cbd6e3;
+  --button-line: #b5c4d6;
   --accent: #2563eb;
   --accent-soft: #e8f0ff;
   --blue: var(--accent);
@@ -19,7 +19,7 @@
   --danger-soft: #fde7e9;
   --action-success: #0f766e;
   --action-error: #b4232d;
-  --library-row-alt: #eef4fb;
+  --library-row-alt: #e7eef8;
   --document-title-ink: #000000;
   --shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
   font-family:
@@ -206,15 +206,31 @@ textarea {
   --async-feedback-base-bg: transparent;
   --async-feedback-base-border: transparent;
   --async-feedback-base-color: var(--ink);
-  border-radius: 6px;
-  border: 1px solid transparent;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 10px;
+  border: 2px solid transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 38px;
-  padding: 0 12px;
+  min-height: 42px;
+  padding: 0 16px;
   color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.primary-button svg,
+.secondary-button svg,
+.icon-button svg {
+  flex: 0 0 auto;
 }
 
 .primary-button,
@@ -224,51 +240,77 @@ textarea {
 
 .primary-button {
   --async-feedback-base-bg: var(--blue);
-  --async-feedback-base-border: transparent;
+  --async-feedback-base-border: var(--blue);
   --async-feedback-base-color: white;
   background: var(--blue);
+  border-color: var(--blue);
   color: white;
 }
 
 .secondary-button,
 .icon-button {
-  --async-feedback-base-bg: var(--panel-2);
+  --async-feedback-base-bg: var(--panel);
   --async-feedback-base-border: var(--button-line);
   --async-feedback-base-color: var(--ink);
-  background: var(--panel-2);
+  background: var(--panel);
   border-color: var(--button-line);
+}
+
+.primary-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--blue) 88%, #0f172a);
+  border-color: color-mix(in srgb, var(--blue) 88%, #0f172a);
+}
+
+.secondary-button:hover:not(:disabled),
+.icon-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--blue-soft) 42%, var(--panel));
+  border-color: color-mix(in srgb, var(--blue) 46%, var(--button-line));
+}
+
+.icon-button {
+  width: 42px;
+  min-width: 42px;
+  padding: 0;
 }
 
 .async-feedback-success,
 .async-feedback-error {
-  color: white;
-  animation-duration: 5s;
   animation-fill-mode: forwards;
   animation-timing-function: linear;
 }
 
 .async-feedback-success {
   animation-name: async-feedback-success;
+  animation-duration: 0.9s;
 }
 
 .async-feedback-error {
   animation-name: async-feedback-error;
-}
-
-.async-feedback-success.async-feedback-quick {
-  animation-duration: 1.2s;
+  animation-duration: 5s;
+  color: white;
 }
 
 .async-feedback-progress {
-  background: var(--action-success);
-  border-color: var(--action-success);
-  color: white;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--action-success) 28%, transparent);
+  background: var(--blue-soft);
+  border-color: color-mix(in srgb, var(--blue) 42%, var(--button-line));
+  color: var(--blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.async-feedback-progress svg {
+  animation: spin 0.9s linear infinite;
+  transform-origin: center;
 }
 
 @keyframes async-feedback-success {
-  0%,
-  50% {
+  0% {
+    background-color: var(--blue-soft);
+    border-color: color-mix(in srgb, var(--blue) 42%, var(--button-line));
+    color: var(--blue);
+  }
+
+  22.222%,
+  77.778% {
     background-color: var(--action-success);
     border-color: var(--action-success);
     color: white;
@@ -304,18 +346,18 @@ textarea {
 
 .async-action-slot.in-flight {
   z-index: 3;
-  padding-bottom: 7px;
 }
 
 .async-action-progress {
   position: absolute;
-  left: 2px;
-  right: 2px;
-  bottom: 0;
-  height: 4px;
+  left: 7px;
+  right: 7px;
+  bottom: 4px;
+  height: 3px;
   overflow: hidden;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--action-success) 16%, var(--line));
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel));
+  pointer-events: none;
 }
 
 .async-action-progress span {
@@ -325,9 +367,9 @@ textarea {
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--action-success) 35%, white) 0%,
-    var(--action-success) 48%,
-    color-mix(in srgb, var(--action-success) 35%, white) 100%
+    color-mix(in srgb, var(--blue) 18%, white) 0%,
+    var(--blue) 48%,
+    color-mix(in srgb, var(--blue) 18%, white) 100%
   );
   animation: async-action-progress 1.1s ease-in-out infinite;
 }
@@ -389,9 +431,20 @@ textarea {
   cursor: progress;
 }
 
+.primary-button.async-feedback-success:disabled,
+.secondary-button.async-feedback-success:disabled,
+.icon-button.async-feedback-success:disabled,
+.primary-button.async-feedback-error:disabled,
+.secondary-button.async-feedback-error:disabled,
+.icon-button.async-feedback-error:disabled {
+  opacity: 1;
+}
+
 .icon-button.compact {
-  width: 30px;
-  min-height: 30px;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  border-radius: 8px;
   padding: 0;
 }
 
@@ -750,10 +803,6 @@ textarea {
 .filter-controls input {
   width: 100%;
   min-width: 0;
-}
-
-.filter-controls .secondary-button {
-  width: 100%;
 }
 
 .saved-search-form {
@@ -2074,8 +2123,10 @@ textarea {
 
 .secondary-button.compact,
 .primary-button.compact {
-  min-height: 30px;
-  padding: 0 9px;
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .compact-checklist {
@@ -2826,6 +2877,17 @@ pre {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.settings-save-row {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.settings-save-row.bottom {
+  padding-top: 2px;
 }
 
 .settings-grid > div {
