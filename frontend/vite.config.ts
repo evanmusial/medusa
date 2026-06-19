@@ -21,7 +21,7 @@ const buildVersion = buildSha ? `${buildDate}+${buildSha}` : buildDate;
 export default defineConfig({
   plugins: [react()],
   define: {
-    __MEDUSA_BUILD_VERSION__: JSON.stringify(buildVersion),
+    "import.meta.env.VITE_MEDUSA_BUILD_VERSION": JSON.stringify(buildVersion),
   },
   server: {
     host: "0.0.0.0",

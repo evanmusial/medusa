@@ -67,13 +67,12 @@ import type {
   Tag,
 } from "./types";
 
-declare const __MEDUSA_BUILD_VERSION__: string;
-
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "settings";
 
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
+const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library }> = [
   { id: "library", label: "Library", icon: Library },
@@ -600,8 +599,8 @@ function Header({
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents, notes, figures, citations..." />
       </label>
       <div className="topbar-actions">
-        <span className="build-version" title={`Medusa build ${__MEDUSA_BUILD_VERSION__}`}>
-          v{__MEDUSA_BUILD_VERSION__}
+        <span className="build-version" title={`Medusa build ${MEDUSA_BUILD_VERSION}`}>
+          v{MEDUSA_BUILD_VERSION}
         </span>
         <button className="icon-button" title="Toggle theme" onClick={() => setTheme(theme === "day" ? "night" : "day")}>
           {theme === "day" ? <Moon size={18} /> : <Sun size={18} />}
