@@ -9,7 +9,9 @@ from app.config import get_settings
 
 DEFAULT_GPT_MODEL = "gpt-5.5"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_RAW_TEXT_EXTRACTOR = "marker"
 
+MODEL_RAW_TEXT_EXTRACTION = "raw_text_extraction"
 MODEL_METADATA = "metadata"
 MODEL_SUMMARY = "summary"
 MODEL_APA_CITATION = "apa_citation"
@@ -43,6 +45,11 @@ EMBEDDING_MODEL_OPTIONS = (
     "text-embedding-3-small",
     "text-embedding-3-large",
 )
+LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS = (
+    "docling",
+    "marker",
+    "pymupdf",
+)
 
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
@@ -51,11 +58,17 @@ MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 class AnalysisModelTask:
     key: str
     label: str
-    model_kind: Literal["gpt", "embedding"]
+    model_kind: Literal["gpt", "embedding", "raw_text_extraction"]
     description: str
 
 
 ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
+    AnalysisModelTask(
+        key=MODEL_RAW_TEXT_EXTRACTION,
+        label="Raw Text Extraction",
+        model_kind="raw_text_extraction",
+        description="Extracts and linearizes the PDF text/layout before page normalization, indexing, and document intelligence. Local extractors avoid cloud model spend; OpenAI options are reserved for cloud-backed extraction fallbacks.",
+    ),
     AnalysisModelTask(
         key=MODEL_METADATA,
         label="Metadata",
@@ -114,6 +127,8 @@ def normalize_model_id(value: object, default: str) -> str:
 def default_model_for_task(task_key: str) -> str:
     settings = get_settings()
     task = TASK_BY_KEY.get(task_key)
+    if task and task.model_kind == "raw_text_extraction":
+        return DEFAULT_RAW_TEXT_EXTRACTOR
     if task and task.model_kind == "embedding":
         return normalize_model_id(settings.openai_embedding_model, DEFAULT_EMBEDDING_MODEL)
     return normalize_model_id(settings.openai_model, DEFAULT_GPT_MODEL)
@@ -127,10 +142,13 @@ def model_options(saved_models: dict[str, str] | None = None) -> dict[str, list[
     saved_values = set(saved_models.values()) if saved_models else set()
     gpt = [*GPT_MODEL_OPTIONS]
     embedding = [*EMBEDDING_MODEL_OPTIONS]
+    raw_text_extraction = [*LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS]
     for model in sorted(saved_values):
         if model.startswith("text-embedding-"):
             if model not in embedding:
                 embedding.append(model)
+        elif model in LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS:
+            continue
         elif model not in gpt:
             gpt.append(model)
     for model in (get_settings().openai_model, DEFAULT_GPT_MODEL):
@@ -140,10 +158,27 @@ def model_options(saved_models: dict[str, str] | None = None) -> dict[str, list[
     embedding_default = normalize_model_id(get_settings().openai_embedding_model, DEFAULT_EMBEDDING_MODEL)
     if embedding_default not in embedding:
         embedding.insert(0, embedding_default)
-    return {"gpt": gpt, "embedding": embedding}
+    for model in gpt:
+        if model not in raw_text_extraction:
+            raw_text_extraction.append(model)
+    for model in sorted(saved_values):
+        if model.startswith("text-embedding-") or model in raw_text_extraction:
+            continue
+        raw_text_extraction.append(model)
+    return {"gpt": gpt, "embedding": embedding, "raw_text_extraction": raw_text_extraction}
 
 
-def task_payloads(models: dict[str, str] | None = None) -> list[dict[str, str]]:
+def option_groups_for_task(task: AnalysisModelTask, models: dict[str, str] | None = None) -> list[dict[str, list[str] | str]]:
+    if task.model_kind != "raw_text_extraction":
+        return []
+    options = model_options(models)
+    return [
+        {"label": "Local", "options": [*LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS]},
+        {"label": "OpenAI", "options": options["gpt"]},
+    ]
+
+
+def task_payloads(models: dict[str, str] | None = None) -> list[dict[str, str | list[dict[str, list[str] | str]]]]:
     model_map = models or default_analysis_models()
     return [
         {
@@ -153,6 +188,7 @@ def task_payloads(models: dict[str, str] | None = None) -> list[dict[str, str]]:
             "default_model": default_model_for_task(task.key),
             "selected_model": model_map.get(task.key, default_model_for_task(task.key)),
             "description": task.description,
+            "option_groups": option_groups_for_task(task, model_map),
         }
         for task in ANALYSIS_MODEL_TASKS
     ]

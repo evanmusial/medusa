@@ -458,6 +458,11 @@ class DashboardOut(BaseModel):
     projects: int
 
 
+class ModelOptionGroupOut(BaseModel):
+    label: str
+    options: list[str]
+
+
 class AnalysisModelTaskOut(BaseModel):
     key: str
     label: str
@@ -465,6 +470,7 @@ class AnalysisModelTaskOut(BaseModel):
     default_model: str
     selected_model: str
     description: str
+    option_groups: list[ModelOptionGroupOut] = Field(default_factory=list)
 
 
 class AppPreferencesOut(BaseModel):
@@ -474,6 +480,7 @@ class AppPreferencesOut(BaseModel):
     accent_color_day: str
     accent_color_night: str
     document_cache_size_mb: int
+    library_alternating_rows: bool
     analysis_models: dict[str, str]
     analysis_model_tasks: list[AnalysisModelTaskOut]
     model_options: dict[str, list[str]]
@@ -484,7 +491,80 @@ class AppPreferencesPatch(BaseModel):
     accent_color_day: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     document_cache_size_mb: int | None = Field(default=None, ge=0)
+    library_alternating_rows: bool | None = None
     analysis_models: dict[str, str] | None = None
+
+
+class OpenAIUsageTotalsOut(BaseModel):
+    request_count: int
+    successful_request_count: int
+    failed_request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
+    input_file_bytes: int
+    input_text_characters: int
+    output_text_characters: int
+    oldest_created_at: datetime | None = None
+    newest_created_at: datetime | None = None
+    estimated_cost_usd: float
+    priced_request_count: int
+    unpriced_request_count: int
+
+
+class OpenAIUsageGroupOut(BaseModel):
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
+    input_file_bytes: int
+    failed_request_count: int
+    task_key: str | None = None
+    model: str | None = None
+    estimated_cost_usd: float
+    priced_request_count: int
+    unpriced_request_count: int
+
+
+class OpenAIUsageRecentOut(BaseModel):
+    id: str
+    created_at: datetime
+    document_id: str | None = None
+    source: str | None = None
+    task_key: str
+    operation: str
+    model: str
+    endpoint: str
+    status: str
+    page_number: int | None = None
+    used_pdf_file: bool
+    input_file_bytes: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float | None = None
+    error_message: str | None = None
+
+
+class OpenAIUsagePricingOut(BaseModel):
+    basis: str
+    source_url: str
+    updated_at: str
+
+
+class OpenAIUsageOut(BaseModel):
+    period: str
+    summary: OpenAIUsageTotalsOut
+    by_task: list[OpenAIUsageGroupOut]
+    by_model: list[OpenAIUsageGroupOut]
+    recent: list[OpenAIUsageRecentOut]
+    pricing: OpenAIUsagePricingOut
 
 
 class BibliographyOut(BaseModel):

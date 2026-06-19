@@ -112,6 +112,37 @@ class AppPreference(Base, TimestampMixin):
     value: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
 
 
+class OpenAIUsageRecord(Base, TimestampMixin):
+    __tablename__ = "openai_usage_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    import_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("import_jobs.id", ondelete="SET NULL"), index=True)
+    concordance_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("concordance_runs.id", ondelete="SET NULL"), index=True)
+    concordance_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("concordance_jobs.id", ondelete="SET NULL"), index=True)
+    source: Mapped[str | None] = mapped_column(String(80), index=True)
+    capability_key: Mapped[str | None] = mapped_column(String(120), index=True)
+    task_key: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(80), default="openai", nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(80), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="success", nullable=False, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    used_pdf_file: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    input_file_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_text_characters: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_text_characters: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    reasoning_output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    usage_metadata: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+
+
 class Domain(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "domains"
 

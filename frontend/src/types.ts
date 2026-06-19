@@ -31,6 +31,7 @@ export type AppPreferences = {
   accent_color_day: string;
   accent_color_night: string;
   document_cache_size_mb: number;
+  library_alternating_rows: boolean;
   analysis_models: Record<string, string>;
   analysis_model_tasks: AnalysisModelTask[];
   model_options: Record<string, string[]>;
@@ -39,10 +40,88 @@ export type AppPreferences = {
 export type AnalysisModelTask = {
   key: string;
   label: string;
-  model_kind: "gpt" | "embedding" | string;
+  model_kind: "gpt" | "embedding" | "raw_text_extraction" | string;
   default_model: string;
   selected_model: string;
   description: string;
+  option_groups: ModelOptionGroup[];
+};
+
+export type ModelOptionGroup = {
+  label: string;
+  options: string[];
+};
+
+export type OpenAIUsageTotals = {
+  request_count: number;
+  successful_request_count: number;
+  failed_request_count: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+  input_file_bytes: number;
+  input_text_characters: number;
+  output_text_characters: number;
+  oldest_created_at?: string | null;
+  newest_created_at?: string | null;
+  estimated_cost_usd: number;
+  priced_request_count: number;
+  unpriced_request_count: number;
+};
+
+export type OpenAIUsageGroup = {
+  request_count: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+  input_file_bytes: number;
+  failed_request_count: number;
+  task_key?: string | null;
+  model?: string | null;
+  estimated_cost_usd: number;
+  priced_request_count: number;
+  unpriced_request_count: number;
+};
+
+export type OpenAIUsageRecent = {
+  id: string;
+  created_at: string;
+  document_id?: string | null;
+  source?: string | null;
+  task_key: string;
+  operation: string;
+  model: string;
+  endpoint: string;
+  status: string;
+  page_number?: number | null;
+  used_pdf_file: boolean;
+  input_file_bytes: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd?: number | null;
+  error_message?: string | null;
+};
+
+export type OpenAIUsagePeriod = "last_day" | "last_month" | "last_3_months" | "all_time";
+
+export type OpenAIUsage = {
+  period: OpenAIUsagePeriod;
+  summary: OpenAIUsageTotals;
+  by_task: OpenAIUsageGroup[];
+  by_model: OpenAIUsageGroup[];
+  recent: OpenAIUsageRecent[];
+  pricing: {
+    basis: string;
+    source_url: string;
+    updated_at: string;
+  };
 };
 
 export type Domain = {

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     openai_send_pdf_file: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_SEND_PDF")
     openai_pdf_file_max_mb: int = Field(default=24, validation_alias="MEDUSA_OPENAI_PDF_FILE_MAX_MB")
     openai_normalize_page_text: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT")
+    openai_page_normalization_mode: str = Field(default="auto", validation_alias="MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE")
+    openai_page_normalization_auto_max_pages: int = Field(
+        default=4,
+        validation_alias="MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES",
+    )
     openai_text_normalization_page_max_chars: int = Field(
         default=14_000,
         validation_alias="MEDUSA_OPENAI_TEXT_NORMALIZATION_PAGE_MAX_CHARS",
@@ -55,6 +60,10 @@ class Settings(BaseSettings):
         validation_alias="MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS",
     )
     openai_embedding_timeout_seconds: float = Field(default=60.0, validation_alias="MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS")
+    raw_text_extraction_timeout_seconds: float = Field(
+        default=900.0,
+        validation_alias="MEDUSA_RAW_TEXT_EXTRACTION_TIMEOUT_SECONDS",
+    )
 
     recommendations_enable_openalex: bool = Field(default=True, validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_OPENALEX")
     recommendations_enable_semantic_scholar: bool = Field(

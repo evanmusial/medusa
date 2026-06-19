@@ -38,6 +38,7 @@ import {
   Tags,
   Trash2,
   UploadCloud,
+  WalletCards,
   X,
 } from "lucide-react";
 import { api } from "./lib/api";
@@ -59,15 +60,19 @@ import type {
   DuplicateImportStrategy,
   ImportDuplicateCheck,
   ImportJob,
+  ModelOptionGroup,
   Note,
   NotePayload,
+  OpenAIUsage,
+  OpenAIUsageGroup,
+  OpenAIUsagePeriod,
   Project,
   ProjectItem,
   SavedSearch,
   Tag,
 } from "./types";
 
-type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "settings";
+type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "budget" | "settings";
 type SidebarCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
@@ -107,15 +112,24 @@ const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "restored_paused"]);
 const ASYNC_ACTION_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
+const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
+  { value: "last_day", label: "Last day" },
+  { value: "last_month", label: "Last month" },
+  { value: "last_3_months", label: "Last 3 months" },
+  { value: "all_time", label: "All time" },
+];
+type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
+type BudgetGroupMode = "model" | "task";
 
-const navItems: Array<{ id: View; label: string; icon: typeof Library }> = [
+const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; separated?: boolean }> = [
   { id: "library", label: "Library", icon: Library },
   { id: "domains", label: "Domains", icon: FolderTree },
   { id: "projects", label: "Projects", icon: ListChecks },
   { id: "queue", label: "Queue", icon: ListTodo },
   { id: "notes", label: "Notes", icon: BookOpen },
   { id: "import", label: "Import", icon: UploadCloud },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "budget", label: "Budget", icon: WalletCards, shortcut: "B" },
+  { id: "settings", label: "Settings", icon: Settings, separated: true },
 ];
 
 function authorLine(document: DocumentSummary | DocumentDetail) {
@@ -125,6 +139,10 @@ function authorLine(document: DocumentSummary | DocumentDetail) {
     .slice(0, 3)
     .map((author) => [author.given, author.family].filter(Boolean).join(" "))
     .join(", ");
+}
+
+function pageCountMarker(document: DocumentSummary | DocumentDetail) {
+  return document.page_count > 0 ? `${document.page_count}pp` : "?pp";
 }
 
 function recommendationAuthorLine(item: DocumentRecommendation) {
@@ -250,14 +268,31 @@ function useAsyncActionFeedbackMap() {
   };
 }
 
-function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | null) {
-  return feedback ? `${className} async-feedback-${feedback.tone}` : className;
+function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | null, busy = false) {
+  return [className, busy ? "async-feedback-progress" : "", feedback ? `async-feedback-${feedback.tone}` : ""]
+    .filter(Boolean)
+    .join(" ");
 }
 
-function AsyncActionSlot({ children, feedback }: { children: ReactNode; feedback?: AsyncActionFeedback | null }) {
+function AsyncActionSlot({
+  busy = false,
+  children,
+  feedback,
+  label = "Async work in progress",
+}: {
+  busy?: boolean;
+  children: ReactNode;
+  feedback?: AsyncActionFeedback | null;
+  label?: string;
+}) {
   return (
-    <span className="async-action-slot">
+    <span className={`async-action-slot ${busy ? "in-flight" : ""}`}>
       {children}
+      {busy ? (
+        <span className="async-action-progress" role="progressbar" aria-label={label}>
+          <span />
+        </span>
+      ) : null}
       {feedback?.tone === "error" && feedback.message ? (
         <span key={feedback.token} className="async-action-message" role="alert">
           {feedback.message}
@@ -277,6 +312,10 @@ function backgroundJobId() {
 
 function isTerminalBackgroundStatus(status: BackgroundJobStatus) {
   return status === "complete" || status === "failed";
+}
+
+function isActiveConcordanceStatus(status: string) {
+  return status === "queued" || status === "running";
 }
 
 function statusFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[]): BackgroundJobStatus {
@@ -332,11 +371,12 @@ function backgroundStatusLabel(job: BackgroundJob) {
 
 function BackgroundJobShelf({ jobs }: { jobs: BackgroundJob[] }) {
   if (!jobs.length) return null;
+  const activeCount = jobs.filter((job) => !isTerminalBackgroundStatus(job.status)).length;
   return (
     <section className="background-jobs" aria-label="Background work">
       <div className="background-jobs-head">
         <span>Background work</span>
-        <strong>{jobs.filter((job) => !isTerminalBackgroundStatus(job.status)).length || "Done"}</strong>
+        <strong>{activeCount ? `${activeCount} active` : "Done"}</strong>
       </div>
       <div className="background-job-list">
         {jobs.slice(0, 4).map((job) => {
@@ -459,6 +499,22 @@ function formatFileSize(bytes?: number | null) {
   }
   const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatMetric(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "0";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0, notation: Math.abs(value) >= 100000 ? "compact" : "standard" }).format(value);
+}
+
+function formatUsd(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "Unpriced";
+  const minimumFractionDigits = value > 0 && value < 0.01 ? 4 : 2;
+  return new Intl.NumberFormat(undefined, {
+    currency: "USD",
+    maximumFractionDigits: 4,
+    minimumFractionDigits,
+    style: "currency",
+  }).format(value);
 }
 
 function formatDuration(seconds?: number | null) {
@@ -902,7 +958,13 @@ function Sidebar({
             const Icon = item.icon;
             const count = formatSidebarCount(counts[item.id]);
             return (
-              <button key={item.id} className={activeView === item.id ? "active" : ""} onClick={() => setActiveView(item.id)}>
+              <button
+                key={item.id}
+                aria-keyshortcuts={item.shortcut}
+                className={`${activeView === item.id ? "active" : ""}${item.separated ? " nav-separated" : ""}`}
+                onClick={() => setActiveView(item.id)}
+                title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
+              >
                 <Icon size={18} />
                 <span>
                   {item.label}
@@ -991,6 +1053,65 @@ function DomainTree({ domains }: { domains: Domain[] }) {
   return <div className="domain-tree">{roots.map((domain) => render(domain))}</div>;
 }
 
+function BulkMultiSelect({
+  emptyLabel,
+  extraCount = 0,
+  footer,
+  label,
+  onChange,
+  options,
+  selectedIds,
+}: {
+  emptyLabel: string;
+  extraCount?: number;
+  footer?: ReactNode;
+  label: string;
+  onChange: (ids: string[]) => void;
+  options: Array<{ id: string; name: string }>;
+  selectedIds: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const selectedCount = selectedIds.length + extraCount;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", closeOnOutsideClick);
+    return () => window.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open]);
+
+  const toggleId = (id: string) => {
+    onChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : uniqueValues([...selectedIds, id]));
+  };
+
+  return (
+    <div className="bulk-multi-select" ref={wrapperRef}>
+      <button className="bulk-multi-trigger" type="button" onClick={() => setOpen((value) => !value)}>
+        <span>{selectedCount ? `${label} ${selectedCount}` : label}</span>
+        <ChevronRight size={14} />
+      </button>
+      {open ? (
+        <div className="bulk-multi-menu">
+          {options.length ? (
+            options.map((option) => (
+              <label key={option.id}>
+                <input type="checkbox" checked={selectedIds.includes(option.id)} onChange={() => toggleId(option.id)} />
+                <span>{option.name}</span>
+              </label>
+            ))
+          ) : (
+            <div className="bulk-multi-empty">{emptyLabel}</div>
+          )}
+          {footer ? <div className="bulk-multi-footer">{footer}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LibraryView({
   documents,
   document,
@@ -1007,6 +1128,7 @@ function LibraryView({
   savedSearches,
   startConcordanceRun,
   loading,
+  alternatingRows,
 }: {
   documents: DocumentSummary[];
   document?: DocumentDetail;
@@ -1023,6 +1145,7 @@ function LibraryView({
   savedSearches: SavedSearch[];
   startConcordanceRun: StartConcordanceRun;
   loading: boolean;
+  alternatingRows: boolean;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
   const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
@@ -1031,9 +1154,11 @@ function LibraryView({
   const [saveName, setSaveName] = useState("");
   const [bulkReadStatus, setBulkReadStatus] = useState("");
   const [bulkPriority, setBulkPriority] = useState("");
-  const [bulkTagId, setBulkTagId] = useState("");
+  const [bulkTagIds, setBulkTagIds] = useState<string[]>([]);
   const [bulkCustomTag, setBulkCustomTag] = useState("");
   const [bulkDomainId, setBulkDomainId] = useState("");
+  const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
+  const [batchConcordanceRunId, setBatchConcordanceRunId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const batchConcordanceFeedback = useAsyncActionFeedback();
   const saveSearch = useMutation({
@@ -1052,22 +1177,25 @@ function LibraryView({
       const updates: Record<string, unknown> = {};
       if (bulkReadStatus) updates.read_status = bulkReadStatus;
       if (bulkPriority) updates.priority = bulkPriority;
-      if (bulkTagId && bulkTagId !== "__custom__") updates.tag_ids = [bulkTagId];
+      if (bulkTagIds.length) updates.tag_ids = bulkTagIds;
       if (bulkCustomTag.trim()) updates.tag_names = [bulkCustomTag.trim()];
       if (bulkDomainId) updates.domain_ids = [bulkDomainId];
+      if (bulkProjectIds.length) updates.project_ids = bulkProjectIds;
       return api.bulkUpdateDocuments(selectedIds, updates);
     },
     onSuccess: () => {
       setSelectedIds([]);
       setBulkReadStatus("");
       setBulkPriority("");
-      setBulkTagId("");
+      setBulkTagIds([]);
       setBulkCustomTag("");
       setBulkDomainId("");
+      setBulkProjectIds([]);
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document"] });
       void queryClient.invalidateQueries({ queryKey: ["domains"] });
       void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
   const batchConcordance = useMutation({
@@ -1079,9 +1207,9 @@ function LibraryView({
         scope_type: "documents",
         scope_data: { document_ids: selectedIds },
       }),
-    onSuccess: () => {
-      batchConcordanceFeedback.showSuccess();
-      setSelectedIds([]);
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setBatchConcordanceRunId(run.id);
+      else batchConcordanceFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
@@ -1089,17 +1217,42 @@ function LibraryView({
       void queryClient.invalidateQueries({ queryKey: ["document"] });
     },
     onError: (error) => {
+      setBatchConcordanceRunId(null);
       batchConcordanceFeedback.showError(actionFailureMessage("Could not start selected-document Concordance", error));
     },
   });
+  const trackedBatchConcordanceJobs = useMemo(
+    () => (batchConcordanceRunId ? citationJobs.filter((job) => job.run_id === batchConcordanceRunId) : []),
+    [batchConcordanceRunId, citationJobs],
+  );
+  const batchConcordanceBusy =
+    batchConcordance.isPending ||
+    Boolean(batchConcordanceRunId && (!trackedBatchConcordanceJobs.length || trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))));
+  useEffect(() => {
+    if (!batchConcordanceRunId || trackedBatchConcordanceJobs.length === 0) return;
+    if (trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    const failedJob = trackedBatchConcordanceJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      batchConcordanceFeedback.showError(
+        actionFailureMessage("Selected-document Concordance failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      batchConcordanceFeedback.showSuccess();
+    }
+    setBatchConcordanceRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document"] });
+  }, [batchConcordanceFeedback.showError, batchConcordanceFeedback.showSuccess, batchConcordanceRunId, queryClient, trackedBatchConcordanceJobs]);
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
   } as CSSProperties;
   const allVisibleSelected = documents.length > 0 && documents.every((item) => selectedIds.includes(item.id));
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
+  const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const hasBulkUpdate = Boolean(
-    bulkReadStatus || bulkPriority || (bulkTagId && bulkTagId !== "__custom__") || bulkCustomTag.trim() || bulkDomainId,
+    bulkReadStatus || bulkPriority || bulkTagIds.length || bulkCustomTag.trim() || bulkDomainId || bulkProjectIds.length,
   );
 
   const setFilterValue = (key: keyof DocumentFilters, value: string) => {
@@ -1293,58 +1446,55 @@ function LibraryView({
                 <option value="normal">Normal</option>
                 <option value="low">Low</option>
               </select>
-              <select
-                value={bulkTagId}
-                onChange={(event) => {
-                  setBulkTagId(event.target.value);
-                  if (event.target.value && event.target.value !== "__custom__") setBulkCustomTag("");
-                }}
-              >
-                <option value="">Add tag</option>
-                {sortedTags.map((tag) => (
-                  <option key={tag.id} value={tag.id}>
-                    {tag.name}
-                  </option>
-                ))}
-                <option value="__custom__">Custom tag...</option>
-              </select>
-              {bulkTagId === "__custom__" || bulkCustomTag ? (
-                <input
-                  className="bulk-custom-tag"
-                  placeholder="Custom tag"
-                  value={bulkCustomTag}
-                  onChange={(event) => {
-                    setBulkCustomTag(event.target.value);
-                    setBulkTagId("__custom__");
-                  }}
-                />
-              ) : null}
+              <BulkMultiSelect
+                emptyLabel="No tags"
+                extraCount={bulkCustomTag.trim() ? 1 : 0}
+                footer={
+                  <input
+                    className="bulk-custom-tag"
+                    placeholder="New tag"
+                    value={bulkCustomTag}
+                    onChange={(event) => setBulkCustomTag(event.target.value)}
+                  />
+                }
+                label="Tags"
+                onChange={setBulkTagIds}
+                options={sortedTags}
+                selectedIds={bulkTagIds}
+              />
               <select value={bulkDomainId} onChange={(event) => setBulkDomainId(event.target.value)}>
-                <option value="">Add domain</option>
+                <option value="">Domain</option>
                 {domains.map((domain) => (
                   <option key={domain.id} value={domain.id}>
                     {domain.name}
                   </option>
                 ))}
               </select>
+              <BulkMultiSelect
+                emptyLabel="No projects"
+                label="Project"
+                onChange={setBulkProjectIds}
+                options={sortedProjects}
+                selectedIds={bulkProjectIds}
+              />
               <button className="primary-button" disabled={!hasBulkUpdate || bulkUpdate.isPending} onClick={() => bulkUpdate.mutate()}>
                 <CheckSquare size={15} />
                 Apply
               </button>
-              <AsyncActionSlot feedback={batchConcordanceFeedback.feedback}>
+              <AsyncActionSlot busy={batchConcordanceBusy} feedback={batchConcordanceFeedback.feedback} label="Selected-document Concordance in progress">
                 <button
-                  className={asyncFeedbackClass("secondary-button", batchConcordanceFeedback.feedback)}
-                  disabled={batchConcordance.isPending}
+                  className={asyncFeedbackClass("secondary-button", batchConcordanceFeedback.feedback, batchConcordanceBusy)}
+                  disabled={batchConcordanceBusy}
                   onClick={() => batchConcordance.mutate()}
                 >
-                  <RefreshCw size={15} />
-                  Concord
+                  <RefreshCw className={batchConcordanceBusy ? "spin" : ""} size={15} />
+                  {batchConcordanceBusy ? "Concording" : "Concord"}
                 </button>
               </AsyncActionSlot>
             </div>
           ) : null}
         </div>
-        <div className="rows">
+        <div className={`rows ${alternatingRows ? "alternating-rows" : ""}`}>
           {documents.map((item) => (
             <div
               key={item.id}
@@ -1362,8 +1512,10 @@ function LibraryView({
               />
               <button className="doc-row-main" onClick={() => activateDocument(item.id)} type="button">
                 <strong>{item.title}</strong>
-                <span>
-                  {authorLine(item)} {item.publication_year ? `• ${item.publication_year}` : ""}
+                <span className="doc-row-byline">
+                  <span className="doc-row-pages">{pageCountMarker(item)}</span>
+                  <span className="doc-row-year">{item.publication_year || "n.d."}</span>
+                  <span className="doc-row-authors">{authorLine(item)}</span>
                 </span>
               </button>
               <div className="row-meta">
@@ -1747,6 +1899,7 @@ function DocumentPanelContent({
     color: "#f6c343",
   });
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [documentConcordanceRunId, setDocumentConcordanceRunId] = useState<string | null>(null);
   const [citationRunId, setCitationRunId] = useState<string | null>(null);
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
@@ -1775,13 +1928,15 @@ function DocumentPanelContent({
         scope_data: { document_ids: [document.id] },
         documentId: document.id,
       }),
-    onSuccess: () => {
-      runConcordanceFeedback.showSuccess();
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setDocumentConcordanceRunId(run.id);
+      else runConcordanceFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
     },
     onError: (error) => {
+      setDocumentConcordanceRunId(null);
       runConcordanceFeedback.showError(actionFailureMessage("Could not start document Concordance", error));
     },
   });
@@ -1836,6 +1991,7 @@ function DocumentPanelContent({
     setEditing(false);
     setRecommendationsOpen(false);
     setSaveError(null);
+    setDocumentConcordanceRunId(null);
     setCitationRunId(null);
   }, [document.id]);
 
@@ -1852,7 +2008,11 @@ function DocumentPanelContent({
   const currentPage = pages[currentPageIndex];
   const currentPageText = currentPage ? pageReadableText(currentPage).trim() : "";
   const citationRefreshActive = citationJobs.some(
-    (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && ["queued", "running"].includes(job.status),
+    (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && isActiveConcordanceStatus(job.status),
+  );
+  const trackedDocumentConcordanceJobs = useMemo(
+    () => (documentConcordanceRunId ? citationJobs.filter((job) => job.run_id === documentConcordanceRunId && job.document_id === document.id) : []),
+    [citationJobs, document.id, documentConcordanceRunId],
   );
   const trackedCitationJobs = useMemo(
     () =>
@@ -1863,11 +2023,41 @@ function DocumentPanelContent({
         : [],
     [citationJobs, citationRunId, document.id],
   );
+  const documentConcordanceBusy =
+    runConcordance.isPending ||
+    Boolean(
+      documentConcordanceRunId &&
+        (!trackedDocumentConcordanceJobs.length || trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))),
+    );
   const citationBusy = refreshCitation.isPending || citationRefreshActive || Boolean(citationRunId);
 
   useEffect(() => {
+    if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
+    if (trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    const failedJob = trackedDocumentConcordanceJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      runConcordanceFeedback.showError(
+        actionFailureMessage("Document Concordance failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      runConcordanceFeedback.showSuccess();
+    }
+    setDocumentConcordanceRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+  }, [
+    document.id,
+    documentConcordanceRunId,
+    queryClient,
+    runConcordanceFeedback.showError,
+    runConcordanceFeedback.showSuccess,
+    trackedDocumentConcordanceJobs,
+  ]);
+
+  useEffect(() => {
     if (!citationRunId || trackedCitationJobs.length === 0) return;
-    if (trackedCitationJobs.some((job) => job.status === "queued" || job.status === "running")) return;
+    if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedCitationJobs.find((job) => job.status === "failed");
     if (failedJob) {
       citationFeedback.showError(
@@ -1978,14 +2168,14 @@ function DocumentPanelContent({
           {editing ? <X size={15} /> : <Edit3 size={15} />}
           {editing ? "Cancel" : "Edit"}
         </button>
-        <AsyncActionSlot feedback={runConcordanceFeedback.feedback}>
+        <AsyncActionSlot busy={documentConcordanceBusy} feedback={runConcordanceFeedback.feedback} label="Document Concordance in progress">
           <button
-            className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback)}
+            className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback, documentConcordanceBusy)}
             onClick={() => runConcordance.mutate()}
-            disabled={runConcordance.isPending}
+            disabled={documentConcordanceBusy}
           >
-            <RefreshCw size={15} />
-            Concord
+            <RefreshCw className={documentConcordanceBusy ? "spin" : ""} size={15} />
+            {documentConcordanceBusy ? "Concording" : "Concord"}
           </button>
         </AsyncActionSlot>
         {onOpenReader && !readerExpanded ? (
@@ -2231,9 +2421,9 @@ function DocumentPanelContent({
             {copiedKey === "citation" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
             {copiedKey === "citation" ? "Copied" : "Copy"}
           </button>
-          <AsyncActionSlot feedback={citationFeedback.feedback}>
+          <AsyncActionSlot busy={citationBusy} feedback={citationFeedback.feedback} label="Citation check in progress">
             <button
-              className={asyncFeedbackClass("secondary-button", citationFeedback.feedback)}
+              className={asyncFeedbackClass("secondary-button", citationFeedback.feedback, citationBusy)}
               onClick={() => refreshCitation.mutate()}
               disabled={citationBusy}
             >
@@ -3313,21 +3503,50 @@ function InfoPopup({ text }: { text: string }) {
   );
 }
 
+function modelDisplayName(model: string) {
+  if (model === "docling") return "Docling";
+  if (model === "marker") return "Marker";
+  if (model === "pymupdf") return "PyMuPDF";
+  return model;
+}
+
 function ModelSelect({
   value,
   options,
+  optionGroups,
   defaultModel,
   onChange,
 }: {
   value: string;
   options: string[];
+  optionGroups?: ModelOptionGroup[];
   defaultModel: string;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const hasGroups = Boolean(optionGroups?.length);
   const uniqueOptions = Array.from(new Set([value, defaultModel, ...options].filter(Boolean))).sort((left, right) =>
     left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
   );
+  const groupedOptions = (() => {
+    if (!hasGroups) return [];
+    const seen = new Set<string>();
+    const groups = (optionGroups || [])
+      .map((group) => {
+        const groupOptions = group.options.filter((option) => {
+          if (!option || seen.has(option)) return false;
+          seen.add(option);
+          return true;
+        });
+        return { ...group, options: groupOptions };
+      })
+      .filter((group) => group.options.length);
+    const currentOptions = Array.from(new Set([value, defaultModel].filter((option) => option && !seen.has(option))));
+    if (currentOptions.length) {
+      groups.unshift({ label: "Current", options: currentOptions });
+    }
+    return groups;
+  })();
 
   return (
     <div
@@ -3339,30 +3558,218 @@ function ModelSelect({
       }}
     >
       <button className="model-select-trigger" type="button" onClick={() => setOpen((current) => !current)}>
-        <span>{value}</span>
+        <span>{modelDisplayName(value)}</span>
         <ChevronRight size={14} aria-hidden="true" />
       </button>
       {open ? (
         <div className="model-options" role="listbox">
-          {uniqueOptions.map((option) => (
-            <button
-              aria-selected={option === value}
-              className={option === value ? "selected" : ""}
-              key={option}
-              onClick={() => {
-                onChange(option);
-                setOpen(false);
-              }}
-              role="option"
-              type="button"
-            >
-              <span>{option}</span>
-              {option === defaultModel ? <span className="model-default-marker">(Default)</span> : null}
-            </button>
-          ))}
+          {hasGroups
+            ? groupedOptions.map((group) => (
+                <div className="model-options-group" key={group.label}>
+                  <div className="model-options-group-label">{group.label}</div>
+                  {group.options.map((option) => (
+                    <button
+                      aria-selected={option === value}
+                      className={option === value ? "selected" : ""}
+                      key={option}
+                      onClick={() => {
+                        onChange(option);
+                        setOpen(false);
+                      }}
+                      role="option"
+                      type="button"
+                    >
+                      <span>{modelDisplayName(option)}</span>
+                      {option === defaultModel ? <span className="model-default-marker">(Default)</span> : null}
+                    </button>
+                  ))}
+                </div>
+              ))
+            : uniqueOptions.map((option) => (
+                <button
+                  aria-selected={option === value}
+                  className={option === value ? "selected" : ""}
+                  key={option}
+                  onClick={() => {
+                    onChange(option);
+                    setOpen(false);
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  <span>{modelDisplayName(option)}</span>
+                  {option === defaultModel ? <span className="model-default-marker">(Default)</span> : null}
+                </button>
+              ))}
         </div>
       ) : null}
     </div>
+  );
+}
+
+function budgetRowLabel(row: OpenAIUsageGroup, groupMode: BudgetGroupMode) {
+  if (groupMode === "model") return row.model || "unknown";
+  return (row.task_key || "unknown").replaceAll("_", " ");
+}
+
+function formatBudgetCost(row: Pick<OpenAIUsageGroup, "estimated_cost_usd" | "priced_request_count" | "request_count">) {
+  if (!row.priced_request_count && row.request_count) return "Unpriced";
+  return formatUsd(row.estimated_cost_usd);
+}
+
+function BudgetView() {
+  const [period, setPeriod] = useState<OpenAIUsagePeriod>("last_month");
+  const [metricMode, setMetricMode] = useState<BudgetMetricMode>("tokens_cost");
+  const [groupMode, setGroupMode] = useState<BudgetGroupMode>("model");
+  const usage = useQuery({
+    queryKey: ["openai-usage", period],
+    queryFn: () => api.openaiUsage(period),
+    refetchInterval: 10000,
+  });
+  const summary = usage.data?.summary;
+  const rows = groupMode === "model" ? usage.data?.by_model || [] : usage.data?.by_task || [];
+  const showTokens = metricMode !== "cost";
+  const showCost = metricMode !== "tokens";
+
+  return (
+    <section className="workbench budget-view">
+      <div className="budget-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Budget</h2>
+            <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isFetching ? "Loading usage" : "No recorded calls"}</span>
+          </div>
+          <WalletCards size={20} />
+        </div>
+        <div className="budget-controls">
+          <label>
+            Period
+            <select value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
+              {USAGE_PERIOD_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Metric
+            <select value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
+              <option value="tokens_cost">Tokens + cost</option>
+              <option value="tokens">Tokens</option>
+              <option value="cost">Cost</option>
+            </select>
+          </label>
+          <label>
+            Group
+            <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
+              <option value="model">By model</option>
+              <option value="task">By task</option>
+            </select>
+          </label>
+        </div>
+        <div className="budget-metric-grid">
+          <div>
+            <span>Estimated cost</span>
+            <strong>{summary ? formatUsd(summary.estimated_cost_usd) : "$0.00"}</strong>
+          </div>
+          <div>
+            <span>Total tokens</span>
+            <strong>{formatMetric(summary?.total_tokens)}</strong>
+          </div>
+          <div>
+            <span>Input tokens</span>
+            <strong>{formatMetric(summary?.input_tokens)}</strong>
+          </div>
+          <div>
+            <span>Cached input</span>
+            <strong>{formatMetric(summary?.cached_input_tokens)}</strong>
+          </div>
+          <div>
+            <span>Output tokens</span>
+            <strong>{formatMetric(summary?.output_tokens)}</strong>
+          </div>
+          <div>
+            <span>Unpriced calls</span>
+            <strong>{formatMetric(summary?.unpriced_request_count)}</strong>
+          </div>
+        </div>
+        <div className="budget-table">
+          <div className={`budget-row header ${metricMode}`}>
+            <span>{groupMode === "model" ? "Model" : "Task"}</span>
+            <span>Calls</span>
+            {showTokens ? (
+              <>
+                <span>Input</span>
+                <span>Cached</span>
+                <span>Output</span>
+                <span>Total</span>
+              </>
+            ) : null}
+            {showCost ? (
+              <>
+                <span>Cost</span>
+                {metricMode === "cost" ? <span>Priced</span> : null}
+                <span>Unpriced</span>
+              </>
+            ) : null}
+          </div>
+          {rows.length ? (
+            rows.map((row) => (
+              <div className={`budget-row ${metricMode}`} key={`${groupMode}-${budgetRowLabel(row, groupMode)}`}>
+                <span>{budgetRowLabel(row, groupMode)}</span>
+                <span>{formatMetric(row.request_count)}</span>
+                {showTokens ? (
+                  <>
+                    <span>{formatMetric(row.input_tokens)}</span>
+                    <span>{formatMetric(row.cached_input_tokens)}</span>
+                    <span>{formatMetric(row.output_tokens)}</span>
+                    <span>{formatMetric(row.total_tokens)}</span>
+                  </>
+                ) : null}
+                {showCost ? (
+                  <>
+                    <span>{formatBudgetCost(row)}</span>
+                    {metricMode === "cost" ? <span>{formatMetric(row.priced_request_count)}</span> : null}
+                    <span>{formatMetric(row.unpriced_request_count)}</span>
+                  </>
+                ) : null}
+              </div>
+            ))
+          ) : (
+            <div className={`budget-row empty ${metricMode}`}>
+              <span>No usage recorded</span>
+              <span />
+              {showTokens ? (
+                <>
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </>
+              ) : null}
+              {showCost ? (
+                <>
+                  <span />
+                  {metricMode === "cost" ? <span /> : null}
+                  <span />
+                </>
+              ) : null}
+            </div>
+          )}
+        </div>
+        <div className="budget-footnote">
+          <span>{usage.data?.pricing.updated_at ? `Pricing ${usage.data.pricing.updated_at}` : "Pricing"}</span>
+          {usage.data?.pricing.source_url ? (
+            <a href={usage.data.pricing.source_url} rel="noreferrer" target="_blank">
+              OpenAI
+              <ExternalLink size={12} />
+            </a>
+          ) : null}
+          <span>{usage.data?.pricing.basis}</span>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -3371,6 +3778,7 @@ function SettingsView({
   runs,
   jobs,
   preferences,
+  openaiUsage,
   domains,
   projects,
   savedSearches,
@@ -3382,6 +3790,7 @@ function SettingsView({
   runs: ConcordanceRun[];
   jobs: ConcordanceJob[];
   preferences?: AppPreferences;
+  openaiUsage?: OpenAIUsage;
   domains: Domain[];
   projects: Project[];
   savedSearches: SavedSearch[];
@@ -3398,6 +3807,7 @@ function SettingsView({
   const [accentColorDay, setAccentColorDay] = useState(preferences?.accent_color_day || "#2563eb");
   const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
   const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1000);
+  const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const queryClient = useQueryClient();
@@ -3409,6 +3819,7 @@ function SettingsView({
       setAccentColorDay(preferences.accent_color_day);
       setAccentColorNight(preferences.accent_color_night);
       setDocumentCacheSizeMb(preferences.document_cache_size_mb);
+      setLibraryAlternatingRows(preferences.library_alternating_rows);
       setAnalysisModels(preferences.analysis_models);
     }
   }, [preferences]);
@@ -3460,6 +3871,7 @@ function SettingsView({
         accent_color_day: accentColorDay,
         accent_color_night: accentColorNight,
         document_cache_size_mb: documentCacheSizeMb,
+        library_alternating_rows: libraryAlternatingRows,
         analysis_models: analysisModels,
       }),
     onSuccess: () => {
@@ -3471,12 +3883,16 @@ function SettingsView({
   const progressTotal = latestRun?.total_jobs || 0;
   const progressDone = latestRun ? latestRun.completed_jobs + latestRun.failed_jobs : 0;
   const warningThreshold = preferences?.import_worker_cost_warning_threshold || 4;
+  const usageSummary = openaiUsage?.summary;
+  const usageTaskRows = openaiUsage?.by_task || [];
+  const recentUsageRows = openaiUsage?.recent || [];
   const preferenceDirty = Boolean(
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
         preferences.accent_color_day !== accentColorDay ||
         preferences.accent_color_night !== accentColorNight ||
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
+        preferences.library_alternating_rows !== libraryAlternatingRows ||
         !sameStringMap(preferences.analysis_models, analysisModels)),
   );
   const importCostWarning = importWorkerConcurrency > warningThreshold;
@@ -3502,7 +3918,7 @@ function SettingsView({
         <div className="panel-title-row">
           <div>
             <h2>Preferences</h2>
-            <span>Import worker throughput</span>
+            <span>Display and processing</span>
           </div>
           <Settings size={20} />
         </div>
@@ -3537,6 +3953,14 @@ function SettingsView({
           />
           <p>Default is 1,000 MB. Uploads still write originals to configured storage before cache rules apply.</p>
         </div>
+        <label className="checkbox-row preference-checkbox">
+          <input
+            type="checkbox"
+            checked={libraryAlternatingRows}
+            onChange={(event) => setLibraryAlternatingRows(event.target.checked)}
+          />
+          <span>Alternate Library rows</span>
+        </label>
         <div className="accent-settings">
           <label>
             <span>Day accent</span>
@@ -3563,7 +3987,7 @@ function SettingsView({
         <div className="panel-title-row">
           <div>
             <h2>Models</h2>
-            <span>{preferences?.analysis_model_tasks.length || 7} document-analysis tasks</span>
+            <span>{preferences?.analysis_model_tasks.length || 8} document-analysis tasks</span>
           </div>
           <Sparkles size={20} />
         </div>
@@ -3581,6 +4005,7 @@ function SettingsView({
               <ModelSelect
                 defaultModel={task.default_model}
                 onChange={(model) => setAnalysisModels((current) => ({ ...current, [task.key]: model }))}
+                optionGroups={task.option_groups}
                 options={preferences?.model_options[task.model_kind] || []}
                 value={analysisModels[task.key] || task.selected_model || task.default_model}
               />
@@ -3596,6 +4021,99 @@ function SettingsView({
           <Save size={16} />
           Save models
         </button>
+      </div>
+      <div className="openai-usage-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>OpenAI Usage</h2>
+            <span>{usageSummary ? `${formatMetric(usageSummary.request_count)} recorded calls` : "No recorded calls"}</span>
+          </div>
+          <Gauge size={20} />
+        </div>
+        <div className="usage-metric-grid">
+          <div>
+            <span>Input tokens</span>
+            <strong>{formatMetric(usageSummary?.input_tokens)}</strong>
+          </div>
+          <div>
+            <span>Cached input</span>
+            <strong>{formatMetric(usageSummary?.cached_input_tokens)}</strong>
+          </div>
+          <div>
+            <span>Output tokens</span>
+            <strong>{formatMetric(usageSummary?.output_tokens)}</strong>
+          </div>
+          <div>
+            <span>PDF/file context</span>
+            <strong>{formatFileSize(usageSummary?.input_file_bytes) || "0 B"}</strong>
+          </div>
+          <div>
+            <span>Failures</span>
+            <strong>{formatMetric(usageSummary?.failed_request_count)}</strong>
+          </div>
+        </div>
+        <div className="usage-table">
+          <div className="usage-row header">
+            <span>Task</span>
+            <span>Calls</span>
+            <span>Input</span>
+            <span>Cached</span>
+            <span>Output</span>
+            <span>Files</span>
+          </div>
+          {usageTaskRows.length ? (
+            usageTaskRows.map((row) => (
+              <div className="usage-row" key={row.task_key || "unknown"}>
+                <span>{(row.task_key || "unknown").replaceAll("_", " ")}</span>
+                <span>{formatMetric(row.request_count)}</span>
+                <span>{formatMetric(row.input_tokens)}</span>
+                <span>{formatMetric(row.cached_input_tokens)}</span>
+                <span>{formatMetric(row.output_tokens)}</span>
+                <span>{formatFileSize(row.input_file_bytes) || "0 B"}</span>
+              </div>
+            ))
+          ) : (
+            <div className="usage-row empty">
+              <span>No usage recorded yet</span>
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
+        </div>
+        <div className="usage-table recent">
+          <div className="usage-row header">
+            <span>Recent call</span>
+            <span>Model</span>
+            <span>Status</span>
+            <span>Input</span>
+            <span>Output</span>
+            <span>Files</span>
+          </div>
+          {recentUsageRows.length ? (
+            recentUsageRows.slice(0, 6).map((row) => (
+              <div className="usage-row" key={row.id}>
+                <span>{row.page_number ? `${row.task_key} p.${row.page_number}` : row.task_key}</span>
+                <span>{row.model}</span>
+                <StatusPill value={row.status} tone={row.status === "failed" ? "warn" : "good"} />
+                <span>{formatMetric(row.input_tokens)}</span>
+                <span>{formatMetric(row.output_tokens)}</span>
+                <span>{formatFileSize(row.input_file_bytes) || "0 B"}</span>
+              </div>
+            ))
+          ) : (
+            <div className="usage-row empty">
+              <span>No calls yet</span>
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
+        </div>
       </div>
       <div className="export-panel">
         <div className="panel-title-row">
@@ -3626,14 +4144,14 @@ function SettingsView({
             <h2>Concordance Runs</h2>
             <span>{activeJobs} active jobs</span>
           </div>
-          <AsyncActionSlot feedback={createRunFeedback.feedback}>
+          <AsyncActionSlot busy={createRun.isPending} feedback={createRunFeedback.feedback} label="Concordance Run request in progress">
             <button
-              className={asyncFeedbackClass("primary-button", createRunFeedback.feedback)}
+              className={asyncFeedbackClass("primary-button", createRunFeedback.feedback, createRun.isPending)}
               disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length}
               onClick={() => createRun.mutate()}
             >
-              <RefreshCw size={16} />
-              Start run
+              <RefreshCw className={createRun.isPending ? "spin" : ""} size={16} />
+              {createRun.isPending ? "Starting" : "Start run"}
             </button>
           </AsyncActionSlot>
         </div>
@@ -3778,6 +4296,7 @@ export default function App() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
+  const openaiUsage = useQuery({ queryKey: ["openai-usage"], queryFn: () => api.openaiUsage(), enabled: Boolean(me.data), refetchInterval: 10000 });
   const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data), refetchInterval: 10000 });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data) });
@@ -3920,6 +4439,18 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key.toLowerCase() !== "b") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      setActiveView("budget");
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) return <Login />;
 
@@ -4025,6 +4556,7 @@ export default function App() {
             savedSearches={savedSearches.data || []}
             startConcordanceRun={startConcordanceRun}
             loading={documents.isFetching}
+            alternatingRows={preferences.data?.library_alternating_rows ?? true}
           />
         ) : null}
         {activeView === "import" ? (
@@ -4040,11 +4572,13 @@ export default function App() {
             projects={projects.data || []}
           />
         ) : null}
+        {activeView === "budget" ? <BudgetView /> : null}
         {activeView === "settings" ? (
           <SettingsView
             capabilities={concordanceCapabilities.data || []}
             domains={domains.data || []}
             jobs={concordanceJobs.data || []}
+            openaiUsage={openaiUsage.data}
             preferences={preferences.data}
             projects={projects.data || []}
             query={query}

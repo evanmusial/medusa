@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +28,7 @@ class ExtractedPage:
     page_number: int
     text: str
     low_text: bool
+    source: str = "pymupdf"
 
 
 @dataclass
@@ -31,6 +36,8 @@ class ExtractedDocument:
     page_count: int
     pages: list[ExtractedPage]
     full_text: str
+    source: str = "pymupdf"
+    fallback_reason: str | None = None
 
 
 @dataclass
@@ -126,8 +133,22 @@ def _is_usable_graphic_bbox(
     return _bbox_width(bbox) >= min_width and _bbox_height(bbox) >= min_height
 
 
+_UNSAFE_TEXT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_MARKER_PAGE_BREAK_RE = re.compile(r"(?:^|\n)\s*(?P<page>\d+)\s*\n-{10,}\s*(?:\n|$)")
+RAW_TEXT_EXTRACTOR_MARKER = "marker"
+RAW_TEXT_EXTRACTOR_PYMUPDF = "pymupdf"
+RAW_TEXT_EXTRACTOR_DOCLING = "docling"
+
+
+def sanitize_extracted_text(text: str | None) -> str:
+    """Remove PDF control bytes that can break or pollute persisted text."""
+    if not text:
+        return ""
+    return _UNSAFE_TEXT_CONTROL_RE.sub("", text)
+
+
 def _cell(value: Any) -> str:
-    text = "" if value is None else str(value)
+    text = "" if value is None else sanitize_extracted_text(str(value))
     return " ".join(text.replace("|", "\\|").split())
 
 
@@ -187,7 +208,7 @@ def extract_layout_blocks(page: Any) -> list[LayoutBlock]:
             y0=float(raw[1]),
             x1=float(raw[2]),
             y1=float(raw[3]),
-            text=str(raw[4]).strip(),
+            text=sanitize_extracted_text(str(raw[4])).strip(),
         )
         if not block.text:
             continue
@@ -211,7 +232,7 @@ def _caption_candidates(page: Any) -> list[CaptionCandidate]:
         block_type = raw[6] if len(raw) > 6 else 0
         if block_type != 0:
             continue
-        text = " ".join(str(raw[4]).split())
+        text = " ".join(sanitize_extracted_text(str(raw[4])).split())
         if not text:
             continue
         match = _FIGURE_LABEL_RE.match(text)
@@ -398,7 +419,9 @@ def order_blocks_for_reading(blocks: list[LayoutBlock], page_width: float) -> li
 
 
 def blocks_to_text(blocks: list[LayoutBlock], page_width: float) -> str:
-    return "\n\n".join(block.text for block in order_blocks_for_reading(blocks, page_width) if block.text).strip()
+    return sanitize_extracted_text(
+        "\n\n".join(block.text for block in order_blocks_for_reading(blocks, page_width) if block.text)
+    ).strip()
 
 
 _SPACED_LETTERS_RE = re.compile(r"\b(?:[A-Za-z]\s+){2,}[A-Za-z]\b")
@@ -412,7 +435,7 @@ def _join_spaced_letters(match: re.Match[str]) -> str:
 
 
 def _normalize_inline_spacing(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", text)
+    normalized = unicodedata.normalize("NFKC", sanitize_extracted_text(text))
     normalized = normalized.replace("\u00ad", "")
     normalized = normalized.replace("\u200b", "")
     normalized = normalized.replace("\u200c", "")
@@ -452,7 +475,7 @@ def normalize_extracted_text(text: str | None) -> str:
     """Turn layout-oriented PDF text into readable paragraph-oriented text."""
     if not text:
         return ""
-    source = text.replace("\r\n", "\n").replace("\r", "\n")
+    source = sanitize_extracted_text(text).replace("\r\n", "\n").replace("\r", "\n")
     paragraphs: list[str] = []
     for block in re.split(r"\n\s*\n+", source):
         lines = [line.strip() for line in block.splitlines() if line.strip()]
@@ -467,7 +490,17 @@ def normalize_extracted_text(text: str | None) -> str:
     return "\n\n".join(paragraphs).strip()
 
 
-def extract_pdf_text(path: Path) -> ExtractedDocument:
+def _pdf_page_count(path: Path) -> int:
+    try:
+        import fitz
+    except Exception as exc:  # pragma: no cover - exercised only without optional dependency
+        raise RuntimeError("PyMuPDF is required for PDF page counting") from exc
+
+    with fitz.open(path) as pdf:
+        return len(pdf)
+
+
+def _extract_pdf_text_with_pymupdf(path: Path, *, fallback_reason: str | None = None) -> ExtractedDocument:
     settings = get_settings()
     try:
         import fitz
@@ -477,11 +510,110 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
     pages: list[ExtractedPage] = []
     with fitz.open(path) as pdf:
         for index, page in enumerate(pdf, start=1):
-            text = blocks_to_text(extract_layout_blocks(page), float(page.rect.width))
+            text = sanitize_extracted_text(blocks_to_text(extract_layout_blocks(page), float(page.rect.width)))
             low_text = len(text) < settings.low_text_page_threshold
             pages.append(ExtractedPage(page_number=index, text=text, low_text=low_text))
-    full_text = "\n\n".join(page.text for page in pages if page.text)
-    return ExtractedDocument(page_count=len(pages), pages=pages, full_text=full_text)
+    full_text = sanitize_extracted_text("\n\n".join(page.text for page in pages if page.text))
+    return ExtractedDocument(
+        page_count=len(pages),
+        pages=pages,
+        full_text=full_text,
+        source=RAW_TEXT_EXTRACTOR_PYMUPDF,
+        fallback_reason=fallback_reason,
+    )
+
+
+def _split_marker_paginated_markdown(markdown: str, page_count: int) -> list[ExtractedPage]:
+    settings = get_settings()
+    clean = sanitize_extracted_text(markdown)
+    matches = list(_MARKER_PAGE_BREAK_RE.finditer(clean))
+    if not matches:
+        raise RuntimeError("Marker did not return paginated Markdown.")
+
+    raw_page_numbers = [int(match.group("page")) for match in matches]
+    offset = 1 if 0 in raw_page_numbers else 0
+    by_page: dict[int, str] = {}
+    for index, match in enumerate(matches):
+        page_number = int(match.group("page")) + offset
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(clean)
+        if page_number < 1:
+            continue
+        by_page[page_number] = clean[start:end].strip()
+
+    if not by_page:
+        raise RuntimeError("Marker pagination did not contain any page text.")
+
+    pages: list[ExtractedPage] = []
+    for page_number in range(1, max(page_count, max(by_page)) + 1):
+        text = by_page.get(page_number, "")
+        pages.append(
+            ExtractedPage(
+                page_number=page_number,
+                text=text,
+                low_text=len(text) < settings.low_text_page_threshold,
+                source=RAW_TEXT_EXTRACTOR_MARKER,
+            )
+        )
+    return pages
+
+
+def _extract_pdf_text_with_marker(path: Path) -> ExtractedDocument:
+    settings = get_settings()
+    marker_binary = shutil.which("marker_single")
+    if not marker_binary:
+        raise RuntimeError("Marker is not installed in this worker image.")
+
+    page_count = _pdf_page_count(path)
+    with tempfile.TemporaryDirectory(prefix="medusa-marker-") as output_dir:
+        command = [
+            marker_binary,
+            str(path),
+            "--output_dir",
+            output_dir,
+            "--output_format",
+            "markdown",
+            "--paginate_output",
+            "--disable_image_extraction",
+        ]
+        env = os.environ.copy()
+        subprocess.run(
+            command,
+            check=True,
+            cwd=output_dir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=settings.raw_text_extraction_timeout_seconds,
+        )
+        markdown_files = sorted(Path(output_dir).rglob("*.md"))
+        if not markdown_files:
+            raise RuntimeError("Marker did not write Markdown output.")
+        markdown = markdown_files[0].read_text(encoding="utf-8", errors="replace")
+
+    pages = _split_marker_paginated_markdown(markdown, page_count)
+    full_text = sanitize_extracted_text("\n\n".join(page.text for page in pages if page.text))
+    return ExtractedDocument(
+        page_count=max(page_count, len(pages)),
+        pages=pages,
+        full_text=full_text,
+        source=RAW_TEXT_EXTRACTOR_MARKER,
+    )
+
+
+def extract_pdf_text(path: Path, extractor: str | None = None) -> ExtractedDocument:
+    selected = (extractor or RAW_TEXT_EXTRACTOR_PYMUPDF).strip().lower()
+    if selected == RAW_TEXT_EXTRACTOR_MARKER:
+        try:
+            return _extract_pdf_text_with_marker(path)
+        except Exception as exc:
+            return _extract_pdf_text_with_pymupdf(path, fallback_reason=f"Marker unavailable: {exc}")
+    if selected == RAW_TEXT_EXTRACTOR_DOCLING:
+        return _extract_pdf_text_with_pymupdf(path, fallback_reason="Docling raw extraction is not wired yet.")
+    if selected == RAW_TEXT_EXTRACTOR_PYMUPDF:
+        return _extract_pdf_text_with_pymupdf(path)
+    return _extract_pdf_text_with_pymupdf(path, fallback_reason=f"Raw extraction model {selected!r} is not wired yet.")
 
 
 def _render_page_crop(page: Any, bbox: tuple[float, float, float, float]) -> tuple[bytes, int, int]:
@@ -598,6 +730,7 @@ def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80
 
 
 def split_text_into_chunks(text: str, target_chars: int = 3200) -> list[str]:
+    text = sanitize_extracted_text(text)
     paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
     chunks: list[str] = []
     current: list[str] = []

@@ -22,6 +22,7 @@ IMPORT_WORKER_CONCURRENCY_KEY = "import_worker_concurrency"
 ACCENT_COLOR_DAY_KEY = "accent_color_day"
 ACCENT_COLOR_NIGHT_KEY = "accent_color_night"
 DOCUMENT_CACHE_SIZE_MB_KEY = "document_cache_size_mb"
+LIBRARY_ALTERNATING_ROWS_KEY = "library_alternating_rows"
 ANALYSIS_MODEL_KEY_PREFIX = "analysis_model_"
 
 MIN_IMPORT_WORKER_CONCURRENCY = 1
@@ -36,6 +37,7 @@ SAFE_PREFERENCE_KEYS = {
     ACCENT_COLOR_DAY_KEY,
     ACCENT_COLOR_NIGHT_KEY,
     DOCUMENT_CACHE_SIZE_MB_KEY,
+    LIBRARY_ALTERNATING_ROWS_KEY,
     *(f"{ANALYSIS_MODEL_KEY_PREFIX}{task.key}" for task in ANALYSIS_MODEL_TASKS),
 }
 
@@ -63,6 +65,20 @@ def normalize_hex_color(value: Any, default: str) -> str:
         candidate = value.strip()
         if HEX_COLOR_RE.match(candidate):
             return candidate.lower()
+    return default
+
+
+def normalize_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in {"true", "1", "yes", "on"}:
+            return True
+        if candidate in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, int):
+        return bool(value)
     return default
 
 
@@ -136,6 +152,7 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "accent_color_day": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_DAY_KEY), DEFAULT_DAY_ACCENT),
         "accent_color_night": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_NIGHT_KEY), DEFAULT_NIGHT_ACCENT),
         "document_cache_size_mb": get_document_cache_size_mb(db),
+        "library_alternating_rows": normalize_bool(_get_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY), True),
         "analysis_models": analysis_models,
         "analysis_model_tasks": task_payloads(analysis_models),
         "model_options": model_options(analysis_models),
@@ -149,6 +166,7 @@ def update_app_preferences(
     accent_color_day: str | None = None,
     accent_color_night: str | None = None,
     document_cache_size_mb: int | None = None,
+    library_alternating_rows: bool | None = None,
     analysis_models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if import_worker_concurrency is not None:
@@ -163,6 +181,8 @@ def update_app_preferences(
         _set_preference_value(db, ACCENT_COLOR_NIGHT_KEY, normalize_hex_color(accent_color_night, DEFAULT_NIGHT_ACCENT))
     if document_cache_size_mb is not None:
         _set_preference_value(db, DOCUMENT_CACHE_SIZE_MB_KEY, clamp_document_cache_size_mb(document_cache_size_mb))
+    if library_alternating_rows is not None:
+        _set_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY, bool(library_alternating_rows))
     if analysis_models is not None:
         for task in ANALYSIS_MODEL_TASKS:
             if task.key not in analysis_models:

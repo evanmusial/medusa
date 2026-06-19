@@ -29,7 +29,9 @@ from app.services.analysis_models import (
 )
 from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
 from app.services.document_cache import ensure_document_pdf_bytes
+from app.services.extraction import sanitize_extracted_text
 from app.services.figures import process_document_figures_from_storage
+from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.processing import (
     author_search_text,
@@ -323,13 +325,13 @@ class ConcordanceProcessor:
             db.commit()
 
             if job.capability_key == "page_text_normalization":
-                evidence = self._normalize_page_text(db, document)
+                evidence = self._normalize_page_text(db, document, job)
             elif job.capability_key == "search_index":
                 evidence = self._rebuild_search_index(document)
             elif job.capability_key == "citation_refresh":
                 evidence = self._refresh_citation(db, document)
             elif job.capability_key == "summary_topics":
-                evidence = self._refresh_summary_topics(db, document)
+                evidence = self._refresh_summary_topics(db, document, job)
             elif job.capability_key == "figure_assets":
                 evidence = self._extract_figures(db, document)
             elif job.capability_key == "recommendations":
@@ -377,32 +379,44 @@ class ConcordanceProcessor:
         attributes = "\n\n".join(
             f"{value.definition.name}: {_stringify_attribute_value(value.value)}" for value in document.attributes if value.definition
         )
-        document.search_text = "\n\n".join(
-            part
-            for part in [
-                document.title,
-                author_search_text(document.authors),
-                document.abstract,
-                document.rich_summary,
-                document.apa_citation,
-                page_text,
-                figure_search_text(document.figures),
-                notes,
-                attributes,
-                " ".join(tag.name for tag in document.tags),
-                " ".join(domain.name for domain in document.domains),
-            ]
-            if part
+        document.search_text = sanitize_extracted_text(
+            "\n\n".join(
+                part
+                for part in [
+                    document.title,
+                    author_search_text(document.authors),
+                    document.abstract,
+                    document.rich_summary,
+                    document.apa_citation,
+                    page_text,
+                    figure_search_text(document.figures),
+                    notes,
+                    attributes,
+                    " ".join(tag.name for tag in document.tags),
+                    " ".join(domain.name for domain in document.domains),
+                ]
+                if part
+            )
         )
         return {"indexed_characters": len(document.search_text or ""), "pages": len(document.pages)}
 
-    def _normalize_page_text(self, db: Session, document: Document) -> dict[str, Any]:
+    def _usage_context(self, document: Document, job: ConcordanceJob, capability_key: str | None = None) -> OpenAIUsageContext:
+        return OpenAIUsageContext(
+            document_id=document.id,
+            concordance_run_id=job.run_id,
+            concordance_job_id=job.id,
+            source="concordance",
+            capability_key=capability_key or job.capability_key,
+        )
+
+    def _normalize_page_text(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
         pdf_bytes = self._document_pdf_bytes(db, document)
         summary = normalize_document_pages(
             document,
             db=db,
             model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
             pdf_bytes=pdf_bytes,
+            usage_context=self._usage_context(document, job, "page_text_normalization"),
         )
         reading_text = rebuild_document_text_chunks(db, document)
         evidence = dict(document.metadata_evidence or {})
@@ -473,7 +487,7 @@ class ConcordanceProcessor:
                 )
         return {"verified": verified, "crossref_evidence": bool(crossref), "filled_fields": filled_fields}
 
-    def _refresh_summary_topics(self, db: Session, document: Document) -> dict[str, Any]:
+    def _refresh_summary_topics(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
         ai = get_ai_service()
         pdf_bytes = self._document_pdf_bytes(db, document)
         model_preferences = get_analysis_models(db)
@@ -487,6 +501,7 @@ class ConcordanceProcessor:
                 MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
                 MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
             },
+            usage_context=self._usage_context(document, job, "summary_topics"),
         )
         evidence = dict(document.metadata_evidence or {})
         evidence["concordance_ai"] = {

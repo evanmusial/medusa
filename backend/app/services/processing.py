@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.services.analysis_models import (
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_RAW_TEXT_EXTRACTION,
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
@@ -34,8 +36,9 @@ from app.services.document_cache import (
     mark_processing_cache_retained,
     metadata_cache_path,
 )
-from app.services.extraction import extract_pdf_text, split_text_into_chunks
+from app.services.extraction import extract_pdf_text, normalize_extracted_text, sanitize_extracted_text, split_text_into_chunks
 from app.services.figures import process_document_figures
+from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
 
@@ -156,7 +159,7 @@ def _has_metadata_value(value: Any) -> bool:
 
 
 def preferred_page_text(page: DocumentPage) -> str:
-    return (page.normalized_text or page.text or "").strip()
+    return sanitize_extracted_text(page.normalized_text or page.text or "").strip()
 
 
 def document_reading_text(document: Document) -> str:
@@ -165,6 +168,48 @@ def document_reading_text(document: Document) -> str:
         for text in (preferred_page_text(page) for page in sorted(document.pages, key=lambda page: page.page_number))
         if text
     )
+
+
+_SPACED_LETTER_ARTIFACT_RE = re.compile(r"(?:\b[A-Za-z]\s+){4,}[A-Za-z]\b")
+_BROKEN_HYPHEN_ARTIFACT_RE = re.compile(r"[A-Za-z]-\s*\n\s*[a-z]")
+
+
+def _page_text_source(page: DocumentPage) -> str:
+    return (page.text_source or "").replace("_low_text", "").strip().lower() or "pdf"
+
+
+def _page_cloud_normalization_reason(page: DocumentPage) -> str | None:
+    text = sanitize_extracted_text(page.text)
+    if not text.strip():
+        return None
+    if page.low_text:
+        return "low_text"
+    if _page_text_source(page) == "marker":
+        return None
+    if len(_BROKEN_HYPHEN_ARTIFACT_RE.findall(text)) >= 2:
+        return "hyphenated_wraps"
+    if _SPACED_LETTER_ARTIFACT_RE.search(text):
+        return "spaced_letters"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 16:
+        short_lines = sum(1 for line in lines if len(line) <= 42 and not line.startswith("|"))
+        if short_lines / len(lines) >= 0.58:
+            return "fragmented_lines"
+    return None
+
+
+def _page_normalization_mode() -> str:
+    mode = (get_settings().openai_page_normalization_mode or "auto").strip().lower()
+    return mode if mode in {"auto", "always", "never"} else "auto"
+
+
+def _local_page_normalization(text: str | None, *, source: str, notes: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "normalized_text": normalize_extracted_text(text),
+        "source": source,
+        "confidence": 0.65,
+        "notes": notes or [],
+    }
 
 
 def normalize_document_pages(
@@ -176,8 +221,15 @@ def normalize_document_pages(
     resume_existing: bool = False,
     model: str | None = None,
     pdf_bytes: bytes | None = None,
+    usage_context: OpenAIUsageContext | None = None,
 ) -> dict[str, Any]:
     ai = ai or get_ai_service()
+    settings = get_settings()
+    mode = _page_normalization_mode()
+    auto_max_pages = max(0, settings.openai_page_normalization_auto_max_pages)
+    auto_cloud_pages = 0
+    auto_reasons: dict[str, int] = {}
+    auto_skipped_by_cap = 0
     source_counts: dict[str, int] = {}
     model_counts: dict[str, int] = {}
     changed_pages = 0
@@ -185,6 +237,8 @@ def normalize_document_pages(
     pages = sorted(document.pages, key=lambda page: page.page_number)
     total_pages = len(pages)
     for index, page in enumerate(pages, start=1):
+        page.text = sanitize_extracted_text(page.text)
+        page.normalized_text = sanitize_extracted_text(page.normalized_text) or None
         if resume_existing and page.normalized_text:
             source_counts["existing"] = source_counts.get("existing", 0) + 1
             continue
@@ -200,9 +254,32 @@ def normalize_document_pages(
                 payload={"page_number": page.page_number, "page_index": index, "page_count": total_pages},
             )
             db.commit()
-        before = page.normalized_text or ""
-        result = ai.normalize_page_text(document.original_filename, page.page_number, page.text, model=model, pdf_bytes=pdf_bytes)
-        page.normalized_text = result.get("normalized_text") or None
+        before = sanitize_extracted_text(page.normalized_text)
+        auto_reason = _page_cloud_normalization_reason(page)
+        if auto_reason:
+            auto_reasons[auto_reason] = auto_reasons.get(auto_reason, 0) + 1
+        if mode == "never" or not settings.openai_normalize_page_text:
+            result = _local_page_normalization(page.text, source="local")
+        elif mode == "auto" and not auto_reason:
+            result = _local_page_normalization(page.text, source="local_auto")
+        elif mode == "auto" and auto_cloud_pages >= auto_max_pages:
+            auto_skipped_by_cap += 1
+            result = _local_page_normalization(
+                page.text,
+                source="local_auto_cap",
+                notes=[f"OpenAI page normalization auto cap reached before page {page.page_number}."],
+            )
+        else:
+            auto_cloud_pages += 1 if mode == "auto" else 0
+            result = ai.normalize_page_text(
+                document.original_filename,
+                page.page_number,
+                page.text,
+                model=model,
+                pdf_bytes=pdf_bytes if mode == "always" else None,
+                usage_context=usage_context,
+            )
+        page.normalized_text = sanitize_extracted_text(result.get("normalized_text")) or None
         source = result.get("source") or "unknown"
         source_counts[source] = source_counts.get(source, 0) + 1
         openai = result.get("_openai") or {}
@@ -218,8 +295,16 @@ def normalize_document_pages(
     summary = {
         "pages": total_pages,
         "changed_pages": changed_pages,
+        "mode": mode,
         "sources": source_counts,
     }
+    if mode == "auto":
+        summary["auto_cloud_pages"] = auto_cloud_pages
+        summary["auto_cloud_page_limit"] = auto_max_pages
+        if auto_reasons:
+            summary["auto_reasons"] = auto_reasons
+        if auto_skipped_by_cap:
+            summary["auto_skipped_by_cap"] = auto_skipped_by_cap
     if model_counts:
         summary["models"] = model_counts
     if failed_notes:
@@ -228,7 +313,7 @@ def normalize_document_pages(
 
 
 def rebuild_document_text_chunks(db: Session, document: Document) -> str:
-    reading_text = document_reading_text(document)
+    reading_text = sanitize_extracted_text(document_reading_text(document))
     document.search_text = reading_text
     document.chunks.clear()
     db.flush()
@@ -317,8 +402,19 @@ class DocumentProcessor:
             if not local_path or not local_path.exists():
                 raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
 
-            checkpoint_job_step(db, job, document, "extracting", "Extracting PDF text.")
-            extracted = extract_pdf_text(local_path)
+            raw_text_extractor = get_analysis_model(db, MODEL_RAW_TEXT_EXTRACTION)
+            checkpoint_job_step(db, job, document, "extracting", f"Extracting PDF text with {raw_text_extractor}.")
+            extracted = extract_pdf_text(local_path, extractor=raw_text_extractor)
+            if extracted.fallback_reason:
+                log_event(
+                    db,
+                    job=job,
+                    document=document,
+                    event_type="raw_extraction_fallback",
+                    message=extracted.fallback_reason,
+                    level="warning",
+                    payload={"selected_extractor": raw_text_extractor, "actual_extractor": extracted.source},
+                )
             document.page_count = extracted.page_count
             document.pages.clear()
             db.flush()
@@ -327,9 +423,9 @@ class DocumentProcessor:
                     DocumentPage(
                         document_id=document.id,
                         page_number=page.page_number,
-                        text=page.text,
+                        text=sanitize_extracted_text(page.text),
                         low_text=page.low_text,
-                        text_source="pdf" if not page.low_text else "pdf_low_text",
+                        text_source=page.source if not page.low_text else f"{page.source}_low_text",
                     )
                 )
             db.flush()
@@ -355,10 +451,21 @@ class DocumentProcessor:
             resume_existing=resume_normalization,
             model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
             pdf_bytes=pdf_bytes,
+            usage_context=OpenAIUsageContext(
+                document_id=document.id,
+                import_job_id=job.id,
+                source="import",
+                capability_key="page_text_normalization",
+            ),
         )
         reading_text = rebuild_document_text_chunks(db, document)
         document.metadata_evidence = {
             **(document.metadata_evidence or {}),
+            "raw_text_extraction": {
+                "selected_extractor": get_analysis_model(db, MODEL_RAW_TEXT_EXTRACTION),
+                "actual_extractor": extracted.source if not resume_normalization else "persisted_pages",
+                "fallback_reason": extracted.fallback_reason if not resume_normalization else None,
+            },
             "page_text_normalization": normalization_summary,
         }
         job.current_step = "extracted"
@@ -413,6 +520,12 @@ class DocumentProcessor:
                 MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
                 MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
             },
+            usage_context=OpenAIUsageContext(
+                document_id=document.id,
+                import_job_id=job.id,
+                source="import",
+                capability_key="summary_topics",
+            ),
         )
         document.title = metadata.get("title") or document.title
         document.subtitle = metadata.get("subtitle")
@@ -497,23 +610,34 @@ class DocumentProcessor:
         for chunk in document.chunks[:20]:
             if chunk.embedding is None:
                 try:
-                    chunk.embedding = ai.embed(chunk.text, model=encoding_model)
+                    chunk.embedding = ai.embed(
+                        chunk.text,
+                        model=encoding_model,
+                        usage_context=OpenAIUsageContext(
+                            document_id=document.id,
+                            import_job_id=job.id,
+                            source="import",
+                            capability_key="text_chunk_encoding",
+                        ),
+                    )
                     if chunk.embedding is not None:
                         encoded_chunks += 1
                 except Exception as exc:
                     embedding_errors.append(str(exc))
-        document.search_text = "\n\n".join(
-            part
-            for part in [
-                document.title,
-                author_search_text(document.authors),
-                document.abstract,
-                document.rich_summary,
-                document.search_text,
-                figure_search_text(document.figures),
-                " ".join(tag.name for tag in document.tags),
-            ]
-            if part
+        document.search_text = sanitize_extracted_text(
+            "\n\n".join(
+                part
+                for part in [
+                    document.title,
+                    author_search_text(document.authors),
+                    document.abstract,
+                    document.rich_summary,
+                    document.search_text,
+                    figure_search_text(document.figures),
+                    " ".join(tag.name for tag in document.tags),
+                ]
+                if part
+            )
         )
         evidence = dict(document.metadata_evidence or {})
         evidence["text_chunk_encoding"] = {

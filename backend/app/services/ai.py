@@ -21,6 +21,7 @@ from app.services.analysis_models import (
     default_analysis_models,
 )
 from app.services.extraction import normalize_extracted_text
+from app.services.openai_usage import OpenAIUsageContext, record_openai_usage
 
 
 METADATA_EXTRACTION_PROMPT = (
@@ -220,6 +221,7 @@ class AiService:
         pdf_bytes: bytes | None = None,
         *,
         models: dict[str, str] | None = None,
+        usage_context: OpenAIUsageContext | None = None,
     ) -> dict[str, Any]:
         if not self.client:
             title = Path(filename).stem.replace("_", " ").replace("-", " ").strip() or "Untitled document"
@@ -243,7 +245,11 @@ class AiService:
             }
 
         models = {**default_analysis_models(), **(models or {})}
-        input_content, used_pdf_file = self._document_input_content(filename, text, pdf_bytes)
+        input_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
+            filename,
+            text,
+            pdf_bytes,
+        )
         identity = self._responses_json(
             model=models[MODEL_METADATA],
             schema_name="medusa_document_metadata",
@@ -251,6 +257,11 @@ class AiService:
             prompt=METADATA_EXTRACTION_PROMPT,
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_METADATA,
+            input_text_characters=input_text_characters,
+            input_file_bytes=input_file_bytes,
+            used_pdf_file=used_pdf_file,
         )
         identity["authors"] = normalize_author_contact_details(identity.get("authors"))
         summary = self._responses_json(
@@ -264,6 +275,11 @@ class AiService:
             ),
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_SUMMARY,
+            input_text_characters=input_text_characters,
+            input_file_bytes=input_file_bytes,
+            used_pdf_file=used_pdf_file,
         )
         citation = self._responses_json(
             model=models[MODEL_APA_CITATION],
@@ -276,6 +292,11 @@ class AiService:
             ),
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_APA_CITATION,
+            input_text_characters=input_text_characters,
+            input_file_bytes=input_file_bytes,
+            used_pdf_file=used_pdf_file,
         )
         keywords = self._responses_json(
             model=models[MODEL_KEYWORDS_TOPICS],
@@ -287,6 +308,11 @@ class AiService:
             ),
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_KEYWORDS_TOPICS,
+            input_text_characters=input_text_characters,
+            input_file_bytes=input_file_bytes,
+            used_pdf_file=used_pdf_file,
         )
         confidences = [
             value
@@ -335,10 +361,11 @@ class AiService:
         pdf_bytes: bytes | None,
         *,
         page_number: int | None = None,
-    ) -> tuple[list[dict[str, Any]], bool]:
+    ) -> tuple[list[dict[str, Any]], bool, int, int]:
         sample = text[:28_000]
         input_content: list[dict[str, Any]] = []
         used_pdf_file = self._should_send_pdf_file(pdf_bytes)
+        input_file_bytes = len(pdf_bytes or b"") if used_pdf_file else 0
         if used_pdf_file and pdf_bytes:
             input_content.append(
                 {
@@ -350,8 +377,9 @@ class AiService:
         heading = f"Filename: {filename}"
         if page_number is not None:
             heading = f"{heading}\nPage: {page_number}"
-        input_content.append({"type": "input_text", "text": f"{heading}\n\nExtracted PDF text:\n{sample}"})
-        return input_content, used_pdf_file
+        input_text = f"{heading}\n\nExtracted PDF text:\n{sample}"
+        input_content.append({"type": "input_text", "text": input_text})
+        return input_content, used_pdf_file, len(input_text), input_file_bytes
 
     def _responses_json(
         self,
@@ -362,25 +390,60 @@ class AiService:
         prompt: str,
         input_content: list[dict[str, Any]],
         timeout: float,
+        usage_context: OpenAIUsageContext | None = None,
+        task_key: str | None = None,
+        input_text_characters: int = 0,
+        input_file_bytes: int = 0,
+        used_pdf_file: bool = False,
     ) -> dict[str, Any]:
-        with hard_timeout(timeout):
-            response = self.client.responses.create(
+        response = None
+        try:
+            with hard_timeout(timeout):
+                response = self.client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": input_content},
+                    ],
+                    text={
+                            "format": {
+                                "type": "json_schema",
+                                "name": schema_name,
+                                "schema": schema,
+                                "strict": True,
+                            }
+                        },
+                    timeout=timeout,
+                )
+            payload = json.loads(response.output_text)
+            record_openai_usage(
+                usage_context,
+                task_key=task_key or schema_name,
+                operation=schema_name,
+                endpoint="responses",
                 model=model,
-                input=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": input_content},
-                ],
-                text={
-                        "format": {
-                            "type": "json_schema",
-                            "name": schema_name,
-                            "schema": schema,
-                            "strict": True,
-                        }
-                    },
-                timeout=timeout,
+                status="success",
+                response=response,
+                input_text_characters=input_text_characters,
+                input_file_bytes=input_file_bytes,
+                used_pdf_file=used_pdf_file,
             )
-        return json.loads(response.output_text)
+            return payload
+        except Exception as exc:
+            record_openai_usage(
+                usage_context,
+                task_key=task_key or schema_name,
+                operation=schema_name,
+                endpoint="responses",
+                model=model,
+                status="failed",
+                response=response,
+                error=exc,
+                input_text_characters=input_text_characters,
+                input_file_bytes=input_file_bytes,
+                used_pdf_file=used_pdf_file,
+            )
+            raise
 
     @staticmethod
     def _unique_strings(values: list[Any]) -> list[str]:
@@ -409,6 +472,7 @@ class AiService:
         *,
         model: str | None = None,
         pdf_bytes: bytes | None = None,
+        usage_context: OpenAIUsageContext | None = None,
     ) -> dict[str, Any]:
         fallback = normalize_extracted_text(text)
         if not fallback:
@@ -427,8 +491,15 @@ class AiService:
             }
 
         sample = fallback[: self.settings.openai_text_normalization_page_max_chars]
-        input_content, used_pdf_file = self._document_input_content(filename, sample, pdf_bytes, page_number=page_number)
+        input_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
+            filename,
+            sample,
+            pdf_bytes,
+            page_number=page_number,
+        )
         selected_model = model or default_analysis_models()[MODEL_PAGE_TEXT_NORMALIZATION]
+        page_usage_context = usage_context.for_page(page_number) if usage_context else None
+        response = None
         try:
             with hard_timeout(self.settings.openai_page_normalization_timeout_seconds):
                 response = self.client.responses.create(
@@ -448,6 +519,18 @@ class AiService:
                     timeout=self.settings.openai_page_normalization_timeout_seconds,
                 )
             result = json.loads(response.output_text)
+            record_openai_usage(
+                page_usage_context,
+                task_key=MODEL_PAGE_TEXT_NORMALIZATION,
+                operation="medusa_page_text_normalization",
+                endpoint="responses",
+                model=selected_model,
+                status="success",
+                response=response,
+                input_text_characters=input_text_characters,
+                input_file_bytes=input_file_bytes,
+                used_pdf_file=used_pdf_file,
+            )
             normalized = normalize_extracted_text(result.get("normalized_text") or fallback) or fallback
             return {
                 "normalized_text": normalized,
@@ -461,6 +544,19 @@ class AiService:
                 },
             }
         except Exception as exc:
+            record_openai_usage(
+                page_usage_context,
+                task_key=MODEL_PAGE_TEXT_NORMALIZATION,
+                operation="medusa_page_text_normalization",
+                endpoint="responses",
+                model=selected_model,
+                status="failed",
+                response=response,
+                error=exc,
+                input_text_characters=input_text_characters,
+                input_file_bytes=input_file_bytes,
+                used_pdf_file=used_pdf_file,
+            )
             return {
                 "normalized_text": fallback,
                 "source": "local_fallback",
@@ -468,17 +564,47 @@ class AiService:
                 "notes": [f"OpenAI page text normalization failed: {exc}"],
             }
 
-    def embed(self, text: str, *, model: str | None = None) -> list[float] | None:
+    def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+    ) -> list[float] | None:
         if not self.client or not text.strip():
             return None
         selected_model = model or default_analysis_models()[MODEL_TEXT_CHUNK_ENCODING]
-        with hard_timeout(self.settings.openai_embedding_timeout_seconds):
-            response = self.client.embeddings.create(
+        input_text = text[:24_000]
+        try:
+            with hard_timeout(self.settings.openai_embedding_timeout_seconds):
+                response = self.client.embeddings.create(
+                    model=selected_model,
+                    input=input_text,
+                    encoding_format="float",
+                    timeout=self.settings.openai_embedding_timeout_seconds,
+                )
+            record_openai_usage(
+                usage_context,
+                task_key=MODEL_TEXT_CHUNK_ENCODING,
+                operation="text_chunk_embedding",
+                endpoint="embeddings",
                 model=selected_model,
-                input=text[:24_000],
-                encoding_format="float",
-                timeout=self.settings.openai_embedding_timeout_seconds,
+                status="success",
+                response=response,
+                input_text_characters=len(input_text),
             )
+        except Exception as exc:
+            record_openai_usage(
+                usage_context,
+                task_key=MODEL_TEXT_CHUNK_ENCODING,
+                operation="text_chunk_embedding",
+                endpoint="embeddings",
+                model=selected_model,
+                status="failed",
+                error=exc,
+                input_text_characters=len(input_text),
+            )
+            raise
         return response.data[0].embedding
 
 

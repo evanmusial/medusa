@@ -1,4 +1,15 @@
-from app.services.extraction import LayoutBlock, blocks_to_text, normalize_extracted_text, rows_to_markdown, split_text_into_chunks
+from app.services.extraction import (
+    ExtractedDocument,
+    ExtractedPage,
+    LayoutBlock,
+    blocks_to_text,
+    extract_pdf_text,
+    normalize_extracted_text,
+    rows_to_markdown,
+    sanitize_extracted_text,
+    split_text_into_chunks,
+    _split_marker_paginated_markdown,
+)
 
 
 def test_split_text_into_chunks_preserves_paragraphs():
@@ -48,6 +59,14 @@ def test_rows_to_markdown_preserves_table_shape_and_escapes_pipes():
     )
 
 
+def test_sanitize_extracted_text_removes_postgres_unsafe_controls():
+    text = "\x00\x02Title\tline\nNext paragraph\x7f"
+
+    sanitized = sanitize_extracted_text(text)
+
+    assert sanitized == "Title\tline\nNext paragraph"
+
+
 def test_normalize_extracted_text_conforms_line_wraps_and_spacing():
     text = "B a y e s i a n Network Model for Predicting Insider Threats\n\nThe model com-\npares insider threat signals .\nIt preserves paragraph flow ."
 
@@ -57,3 +76,42 @@ def test_normalize_extracted_text_conforms_line_wraps_and_spacing():
     assert "compares insider threat signals." in normalized
     assert "paragraph flow." in normalized
     assert "com-\npares" not in normalized
+
+
+def test_marker_paginated_markdown_splits_into_pages(monkeypatch, tmp_path):
+    from app.config import get_settings
+
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    get_settings.cache_clear()
+    markdown = "\n\n0\n------------------------------------------------\n# Title\n\nLeft then right\n\n1\n------------------------------------------------\nTable text"
+
+    pages = _split_marker_paginated_markdown(markdown, page_count=2)
+
+    assert [(page.page_number, page.source) for page in pages] == [(1, "marker"), (2, "marker")]
+    assert pages[0].text.startswith("# Title")
+    assert pages[1].text == "Table text"
+
+
+def test_marker_extractor_falls_back_to_pymupdf(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+
+    def fail_marker(path):
+        raise RuntimeError("marker missing")
+
+    def fake_pymupdf(path, *, fallback_reason=None):
+        return ExtractedDocument(
+            page_count=1,
+            pages=[ExtractedPage(page_number=1, text="fallback", low_text=False)],
+            full_text="fallback",
+            source="pymupdf",
+            fallback_reason=fallback_reason,
+        )
+
+    monkeypatch.setattr("app.services.extraction._extract_pdf_text_with_marker", fail_marker)
+    monkeypatch.setattr("app.services.extraction._extract_pdf_text_with_pymupdf", fake_pymupdf)
+
+    extracted = extract_pdf_text(pdf_path, extractor="marker")
+
+    assert extracted.source == "pymupdf"
+    assert extracted.fallback_reason == "Marker unavailable: marker missing"

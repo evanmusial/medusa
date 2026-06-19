@@ -21,6 +21,8 @@ import type {
   ImportJob,
   Note,
   NotePayload,
+  OpenAIUsage,
+  OpenAIUsagePeriod,
   Project,
   ProjectDetail,
   ProjectItem,
@@ -49,11 +51,17 @@ export const api = {
   me: () => request<User>("/api/me"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
+  openaiUsage: (period: OpenAIUsagePeriod = "all_time") => request<OpenAIUsage>(`/api/openai/usage?period=${period}`),
   updatePreferences: (
     body: Partial<
       Pick<
         AppPreferences,
-        "import_worker_concurrency" | "accent_color_day" | "accent_color_night" | "document_cache_size_mb" | "analysis_models"
+        | "import_worker_concurrency"
+        | "accent_color_day"
+        | "accent_color_night"
+        | "document_cache_size_mb"
+        | "library_alternating_rows"
+        | "analysis_models"
       >
     >,
   ) =>

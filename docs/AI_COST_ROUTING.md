@@ -1,0 +1,312 @@
+# AI Cost Routing Plan
+
+Last updated: 2026-06-19
+
+This page captures the proposed model and tool routing strategy for reducing cloud LLM spend while preserving rigorous academic quality in Medusa. It is a planning document, not an implemented contract. Before wiring any of these routes into import or Concordance processing, validate them against a small gold set of representative papers and keep the current usage ledger as the measurement surface.
+
+## Goals
+
+- Preserve academic quality for summaries, citations, metadata, search, and page reading.
+- Avoid sending full PDFs or page images to cloud LLMs unless the document actually needs visual or high-context reasoning.
+- Prefer deterministic evidence and local scholarly parsers for extractive work.
+- Use cheap cloud models for low-risk enrichment and premium models only for synthesis, ambiguity, or high-value documents.
+- Keep every cloud route observable through durable usage records, including provider, model, task, token counts, file/PDF bytes, status, and errors.
+
+## Proposed Pipeline
+
+| Medusa step | Proposed default | Fallbacks | Escalation path | Cost-control rule |
+| --- | --- | --- | --- | --- |
+| PDF hashing, duplicate detection, storage | Local checksum and storage adapter only | None | None | No LLM use. |
+| Raw text and layout extraction | Marker by default, with model weights cached under `data/model-cache`; PyMuPDF remains the bundled fallback | Docling for an alternate local parser; GROBID for scholarly TEI/full text and references; local Qwen-VL or olmOCR-style OCR for hard pages | Gemini Flash or Claude/GPT PDF analysis only when local extraction fails on important documents | First Marker use may download local weights once per cache. Do not send full PDFs by default just to obtain text. |
+| Text normalization | Local cleanup by default after Marker/PyMuPDF extraction | Auto-escalate only low-text or artifact-heavy pages, capped per document and text-only by default | Gemini 2.5 Flash-Lite/Flash, Claude, or GPT only for flagged pages; premium models only for exceptional pages | Never send the full PDF once per page by default. `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=always` is the explicit override for all-pages cloud normalization. |
+| Metadata | GROBID + PDF metadata + DOI regex + Crossref/Semantic Scholar/OpenAlex evidence | Gemini Flash-Lite, Claude Haiku, or GPT nano/mini on first pages/references only | GPT-5.5, Claude Sonnet, or Gemini Pro only for conflicting or high-value records | Treat metadata as extractive. Local/evidence first; cheap model second; premium model last. |
+| DOI and source verification | Deterministic DOI/title matching through Crossref, Semantic Scholar, OpenAlex, DOI.org, publisher/static source evidence | Search targeted evidence and compare normalized titles | LLM only to classify ambiguity or explain conflicting evidence for Queue review | Verified status must come from evidence or explicit user acceptance, not model confidence alone. |
+| APA citation candidate | Deterministic formatter from verified metadata when enough fields exist | Cheap model can draft a candidate when fields are incomplete, but candidate stays reviewable | Premium model for ambiguous bibliographic form, unusual document types, or high-value papers | The model assists citation text; verification remains evidence-backed. |
+| Keywords and topics | Local keyphrase extraction, taxonomy cleanup, and near-duplicate clustering | Gemini Flash-Lite, Gemini Flash, Claude Haiku, GPT nano/mini, or a local text LLM | Premium model only if keywords are used for a final scholarly deliverable | This is a cheap/local task by default because mistakes are editable and low-risk. |
+| Summary | Premium synthesis model such as GPT-5.5 | Claude Sonnet or Gemini Pro as challengers in evals; Gemini Flash for cheap drafts | Batch/Flex or provider batch APIs for non-urgent Concordance refreshes | Keep high-quality synthesis available, but avoid repeated full-PDF calls for the same document. |
+| Accessory summaries | User-selectable draft vs deep analysis mode | Gemini Flash or cheap GPT/Claude tier for drafts | GPT-5.5, Claude Sonnet, or Gemini Pro for final/important summaries | Let task importance drive cost. Accessory summaries should not silently run premium full-PDF analysis. |
+| Text chunk encoding | Local BGE-M3 embeddings | Gemini Embedding, Voyage, or OpenAI embeddings if local runtime is impractical | None needed for quality beyond embedding evals | Strong local candidate. Reindex through Concordance when switching embedding models. |
+| Figure and caption gists | Local figure extraction and nearby caption parsing | Local Qwen-VL for targeted page/figure understanding | Gemini Flash for visual gists; premium model only for critical figures | Send cropped figure/page regions, not whole PDFs, whenever possible. |
+| Retroactive refreshes | Concordance Runs with provider/model recorded per capability version | Batch or Flex-style cloud processing for slow non-urgent refreshes | Premium model only for selected scope or failed cheap/local pass | Large library refreshes should default to async discounted processing. |
+
+## Non-ChatGPT Options
+
+### Gemini 2.5 Flash-Lite
+
+Best fit:
+
+- Keywords and topics.
+- Low-risk metadata fallback.
+- Cheap flagged-page normalization when local cleanup is poor.
+
+Pros:
+
+- Very low published token pricing compared with premium models.
+- Multimodal and document-capable.
+- Good candidate for high-volume, low-risk enrichment.
+- Batch/Flex-like pricing modes can lower cost further for async work.
+
+Cons:
+
+- Should not be trusted as the final academic summarizer without Medusa-specific evals.
+- Lower reasoning quality than premium models on ambiguous citations or nuanced paper interpretation.
+- Full-document PDF use can still become expensive if repeated per task or per page.
+
+### Gemini 2.5 Flash
+
+Best fit:
+
+- Harder metadata fallback.
+- Flagged page normalization.
+- Draft summaries or figure/caption gists.
+
+Pros:
+
+- Still relatively inexpensive.
+- Stronger than Flash-Lite while retaining multimodal/document support.
+- Large context makes it useful for selected long-section analysis.
+
+Cons:
+
+- More expensive than Flash-Lite, so it should not become the new default for every page.
+- Quality for final academic summaries must be benchmarked against GPT-5.5, Claude Sonnet, and human review.
+
+### Gemini 2.5 Pro
+
+Best fit:
+
+- Premium challenger for summaries, accessory summaries, and difficult PDF reasoning.
+- Long-context analysis where visual document understanding matters.
+
+Pros:
+
+- Strong multimodal document understanding.
+- Good candidate for evaluating whether OpenAI premium calls can be reduced for synthesis.
+- Useful when the whole-document context genuinely matters.
+
+Cons:
+
+- Too expensive for routine metadata, keywords, or page cleanup.
+- Needs side-by-side evaluation before becoming a trusted final-summary model.
+
+### Claude Haiku
+
+Best fit:
+
+- Cheap-ish extraction and classification.
+- Metadata or keyword fallback when Anthropic provider support is desirable.
+
+Pros:
+
+- Good instruction following for structured extraction.
+- Faster and cheaper than Sonnet/Opus-style models.
+- Claude PDF support can analyze text, charts, tables, and visual PDF content.
+
+Cons:
+
+- More expensive than Gemini Flash-Lite for routine enrichment.
+- Not obviously better than purpose-built local tools for scholarly metadata.
+- Should not be the default if the main goal is lowest safe cloud spend.
+
+### Claude Sonnet
+
+Best fit:
+
+- Serious summaries.
+- Ambiguous citation reasoning.
+- Review notes where prose quality and cautious reasoning matter.
+
+Pros:
+
+- Strong analysis and academic writing quality.
+- Good fit as a premium alternative to GPT-5.5.
+- PDF support and prompt caching can help repeated analysis.
+
+Cons:
+
+- Too expensive for routine extractive work.
+- PDF visual analysis can be token-heavy because pages are processed with text and images.
+- Needs provider abstraction, credential handling, and usage accounting before integration.
+
+### Claude Opus or Fable tier
+
+Best fit:
+
+- Evaluation benchmark.
+- Rare, high-value "this paper really matters" analysis.
+
+Pros:
+
+- Highest expected reasoning and writing quality from Anthropic.
+- Useful for calibrating whether cheaper models are losing important nuance.
+
+Cons:
+
+- Not an economizing path for default imports.
+- Should require an explicit user action or high-value Concordance scope.
+
+### GROBID
+
+Best fit:
+
+- Scholarly metadata.
+- Author, title, abstract, affiliation, reference, and bibliographic structure extraction.
+
+Pros:
+
+- Purpose-built for scientific and technical publications.
+- Local and evidence-friendly.
+- Likely better than a general LLM for many header and reference extraction tasks.
+- Can produce structured TEI that maps well to provenance and review surfaces.
+
+Cons:
+
+- Not a summarizer.
+- Can struggle on scans, unusual layouts, and poor OCR.
+- Needs integration, confidence scoring, and field-level conflict handling.
+
+### Docling
+
+Best fit:
+
+- Local PDF/document conversion.
+- Reading order, OCR, tables, formulas, and structured downstream text.
+
+Pros:
+
+- Targets the exact "messy PDF to structured text" problem.
+- Local and open-source.
+- Can reduce the need for cloud page normalization.
+
+Cons:
+
+- Needs benchmarking on Medusa's real academic PDFs.
+- A clean-looking conversion can still be semantically wrong if reading order or table structure is off.
+
+### Marker
+
+Best fit:
+
+- PDF to Markdown/JSON/chunks/HTML.
+- Tables, forms, equations, inline math, links, references, images, and artifact removal.
+
+Pros:
+
+- Can run on GPU, CPU, or Apple MPS.
+- Produces LLM-ready representations and can optionally use local/remote LLMs for accuracy boosts.
+- Good candidate for replacing much of page normalization and chunk preparation.
+
+Cons:
+
+- Needs evals for faithfulness, especially tables, equations, and multi-column pages.
+- Optional LLM boosting needs tight configuration to avoid hidden cloud cost or hallucinated cleanup.
+
+### Qwen2.5-VL or Qwen3-VL local
+
+Best fit:
+
+- Difficult OCR/layout pages.
+- Figure, table, chart, and page-region understanding.
+- Local visual document parsing experiments.
+
+Pros:
+
+- Strong document-parsing orientation, including layout-aware formats in the Qwen-VL family.
+- Local/private once installed.
+- Useful for targeted visual repair without sending full PDFs to a cloud model.
+
+Cons:
+
+- Hardware-heavy, especially for larger models.
+- Structured output reliability and hallucination control need careful prompting and validators.
+- Slower CPU-only operation may be impractical for large library refreshes.
+
+### BGE-M3
+
+Best fit:
+
+- Local text chunk embeddings.
+- Semantic search and hybrid retrieval experiments.
+
+Pros:
+
+- Local, no per-token cloud spend.
+- Supports 100+ languages and up to 8192-token inputs.
+- Supports dense, sparse, and multi-vector retrieval modes.
+
+Cons:
+
+- Requires local embedding runtime, vector dimension decisions, and Concordance reindexing.
+- Search quality must be evaluated against OpenAI/Gemini/Voyage embeddings on Medusa queries.
+
+### Gemini Embedding
+
+Best fit:
+
+- Cheap cloud embedding fallback if local BGE-M3 is not practical.
+
+Pros:
+
+- Low-cost managed embedding route.
+- Avoids local model hosting and dependency weight.
+
+Cons:
+
+- Still cloud spend.
+- Embedding provider changes require reindexing and compatibility tracking.
+
+### Voyage Embeddings
+
+Best fit:
+
+- High-quality managed retrieval if local embeddings underperform.
+
+Pros:
+
+- Strong reputation for retrieval-specific models.
+- Useful challenger for academic semantic search quality.
+
+Cons:
+
+- Adds another provider and credential surface.
+- Still cloud spend and another usage/pricing integration.
+
+## Evaluation Before Implementation
+
+Use a small, fixed evaluation set before changing defaults:
+
+- 10 to 20 representative PDFs: born-digital two-column papers, scanned pages, tables, equations, book chapters, front matter before articles, bad metadata, and multi-author papers.
+- Metadata score: exact/normalized title, author order, affiliations, email extraction without inference, year, venue, publisher, DOI, abstract.
+- Citation score: APA correctness, DOI/source link correctness, verified vs needs-review calibration.
+- Normalization score: reading order, hyphenation, line wrapping, headings, captions, table preservation, no summarization, no hallucinated text.
+- Keyword score: useful primitives, no verbose compounds, no near-duplicate clutter, stable taxonomy fit.
+- Summary score: faithfulness, methodological nuance, caveats, usefulness, and no invented claims.
+- Retrieval score: known-item search, semantic query relevance, and false positives.
+- Cost score: token count, file/PDF bytes, cache hits, output tokens, failures, retries, and wall-clock time.
+
+## Implementation Notes
+
+- Add provider routing only after the usage ledger can distinguish `provider`, `endpoint`, `model`, `task_key`, and file/PDF context for every non-OpenAI call.
+- Keep provider API keys in `.env` and document them in `.env.example`; never commit credentials.
+- Store model/provider choices in Settings preferences so Concordance Runs can refresh older documents when defaults change.
+- Preserve local/no-credential fallbacks: imports should still complete with local extraction and reviewable metadata when all cloud credentials are absent.
+- Treat provider/model changes as capability-version changes for affected Concordance tasks.
+- Do not silently overwrite user-corrected metadata. Local or model output should fill missing fields or create reviewable candidates unless the user explicitly asks for replacement.
+
+## Source Pointers
+
+Pricing and capabilities change. Recheck these pages before implementation:
+
+- [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+- [OpenAI Batch API](https://developers.openai.com/api/docs/guides/batch)
+- [OpenAI Flex processing](https://developers.openai.com/api/docs/guides/flex-processing)
+- [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)
+- [Gemini document understanding](https://ai.google.dev/gemini-api/docs/document-processing)
+- [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+- [Claude PDF support](https://platform.claude.com/docs/en/build-with-claude/pdf-support)
+- [GROBID documentation](https://grobid.readthedocs.io/)
+- [Docling](https://www.docling.ai/)
+- [Marker](https://github.com/datalab-to/marker)
+- [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL)
+- [BGE-M3](https://huggingface.co/BAAI/bge-m3)
+- [Voyage AI pricing](https://docs.voyageai.com/docs/pricing)

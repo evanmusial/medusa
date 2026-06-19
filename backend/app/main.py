@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
@@ -74,6 +74,7 @@ from app.schemas import (
     NoteCreate,
     NoteOut,
     NotePatch,
+    OpenAIUsageOut,
     ProcessingEventOut,
     ProjectCreate,
     ProjectDetail,
@@ -93,6 +94,7 @@ from app.services.concordance import create_concordance_run, current_capabilitie
 from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
 from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
+from app.services.extraction import sanitize_extracted_text
 from app.services.processing import (
     author_search_text,
     document_metadata,
@@ -101,6 +103,7 @@ from app.services.processing import (
     refresh_import_batch_progress,
 )
 from app.services.preferences import get_app_preferences, update_app_preferences
+from app.services.openai_usage import openai_usage_summary
 from app.services.recommendations import (
     list_document_recommendations,
     queue_recommendation_imports,
@@ -337,23 +340,25 @@ def rebuild_document_search_text(document: Document) -> str:
     attributes = "\n\n".join(
         f"{value.definition.name}: {attribute_value_text(value.value)}" for value in document.attributes if value.definition
     )
-    return "\n\n".join(
-        part
-        for part in [
-            document.title,
-            author_search_text(document.authors),
-            document.abstract,
-            document.rich_summary,
-            document.apa_citation,
-            page_text,
-            figure_search_text(document.figures),
-            notes,
-            annotations,
-            attributes,
-            " ".join(tag.name for tag in document.tags),
-            " ".join(domain.name for domain in document.domains),
-        ]
-        if part
+    return sanitize_extracted_text(
+        "\n\n".join(
+            part
+            for part in [
+                document.title,
+                author_search_text(document.authors),
+                document.abstract,
+                document.rich_summary,
+                document.apa_citation,
+                page_text,
+                figure_search_text(document.figures),
+                notes,
+                annotations,
+                attributes,
+                " ".join(tag.name for tag in document.tags),
+                " ".join(domain.name for domain in document.domains),
+            ]
+            if part
+        )
     )
 
 
@@ -471,10 +476,20 @@ def patch_preferences(
         accent_color_day=payload.accent_color_day,
         accent_color_night=payload.accent_color_night,
         document_cache_size_mb=payload.document_cache_size_mb,
+        library_alternating_rows=payload.library_alternating_rows,
         analysis_models=payload.analysis_models,
     )
     db.commit()
     return preferences
+
+
+@app.get("/api/openai/usage", response_model=OpenAIUsageOut)
+def read_openai_usage(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    period: str = Query("all_time", pattern="^(last_day|last_month|last_3_months|all_time)$"),
+) -> dict[str, Any]:
+    return openai_usage_summary(db, period=period)
 
 
 @app.get("/api/domains", response_model=list[DomainOut])
@@ -1076,6 +1091,9 @@ def bulk_update_documents(
         if "domain_ids" in updates:
             domains = db.query(Domain).filter(Domain.id.in_(updates["domain_ids"])).all()
             document.domains = list({domain.id: domain for domain in [*document.domains, *domains]}.values())
+        if "project_ids" in updates:
+            projects = db.query(Project).filter(Project.id.in_(updates["project_ids"]), Project.deleted_at.is_(None)).all()
+            apply_project_defaults(db, document, projects, document.priority)
     db.commit()
     return {"updated": len(documents)}
 

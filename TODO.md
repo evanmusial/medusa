@@ -20,6 +20,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Document Processing And Intelligence
 
+- [ ] Wire Docling and OpenAI raw extraction fallbacks.
+  - Acceptance: Docling can be installed for the worker without requiring cloud credentials; the Raw Text Extraction Settings preference selects Docling, PyMuPDF, or an OpenAI fallback intentionally; unavailable local extractors record a clear processing event and fall back safely; imports and Concordance extraction refreshes both honor the selected engine without breaking page-level reader state.
+
 - [ ] Integrate a local scholarly parser such as GROBID.
   - Acceptance: title, authors, affiliations, abstract, references, and section metadata can be extracted when available and stored with evidence.
 
@@ -123,8 +126,11 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add GCS manifest validation.
   - Acceptance: Medusa can check that every stored URI in Postgres exists in GCS/local storage and report missing objects.
 
-- [ ] Add cost/status dashboard for OpenAI/OCR work.
-  - Acceptance: Settings shows queued/completed/failed AI/OCR work, rough token/page counts, and recent errors.
+- [x] Add OpenAI usage dashboard.
+  - Acceptance: Budget shows recorded OpenAI Responses/embeddings calls across last-day, last-month, last-3-month, and all-time windows, including success/failure counts, token totals, cached input tokens, conservative known-model cost estimates, unpriced-call counts, PDF/file context bytes, task/model rollups, and recent errors from the durable `OpenAIUsageRecord` ledger.
+
+- [ ] Add OCR cost/status dashboard coverage.
+  - Acceptance: Settings shows queued/completed/failed OCR work, page counts, provider status, and recent OCR errors once OCR processing is wired into imports/Concordance.
 
 - [ ] Replace FastAPI startup event with lifespan handler.
   - Acceptance: startup logic avoids current deprecation warnings while preserving admin bootstrap behavior.

@@ -321,15 +321,17 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(
         processing,
         "extract_pdf_text",
-        lambda _: SimpleNamespace(
+        lambda _, extractor=None: SimpleNamespace(
             page_count=1,
-            pages=[SimpleNamespace(page_number=1, text="Replacement text", low_text=False)],
+            pages=[SimpleNamespace(page_number=1, text="\x00\x02Replacement text\x7f", low_text=False, source="test")],
+            source="test",
+            fallback_reason=None,
         ),
     )
     monkeypatch.setattr(
         processing,
         "normalize_document_pages",
-        lambda document, ai=None, db=None, job=None, resume_existing=False, model=None, pdf_bytes=None: {
+        lambda document, ai=None, db=None, job=None, resume_existing=False, model=None, pdf_bytes=None, usage_context=None: {
             "pages": 1,
             "sources": {"test": 1},
         },
@@ -355,25 +357,32 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
         assert len(pages) == 1
         assert pages[0].page_number == 1
         assert pages[0].text == "Replacement text"
+        assert "\x00" not in document.search_text
         assert job.current_step == "extracted"
 
 
 def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE", "always")
 
     from app.database import Base
+    from app.config import get_settings
     from app.models import Document, DocumentPage, ImportBatch, ImportJob, ProcessingEvent, TextChunk
     from app.services.processing import DocumentProcessor
     from app.services import processing
 
+    get_settings.cache_clear()
+
     class FakeAi:
         def __init__(self):
             self.pages: list[int] = []
+            self.text_inputs: list[str] = []
 
         def normalize_page_text(self, filename, page_number, text, **_):
             self.pages.append(page_number)
-            return {"normalized_text": f"normalized {page_number}", "source": "test", "notes": []}
+            self.text_inputs.append(text)
+            return {"normalized_text": f"\x00normalized {page_number}\x7f", "source": "test", "notes": []}
 
     fake_ai = FakeAi()
     monkeypatch.setattr(processing, "get_ai_service", lambda: fake_ai)
@@ -401,7 +410,7 @@ def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tm
             page_count=2,
         )
         document.pages.append(DocumentPage(page_number=1, text="Page one", normalized_text="already done", low_text=False))
-        document.pages.append(DocumentPage(page_number=2, text="Page two", low_text=False))
+        document.pages.append(DocumentPage(page_number=2, text="\x00Page two\x7f", low_text=False))
         batch = ImportBatch(total_files=1, shared_defaults={})
         job = ImportJob(batch=batch, document=document, status="running", current_step="normalizing_page_2")
         db.add_all([document, batch, job])
@@ -410,10 +419,79 @@ def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tm
         DocumentProcessor()._extract(db, job, document)
 
         assert fake_ai.pages == [2]
+        assert fake_ai.text_inputs == ["Page two"]
         assert document.pages[0].normalized_text == "already done"
         assert document.pages[1].normalized_text == "normalized 2"
+        assert "\x00" not in document.search_text
         assert job.current_step == "extracted"
         assert document.metadata_evidence["page_text_normalization"]["sources"] == {"existing": 1, "test": 1}
+
+
+def test_auto_page_normalization_uses_local_for_clean_marker_pages(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE", "auto")
+
+    from app.config import get_settings
+    from app.models import Document, DocumentPage
+    from app.services.processing import normalize_document_pages
+
+    get_settings.cache_clear()
+
+    class FailIfCalled:
+        def normalize_page_text(self, *_, **__):
+            raise AssertionError("clean Marker page should not call OpenAI normalization")
+
+    document = Document(title="Marker", original_filename="marker.pdf", checksum_sha256="5" * 64)
+    document.pages.append(
+        DocumentPage(page_number=1, text="A clean paragraph from Marker.\n\nA second clean paragraph.", low_text=False, text_source="marker")
+    )
+
+    summary = normalize_document_pages(document, ai=FailIfCalled(), pdf_bytes=b"%PDF")
+
+    assert document.pages[0].normalized_text == "A clean paragraph from Marker.\n\nA second clean paragraph."
+    assert summary["sources"] == {"local_auto": 1}
+    assert summary["auto_cloud_pages"] == 0
+
+
+def test_auto_page_normalization_escalates_artifact_pages_without_pdf_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE", "auto")
+
+    from app.config import get_settings
+    from app.models import Document, DocumentPage
+    from app.services.processing import normalize_document_pages
+
+    get_settings.cache_clear()
+
+    class FakeAi:
+        def __init__(self):
+            self.pdf_bytes = "not called"
+
+        def normalize_page_text(self, filename, page_number, text, **kwargs):
+            del filename, page_number, text
+            self.pdf_bytes = kwargs.get("pdf_bytes")
+            return {"normalized_text": "Cloud cleaned text", "source": "openai", "notes": [], "_openai": {"model": "test"}}
+
+    fake_ai = FakeAi()
+    document = Document(title="Artifact", original_filename="artifact.pdf", checksum_sha256="6" * 64)
+    document.pages.append(
+        DocumentPage(
+            page_number=1,
+            text="The article de-\nscribes one issue.\n\nThe method com-\npares another issue.",
+            low_text=False,
+            text_source="pymupdf",
+        )
+    )
+
+    summary = normalize_document_pages(document, ai=fake_ai, pdf_bytes=b"%PDF")
+
+    assert document.pages[0].normalized_text == "Cloud cleaned text"
+    assert fake_ai.pdf_bytes is None
+    assert summary["sources"] == {"openai": 1}
+    assert summary["auto_cloud_pages"] == 1
+    assert summary["auto_reasons"] == {"hyphenated_wraps": 1}
 
 
 def test_duplicate_preflight_and_skip_strategy(monkeypatch, tmp_path):
