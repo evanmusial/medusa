@@ -31,6 +31,7 @@ from app.services.processing import (
     normalize_document_pages,
     rebuild_document_text_chunks,
 )
+from app.services.recommendations import refresh_document_recommendations
 from app.services.storage import get_storage_service
 from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
 
@@ -73,6 +74,12 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
         label="Figure assets",
         version=1,
         description="Extract embedded PDF figures/images into durable storage and attach them to document records.",
+    ),
+    CapabilityDefinition(
+        key="recommendations",
+        label="Related paper recommendations",
+        version=1,
+        description="Refresh DOI-based related-paper recommendations and mark recommendations already present in the library.",
     ),
 )
 
@@ -315,6 +322,8 @@ class ConcordanceProcessor:
                 evidence = self._refresh_summary_topics(db, document)
             elif job.capability_key == "figure_assets":
                 evidence = self._extract_figures(db, document)
+            elif job.capability_key == "recommendations":
+                evidence = self._refresh_recommendations(db, document)
             else:
                 raise RuntimeError(f"Unsupported Concordance capability: {job.capability_key}")
 
@@ -392,6 +401,16 @@ class ConcordanceProcessor:
 
     def _extract_figures(self, db: Session, document: Document) -> dict[str, Any]:
         return process_document_figures_from_storage(db, document)
+
+    def _refresh_recommendations(self, db: Session, document: Document) -> dict[str, Any]:
+        if not document.doi:
+            return {"recommendation_count": 0, "skipped": "missing_doi"}
+        recommendations = refresh_document_recommendations(db, document)
+        return {
+            "recommendation_count": len(recommendations),
+            "existing_matches": sum(1 for item in recommendations if item.existing_document_id),
+            "with_pdf": sum(1 for item in recommendations if item.pdf_url),
+        }
 
     def _refresh_citation(self, db: Session, document: Document) -> dict[str, Any]:
         evidence = dict(document.metadata_evidence or {})

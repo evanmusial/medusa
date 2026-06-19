@@ -45,6 +45,10 @@ def job_step_at_least(job: ImportJob, step: str) -> bool:
     return IMPORT_STEP_ORDER.get(job.current_step, 0) >= IMPORT_STEP_ORDER[step]
 
 
+def is_page_normalization_step(step: str | None) -> bool:
+    return bool(step and step.startswith("normalizing_page_"))
+
+
 def log_event(
     db: Session,
     *,
@@ -68,10 +72,10 @@ def log_event(
 
 
 def checkpoint_job_step(db: Session, job: ImportJob, document: Document, step: str, message: str) -> None:
-    if job.current_step == step:
-        return
-    job.current_step = step
-    log_event(db, job=job, document=document, event_type=step, message=message)
+    if job.current_step != step:
+        job.current_step = step
+        log_event(db, job=job, document=document, event_type=step, message=message)
+    job.locked_at = utc_now()
     db.commit()
 
 
@@ -132,12 +136,36 @@ def document_reading_text(document: Document) -> str:
     )
 
 
-def normalize_document_pages(document: Document, *, ai: Any | None = None) -> dict[str, Any]:
+def normalize_document_pages(
+    document: Document,
+    *,
+    ai: Any | None = None,
+    db: Session | None = None,
+    job: ImportJob | None = None,
+    resume_existing: bool = False,
+) -> dict[str, Any]:
     ai = ai or get_ai_service()
     source_counts: dict[str, int] = {}
     changed_pages = 0
     failed_notes: list[str] = []
-    for page in sorted(document.pages, key=lambda page: page.page_number):
+    pages = sorted(document.pages, key=lambda page: page.page_number)
+    total_pages = len(pages)
+    for index, page in enumerate(pages, start=1):
+        if resume_existing and page.normalized_text:
+            source_counts["existing"] = source_counts.get("existing", 0) + 1
+            continue
+        if db and job:
+            job.current_step = f"normalizing_page_{page.page_number}"
+            job.locked_at = utc_now()
+            log_event(
+                db,
+                job=job,
+                document=document,
+                event_type="normalizing_page",
+                message=f"Normalizing page {index} of {total_pages}.",
+                payload={"page_number": page.page_number, "page_index": index, "page_count": total_pages},
+            )
+            db.commit()
         before = page.normalized_text or ""
         result = ai.normalize_page_text(document.original_filename, page.page_number, page.text)
         page.normalized_text = result.get("normalized_text") or None
@@ -146,8 +174,11 @@ def normalize_document_pages(document: Document, *, ai: Any | None = None) -> di
         if (page.normalized_text or "") != before:
             changed_pages += 1
         failed_notes.extend(note for note in result.get("notes") or [] if "failed" in note.lower())
+        if db and job:
+            job.locked_at = utc_now()
+            db.commit()
     summary = {
-        "pages": len(document.pages),
+        "pages": total_pages,
         "changed_pages": changed_pages,
         "sources": source_counts,
     }
@@ -238,29 +269,49 @@ class DocumentProcessor:
     def _extract(self, db: Session, job: ImportJob, document: Document) -> None:
         if job_step_at_least(job, "extracted"):
             return
-        local_path = document.metadata_evidence.get("local_cache_path")
-        if not local_path or not Path(local_path).exists():
-            raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
+        resume_normalization = (job.current_step == "normalizing_pages" or is_page_normalization_step(job.current_step)) and bool(
+            document.pages
+        )
+        if not resume_normalization:
+            local_path = document.metadata_evidence.get("local_cache_path")
+            if not local_path or not Path(local_path).exists():
+                raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
 
-        checkpoint_job_step(db, job, document, "extracting", "Extracting PDF text.")
-        extracted = extract_pdf_text(Path(local_path))
-        ai = get_ai_service()
-        document.page_count = extracted.page_count
-        document.pages.clear()
-        db.flush()
-        for page in extracted.pages:
-            document.pages.append(
-                DocumentPage(
-                    document_id=document.id,
-                    page_number=page.page_number,
-                    text=page.text,
-                    low_text=page.low_text,
-                    text_source="pdf" if not page.low_text else "pdf_low_text",
+            checkpoint_job_step(db, job, document, "extracting", "Extracting PDF text.")
+            extracted = extract_pdf_text(Path(local_path))
+            document.page_count = extracted.page_count
+            document.pages.clear()
+            db.flush()
+            for page in extracted.pages:
+                document.pages.append(
+                    DocumentPage(
+                        document_id=document.id,
+                        page_number=page.page_number,
+                        text=page.text,
+                        low_text=page.low_text,
+                        text_source="pdf" if not page.low_text else "pdf_low_text",
+                    )
                 )
+            db.flush()
+            checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing extracted page text.")
+        else:
+            job.locked_at = utc_now()
+            log_event(
+                db,
+                job=job,
+                document=document,
+                event_type="normalization_resumed",
+                message="Resuming page text normalization from persisted page checkpoints.",
             )
-        db.flush()
-        checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing extracted page text.")
-        normalization_summary = normalize_document_pages(document, ai=ai)
+            db.commit()
+        ai = get_ai_service()
+        normalization_summary = normalize_document_pages(
+            document,
+            ai=ai,
+            db=db,
+            job=job,
+            resume_existing=resume_normalization,
+        )
         reading_text = rebuild_document_text_chunks(db, document)
         document.metadata_evidence = {
             **(document.metadata_evidence or {}),
@@ -272,9 +323,9 @@ class DocumentProcessor:
             job=job,
             document=document,
             event_type="extracted",
-            message=f"Extracted {extracted.page_count} pages.",
+            message=f"Extracted {document.page_count} pages.",
             payload={
-                "low_text_pages": [page.page_number for page in extracted.pages if page.low_text],
+                "low_text_pages": [page.page_number for page in document.pages if page.low_text],
                 "readable_characters": len(reading_text),
                 "page_text_normalization": normalization_summary,
             },

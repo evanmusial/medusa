@@ -17,6 +17,7 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
 
     from app.models import (
         Annotation,
+        AppPreference,
         AttributeDefinition,
         CitationCandidate,
         Document,
@@ -83,6 +84,7 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         source.add(job)
         source.flush()
         source.add(ProcessingEvent(import_job_id=job.id, document_id=document.id, event_type="queued", message="Queued."))
+        source.add(AppPreference(key="import_worker_concurrency", value={"value": 3}))
         source.commit()
 
         exported = build_metadata_export(source)
@@ -100,6 +102,7 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         restored = destination.query(Document).one()
         restored_job = destination.query(ImportJob).one()
         restored_project = destination.query(Project).one()
+        restored_preference = destination.query(AppPreference).one()
 
         assert result["applied"] is True
         assert destination.query(User).count() == 0
@@ -113,6 +116,8 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         assert restored.annotations[0].body == "Important margin note."
         assert restored.attributes[0].value == {"value": "Machines"}
         assert restored_project.items[0].document_id == restored.id
+        assert restored_preference.key == "import_worker_concurrency"
+        assert restored_preference.value == {"value": 3}
         assert restored_job.status == "restored_paused"
         assert "parked" in restored_job.last_error
 

@@ -10,11 +10,26 @@ export type Dashboard = {
   needs_review: number;
   queued_jobs: number;
   active_import_jobs: number;
+  import_queued_jobs: number;
+  import_running_jobs: number;
+  import_progress_total: number;
+  import_progress_completed: number;
+  import_progress_failed: number;
+  import_active_step?: string | null;
+  import_active_elapsed_seconds?: number | null;
   active_concordance_jobs: number;
   failed_jobs: number;
   failed_import_jobs: number;
   failed_concordance_jobs: number;
   projects: number;
+};
+
+export type AppPreferences = {
+  import_worker_concurrency: number;
+  recommended_import_worker_concurrency: number;
+  import_worker_cost_warning_threshold: number;
+  accent_color_day: string;
+  accent_color_night: string;
 };
 
 export type Domain = {
@@ -154,6 +169,46 @@ export type DocumentDetail = DocumentSummary & {
   duplicate_document_ids: string[];
 };
 
+export type DocumentRecommendation = {
+  id: string;
+  source_document_id: string;
+  existing_document_id?: string | null;
+  imported_document_id?: string | null;
+  existing_document_title?: string | null;
+  title: string;
+  doi?: string | null;
+  authors: Array<Record<string, string | null>>;
+  publication_year?: number | null;
+  journal?: string | null;
+  description?: string | null;
+  source_provider: string;
+  source_relation?: string | null;
+  external_id?: string | null;
+  source_url?: string | null;
+  pdf_url?: string | null;
+  score?: number | null;
+  status: string;
+  raw_metadata: Record<string, unknown>;
+  has_pdf: boolean;
+  last_seen_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DocumentRecommendationRefresh = {
+  document_id: string;
+  recommendation_count: number;
+  recommendations: DocumentRecommendation[];
+};
+
+export type DocumentRecommendationDownload = {
+  batch_id: string;
+  queued_count: number;
+  skipped_existing_count: number;
+  unavailable_count: number;
+  failed_count: number;
+};
+
 export type DocumentUpdatePayload = Partial<DocumentDetail> & {
   tag_names?: string[];
   domain_ids?: string[];
@@ -216,10 +271,12 @@ export type ImportJob = {
   document_title?: string | null;
   original_filename?: string | null;
   file_size_bytes?: number | null;
+  document_page_count?: number | null;
   status: string;
   current_step: string;
   attempts: number;
   last_error?: string | null;
+  locked_at?: string | null;
   created_at: string;
   updated_at: string;
 };

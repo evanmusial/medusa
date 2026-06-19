@@ -7,16 +7,16 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Highest Priority
 
 - [ ] Implement exhaustive DOI/source-link resolution for APA citations.
-  - Acceptance: citation refresh searches document metadata, extracted text, references, Crossref, Semantic Scholar, DOI.org, publisher pages, and targeted web evidence to locate a DOI whenever one exists; APA output favors DOI links; when no DOI can be verified, APA output uses the best direct stable source link, preferably a PDF or other static document; all evidence, attempted sources, conflicts, and confidence are recorded for Review Queue inspection.
+  - Acceptance: citation refresh searches document metadata, extracted text, references, Crossref, Semantic Scholar, DOI.org, publisher pages, and targeted web evidence to locate a DOI whenever one exists; APA output favors DOI links; when no DOI can be verified, APA output uses the best direct stable source link, preferably a PDF or other static document; all evidence, attempted sources, conflicts, and confidence are recorded for Queue inspection.
 
 - [ ] Add real low-text OCR fallback with Google Vision.
   - Acceptance: low-text/scanned PDF pages are detected, OCR is run only when needed, OCR text is stored per page, and processing remains resumable.
 
 - [ ] Add robust citation verification beyond current Crossref basics.
-  - Acceptance: DOI, Crossref, Semantic Scholar, publisher, PDF/static-source, and web evidence can be compared; uncertain conflicts create Review Queue candidates instead of overwriting trusted metadata.
+  - Acceptance: DOI, Crossref, Semantic Scholar, publisher, PDF/static-source, and web evidence can be compared; uncertain conflicts create Queue candidates instead of overwriting trusted metadata.
 
 - [ ] Add richer citation review evidence UI.
-  - Acceptance: Review Queue shows source evidence side by side, supports partial field-level acceptance, and records which source supplied each accepted field.
+  - Acceptance: Queue shows source evidence side by side, supports partial field-level acceptance, and records which source supplied each accepted field.
 
 ## Document Processing And Intelligence
 
@@ -56,6 +56,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: reminder annotations surface in Notes/Review or a reminder view with due dates.
 
 ## Library Organization And Search
+
+- [ ] Add richer recommendation source/import management.
+  - Acceptance: related-paper recommendations can be refreshed on a schedule or Concordance scope, source/provider failures are visible in Settings, downloads run as durable background fetch jobs instead of request-time fetches, and non-open recommendations can be triaged into a wishlist without pretending a PDF is available.
 
 - [ ] Add arbitrary-filter Concordance scopes.
   - Acceptance: Concordance can run against the current filtered result set, not only whole library, document, domain, project, search text, or saved search.
@@ -126,7 +129,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Testing And QA
 
 - [ ] Add Playwright smoke tests.
-  - Acceptance: login, import defaults, library search, document correction, citation copy, Review Queue actions, project bibliography, backup export, annotations, and day/night modes are covered.
+  - Acceptance: login, import defaults, library search, document correction, citation copy, Queue actions, project bibliography, backup export, annotations, and day/night modes are covered.
 
 - [ ] Add import end-to-end tests with mocked GCS/OpenAI/OCR adapters.
   - Acceptance: upload through processed/searchable states is tested without real cloud calls.
@@ -135,4 +138,4 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: stopping the worker mid-import and restarting resumes without duplicate records or lost files.
 
 - [ ] Add visual regression checks for cockpit layouts.
-  - Acceptance: Library, document detail, Import, Projects, Review Queue, Notes, and Settings are checked at desktop and mobile widths.
+  - Acceptance: Library, document detail, Import, Projects, Queue, Notes, and Settings are checked at desktop and mobile widths.

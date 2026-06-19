@@ -105,6 +105,13 @@ class SessionToken(Base, TimestampMixin):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class AppPreference(Base, TimestampMixin):
+    __tablename__ = "app_preferences"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+
+
 class Domain(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "domains"
 
@@ -188,6 +195,11 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     notes: Mapped[list["Note"]] = relationship(back_populates="document")
     attributes: Mapped[list["DocumentAttributeValue"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     capabilities: Mapped[list["DocumentCapability"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    recommendations: Mapped[list["DocumentRecommendation"]] = relationship(
+        back_populates="source_document",
+        cascade="all, delete-orphan",
+        foreign_keys="DocumentRecommendation.source_document_id",
+    )
 
 
 class DocumentVersion(Base, TimestampMixin):
@@ -319,6 +331,52 @@ class DocumentCapability(Base, TimestampMixin):
     document: Mapped[Document] = relationship(back_populates="capabilities")
 
     __table_args__ = (UniqueConstraint("document_id", "capability_key", name="uq_document_capability"),)
+
+
+class DocumentRecommendation(Base, TimestampMixin):
+    __tablename__ = "document_recommendations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source_document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    existing_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    match_key: Mapped[str] = mapped_column(String(900), nullable=False)
+    title: Mapped[str] = mapped_column(String(800), nullable=False)
+    doi: Mapped[str | None] = mapped_column(String(256), index=True)
+    authors: Mapped[list[dict[str, Any]]] = mapped_column(JsonDict, default=list, nullable=False)
+    publication_year: Mapped[int | None] = mapped_column(Integer)
+    journal: Mapped[str | None] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text)
+    source_provider: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_relation: Mapped[str | None] = mapped_column(String(120))
+    external_id: Mapped[str | None] = mapped_column(String(360))
+    source_url: Mapped[str | None] = mapped_column(Text)
+    pdf_url: Mapped[str | None] = mapped_column(Text)
+    score: Mapped[float | None] = mapped_column(Numeric(8, 3))
+    status: Mapped[str] = mapped_column(String(40), default="candidate", nullable=False, index=True)
+    raw_metadata: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    imported_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+
+    source_document: Mapped[Document] = relationship(
+        back_populates="recommendations",
+        foreign_keys=[source_document_id],
+    )
+    existing_document: Mapped[Document | None] = relationship(foreign_keys=[existing_document_id])
+    imported_document: Mapped[Document | None] = relationship(foreign_keys=[imported_document_id])
+
+    @property
+    def existing_document_title(self) -> str | None:
+        if self.existing_document:
+            return self.existing_document.title
+        if self.imported_document:
+            return self.imported_document.title
+        return None
+
+    @property
+    def has_pdf(self) -> bool:
+        return bool(self.pdf_url)
+
+    __table_args__ = (UniqueConstraint("source_document_id", "match_key", name="uq_document_recommendation_match"),)
 
 
 class Project(Base, TimestampMixin, SoftDeleteMixin):

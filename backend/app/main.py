@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -24,6 +24,7 @@ from app.models import (
     ConcordanceRun,
     Document,
     DocumentAttributeValue,
+    DocumentRecommendation,
     DocumentVersion,
     Domain,
     Figure,
@@ -43,6 +44,8 @@ from app.schemas import (
     AnnotationCreate,
     AnnotationOut,
     AnnotationPatch,
+    AppPreferencesOut,
+    AppPreferencesPatch,
     AttributeDefinitionCreate,
     AttributeDefinitionOut,
     BibliographyOut,
@@ -55,6 +58,10 @@ from app.schemas import (
     DashboardOut,
     DocumentDetail,
     DocumentPatch,
+    DocumentRecommendationDownloadCreate,
+    DocumentRecommendationDownloadOut,
+    DocumentRecommendationOut,
+    DocumentRecommendationRefreshOut,
     DocumentSummary,
     DomainCreate,
     DomainOut,
@@ -86,6 +93,12 @@ from app.services.concordance import create_concordance_run, current_capabilitie
 from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.processing import document_metadata, document_reading_text, refresh_import_batch_progress
+from app.services.preferences import get_app_preferences, update_app_preferences
+from app.services.recommendations import (
+    list_document_recommendations,
+    queue_recommendation_imports,
+    refresh_document_recommendations,
+)
 from app.services.storage import get_storage_service
 
 
@@ -389,22 +402,70 @@ def me(user: Annotated[User, Depends(current_user)]) -> User:
 
 @app.get("/api/dashboard", response_model=DashboardOut)
 def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> DashboardOut:
-    active_import_jobs = db.query(ImportJob).filter(ImportJob.status.in_(["queued", "running"])).count()
+    import_queued_jobs = db.query(ImportJob).filter(ImportJob.status == "queued").count()
+    import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
+    active_import_jobs = import_queued_jobs + import_running_jobs
     active_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status.in_(["queued", "running"])).count()
     failed_import_jobs = db.query(ImportJob).filter(ImportJob.status == "failed").count()
     failed_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "failed").count()
+    active_batch_ids = [
+        row[0]
+        for row in db.query(ImportJob.batch_id).filter(ImportJob.status.in_(["queued", "running"])).distinct().all()
+    ]
+    active_batches = db.query(ImportBatch).filter(ImportBatch.id.in_(active_batch_ids)).all() if active_batch_ids else []
+    import_progress_total = sum(batch.total_files for batch in active_batches)
+    import_progress_completed = sum(batch.completed_files for batch in active_batches)
+    import_progress_failed = sum(batch.failed_files for batch in active_batches)
+    active_import_job = (
+        db.query(ImportJob)
+        .filter(ImportJob.status == "running")
+        .order_by(ImportJob.locked_at.asc(), ImportJob.created_at.asc())
+        .first()
+    )
+    active_started_at = None
+    if active_import_job:
+        active_started_at = active_import_job.locked_at or active_import_job.updated_at
+    active_elapsed_seconds = int((utc_now() - active_started_at).total_seconds()) if active_started_at else None
     return DashboardOut(
         documents=db.query(Document).filter(Document.deleted_at.is_(None)).count(),
         unread=db.query(Document).filter(Document.deleted_at.is_(None), Document.read_status == "unread").count(),
         needs_review=db.query(Document).filter(Document.deleted_at.is_(None), Document.citation_status == "needs_review").count(),
         queued_jobs=active_import_jobs + active_concordance_jobs,
         active_import_jobs=active_import_jobs,
+        import_queued_jobs=import_queued_jobs,
+        import_running_jobs=import_running_jobs,
+        import_progress_total=import_progress_total,
+        import_progress_completed=import_progress_completed,
+        import_progress_failed=import_progress_failed,
+        import_active_step=active_import_job.current_step if active_import_job else None,
+        import_active_elapsed_seconds=active_elapsed_seconds,
         active_concordance_jobs=active_concordance_jobs,
         failed_jobs=failed_import_jobs + failed_concordance_jobs,
         failed_import_jobs=failed_import_jobs,
         failed_concordance_jobs=failed_concordance_jobs,
         projects=db.query(Project).filter(Project.deleted_at.is_(None)).count(),
     )
+
+
+@app.get("/api/preferences", response_model=AppPreferencesOut)
+def read_preferences(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> dict[str, int | str]:
+    return get_app_preferences(db)
+
+
+@app.patch("/api/preferences", response_model=AppPreferencesOut)
+def patch_preferences(
+    payload: AppPreferencesPatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, int | str]:
+    preferences = update_app_preferences(
+        db,
+        import_worker_concurrency=payload.import_worker_concurrency,
+        accent_color_day=payload.accent_color_day,
+        accent_color_night=payload.accent_color_night,
+    )
+    db.commit()
+    return preferences
 
 
 @app.get("/api/domains", response_model=list[DomainOut])
@@ -687,6 +748,72 @@ def refresh_document_citation(
     db.commit()
     db.refresh(run)
     return run
+
+
+@app.get("/api/documents/{document_id}/recommendations", response_model=list[DocumentRecommendationOut])
+def get_document_recommendations(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    hide_existing: bool = False,
+) -> list[DocumentRecommendation]:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    rows = list_document_recommendations(db, document, hide_existing=hide_existing)
+    db.commit()
+    return rows
+
+
+@app.post("/api/documents/{document_id}/recommendations/refresh", response_model=DocumentRecommendationRefreshOut)
+def refresh_recommendations(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentRecommendationRefreshOut:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.processing_status != "ready":
+        raise HTTPException(status_code=409, detail="Recommendations are available after processing is complete")
+    if not document.doi:
+        raise HTTPException(status_code=400, detail="A DOI is required to refresh related-paper recommendations")
+    rows = refresh_document_recommendations(db, document)
+    db.commit()
+    return DocumentRecommendationRefreshOut(
+        document_id=document.id,
+        recommendation_count=len(rows),
+        recommendations=[DocumentRecommendationOut.model_validate(row) for row in rows],
+    )
+
+
+@app.post("/api/documents/{document_id}/recommendations/download", response_model=DocumentRecommendationDownloadOut)
+def download_recommendations(
+    document_id: str,
+    payload: DocumentRecommendationDownloadCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentRecommendationDownloadOut:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    query = db.query(DocumentRecommendation).filter(DocumentRecommendation.source_document_id == document.id)
+    if payload.mode == "new":
+        query = query.filter(
+            DocumentRecommendation.existing_document_id.is_(None),
+            DocumentRecommendation.imported_document_id.is_(None),
+        )
+    else:
+        ids = payload.recommendation_ids or []
+        if not ids:
+            raise HTTPException(status_code=400, detail="recommendation_ids is required for selected downloads")
+        query = query.filter(DocumentRecommendation.id.in_(ids))
+    recommendations = query.order_by(DocumentRecommendation.title).all()
+    if not recommendations:
+        raise HTTPException(status_code=400, detail="No recommendations matched the download request")
+    result = queue_recommendation_imports(db, document, recommendations, skip_existing=payload.skip_existing)
+    db.commit()
+    return DocumentRecommendationDownloadOut(**result)
 
 
 @app.get("/api/documents/{document_id}/original")
@@ -1245,26 +1372,77 @@ def import_job_file_size(document: Document | None) -> int | None:
     return None
 
 
+def import_job_out(job: ImportJob) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "batch_id": job.batch_id,
+        "document_id": job.document_id,
+        "document_title": job.document.title if job.document else None,
+        "original_filename": job.document.original_filename if job.document else None,
+        "file_size_bytes": import_job_file_size(job.document),
+        "document_page_count": job.document.page_count if job.document else None,
+        "status": job.status,
+        "current_step": job.current_step,
+        "attempts": job.attempts,
+        "last_error": job.last_error,
+        "locked_at": job.locked_at,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+
+
 @app.get("/api/imports/jobs", response_model=list[ImportJobOut])
 def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
     jobs = db.query(ImportJob).options(joinedload(ImportJob.document)).order_by(ImportJob.created_at.desc()).limit(100).all()
-    return [
-        {
-            "id": job.id,
-            "batch_id": job.batch_id,
-            "document_id": job.document_id,
-            "document_title": job.document.title if job.document else None,
-            "original_filename": job.document.original_filename if job.document else None,
-            "file_size_bytes": import_job_file_size(job.document),
-            "status": job.status,
-            "current_step": job.current_step,
-            "attempts": job.attempts,
-            "last_error": job.last_error,
-            "created_at": job.created_at,
-            "updated_at": job.updated_at,
-        }
-        for job in jobs
-    ]
+    return [import_job_out(job) for job in jobs]
+
+
+@app.post("/api/imports/jobs/{job_id}/rescue", response_model=ImportJobOut)
+def rescue_import_job(
+    job_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    job = db.query(ImportJob).options(joinedload(ImportJob.document)).filter(ImportJob.id == job_id).one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    if job.status == "complete":
+        raise HTTPException(status_code=400, detail="Completed import jobs do not need rescue.")
+
+    marker = job.locked_at or job.updated_at
+    stale_cutoff = utc_now() - timedelta(seconds=max(1, settings.worker_stale_job_seconds))
+    if job.status == "running" and marker and marker > stale_cutoff:
+        raise HTTPException(
+            status_code=409,
+            detail="This import still has an active worker lock. Restart the app or wait for the stale-lock window before rescuing it.",
+        )
+
+    previous = {
+        "status": job.status,
+        "current_step": job.current_step,
+        "attempts": job.attempts,
+        "locked_at": job.locked_at.isoformat() if job.locked_at else None,
+        "last_error": job.last_error,
+    }
+    job.status = "queued"
+    job.locked_at = None
+    job.last_error = None
+    if job.document:
+        job.document.processing_status = "queued"
+    if job.batch:
+        refresh_import_batch_progress(db, job.batch)
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=job.document_id,
+            event_type="manual_import_rescue",
+            message="Import job was manually requeued.",
+            payload={"previous": previous},
+        )
+    )
+    db.commit()
+    db.refresh(job)
+    return import_job_out(job)
 
 
 @app.get("/api/exports/metadata")

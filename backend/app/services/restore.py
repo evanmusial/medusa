@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Annotation,
+    AppPreference,
     AttributeDefinition,
     CitationCandidate,
     ConcordanceJob,
@@ -17,6 +18,7 @@ from app.models import (
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
+    DocumentRecommendation,
     DocumentVersion,
     Domain,
     Figure,
@@ -32,6 +34,7 @@ from app.models import (
     TextChunk,
 )
 from app.services.exports import EXPORT_SCHEMA_VERSION
+from app.services.preferences import SAFE_PREFERENCE_KEYS
 
 
 class RestoreValidationError(ValueError):
@@ -63,6 +66,7 @@ RESTORE_SECTIONS = [
     "projects",
     "project_bibliographies",
     "notes",
+    "app_preferences",
     "import_batches",
     "import_jobs",
     "processing_events",
@@ -219,6 +223,7 @@ def restore_metadata_export(
             preserve_ids,
         )
         restored_counts["notes"], skipped_rows["notes"] = _restore_notes(db, _section(data, "notes"), id_maps, preserve_ids)
+        restored_counts["app_preferences"] = _restore_app_preferences(db, _section(data, "app_preferences"))
         restored_counts["import_batches"] = _restore_import_batches(
             db,
             _section(data, "import_batches"),
@@ -505,6 +510,23 @@ def _restore_notes(
     return count, skipped
 
 
+def _restore_app_preferences(db: Session, rows: list[dict[str, Any]]) -> int:
+    count = 0
+    for row in rows:
+        key = row.get("key")
+        if key not in SAFE_PREFERENCE_KEYS:
+            continue
+        preference = db.get(AppPreference, key)
+        if not preference:
+            preference = AppPreference(key=key, value={})
+            db.add(preference)
+        preference.value = row.get("value") if isinstance(row.get("value"), dict) else {}
+        _apply_timestamps(preference, row)
+        count += 1
+    db.flush()
+    return count
+
+
 def _restore_import_batches(
     db: Session,
     rows: list[dict[str, Any]],
@@ -755,6 +777,7 @@ def _replace_document_children(
         DocumentCapability,
     ):
         db.query(model).filter(model.document_id == document.id).delete(synchronize_session=False)
+    db.query(DocumentRecommendation).filter(DocumentRecommendation.source_document_id == document.id).delete(synchronize_session=False)
     db.flush()
 
     for version_row in row.get("versions", []):
@@ -851,6 +874,35 @@ def _replace_document_children(
         )
         _apply_timestamps(annotation, annotation_row)
         db.add(annotation)
+
+    for recommendation_row in row.get("recommendations", []):
+        recommendation = DocumentRecommendation(
+            **_restore_kwargs(
+                recommendation_row,
+                preserve_ids,
+            source_document_id=document.id,
+            existing_document_id=id_maps["documents"].get(recommendation_row.get("existing_document_id")),
+            imported_document_id=id_maps["documents"].get(recommendation_row.get("imported_document_id")),
+            match_key=recommendation_row.get("match_key") or "title:restored",
+            title=recommendation_row.get("title") or "Restored recommendation",
+            doi=recommendation_row.get("doi"),
+            authors=recommendation_row.get("authors") or [],
+            publication_year=recommendation_row.get("publication_year"),
+            journal=recommendation_row.get("journal"),
+            description=recommendation_row.get("description"),
+            source_provider=recommendation_row.get("source_provider") or "restored",
+            source_relation=recommendation_row.get("source_relation"),
+            external_id=recommendation_row.get("external_id"),
+            source_url=recommendation_row.get("source_url"),
+            pdf_url=recommendation_row.get("pdf_url"),
+            score=recommendation_row.get("score"),
+            status=recommendation_row.get("status") or "candidate",
+            raw_metadata=recommendation_row.get("raw_metadata") or {},
+            last_seen_at=_dt(recommendation_row.get("last_seen_at")),
+            ),
+        )
+        _apply_timestamps(recommendation, recommendation_row)
+        db.add(recommendation)
 
     for attribute_row in row.get("attributes", []):
         definition_id = id_maps["attribute_definitions"].get(attribute_row.get("attribute_definition_id"))

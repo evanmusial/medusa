@@ -1,6 +1,7 @@
 import type {
   Annotation,
   AnnotationPayload,
+  AppPreferences,
   Bibliography,
   CitationCandidate,
   ConcordanceCapability,
@@ -9,6 +10,9 @@ import type {
   Dashboard,
   DocumentDetail,
   DocumentFilters,
+  DocumentRecommendation,
+  DocumentRecommendationDownload,
+  DocumentRecommendationRefresh,
   DocumentSummary,
   DocumentUpdatePayload,
   Domain,
@@ -44,6 +48,9 @@ export const api = {
   logout: () => request<{ status: string }>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/me"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
+  preferences: () => request<AppPreferences>("/api/preferences"),
+  updatePreferences: (body: Partial<Pick<AppPreferences, "import_worker_concurrency" | "accent_color_day" | "accent_color_night">>) =>
+    request<AppPreferences>("/api/preferences", { method: "PATCH", body: JSON.stringify(body) }),
   domains: () => request<Domain[]>("/api/domains"),
   createDomain: (name: string, parentId?: string | null) =>
     request<Domain>("/api/domains", { method: "POST", body: JSON.stringify({ name, parent_id: parentId || null }) }),
@@ -83,6 +90,18 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   refreshDocumentCitation: (id: string) =>
     request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
+  documentRecommendations: (id: string, hideExisting = false) =>
+    request<DocumentRecommendation[]>(`/api/documents/${id}/recommendations${hideExisting ? "?hide_existing=true" : ""}`),
+  refreshDocumentRecommendations: (id: string) =>
+    request<DocumentRecommendationRefresh>(`/api/documents/${id}/recommendations/refresh`, { method: "POST" }),
+  downloadRecommendations: (
+    id: string,
+    body: { recommendation_ids?: string[]; mode?: "selected" | "new"; skip_existing?: boolean },
+  ) =>
+    request<DocumentRecommendationDownload>(`/api/documents/${id}/recommendations/download`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   annotations: (documentId: string) => request<Annotation[]>(`/api/documents/${documentId}/annotations`),
   createAnnotation: (documentId: string, body: AnnotationPayload) =>
     request<Annotation>(`/api/documents/${documentId}/annotations`, { method: "POST", body: JSON.stringify(body) }),
@@ -107,6 +126,7 @@ export const api = {
     request<Note>(`/api/notes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
+  rescueImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/rescue`, { method: "POST" }),
   checkImportDuplicates: (files: File[]) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));

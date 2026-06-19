@@ -17,7 +17,7 @@ Medusa is a local-first research library, document aggregator, and intelligent t
 - OpenAI adapter for structured metadata, summaries, topics, keywords, page text normalization, and embeddings
 - Citation generation in Markdown APA 7, BibTeX, RIS, and CSL JSON
 - Live document-level citation check/refresh controls backed by durable Concordance jobs
-- Review queue for accepting or rejecting ambiguous citations with correction history
+- Queue view for import work and accepting or rejecting ambiguous citations with correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, and bibliography generation
 - Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
@@ -91,8 +91,11 @@ OpenAI enrichment runs asynchronously during imports and Concordance Runs. By de
 Worker recovery:
 
 ```bash
+MEDUSA_IMPORT_WORKER_CONCURRENCY=4
 MEDUSA_WORKER_STALE_JOB_SECONDS=900
 ```
+
+Medusa defaults to four concurrent import jobs. The env var sets the startup default, and Settings lets the local user change the active preference without editing tracked files. Values above four are allowed but can generate many OpenAI calls and costs over a short period.
 
 Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
 
@@ -154,7 +157,9 @@ Imports are durable jobs stored in PostgreSQL. Each processing step records even
 
 Duplicate uploads are checked before queueing. When an exact checksum match is found, the Import view asks whether to skip the duplicate, overwrite the matching document record, or import anyway as a separate document. Library filters can also show exact checksum duplicates already in the collection.
 
-If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint.
+If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint. In-flight documents may repeat the current step, and page normalization resumes from persisted page checkpoints when possible.
+
+The Import screen can also rescue failed imports or stale locked imports by requeueing the job. Fresh running jobs are protected from manual requeue to avoid racing an active worker.
 
 Settings includes backup export controls. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. Exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 

@@ -13,6 +13,7 @@ import {
   Cloud,
   Download,
   Edit3,
+  ExternalLink,
   FileSearch,
   FileText,
   Filter,
@@ -21,6 +22,7 @@ import {
   Image,
   Library,
   ListChecks,
+  ListTodo,
   LogOut,
   Moon,
   PanelLeftClose,
@@ -40,13 +42,16 @@ import {
 import { api } from "./lib/api";
 import type {
   AnnotationPayload,
+  AppPreferences,
   Bibliography,
   CitationCandidate,
   ConcordanceCapability,
   ConcordanceJob,
   ConcordanceRun,
+  Dashboard,
   DocumentDetail,
   DocumentFilters,
+  DocumentRecommendation,
   DocumentSummary,
   DocumentUpdatePayload,
   Domain,
@@ -61,7 +66,7 @@ import type {
   Tag,
 } from "./types";
 
-type View = "library" | "domains" | "projects" | "review" | "notes" | "import" | "settings";
+type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "settings";
 
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
@@ -71,7 +76,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Library }> = [
   { id: "library", label: "Library", icon: Library },
   { id: "domains", label: "Domains", icon: FolderTree },
   { id: "projects", label: "Projects", icon: ListChecks },
-  { id: "review", label: "Review Queue", icon: FileSearch },
+  { id: "queue", label: "Queue", icon: ListTodo },
   { id: "notes", label: "Notes", icon: BookOpen },
   { id: "import", label: "Import", icon: UploadCloud },
   { id: "settings", label: "Settings", icon: Settings },
@@ -83,6 +88,28 @@ function authorLine(document: DocumentSummary | DocumentDetail) {
   return authors
     .slice(0, 3)
     .map((author) => [author.given, author.family].filter(Boolean).join(" "))
+    .join(", ");
+}
+
+function recommendationAuthorLine(item: DocumentRecommendation) {
+  const authors = item.authors || [];
+  if (!authors.length) return "Unknown author";
+  return authors
+    .slice(0, 3)
+    .map((author) => [author.given, author.family].filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function recommendationProviderLabel(value: string) {
+  return value
+    .split(",")
+    .map((part) =>
+      part
+        .trim()
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    )
     .join(", ");
 }
 
@@ -170,8 +197,89 @@ function formatFileSize(bytes?: number | null) {
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+function formatDuration(seconds?: number | null) {
+  if (seconds === undefined || seconds === null || Number.isNaN(seconds)) return "";
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  if (safeSeconds < 60) return `${safeSeconds}s`;
+  const minutes = Math.floor(safeSeconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function importJobProgress(job: ImportJob) {
+  if (job.status === "complete") return 100;
+  if (job.status === "failed") return 100;
+  if (job.status === "queued") return 0;
+  const step = job.current_step || "stored";
+  const pageMatch = step.match(/^normalizing_page_(\d+)$/);
+  if (pageMatch) {
+    const pageNumber = Number(pageMatch[1]);
+    const pageCount = Math.max(1, job.document_page_count || pageNumber);
+    return Math.min(58, 12 + Math.round((Math.min(pageNumber, pageCount) / pageCount) * 42));
+  }
+  const progressByStep: Record<string, number> = {
+    stored: 2,
+    extracting: 8,
+    normalizing_pages: 12,
+    extracted: 58,
+    extracting_figures: 62,
+    figures: 68,
+    enriching: 76,
+    enriched: 84,
+    indexing: 90,
+    indexed: 95,
+    cleaning_cache: 97,
+  };
+  return progressByStep[step] ?? (job.status === "running" ? 8 : 0);
+}
+
+function importJobStage(job: ImportJob) {
+  const pageMatch = job.current_step.match(/^normalizing_page_(\d+)$/);
+  if (pageMatch) {
+    const pageCount = job.document_page_count ? `/${job.document_page_count}` : "";
+    return `normalizing page ${pageMatch[1]}${pageCount}`;
+  }
+  return job.current_step.replaceAll("_", " ");
+}
+
+function importJobLabel(job: ImportJob) {
+  const name = job.original_filename || job.document_title || job.current_step || "Import";
+  const size = formatFileSize(job.file_size_bytes);
+  return `${name}${size ? ` (${size})` : ""}${job.status === "complete" ? " (done)" : ""}`;
+}
+
+function importJobStepLabel(job: ImportJob) {
+  if (job.status === "complete") return "complete";
+  if (job.status === "failed") return job.last_error || "failed";
+  return importJobStage(job);
+}
+
+function canRescueImportJob(job: ImportJob) {
+  if (job.status === "failed" || job.status === "restored_paused") return true;
+  if (job.status !== "running" || !job.locked_at) return false;
+  return Date.now() - new Date(job.locked_at).getTime() > 15 * 60 * 1000;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeHexColor(value?: string | null, fallback = "#2563eb") {
+  return /^#[0-9a-fA-F]{6}$/.test(value || "") ? String(value).toLowerCase() : fallback;
+}
+
+function mixHexColors(foreground: string, background: string, foregroundWeight: number) {
+  const parse = (value: string) => [1, 3, 5].map((start) => Number.parseInt(value.slice(start, start + 2), 16));
+  const fg = parse(foreground);
+  const bg = parse(background);
+  const channel = (index: number) => Math.round(fg[index] * foregroundWeight + bg[index] * (1 - foregroundWeight));
+  return `#${[0, 1, 2].map((index) => channel(index).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function accentSoftColor(accent: string, theme: "day" | "night") {
+  return mixHexColors(accent, theme === "night" ? "#172033" : "#ffffff", theme === "night" ? 0.28 : 0.12);
 }
 
 function useStoredPaneSize(key: string, defaultValue: number, min: number, max: number) {
@@ -504,12 +612,16 @@ function Sidebar({
   activeView,
   collapsed,
   activeImportJobs,
+  dashboard,
+  onOpenQueue,
   onToggleSidebar,
   setActiveView,
 }: {
   activeView: View;
   collapsed: boolean;
   activeImportJobs: number;
+  dashboard?: Dashboard;
+  onOpenQueue: () => void;
   onToggleSidebar: () => void;
   setActiveView: (view: View) => void;
 }) {
@@ -529,15 +641,57 @@ function Sidebar({
           })}
         </nav>
       ) : null}
-      <button
-        className="icon-button sidebar-toggle"
-        title={collapsed ? "Show navigation" : "Hide navigation"}
-        onClick={onToggleSidebar}
-        type="button"
-      >
-        {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-      </button>
+      <div className="sidebar-bottom">
+        {!collapsed ? <SidebarImportProgress dashboard={dashboard} onOpenQueue={onOpenQueue} /> : null}
+        <button
+          className="icon-button sidebar-toggle"
+          title={collapsed ? "Show navigation" : "Hide navigation"}
+          onClick={onToggleSidebar}
+          type="button"
+        >
+          {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+      </div>
     </aside>
+  );
+}
+
+function SidebarImportProgress({ dashboard, onOpenQueue }: { dashboard?: Dashboard; onOpenQueue: () => void }) {
+  if (!dashboard || dashboard.active_import_jobs <= 0) return null;
+  const total = dashboard.import_progress_total || dashboard.active_import_jobs;
+  const finished = Math.min(total, dashboard.import_progress_completed + dashboard.import_progress_failed);
+  const percent = total > 0 ? Math.round((finished / total) * 100) : 0;
+  const visiblePercent = dashboard.import_running_jobs > 0 && percent === 0 ? 6 : percent;
+  const fillWidth = `${Math.max(0, Math.min(100, visiblePercent))}%`;
+  const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
+  const activeElapsed = formatDuration(dashboard.import_active_elapsed_seconds);
+
+  return (
+    <button className="sidebar-import-progress" type="button" aria-label="Open import queue" onClick={onOpenQueue}>
+      <div className="sidebar-progress-head">
+        <span>Imports</span>
+        <strong>{percent}%</strong>
+      </div>
+      <div
+        className={`sidebar-progress-track${dashboard.import_running_jobs > 0 ? " active" : ""}`}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+      >
+        <span style={{ width: fillWidth }} />
+      </div>
+      {activeStep ? (
+        <div className="sidebar-progress-step">
+          <span>{activeStep}</span>
+          {activeElapsed ? <strong>{activeElapsed}</strong> : null}
+        </div>
+      ) : null}
+      <div className="sidebar-progress-meta">
+        <span>{dashboard.import_running_jobs} importing</span>
+        <span>{dashboard.import_queued_jobs} queued</span>
+      </div>
+    </button>
   );
 }
 
@@ -1059,6 +1213,185 @@ function DocumentPanel({
   );
 }
 
+function RecommendationsPanel({ document }: { document: DocumentDetail }) {
+  const [hideExisting, setHideExisting] = useStoredBoolean("medusa-recommendations-hide-existing", false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [notice, setNotice] = useState("");
+  const { copiedKey, copyToClipboard } = useClipboardNotice();
+  const queryClient = useQueryClient();
+  const recommendations = useQuery({
+    queryKey: ["document-recommendations", document.id, hideExisting],
+    queryFn: () => api.documentRecommendations(document.id, hideExisting),
+    enabled: document.processing_status === "ready" && Boolean(document.doi),
+  });
+  const refresh = useMutation({
+    mutationFn: () => api.refreshDocumentRecommendations(document.id),
+    onSuccess: (result) => {
+      setNotice(`Found ${result.recommendation_count} related papers`);
+      void queryClient.invalidateQueries({ queryKey: ["document-recommendations", document.id] });
+    },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "Could not refresh recommendations"),
+  });
+  const download = useMutation({
+    mutationFn: (body: { recommendation_ids?: string[]; mode?: "selected" | "new"; skip_existing?: boolean }) =>
+      api.downloadRecommendations(document.id, body),
+    onSuccess: (result) => {
+      setNotice(
+        `Queued ${result.queued_count}; skipped ${result.skipped_existing_count}; unavailable ${result.unavailable_count}; failed ${result.failed_count}`,
+      );
+      setSelectedIds([]);
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-recommendations", document.id] });
+    },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "Could not queue recommendation downloads"),
+  });
+
+  useEffect(() => {
+    setSelectedIds([]);
+    setNotice("");
+  }, [document.id, hideExisting]);
+
+  const rows = recommendations.data || [];
+  const newRows = rows.filter((item) => !item.existing_document_id && !item.imported_document_id);
+  const selectableRows = rows.filter((item) => !item.existing_document_id && !item.imported_document_id);
+  const allSelectableSelected =
+    selectableRows.length > 0 && selectableRows.every((item) => selectedIds.includes(item.id));
+  const selectedCount = selectedIds.length;
+  const selectedDownloadable = rows.filter((item) => selectedIds.includes(item.id) && item.has_pdf).length;
+  const newDownloadable = newRows.filter((item) => item.has_pdf).length;
+  const canRefresh = document.processing_status === "ready" && Boolean(document.doi);
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  };
+
+  const toggleAllSelectable = () => {
+    setSelectedIds(allSelectableSelected ? [] : selectableRows.map((item) => item.id));
+  };
+
+  return (
+    <section className="detail-section recommendations-panel">
+      <div className="recommendations-head">
+        <div>
+          <h3>Recommendations</h3>
+          <span>
+            {recommendations.isFetching
+              ? "Loading related papers"
+              : `${rows.length} shown / ${newRows.length} new / ${newDownloadable} with PDFs`}
+          </span>
+        </div>
+        <div className="recommendation-actions">
+          <label className="compact-toggle">
+            <input type="checkbox" checked={hideExisting} onChange={(event) => setHideExisting(event.target.checked)} />
+            <span>Hide existing</span>
+          </label>
+          <button className="secondary-button compact" disabled={!canRefresh || refresh.isPending} onClick={() => refresh.mutate()} type="button">
+            <RefreshCw className={refresh.isPending ? "spin" : ""} size={14} />
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div className="recommendations-download-row">
+        <label className="select-all-row">
+          <input type="checkbox" checked={allSelectableSelected} onChange={toggleAllSelectable} disabled={!selectableRows.length} />
+          <strong>{selectedCount ? `${selectedCount} selected` : "Select new papers"}</strong>
+        </label>
+        <button
+          className="secondary-button compact"
+          disabled={!selectedCount || !selectedDownloadable || download.isPending}
+          onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
+          type="button"
+        >
+          <Download size={14} />
+          Selected
+        </button>
+        <button
+          className="primary-button compact"
+          disabled={!newRows.length || !newDownloadable || download.isPending}
+          onClick={() => download.mutate({ mode: "new", skip_existing: true })}
+          type="button"
+        >
+          <Download size={14} />
+          All new
+        </button>
+      </div>
+      {notice ? <p className="recommendation-notice">{notice}</p> : null}
+      {!canRefresh ? (
+        <div className="empty-inline">
+          <Sparkles size={17} />
+          <span>Recommendations need a completed document with a DOI.</span>
+        </div>
+      ) : rows.length ? (
+        <div className="recommendation-list">
+          {rows.map((item) => {
+            const inLibrary = Boolean(item.existing_document_id || item.imported_document_id);
+            return (
+              <article key={item.id} className={`recommendation-row ${inLibrary ? "in-library" : ""}`}>
+                <input
+                  aria-label={`Select ${item.title}`}
+                  type="checkbox"
+                  checked={selectedIds.includes(item.id)}
+                  disabled={inLibrary}
+                  onChange={() => toggleSelected(item.id)}
+                />
+                <div className="recommendation-copy">
+                  <div className="recommendation-title-line">
+                    <strong>{item.title}</strong>
+                    {inLibrary ? <StatusPill value="In library" tone="good" /> : item.has_pdf ? <StatusPill value="PDF" tone="blue" /> : null}
+                  </div>
+                  <span>
+                    {recommendationAuthorLine(item)}
+                    {item.publication_year ? ` / ${item.publication_year}` : ""}
+                    {item.journal ? ` / ${item.journal}` : ""}
+                  </span>
+                  {item.doi ? <code>{item.doi}</code> : null}
+                  <p>{item.description || "No abstract available from recommendation sources."}</p>
+                  <small>
+                    {recommendationProviderLabel(item.source_provider)}
+                    {item.source_relation ? ` / ${item.source_relation.replaceAll("_", " ")}` : ""}
+                    {item.existing_document_title ? ` / ${item.existing_document_title}` : ""}
+                  </small>
+                </div>
+                <div className="recommendation-row-actions">
+                  <button
+                    className="icon-button"
+                    disabled={!item.doi}
+                    onClick={() => item.doi && void copyToClipboard(`doi-${item.id}`, item.doi)}
+                    title="Copy DOI"
+                    type="button"
+                  >
+                    {copiedKey === `doi-${item.id}` ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+                  </button>
+                  <button
+                    className="icon-button"
+                    onClick={() => void copyToClipboard(`title-${item.id}`, item.title)}
+                    title="Copy title"
+                    type="button"
+                  >
+                    {copiedKey === `title-${item.id}` ? <CheckCircle2 size={15} /> : <FileText size={15} />}
+                  </button>
+                  {item.source_url ? (
+                    <a className="icon-button" href={item.source_url} target="_blank" rel="noreferrer" title="Open source">
+                      <ExternalLink size={15} />
+                    </a>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty-inline">
+          <Sparkles size={17} />
+          <span>Refresh to find related papers.</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function DocumentPanelContent({
   citationJobs,
   document,
@@ -1082,6 +1415,7 @@ function DocumentPanelContent({
 }) {
 
   const [editing, setEditing] = useState(false);
+  const [recommendationsOpen, setRecommendationsOpen] = useState(false);
   const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "text" : "pdf"));
   const [readerPageIndex, setReaderPageIndex] = useState(0);
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
@@ -1152,6 +1486,7 @@ function DocumentPanelContent({
     setAnnotationDraft({ page_number: "", kind: "highlight", body: "", color: "#f6c343" });
     setReaderPageIndex(0);
     setEditing(false);
+    setRecommendationsOpen(false);
     setSaveError(null);
   }, [document.id]);
 
@@ -1277,6 +1612,16 @@ function DocumentPanelContent({
             Reader
           </button>
         ) : null}
+        <button
+          className="secondary-button"
+          disabled={document.processing_status !== "ready" || !document.doi}
+          onClick={() => setRecommendationsOpen((value) => !value)}
+          title={!document.doi ? "Recommendations need a DOI" : "View related papers"}
+          type="button"
+        >
+          <Sparkles size={15} />
+          Related
+        </button>
         {onCloseReader && readerExpanded ? (
           <button className="secondary-button" onClick={onCloseReader} type="button">
             <X size={15} />
@@ -1510,6 +1855,7 @@ function DocumentPanelContent({
           </button>
         </div>
       </section>
+      {recommendationsOpen ? <RecommendationsPanel document={document} /> : null}
       <section className="detail-section">
         <h3>Summary</h3>
         <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
@@ -1860,6 +2206,18 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
       setDropMessage(error instanceof Error ? error.message : "Duplicate check failed");
     },
   });
+  const rescueJob = useMutation({
+    mutationFn: (jobId: string) => api.rescueImportJob(jobId),
+    onSuccess: () => {
+      setDropMessage("Import job requeued");
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => {
+      setDropMessage(error instanceof Error ? error.message : "Could not rescue import job");
+    },
+  });
   const isDraggingFiles = dragDepth > 0;
   const importBusy = upload.isPending || duplicatePreflight.isPending;
   const duplicateFiles = duplicateCheck?.files.filter((file) => file.duplicate_in_upload || file.existing_documents.length > 0) || [];
@@ -1885,17 +2243,6 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const applyDuplicateStrategy = (strategy: DuplicateImportStrategy) => {
     if (!pendingFiles.length) return;
     upload.mutate({ incomingFiles: pendingFiles, strategy });
-  };
-
-  const jobLabel = (job: ImportJob) => {
-    const name = job.original_filename || job.document_title || job.current_step || "Import";
-    const size = formatFileSize(job.file_size_bytes);
-    return `${name}${size ? ` (${size})` : ""}${job.status === "complete" ? " (done)" : ""}`;
-  };
-  const jobStepLabel = (job: ImportJob) => {
-    if (job.status === "complete") return "complete";
-    if (job.status === "failed") return job.last_error || "failed";
-    return job.current_step.replaceAll("_", " ");
   };
 
   return (
@@ -2047,10 +2394,23 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
         {jobs.slice(0, 20).map((job) => (
           <div key={job.id} className="job-row">
             <span className="job-copy">
-              <span>{jobLabel(job)}</span>
-              <small>{jobStepLabel(job)}</small>
+              <span>{importJobLabel(job)}</span>
+              <small>{importJobStepLabel(job)}</small>
             </span>
-            <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
+            <span className="job-actions">
+              <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
+              {canRescueImportJob(job) ? (
+                <button
+                  className="icon-button compact"
+                  disabled={rescueJob.isPending}
+                  onClick={() => rescueJob.mutate(job.id)}
+                  title="Requeue this import job"
+                  type="button"
+                >
+                  <RefreshCw size={15} />
+                </button>
+              ) : null}
+            </span>
           </div>
         ))}
       </section>
@@ -2277,7 +2637,7 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
   );
 }
 
-function ReviewView({ items }: { items: CitationCandidate[] }) {
+function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJob[] }) {
   const queryClient = useQueryClient();
   const updateCandidate = useMutation({
     mutationFn: ({ id, status, apply }: { id: string; status: string; apply?: boolean }) =>
@@ -2289,40 +2649,106 @@ function ReviewView({ items }: { items: CitationCandidate[] }) {
       void queryClient.invalidateQueries({ queryKey: ["document"] });
     },
   });
+  const rescueJob = useMutation({
+    mutationFn: (jobId: string) => api.rescueImportJob(jobId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    },
+  });
+  const queueJobs = jobs.filter((job) => ["queued", "running", "failed", "restored_paused"].includes(job.status));
 
   return (
-    <section className="workbench">
-      <h2>Citation Review</h2>
-      <div className="review-list">
-        {items.map((item) => (
-          <article key={item.id}>
-            <div>
-              <strong>{String(item.metadata.title || "Untitled")}</strong>
-              <span>{item.source}</span>
-            </div>
-            <MarkdownBlock content={item.citation_text} empty="No candidate citation." />
-            <div className="review-actions">
-              <StatusPill value={item.status} tone="warn" />
-              <button
-                className="primary-button"
-                disabled={updateCandidate.isPending}
-                onClick={() => updateCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
-              >
-                <CheckCircle2 size={16} />
-                Accept
-              </button>
-              <button
-                className="secondary-button"
-                disabled={updateCandidate.isPending}
-                onClick={() => updateCandidate.mutate({ id: item.id, status: "rejected" })}
-              >
-                <X size={16} />
-                Reject
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
+    <section className="workbench queue-workbench">
+      <section className="queue-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Import Queue</h2>
+            <span>{queueJobs.length ? `${queueJobs.length} active or waiting` : "No import jobs waiting"}</span>
+          </div>
+          <ListTodo size={20} />
+        </div>
+        <div className="queue-job-list">
+          {queueJobs.map((job) => {
+            const progress = importJobProgress(job);
+            return (
+              <div key={job.id} className="queue-job-row">
+                <span className="job-copy">
+                  <span>{importJobLabel(job)}</span>
+                  <small>{importJobStepLabel(job)}</small>
+                </span>
+                <span className="queue-job-status">
+                  <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
+                  {canRescueImportJob(job) ? (
+                    <button
+                      className="icon-button compact"
+                      disabled={rescueJob.isPending}
+                      onClick={() => rescueJob.mutate(job.id)}
+                      title="Requeue this import job"
+                      type="button"
+                    >
+                      <RefreshCw size={15} />
+                    </button>
+                  ) : null}
+                </span>
+                <span
+                  aria-label={`${importJobStage(job)}: ${progress}%`}
+                  aria-valuemax={100}
+                  aria-valuemin={0}
+                  aria-valuenow={progress}
+                  className="queue-job-progress"
+                  role="progressbar"
+                  title={`${importJobStage(job)}: ${progress}%`}
+                >
+                  <span style={{ width: `${progress}%` }} />
+                </span>
+              </div>
+            );
+          })}
+          {!queueJobs.length ? <p className="empty-note">The import queue is clear.</p> : null}
+        </div>
+      </section>
+      <section className="queue-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Citation Review</h2>
+            <span>{items.length ? `${items.length} candidates need review` : "No citation candidates waiting"}</span>
+          </div>
+          <FileSearch size={20} />
+        </div>
+        <div className="review-list">
+          {items.map((item) => (
+            <article key={item.id}>
+              <div>
+                <strong>{String(item.metadata.title || "Untitled")}</strong>
+                <span>{item.source}</span>
+              </div>
+              <MarkdownBlock content={item.citation_text} empty="No candidate citation." />
+              <div className="review-actions">
+                <StatusPill value={item.status} tone="warn" />
+                <button
+                  className="primary-button"
+                  disabled={updateCandidate.isPending}
+                  onClick={() => updateCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
+                >
+                  <CheckCircle2 size={16} />
+                  Accept
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={updateCandidate.isPending}
+                  onClick={() => updateCandidate.mutate({ id: item.id, status: "rejected" })}
+                >
+                  <X size={16} />
+                  Reject
+                </button>
+              </div>
+            </article>
+          ))}
+          {!items.length ? <p className="empty-note">Citation review is clear.</p> : null}
+        </div>
+      </section>
     </section>
   );
 }
@@ -2473,6 +2899,7 @@ function SettingsView({
   capabilities,
   runs,
   jobs,
+  preferences,
   domains,
   projects,
   savedSearches,
@@ -2482,6 +2909,7 @@ function SettingsView({
   capabilities: ConcordanceCapability[];
   runs: ConcordanceRun[];
   jobs: ConcordanceJob[];
+  preferences?: AppPreferences;
   domains: Domain[];
   projects: Project[];
   savedSearches: SavedSearch[];
@@ -2493,8 +2921,19 @@ function SettingsView({
   const [domainId, setDomainId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [savedSearchId, setSavedSearchId] = useState("");
+  const [importWorkerConcurrency, setImportWorkerConcurrency] = useState(preferences?.import_worker_concurrency || 4);
+  const [accentColorDay, setAccentColorDay] = useState(preferences?.accent_color_day || "#2563eb");
+  const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    if (preferences) {
+      setImportWorkerConcurrency(preferences.import_worker_concurrency);
+      setAccentColorDay(preferences.accent_color_day);
+      setAccentColorNight(preferences.accent_color_night);
+    }
+  }, [preferences]);
 
   useEffect(() => {
     setSelectedCapabilityKeys((current) => (current.length ? current : capabilities.map((capability) => capability.key)));
@@ -2530,10 +2969,29 @@ function SettingsView({
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
     },
   });
+  const savePreferences = useMutation({
+    mutationFn: () =>
+      api.updatePreferences({
+        import_worker_concurrency: importWorkerConcurrency,
+        accent_color_day: accentColorDay,
+        accent_color_night: accentColorNight,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+    },
+  });
   const latestRun = runs[0];
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
   const progressTotal = latestRun?.total_jobs || 0;
   const progressDone = latestRun ? latestRun.completed_jobs + latestRun.failed_jobs : 0;
+  const warningThreshold = preferences?.import_worker_cost_warning_threshold || 4;
+  const preferenceDirty = Boolean(
+    preferences &&
+      (preferences.import_worker_concurrency !== importWorkerConcurrency ||
+        preferences.accent_color_day !== accentColorDay ||
+        preferences.accent_color_night !== accentColorNight),
+  );
+  const importCostWarning = importWorkerConcurrency > warningThreshold;
 
   return (
     <section className="workbench settings-grid">
@@ -2551,6 +3009,53 @@ function SettingsView({
         <Sparkles size={22} />
         <h2>AI</h2>
         <p>Set OPENAI_API_KEY to enable structured metadata, summaries, topics, and embeddings.</p>
+      </div>
+      <div className="preferences-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Preferences</h2>
+            <span>Import worker throughput</span>
+          </div>
+          <Settings size={20} />
+        </div>
+        <div className="preference-control">
+          <label htmlFor="import-worker-concurrency">
+            <span>Import workers</span>
+            <strong>{importWorkerConcurrency}</strong>
+          </label>
+          <input
+            id="import-worker-concurrency"
+            min={1}
+            onChange={(event) => setImportWorkerConcurrency(Math.max(1, Number(event.target.value) || 1))}
+            type="number"
+            value={importWorkerConcurrency}
+          />
+          <p>Default is 4. Higher values can fan out many OpenAI calls at once.</p>
+          {importCostWarning ? (
+            <p className="preference-warning">Higher concurrency can incur a large OpenAI cost over a short amount of time.</p>
+          ) : null}
+        </div>
+        <div className="accent-settings">
+          <label>
+            <span>Day accent</span>
+            <span className="accent-swatch" style={{ background: accentColorDay }} />
+            <input type="color" value={accentColorDay} onChange={(event) => setAccentColorDay(event.target.value)} />
+          </label>
+          <label>
+            <span>Night accent</span>
+            <span className="accent-swatch" style={{ background: accentColorNight }} />
+            <input type="color" value={accentColorNight} onChange={(event) => setAccentColorNight(event.target.value)} />
+          </label>
+        </div>
+        <button
+          className="primary-button"
+          disabled={!preferences || !preferenceDirty || savePreferences.isPending}
+          onClick={() => savePreferences.mutate()}
+          type="button"
+        >
+          <Save size={16} />
+          Save
+        </button>
       </div>
       <div className="export-panel">
         <div className="panel-title-row">
@@ -2724,7 +3229,8 @@ export default function App() {
   }, [theme]);
 
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
-  const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 8000 });
+  const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
+  const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
   const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data) });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data) });
@@ -2773,9 +3279,15 @@ export default function App() {
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) return <Login />;
 
+  const activeAccent = normalizeHexColor(
+    theme === "night" ? preferences.data?.accent_color_night : preferences.data?.accent_color_day,
+    theme === "night" ? "#6ea8ff" : "#2563eb",
+  );
   const shellStyle = {
     "--sidebar-width": sidebarCollapsed ? "52px" : `${sidebarWidth}px`,
     "--sidebar-resizer-width": sidebarCollapsed ? "0px" : "8px",
+    "--accent": activeAccent,
+    "--accent-soft": accentSoftColor(activeAccent, theme),
   } as CSSProperties;
 
   return (
@@ -2791,6 +3303,8 @@ export default function App() {
         activeView={activeView}
         collapsed={sidebarCollapsed}
         activeImportJobs={dashboard.data?.active_import_jobs || 0}
+        dashboard={dashboard.data}
+        onOpenQueue={() => setActiveView("queue")}
         onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
         setActiveView={setActiveView}
       />
@@ -2845,7 +3359,7 @@ export default function App() {
           <ImportView domains={domains.data || []} jobs={jobs.data || []} projects={projects.data || []} tags={tags.data || []} />
         ) : null}
         {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
-        {activeView === "review" ? <ReviewView items={review.data || []} /> : null}
+        {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
         {activeView === "notes" ? (
           <NotesView
             documents={documents.data || []}
@@ -2859,6 +3373,7 @@ export default function App() {
             capabilities={concordanceCapabilities.data || []}
             domains={domains.data || []}
             jobs={concordanceJobs.data || []}
+            preferences={preferences.data}
             projects={projects.data || []}
             query={query}
             runs={concordanceRuns.data || []}

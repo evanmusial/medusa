@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import (
     Annotation,
+    AppPreference,
     AttributeDefinition,
     CitationCandidate,
     ConcordanceJob,
@@ -19,6 +20,7 @@ from app.models import (
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
+    DocumentRecommendation,
     DocumentVersion,
     Domain,
     Figure,
@@ -34,6 +36,7 @@ from app.models import (
     TextChunk,
     User,
 )
+from app.services.preferences import SAFE_PREFERENCE_KEYS
 
 
 EXPORT_SCHEMA_VERSION = 1
@@ -236,6 +239,17 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
             }
             for bibliography in db.query(ProjectBibliography).order_by(ProjectBibliography.created_at, ProjectBibliography.id).all()
         ],
+        "app_preferences": [
+            {
+                "key": preference.key,
+                "value": preference.value,
+                **_timestamps(preference),
+            }
+            for preference in db.query(AppPreference)
+            .filter(AppPreference.key.in_(sorted(SAFE_PREFERENCE_KEYS)))
+            .order_by(AppPreference.key)
+            .all()
+        ],
         "import_batches": [
             {
                 "id": batch.id,
@@ -379,6 +393,13 @@ def _document_export(document: Document) -> dict[str, Any]:
             _annotation_export(annotation)
             for annotation in sorted(document.annotations, key=lambda value: (value.page_number or 0, value.created_at, value.id))
         ],
+        "recommendations": [
+            _recommendation_export(recommendation)
+            for recommendation in sorted(
+                document.recommendations,
+                key=lambda value: (value.source_provider, value.title, value.id),
+            )
+        ],
         "attributes": [
             _attribute_value_export(value)
             for value in sorted(document.attributes, key=lambda item: item.definition.name if item.definition else item.id)
@@ -459,6 +480,31 @@ def _annotation_export(annotation: Annotation) -> dict[str, Any]:
         "color": annotation.color,
         **_timestamps(annotation),
         **_soft_delete(annotation),
+    }
+
+
+def _recommendation_export(recommendation: DocumentRecommendation) -> dict[str, Any]:
+    return {
+        "id": recommendation.id,
+        "existing_document_id": recommendation.existing_document_id,
+        "imported_document_id": recommendation.imported_document_id,
+        "match_key": recommendation.match_key,
+        "title": recommendation.title,
+        "doi": recommendation.doi,
+        "authors": recommendation.authors,
+        "publication_year": recommendation.publication_year,
+        "journal": recommendation.journal,
+        "description": recommendation.description,
+        "source_provider": recommendation.source_provider,
+        "source_relation": recommendation.source_relation,
+        "external_id": recommendation.external_id,
+        "source_url": recommendation.source_url,
+        "pdf_url": recommendation.pdf_url,
+        "score": _value(recommendation.score),
+        "status": recommendation.status,
+        "raw_metadata": recommendation.raw_metadata,
+        "last_seen_at": _value(recommendation.last_seen_at),
+        **_timestamps(recommendation),
     }
 
 

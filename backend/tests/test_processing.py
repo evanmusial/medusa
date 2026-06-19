@@ -140,6 +140,61 @@ def test_claim_import_job_leaves_fresh_running_job_alone(monkeypatch, tmp_path):
         assert db.query(ProcessingEvent).count() == 0
 
 
+def test_claim_import_job_skips_excluded_inflight_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.database import Base
+    from app.models import ConcordanceJob, ConcordanceRun, Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+    from app.worker import claim_import_job
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Document.__table__,
+            ImportBatch.__table__,
+            ImportJob.__table__,
+            ProcessingEvent.__table__,
+            ConcordanceRun.__table__,
+            ConcordanceJob.__table__,
+        ],
+    )
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    with Session() as db:
+        running_document = Document(
+            title="Long import",
+            original_filename="long-import.pdf",
+            checksum_sha256="1" * 64,
+            metadata_evidence={},
+        )
+        queued_document = Document(
+            title="Next import",
+            original_filename="next-import.pdf",
+            checksum_sha256="2" * 64,
+            metadata_evidence={},
+        )
+        batch = ImportBatch(total_files=2, shared_defaults={})
+        stale_running_job = ImportJob(
+            batch=batch,
+            document=running_document,
+            status="running",
+            current_step="normalizing_pages",
+            locked_at=utc_now() - timedelta(minutes=30),
+        )
+        queued_job = ImportJob(batch=batch, document=queued_document, status="queued", current_step="stored")
+        db.add_all([running_document, queued_document, batch, stale_running_job, queued_job])
+        db.commit()
+
+        claimed_id = claim_import_job(db, stale_after_seconds=60, exclude_ids={stale_running_job.id})
+
+        assert claimed_id == queued_job.id
+        assert stale_running_job.status == "running"
+        assert queued_job.status == "running"
+        assert db.query(ProcessingEvent).count() == 0
+
+
 def test_worker_start_requeues_interrupted_running_import(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -195,6 +250,48 @@ def test_worker_start_requeues_interrupted_running_import(monkeypatch, tmp_path)
         assert event.payload["previous_step"] == "normalizing_pages"
 
 
+def test_rescue_import_job_requeues_stale_running_import(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.database import Base
+    from app.models import Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    with Session() as db:
+        document = Document(
+            title="Stale import",
+            original_filename="stale-import.pdf",
+            checksum_sha256="3" * 64,
+            metadata_evidence={},
+            processing_status="running",
+        )
+        batch = ImportBatch(total_files=1, shared_defaults={}, status="running")
+        job = ImportJob(
+            batch=batch,
+            document=document,
+            status="running",
+            current_step="normalizing_page_7",
+            locked_at=utc_now() - timedelta(minutes=30),
+            last_error="hung request",
+        )
+        db.add_all([document, batch, job])
+        db.commit()
+
+        rescued = main.rescue_import_job(job.id, object(), db)
+
+        assert rescued["status"] == "queued"
+        assert job.status == "queued"
+        assert job.locked_at is None
+        assert job.last_error is None
+        assert document.processing_status == "queued"
+        assert db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "manual_import_rescue").count() == 1
+
+
 def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -229,7 +326,11 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
             pages=[SimpleNamespace(page_number=1, text="Replacement text", low_text=False)],
         ),
     )
-    monkeypatch.setattr(processing, "normalize_document_pages", lambda document, ai=None: {"pages": 1, "sources": {"test": 1}})
+    monkeypatch.setattr(
+        processing,
+        "normalize_document_pages",
+        lambda document, ai=None, db=None, job=None, resume_existing=False: {"pages": 1, "sources": {"test": 1}},
+    )
     monkeypatch.setattr(processing, "get_ai_service", lambda: object())
 
     with Session() as db:
@@ -252,6 +353,64 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
         assert pages[0].page_number == 1
         assert pages[0].text == "Replacement text"
         assert job.current_step == "extracted"
+
+
+def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.database import Base
+    from app.models import Document, DocumentPage, ImportBatch, ImportJob, ProcessingEvent, TextChunk
+    from app.services.processing import DocumentProcessor
+    from app.services import processing
+
+    class FakeAi:
+        def __init__(self):
+            self.pages: list[int] = []
+
+        def normalize_page_text(self, filename, page_number, text):
+            self.pages.append(page_number)
+            return {"normalized_text": f"normalized {page_number}", "source": "test", "notes": []}
+
+    fake_ai = FakeAi()
+    monkeypatch.setattr(processing, "get_ai_service", lambda: fake_ai)
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Document.__table__,
+            DocumentPage.__table__,
+            TextChunk.__table__,
+            ImportBatch.__table__,
+            ImportJob.__table__,
+            ProcessingEvent.__table__,
+        ],
+    )
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    with Session() as db:
+        document = Document(
+            title="Resume import",
+            original_filename="resume-import.pdf",
+            checksum_sha256="4" * 64,
+            metadata_evidence={},
+            page_count=2,
+        )
+        document.pages.append(DocumentPage(page_number=1, text="Page one", normalized_text="already done", low_text=False))
+        document.pages.append(DocumentPage(page_number=2, text="Page two", low_text=False))
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        job = ImportJob(batch=batch, document=document, status="running", current_step="normalizing_page_2")
+        db.add_all([document, batch, job])
+        db.commit()
+
+        DocumentProcessor()._extract(db, job, document)
+
+        assert fake_ai.pages == [2]
+        assert document.pages[0].normalized_text == "already done"
+        assert document.pages[1].normalized_text == "normalized 2"
+        assert job.current_step == "extracted"
+        assert document.metadata_evidence["page_text_normalization"]["sources"] == {"existing": 1, "test": 1}
 
 
 def test_duplicate_preflight_and_skip_strategy(monkeypatch, tmp_path):

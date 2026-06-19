@@ -56,9 +56,29 @@ class Settings(BaseSettings):
     )
     openai_embedding_timeout_seconds: float = Field(default=60.0, validation_alias="MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS")
 
+    recommendations_enable_openalex: bool = Field(default=True, validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_OPENALEX")
+    recommendations_enable_semantic_scholar: bool = Field(
+        default=True,
+        validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_SEMANTIC_SCHOLAR",
+    )
+    recommendations_enable_crossref: bool = Field(default=True, validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_CROSSREF")
+    recommendations_max_results_per_source: int = Field(default=40, validation_alias="MEDUSA_RECOMMENDATIONS_MAX_PER_SOURCE")
+    recommendations_request_timeout_seconds: float = Field(
+        default=16.0,
+        validation_alias="MEDUSA_RECOMMENDATIONS_REQUEST_TIMEOUT_SECONDS",
+    )
+    recommendation_download_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias="MEDUSA_RECOMMENDATION_DOWNLOAD_TIMEOUT_SECONDS",
+    )
+    recommendation_download_max_mb: int = Field(default=80, validation_alias="MEDUSA_RECOMMENDATION_DOWNLOAD_MAX_MB")
+    openalex_mailto: str | None = Field(default=None, validation_alias="MEDUSA_OPENALEX_MAILTO")
+    semantic_scholar_api_key: str | None = Field(default=None, validation_alias="SEMANTIC_SCHOLAR_API_KEY")
+
     enable_google_vision: bool = Field(default=True, validation_alias="MEDUSA_ENABLE_GOOGLE_VISION")
     low_text_page_threshold: int = 120
     worker_poll_seconds: float = 2.0
+    worker_import_concurrency: int = Field(default=4, validation_alias="MEDUSA_IMPORT_WORKER_CONCURRENCY")
     worker_stale_job_seconds: int = Field(default=900, validation_alias="MEDUSA_WORKER_STALE_JOB_SECONDS")
 
     cors_origins: list[str] = [

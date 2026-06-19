@@ -17,7 +17,8 @@ Core workflows:
 - Run Concordance Runs to bring already-imported documents up to the current extraction, enrichment, citation, tagging, OCR, search, and asset feature set.
 - Preserve document layout semantics during processing where they affect meaning, especially two-column articles and tables.
 - Organize documents by nested domains, flat tags, read priority, custom attributes, and projects.
-- Keep ambiguous metadata and citations visible in a review queue instead of pretending uncertain output is verified.
+- Discover DOI-based related papers for completed documents, mark which recommendations already exist in the library, and queue open-PDF recommendations through the normal import pipeline.
+- Keep ambiguous metadata and citations visible in Queue instead of pretending uncertain output is verified.
 - Build project run sheets with resource status and exportable APA/BibTeX/RIS/CSL bibliographies.
 
 ## Design System Direction
@@ -27,19 +28,20 @@ Medusa should feel like a serious research cockpit: dense, calm, polished, and f
 Current UI architecture:
 
 - Fixed top header with the Medusa emblem, global search aligned by default to the Library document-list pane, theme toggle, and session action.
-- Resizable/collapsible left sidebar navigation: Library, Domains, Projects, Review Queue, Notes, Import, Settings.
+- Resizable/collapsible left sidebar navigation: Library, Domains, Projects, Queue, Notes, Import, Settings.
 - Main Library view uses a tri-pane layout:
   - Resizable left filter pane for domains, tags, smart filters, and saved searches. The pane has a content-aware minimum so select controls and their affordances remain visible.
   - Center dense document results with selected-document bulk edit and batch Concordance controls.
   - Resizable right document detail/correction pane for authenticated original PDF preview, normalized one-page parsed text reading, annotations, citation, summary, extracted figures, tags, domains, attributes, history, and evidence.
 - Library Reader mode can expand the selected document to the whole lower work area while preserving document controls, PDF/Text tabs, citation actions, notes, and metadata sections.
+- Completed DOI-bearing documents expose a Library detail-pane Recommendations panel. The panel refreshes related papers from scholarly metadata services, shows title, DOI, venue, year, source, short abstract/description, existing-library status, and open-PDF availability, supports hiding existing matches, copying just the DOI or title, and queues selected or all-new open PDFs for import.
 - Import view centers immediate drag/drop upload plus a batch-defaults intake panel for optional label, priority, read status, domains, tags, and projects. Domains, tags, and projects use searchable chip pickers with restrained inline creation so bulk uploads can be organized before files are dropped.
 - Import view also provides active drop-target feedback, duplicate-decision handling, and live job status with per-file step labels.
-- The sidebar Import badge shows active import jobs only; the top-level Jobs metric may include imports plus Concordance work.
+- The sidebar Import badge shows active import jobs only; the bottom of the expanded sidebar shows a clickable import progress bar with running and queued import counts, active step, and elapsed time while uploads are queued or processing. Clicking it opens Queue. The top-level Jobs metric may include imports plus Concordance work.
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation.
-- Review Queue shows citation candidates that need human attention and supports accepting or rejecting them.
+- Queue shows queued/running import jobs with per-job stage progress and citation candidates that need human attention, and supports accepting or rejecting citation candidates.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
-- Settings exposes backup/export controls for full metadata JSON and a storage manifest.
+- Settings exposes preferences, day/night accent color controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
 - Metadata restore is CLI-first: dry-run by default, explicit `--apply`, and intended for backup drills or fresh-database recovery.
 
 Visual decisions:
@@ -89,12 +91,14 @@ Backend modules:
 - `backend/app/services/ai.py`: OpenAI Responses API structured metadata, PDF-file context, APA candidate, summary/topic, page text normalization with bounded fallback, and embedding adapter.
 - `backend/app/services/ocr.py`: Google Vision adapter placeholder.
 - `backend/app/services/processing.py`: import processing orchestration.
+- `backend/app/services/preferences.py`: DB-backed local preferences such as import worker concurrency.
 - `backend/app/services/concordance.py`: retroactive capability registry, run creation, and Concordance job processing.
 - `backend/app/services/figures.py`: embedded PDF figure extraction, durable asset storage, and figure row creation.
 - `backend/app/services/exports.py`: authenticated metadata export and durable storage manifest builders.
 - `backend/app/services/restore.py`: metadata export validation, dry-run planning, and fresh-database restore logic.
 - `backend/app/services/citations.py`: APA/BibTeX/RIS/CSL formatting utilities.
 - `backend/app/services/verifier.py`: Crossref lookup and verification helpers.
+- `backend/app/services/recommendations.py`: DOI normalization, OpenAlex/Semantic Scholar/Crossref related-paper adapters, recommendation caching/matching, and open-PDF recommendation import queueing.
 - `backend/app/tools/restore_export.py`: CLI entry point for validating, planning, and applying metadata restores.
 
 Frontend modules:
@@ -109,12 +113,14 @@ Frontend modules:
 Current core entities:
 
 - `User`, `SessionToken`
+- `AppPreference`: local DB-backed operational preferences such as import worker concurrency and day/night accent colors.
 - `Domain`: nestable knowledge hierarchy.
 - `Tag`: flat keyword/topic label.
 - `SavedSearch`: named query and filter presets for repeated research views and Concordance scopes.
 - `Document`: canonical research object and processing/search state.
 - `DocumentVersion`: metadata correction/history snapshots.
 - `DocumentCapability`: per-document completion state for versioned import/concordance capabilities.
+- `DocumentRecommendation`: cached DOI/title-based related-paper recommendations for a source document, including provider/relation evidence, DOI, title, authors, venue, description, open PDF/source URLs, existing-library/import matches, and import status.
 - `DocumentPage`: raw extracted per-page text, normalized reader text, source, low-text flags, and optional page image URI; the document detail API exposes these pages for the full-text reader.
 - `TextChunk`: chunked full text and optional embedding vector.
 - `Figure`: extracted figures/captions/gists with durable asset URIs.
@@ -139,6 +145,8 @@ Important modeling decisions:
 - Crossref evidence may fill missing citation fields such as authors, year, venue, DOI, publisher, and source URL; it should not silently overwrite existing user-corrected fields.
 - APA citations should favor DOI links whenever a DOI can be located and verified. If no DOI can be verified, the citation should prefer a direct stable source link, ideally a PDF or other static document, over a transient search or generic landing page.
 - Citation and metadata text from Crossref, OpenAI, PDFs, or user review candidates should be normalized for display and exports, including decoding HTML entities such as `&amp;`, `&quot;`, and numeric character references into their actual characters.
+- Recommendation matching prefers normalized DOI equality and falls back only to a strict normalized-title match. Recommendations may be cached from multiple providers; source/provider evidence is retained so a candidate can be inspected later.
+- Recommendation imports do not create a parallel processing path. When an open PDF URL is available from a lawful scholarly metadata source, the download endpoint creates normal `ImportBatch` and `ImportJob` records, stores the PDF through the configured storage adapter, and lets the worker process it like any other PDF. Recommendations without open PDF URLs remain metadata-only candidates.
 - Full-text search data is stored on `Document.search_text`; chunk embeddings live on `TextChunk.embedding`.
 - Search and reader copy prefer `DocumentPage.normalized_text` when present and fall back to raw extracted `DocumentPage.text`.
 - Document annotations contribute their body text to `Document.search_text`; deleted annotations are excluded from active document detail and search rebuilds.
@@ -157,7 +165,7 @@ Current import path:
 7. Original is written to GCS when configured, otherwise to local storage.
 8. A document-specific local processing cache copy is saved under `data/processing-cache`.
 9. `Document`, `ImportBatch`, and `ImportJob` records are committed.
-10. Worker claims queued jobs and moves them through extraction, enrichment, indexing, and completion.
+10. Worker claims queued jobs and moves them through extraction, enrichment, indexing, and completion. Import processing defaults to 4 concurrent jobs from one worker process and can be changed to any positive value in Settings.
 11. PDF text and pages are extracted with PyMuPDF using layout-aware block ordering.
 12. Two-column pages should read down the left column before crossing to the right column, while full-width headers/sections remain in vertical order.
 13. Detected tables are converted to Markdown and included in page text so table content is searchable and available to metadata/summarization.
@@ -178,7 +186,9 @@ Durability decisions:
 - Processing events are appended for auditability.
 - The app must tolerate stop/start without losing queued jobs.
 - Worker startup immediately requeues `running` imports and Concordance jobs from the previous worker process. Worker claims also use `locked_at` and `MEDUSA_WORKER_STALE_JOB_SECONDS` as a stale-lock recovery guard.
-- Import jobs checkpoint visible steps before long phases (`extracting`, `normalizing_pages`, `extracting_figures`, `enriching`, `indexing`, `cleaning_cache`) so the Import screen does not appear frozen at `stored` during real processing.
+- The worker keeps an in-process set of active import job IDs so parallel import slots do not reclaim each other's long-running jobs as stale. Restart recovery still requeues interrupted jobs because that in-memory set disappears with the worker process.
+- Import jobs checkpoint visible steps before long phases (`extracting`, `normalizing_pages`, `normalizing_page_<n>`, `extracting_figures`, `enriching`, `indexing`, `cleaning_cache`) so Queue does not appear frozen at `stored` during real processing.
+- Container shutdown is intentionally restart-safe rather than interrupt-perfect: in-flight import threads may be terminated with the container, and the next worker startup requeues those `running` rows. The current document may repeat its current step to preserve correctness. Page normalization commits each completed page and resumes from persisted normalized pages when possible.
 - Import processors should stay idempotent where possible and avoid duplicating pages/chunks when a step reruns.
 - Completed jobs should not leave durable document copies in `data/processing-cache`; originals are retained in GCS or the configured local fallback store.
 - Failed jobs may keep their processing-cache copy to support retry and debugging.
@@ -192,7 +202,7 @@ Implemented foundation:
 - `DocumentCapability` records document-level capability completion state.
 - `ConcordanceRun` records scope, requested capability keys, status, and progress counters.
 - `ConcordanceJob` records document/capability work items with target version, attempts, errors, and completion state.
-- The worker processes import jobs first, then Concordance jobs from the same durable database queue pattern.
+- The worker processes import jobs first, up to the configured import concurrency preference, then Concordance jobs from the same durable database queue pattern.
 - Settings includes a Concordance panel that can start scoped runs and display current capability/run/job status.
 - The document detail pane can start a Concordance Run for the current document.
 
@@ -200,9 +210,10 @@ Current first capabilities:
 
 - `page_text_normalization` v1: conforms raw extracted page text into readable paragraph flow using OpenAI when configured and local cleanup as a fallback.
 - `search_index` v2: rebuilds `Document.search_text` from title, authors, abstract, summary, APA citation, normalized pages, notes, custom attributes, tags, and domains.
-- `citation_refresh` v2: regenerates Markdown APA 7 text with Crossref-backed fields and refreshes citation status; uncertain output stays in Review Queue.
+- `citation_refresh` v2: regenerates Markdown APA 7 text with Crossref-backed fields and refreshes citation status; uncertain output stays in Queue for citation review.
 - `summary_topics` v3: uses the configured AI adapter with extracted text plus original PDF context when available to fill missing metadata, concise Markdown summaries, APA candidates, topics, and keywords without overwriting user-corrected identity metadata.
 - `figure_assets` v1: extracts embedded PDF figures/images into durable storage and attaches them to document records.
+- `recommendations` v1: refreshes DOI-based related-paper recommendations from OpenAlex, Semantic Scholar, and Crossref, marks already-present library matches, and caches provider evidence without importing full text automatically.
 
 Use Concordance Runs when adding or improving:
 
@@ -221,7 +232,7 @@ Expected behavior:
 - Capability versions should be recorded per document or per derived artifact so the app can find missing/outdated work.
 - Concordance jobs must be durable, resumable, idempotent, and visible through processing events/progress.
 - A run should avoid overwriting user-corrected metadata unless explicitly requested or unless it records a reviewable candidate.
-- Ambiguous or low-confidence output should go to Review Queue rather than silently replacing trusted data.
+- Ambiguous or low-confidence output should go to Queue for citation review rather than silently replacing trusted data.
 
 ## Security And Operations
 
@@ -243,6 +254,11 @@ Network:
 
 - The app listens externally on port `3737` through the frontend service.
 - Backend and database are internal Docker services.
+
+Operational settings:
+
+- `MEDUSA_IMPORT_WORKER_CONCURRENCY` sets the startup default for concurrent import processing. The built-in default is 4, and Settings accepts any positive value while warning that higher values can create a burst of OpenAI calls and cost.
+- The active import concurrency and accent color preferences are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`.
 
 Safe deletion:
 
@@ -319,7 +335,7 @@ Why: Completely accurate citations are a product requirement. Review is safer th
 
 Consequences:
 
-- Review Queue is a core workflow, not an error state.
+- Queue citation review is a core workflow, not an error state.
 - Citation candidates store evidence and confidence.
 
 ### 2026-06-17: Quiet cockpit design
@@ -459,7 +475,7 @@ Consequences:
 
 - Citation refresh should become more exhaustive than the current DOI/title Crossref lookup.
 - Future DOI discovery should inspect document metadata, extracted text, references, Crossref, Semantic Scholar, DOI.org, publisher pages, and targeted web evidence.
-- Every attempted source, conflict, and fallback source-link choice should be recorded as evidence for Review Queue inspection.
+- Every attempted source, conflict, and fallback source-link choice should be recorded as evidence for Queue inspection.
 - DOI links should win over source URLs in APA output; stable PDF/static-source URLs are acceptable only when DOI resolution fails.
 
 ### 2026-06-18: GPT-5.5 PDF-context enrichment
@@ -609,14 +625,14 @@ Consequences:
 
 ### 2026-06-18: Actionable citation review
 
-Decision: Add Review Queue actions to accept or reject citation candidates.
+Decision: Add Queue actions to accept or reject citation candidates.
 
 Why: A queue that only displays uncertainty still leaves metadata work stranded. Citation review needs a direct path to promote evidence-backed metadata into the document or dismiss bad candidates.
 
 Consequences:
 
 - Accepting a candidate updates the document fields represented by candidate metadata, applies candidate APA text, marks the document citation as `verified`, refreshes search text, and writes a `DocumentVersion` history record.
-- Rejecting a candidate changes only the candidate status and removes it from the active review queue.
+- Rejecting a candidate changes only the candidate status and removes it from the active citation review queue.
 - Future review work should show richer side-by-side evidence and support partial field-level acceptance.
 
 ### 2026-06-18: Authenticated PDF preview and annotations
@@ -658,3 +674,18 @@ Consequences:
 - `init_db()` runs Alembic for PostgreSQL and keeps SQLAlchemy metadata creation as the SQLite/test fallback.
 - The initial migration is idempotent for existing local PostgreSQL databases by creating current tables and supporting indexes only when missing.
 - Future model changes must include an Alembic revision and corresponding tests or smoke verification.
+
+### 2026-06-18: Import throughput and sidebar progress
+
+Decision: Add DB-backed import worker concurrency preferences, default concurrent imports to four per worker process while allowing higher user-selected values, and show active import progress at the bottom of the expanded sidebar.
+
+Why: Large batches should keep moving without requiring multiple worker containers, while the user still needs a quiet, persistent signal that queued/importing documents are making progress outside the Import view.
+
+Consequences:
+
+- `/api/preferences` exposes active import worker and day/night accent preferences, and Settings saves them as `AppPreference`.
+- The worker claims multiple import jobs up to the current preference, keeps Concordance work behind active imports, and excludes in-process import IDs from stale recovery claims.
+- Import page normalization records and commits per-page checkpoint events so slow OpenAI page-normalization calls are visible as `normalizing_page_<n>` rather than a single opaque extraction step. On restart, already-normalized pages are reused when possible and missing pages are processed again.
+- `/api/imports/jobs/{job_id}/rescue` can requeue failed/restored import jobs and running jobs whose worker lock is stale. Fresh running jobs are rejected to avoid racing an active worker thread.
+- `/api/dashboard` includes import queued/running counts plus active batch progress totals, active step, and elapsed seconds so the sidebar can render progress without scanning the recent job list.
+- The sidebar progress block is hidden when no imports are queued or running and is not shown on the collapsed rail.

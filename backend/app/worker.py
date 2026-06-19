@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import signal
+import threading
 import time
 from datetime import timedelta
 
@@ -13,9 +15,11 @@ from app.models import ConcordanceJob, ImportJob, ProcessingEvent, utc_now
 from app.security import ensure_admin_user
 from app.services.concordance import ConcordanceProcessor, refresh_concordance_run_progress
 from app.services.processing import DocumentProcessor, refresh_import_batch_progress
+from app.services.preferences import get_import_worker_concurrency
 
 
 running = True
+logger = logging.getLogger(__name__)
 
 
 def stop(_: int, __: object) -> None:
@@ -37,15 +41,17 @@ def stale_running_filter(model, cutoff):
     )
 
 
-def claim_import_job(db: Session, stale_after_seconds: int) -> str | None:
+def claim_import_job(db: Session, stale_after_seconds: int, exclude_ids: set[str] | None = None) -> str | None:
     cutoff = stale_cutoff(stale_after_seconds)
     now = utc_now()
-    job = (
+    query = (
         db.query(ImportJob)
         .filter(or_(ImportJob.status == "queued", stale_running_filter(ImportJob, cutoff)))
         .order_by(asc(ImportJob.created_at))
-        .first()
     )
+    if exclude_ids:
+        query = query.filter(ImportJob.id.notin_(exclude_ids))
+    job = query.first()
     if not job:
         return None
 
@@ -132,10 +138,10 @@ def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int]:
     return len(import_jobs), len(concordance_jobs)
 
 
-def claim_next_import_job():
+def claim_next_import_job(exclude_ids: set[str] | None = None):
     settings = get_settings()
     with session_scope() as db:
-        return claim_import_job(db, settings.worker_stale_job_seconds)
+        return claim_import_job(db, settings.worker_stale_job_seconds, exclude_ids)
 
 
 def claim_next_concordance_job():
@@ -162,6 +168,39 @@ def process_once(import_processor: DocumentProcessor, concordance_processor: Con
     return True
 
 
+def process_import_job(job_id: str) -> None:
+    with session_scope() as db:
+        job = db.get(ImportJob, job_id)
+        if job:
+            DocumentProcessor().process_job(db, job)
+
+
+def process_concordance_job(job_id: str) -> None:
+    with session_scope() as db:
+        job = db.get(ConcordanceJob, job_id)
+        if job:
+            ConcordanceProcessor().process_job(db, job)
+
+
+def configured_import_concurrency() -> int:
+    with session_scope() as db:
+        return get_import_worker_concurrency(db)
+
+
+def run_import_thread(job_id: str) -> None:
+    try:
+        process_import_job(job_id)
+    except Exception:
+        logger.exception("Import worker thread crashed while processing job %s", job_id)
+
+
+def collect_finished_imports(inflight_imports: dict[threading.Thread, str]) -> bool:
+    finished = [thread for thread in inflight_imports if not thread.is_alive()]
+    for thread in finished:
+        inflight_imports.pop(thread)
+    return bool(finished)
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -169,13 +208,42 @@ def main() -> None:
     with session_scope() as db:
         ensure_admin_user(db)
         recover_interrupted_jobs_on_start(db)
-    import_processor = DocumentProcessor()
-    concordance_processor = ConcordanceProcessor()
     settings = get_settings()
+    inflight_imports: dict[threading.Thread, str] = {}
     while running:
-        worked = process_once(import_processor, concordance_processor)
+        worked = collect_finished_imports(inflight_imports)
+        import_concurrency = configured_import_concurrency()
+        active_import_ids = set(inflight_imports.values())
+
+        while running and len(inflight_imports) < import_concurrency:
+            job_id = claim_next_import_job(active_import_ids)
+            if not job_id:
+                break
+            thread = threading.Thread(
+                target=run_import_thread,
+                args=(job_id,),
+                name=f"medusa-import-{job_id[:8]}",
+                daemon=True,
+            )
+            thread.start()
+            inflight_imports[thread] = job_id
+            active_import_ids.add(job_id)
+            worked = True
+
+        if not inflight_imports:
+            concordance_job_id = claim_next_concordance_job()
+            if concordance_job_id:
+                process_concordance_job(concordance_job_id)
+                worked = True
+
         if not worked:
             time.sleep(settings.worker_poll_seconds)
+
+    if inflight_imports:
+        logger.info(
+            "Worker shutdown requested with %s import job(s) in flight. They will be recovered on next startup if interrupted.",
+            len(inflight_imports),
+        )
 
 
 if __name__ == "__main__":

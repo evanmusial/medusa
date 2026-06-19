@@ -233,6 +233,57 @@ class DocumentDetail(DocumentSummary):
         return decode_html_entity_text(value)
 
 
+class DocumentRecommendationOut(ApiModel):
+    id: str
+    source_document_id: str
+    existing_document_id: str | None = None
+    imported_document_id: str | None = None
+    existing_document_title: str | None = None
+    title: str
+    doi: str | None = None
+    authors: list[dict[str, Any]] = Field(default_factory=list)
+    publication_year: int | None = None
+    journal: str | None = None
+    description: str | None = None
+    source_provider: str
+    source_relation: str | None = None
+    external_id: str | None = None
+    source_url: str | None = None
+    pdf_url: str | None = None
+    score: float | None = None
+    status: str
+    raw_metadata: dict[str, Any]
+    has_pdf: bool = False
+    last_seen_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("title", "journal", "description", "source_url", "pdf_url", mode="before")
+    @classmethod
+    def decode_recommendation_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class DocumentRecommendationRefreshOut(BaseModel):
+    document_id: str
+    recommendation_count: int
+    recommendations: list[DocumentRecommendationOut]
+
+
+class DocumentRecommendationDownloadCreate(BaseModel):
+    recommendation_ids: list[str] | None = None
+    mode: str = "selected"
+    skip_existing: bool = True
+
+
+class DocumentRecommendationDownloadOut(BaseModel):
+    batch_id: str
+    queued_count: int
+    skipped_existing_count: int
+    unavailable_count: int
+    failed_count: int
+
+
 class ImportDuplicateDocumentOut(BaseModel):
     id: str
     title: str
@@ -311,10 +362,12 @@ class ImportJobOut(ApiModel):
     document_title: str | None = None
     original_filename: str | None = None
     file_size_bytes: int | None = None
+    document_page_count: int | None = None
     status: str
     current_step: str
     attempts: int
     last_error: str | None = None
+    locked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -390,11 +443,32 @@ class DashboardOut(BaseModel):
     needs_review: int
     queued_jobs: int
     active_import_jobs: int
+    import_queued_jobs: int
+    import_running_jobs: int
+    import_progress_total: int
+    import_progress_completed: int
+    import_progress_failed: int
+    import_active_step: str | None = None
+    import_active_elapsed_seconds: int | None = None
     active_concordance_jobs: int
     failed_jobs: int
     failed_import_jobs: int
     failed_concordance_jobs: int
     projects: int
+
+
+class AppPreferencesOut(BaseModel):
+    import_worker_concurrency: int
+    recommended_import_worker_concurrency: int
+    import_worker_cost_warning_threshold: int
+    accent_color_day: str
+    accent_color_night: str
+
+
+class AppPreferencesPatch(BaseModel):
+    import_worker_concurrency: int | None = Field(default=None, ge=1)
+    accent_color_day: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 class BibliographyOut(BaseModel):
