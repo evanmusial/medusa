@@ -6,13 +6,14 @@ import mimetypes
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
 from app.database import get_db, init_db, is_postgres, session_scope
@@ -30,6 +31,7 @@ from app.models import (
     DocumentPage,
     DocumentRecommendation,
     DocumentVersion,
+    DoiStash,
     Domain,
     Figure,
     ImportBatch,
@@ -57,6 +59,7 @@ from app.schemas import (
     AttributeDefinitionCreate,
     AttributeDefinitionOut,
     BackupArtifactOut,
+    BackupEstimateOut,
     BackupRunOut,
     BibliographyOut,
     CitationCandidatePatch,
@@ -75,6 +78,8 @@ from app.schemas import (
     DocumentRecommendationOut,
     DocumentRecommendationRefreshOut,
     DocumentTextScrub,
+    DoiStashCreate,
+    DoiStashOut,
     DocumentSummary,
     DomainCreate,
     DomainOut,
@@ -83,6 +88,7 @@ from app.schemas import (
     ImportDuplicateDocumentOut,
     ImportDuplicateFileOut,
     ImportJobOut,
+    ImportQueueActionOut,
     LoginRequest,
     NoteCreate,
     NoteOut,
@@ -118,6 +124,7 @@ from app.services.analysis_models import (
 from app.services.backups import (
     create_database_backup_run,
     create_restore_run,
+    estimate_backup_size,
     launch_database_backup,
     launch_database_restore,
     list_backup_runs,
@@ -139,12 +146,16 @@ from app.services.preferences import (
     get_analysis_model,
     get_analysis_models,
     get_app_preferences,
+    get_download_naming_template,
+    render_download_filename,
     store_google_service_account,
     update_app_preferences,
 )
 from app.services.openai_usage import estimated_cost_usd_for_record, openai_usage_summary
 from app.services.recommendations import (
+    doi_url,
     list_document_recommendations,
+    normalize_doi,
     queue_recommendation_imports,
     refresh_document_recommendations,
 )
@@ -523,6 +534,16 @@ def json_download(payload: dict[str, Any], filename_prefix: str) -> FastAPIRespo
     )
 
 
+def content_disposition_header(disposition: str, filename: str) -> str:
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii")
+    ascii_fallback = "".join(
+        char if 32 <= ord(char) < 127 and char not in {'"', "\\", ";"} else "_"
+        for char in ascii_fallback
+    )
+    ascii_fallback = ascii_fallback or "download.pdf"
+    return f'{disposition}; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
@@ -638,6 +659,7 @@ def patch_preferences(
         accent_color_night=payload.accent_color_night,
         document_cache_size_mb=payload.document_cache_size_mb,
         library_alternating_rows=payload.library_alternating_rows,
+        download_naming_template=payload.download_naming_template,
         gcs_bucket=payload.gcs_bucket,
         analysis_models=payload.analysis_models,
     )
@@ -1078,11 +1100,231 @@ def download_recommendations(
     return DocumentRecommendationDownloadOut(**result)
 
 
+def sync_doi_stash_import_status(stash: DoiStash) -> bool:
+    if not stash.import_job:
+        return False
+    previous_status = stash.status
+    if stash.import_job.status == "complete":
+        stash.status = "imported"
+        stash.imported_document_id = stash.imported_document_id or stash.import_job.document_id
+        stash.imported_at = stash.imported_at or stash.import_job.updated_at or utc_now()
+    elif stash.import_job.status == "failed":
+        stash.status = "import_failed"
+    elif stash.import_job.status in {"queued", "running", "restored_paused"}:
+        stash.status = "import_queued"
+    return stash.status != previous_status
+
+
+def doi_stash_query(db: Session):
+    return (
+        db.query(DoiStash)
+        .options(joinedload(DoiStash.imported_document), joinedload(DoiStash.import_job))
+        .filter(DoiStash.deleted_at.is_(None))
+    )
+
+
+def doi_stash_out(stash: DoiStash) -> DoiStashOut:
+    return DoiStashOut(
+        id=stash.id,
+        doi=stash.doi,
+        title=stash.title,
+        source_url=stash.source_url,
+        source_provider=stash.source_provider,
+        source_document_id=stash.source_document_id,
+        recommendation_id=stash.recommendation_id,
+        imported_document_id=stash.imported_document_id,
+        imported_document_title=stash.imported_document.title if stash.imported_document else None,
+        import_job_id=stash.import_job_id,
+        import_job_status=stash.import_job.status if stash.import_job else None,
+        status=stash.status,
+        uploaded_filename=stash.uploaded_filename,
+        imported_at=stash.imported_at,
+        stash_metadata=stash.stash_metadata or {},
+        created_at=stash.created_at,
+        updated_at=stash.updated_at,
+    )
+
+
+@app.get("/api/doi-stashes", response_model=list[DoiStashOut])
+def list_doi_stashes(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[DoiStashOut]:
+    stashes = doi_stash_query(db).order_by(DoiStash.created_at.desc()).all()
+    changed = False
+    for stash in stashes:
+        changed = sync_doi_stash_import_status(stash) or changed
+    if changed:
+        db.commit()
+    return [doi_stash_out(stash) for stash in stashes]
+
+
+@app.post("/api/doi-stashes", response_model=DoiStashOut)
+def create_doi_stash(
+    payload: DoiStashCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DoiStashOut:
+    doi = normalize_doi(payload.doi)
+    if not doi:
+        raise HTTPException(status_code=400, detail="A valid DOI is required")
+    recommendation = db.get(DocumentRecommendation, payload.recommendation_id) if payload.recommendation_id else None
+    if payload.recommendation_id and not recommendation:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    title = payload.title or (recommendation.title if recommendation else None)
+    source_url = payload.source_url or (recommendation.source_url if recommendation else None) or doi_url(doi)
+    source_provider = payload.source_provider or (recommendation.provider if recommendation else None)
+    source_document_id = payload.source_document_id or (recommendation.source_document_id if recommendation else None)
+    stash = db.query(DoiStash).filter(DoiStash.doi == doi).one_or_none()
+    if stash:
+        stash.deleted_at = None
+        stash.title = title or stash.title
+        stash.source_url = source_url or stash.source_url
+        stash.source_provider = source_provider or stash.source_provider
+        stash.source_document_id = source_document_id or stash.source_document_id
+        stash.recommendation_id = (payload.recommendation_id if recommendation else None) or stash.recommendation_id
+        if stash.status == "removed":
+            stash.status = "active"
+    else:
+        stash = DoiStash(
+            doi=doi,
+            title=title,
+            source_url=source_url,
+            source_provider=source_provider,
+            source_document_id=source_document_id,
+            recommendation_id=payload.recommendation_id if recommendation else None,
+            status="active",
+            stash_metadata={"created_from": "recommendation" if payload.recommendation_id else "manual"},
+        )
+        db.add(stash)
+    db.commit()
+    db.refresh(stash)
+    return doi_stash_out(stash)
+
+
+@app.delete("/api/doi-stashes/{stash_id}")
+def delete_doi_stash(
+    stash_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    stash = db.get(DoiStash, stash_id)
+    if not stash or stash.deleted_at:
+        raise HTTPException(status_code=404, detail="DOI stash not found")
+    stash.deleted_at = utc_now()
+    stash.status = "removed"
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/doi-stashes/{stash_id}/upload", response_model=DoiStashOut)
+async def upload_doi_stash_pdf(
+    stash_id: str,
+    file: Annotated[UploadFile, File()],
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DoiStashOut:
+    stash = doi_stash_query(db).filter(DoiStash.id == stash_id).one_or_none()
+    if not stash:
+        raise HTTPException(status_code=404, detail="DOI stash not found")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    filename = file.filename or f"{stash.doi.replace('/', '_')}.pdf"
+    looks_like_pdf = data.lstrip().startswith(b"%PDF") or (file.content_type == "application/pdf") or filename.lower().endswith(".pdf")
+    if not looks_like_pdf:
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+
+    checksum = hashlib.sha256(data).hexdigest()
+    batch = ImportBatch(
+        label=f"Stash: {stash.doi}",
+        total_files=1,
+        shared_defaults={
+            "source": "doi_stash",
+            "doi_stash_id": stash.id,
+            "doi": stash.doi,
+        },
+    )
+    db.add(batch)
+    db.flush()
+
+    existing_documents = active_documents_for_checksum(db, checksum)
+    if existing_documents:
+        job = create_skipped_duplicate_job(
+            db,
+            batch=batch,
+            document=existing_documents[0],
+            filename=filename,
+            checksum=checksum,
+            reason="matched_existing_document",
+        )
+        stash.imported_document_id = existing_documents[0].id
+        stash.import_job_id = job.id
+        stash.status = "imported"
+        stash.uploaded_filename = filename
+        stash.imported_at = utc_now()
+        refresh_import_batch_progress(db, batch)
+        db.commit()
+        db.refresh(stash)
+        return doi_stash_out(stash)
+
+    document = Document(
+        title=stash.title or Path(filename).stem.replace("_", " ").replace("-", " "),
+        original_filename=filename,
+        content_type=file.content_type or "application/pdf",
+        checksum_sha256=checksum,
+        doi=stash.doi,
+        source_url=stash.source_url or doi_url(stash.doi),
+        priority="normal",
+        read_status="unread",
+    )
+    db.add(document)
+    db.flush()
+
+    storage = get_storage_service()
+    cache_dir = document_cache_root()
+    key = import_storage_key(checksum, document.id, filename)
+    stored = storage.put_bytes(key, data, file.content_type or "application/pdf")
+    cache_path = import_cache_path(cache_dir, document.id)
+    cache_path.write_bytes(data)
+    document.gcs_uri = stored.uri
+    document.storage_status = stored.backend
+    document.processing_status = "queued"
+    document.metadata_evidence = {
+        "file_size_bytes": len(data),
+        "local_cache_path": str(cache_path),
+        "document_cache_path": str(cache_path),
+        "doi_stash": {
+            "id": stash.id,
+            "doi": stash.doi,
+            "title": stash.title,
+            "source_url": stash.source_url,
+            "source_provider": stash.source_provider,
+            "recommendation_id": stash.recommendation_id,
+            "source_document_id": stash.source_document_id,
+        },
+    }
+    register_document_cache(document, cache_path, source="doi_stash")
+
+    job = ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored")
+    db.add(job)
+    db.flush()
+    stash.imported_document_id = document.id
+    stash.import_job_id = job.id
+    stash.status = "import_queued"
+    stash.uploaded_filename = filename
+    refresh_import_batch_progress(db, batch)
+    db.commit()
+    db.refresh(stash)
+    return doi_stash_out(stash)
+
+
 @app.get("/api/documents/{document_id}/original")
 def document_original(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    download: Annotated[bool, Query()] = False,
 ) -> FastAPIResponse:
     document = db.get(Document, document_id)
     if not document or document.deleted_at:
@@ -1093,11 +1335,15 @@ def document_original(
         data = get_storage_service().get_bytes(document.gcs_uri)
     except Exception as exc:
         raise HTTPException(status_code=404, detail="Original document is unavailable") from exc
-    filename = document.original_filename.replace('"', "")
+    filename = (
+        render_download_filename(document, get_download_naming_template(db))
+        if download
+        else document.original_filename.replace('"', "")
+    )
     return FastAPIResponse(
         content=data,
         media_type=document.content_type or "application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_header("attachment" if download else "inline", filename)},
     )
 
 
@@ -1676,7 +1922,7 @@ def create_skipped_duplicate_job(
     filename: str,
     checksum: str,
     reason: str,
-) -> None:
+) -> ImportJob:
     job = ImportJob(
         batch_id=batch.id,
         document_id=document.id if document else None,
@@ -1695,6 +1941,7 @@ def create_skipped_duplicate_job(
             payload={"filename": filename, "checksum_sha256": checksum, "reason": reason},
         )
     )
+    return job
 
 
 async def inspect_import_duplicates(files: list[UploadFile], db: Session) -> ImportDuplicateCheckOut:
@@ -1910,6 +2157,27 @@ def import_job_step_model(current_step: str, model_preferences: dict[str, str]) 
     return None
 
 
+def import_job_event_value(job: ImportJob, key: str, event_type: str | None = None) -> str | None:
+    events = sorted(job.events or [], key=lambda event: event.created_at, reverse=True)
+    for event in events:
+        if event_type and event.event_type != event_type:
+            continue
+        value = (event.payload or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def import_job_event_message(job: ImportJob, event_type: str | None = None) -> str | None:
+    events = sorted(job.events or [], key=lambda event: event.created_at, reverse=True)
+    for event in events:
+        if event_type and event.event_type != event_type:
+            continue
+        if event.message and event.message.strip():
+            return event.message.strip()
+    return None
+
+
 def import_job_out(
     job: ImportJob,
     *,
@@ -1917,11 +2185,16 @@ def import_job_out(
     estimated_cost_usd: float = 0.0,
 ) -> dict[str, Any]:
     model_preferences = model_preferences or {}
+    event_title = import_job_event_value(job, "title", job.current_step) or import_job_event_value(job, "title")
+    event_error = import_job_event_message(job, job.current_step) or import_job_event_message(job)
+    last_error = job.last_error
+    if job.status == "failed" and not job.document_id and job.current_step == "download_failed":
+        last_error = event_error or job.last_error
     return {
         "id": job.id,
         "batch_id": job.batch_id,
         "document_id": job.document_id,
-        "document_title": job.document.title if job.document else None,
+        "document_title": job.document.title if job.document else event_title,
         "original_filename": job.document.original_filename if job.document else None,
         "file_size_bytes": import_job_file_size(job.document),
         "document_page_count": job.document.page_count if job.document else None,
@@ -1930,7 +2203,7 @@ def import_job_out(
         "current_model": import_job_step_model(job.current_step, model_preferences),
         "estimated_cost_usd": round(estimated_cost_usd, 6),
         "attempts": job.attempts,
-        "last_error": job.last_error,
+        "last_error": last_error or (event_error if job.status == "failed" else None),
         "locked_at": job.locked_at,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -1939,10 +2212,140 @@ def import_job_out(
 
 @app.get("/api/imports/jobs", response_model=list[ImportJobOut])
 def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
-    jobs = db.query(ImportJob).options(joinedload(ImportJob.document)).order_by(ImportJob.created_at.desc()).limit(100).all()
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), selectinload(ImportJob.events))
+        .order_by(ImportJob.created_at.desc())
+        .limit(100)
+        .all()
+    )
     model_preferences = get_analysis_models(db)
     costs = import_job_costs_usd(db, [job.id for job in jobs])
     return [import_job_out(job, model_preferences=model_preferences, estimated_cost_usd=costs.get(job.id, 0.0)) for job in jobs]
+
+
+def import_job_previous_state(job: ImportJob) -> dict[str, Any]:
+    return {
+        "status": job.status,
+        "current_step": job.current_step,
+        "attempts": job.attempts,
+        "locked_at": job.locked_at.isoformat() if job.locked_at else None,
+        "last_error": job.last_error,
+    }
+
+
+def requeue_import_job(db: Session, job: ImportJob, *, event_type: str = "manual_import_rescue") -> None:
+    previous = import_job_previous_state(job)
+    job.status = "queued"
+    job.locked_at = None
+    job.last_error = None
+    if job.document:
+        job.document.processing_status = "queued"
+    if job.batch:
+        refresh_import_batch_progress(db, job.batch)
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=job.document_id,
+            event_type=event_type,
+            message="Import job was manually requeued.",
+            payload={"previous": previous},
+        )
+    )
+
+
+def clear_import_job(db: Session, job: ImportJob) -> None:
+    previous = import_job_previous_state(job)
+    job.status = "cleared"
+    job.current_step = "cleared"
+    job.locked_at = None
+    if job.document and job.document.processing_status != "ready":
+        job.document.processing_status = "cleared"
+    if job.batch:
+        refresh_import_batch_progress(db, job.batch)
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=job.document_id,
+            event_type="manual_import_clear",
+            message="Import job was cleared from the queue.",
+            payload={"previous": previous},
+        )
+    )
+
+
+@app.post("/api/imports/jobs/retry-failed", response_model=ImportQueueActionOut)
+def retry_failed_import_jobs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ImportQueueActionOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status == "failed")
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    updated_count = 0
+    skipped_unretryable_count = 0
+    for job in jobs:
+        if not job.document_id:
+            skipped_unretryable_count += 1
+            continue
+        requeue_import_job(db, job, event_type="manual_import_retry_failed")
+        updated_count += 1
+    db.commit()
+    return ImportQueueActionOut(
+        matched_count=len(jobs),
+        updated_count=updated_count,
+        skipped_unretryable_count=skipped_unretryable_count,
+    )
+
+
+@app.post("/api/imports/jobs/clear", response_model=ImportQueueActionOut)
+def clear_import_queue(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ImportQueueActionOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status.in_(["queued", "running", "failed", "restored_paused"]))
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    updated_count = 0
+    skipped_running_count = 0
+    for job in jobs:
+        if job.status == "running":
+            skipped_running_count += 1
+            continue
+        clear_import_job(db, job)
+        updated_count += 1
+    db.commit()
+    return ImportQueueActionOut(
+        matched_count=len(jobs),
+        updated_count=updated_count,
+        skipped_running_count=skipped_running_count,
+    )
+
+
+@app.post("/api/imports/jobs/clear-failed", response_model=ImportQueueActionOut)
+def clear_failed_import_jobs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ImportQueueActionOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status == "failed")
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    for job in jobs:
+        clear_import_job(db, job)
+    db.commit()
+    return ImportQueueActionOut(matched_count=len(jobs), updated_count=len(jobs))
 
 
 @app.post("/api/imports/jobs/{job_id}/rescue", response_model=ImportJobOut)
@@ -1956,6 +2359,8 @@ def rescue_import_job(
         raise HTTPException(status_code=404, detail="Import job not found")
     if job.status == "complete":
         raise HTTPException(status_code=400, detail="Completed import jobs do not need rescue.")
+    if not job.document_id:
+        raise HTTPException(status_code=400, detail="This queue row has no document record to reprocess. Retry from Related instead.")
 
     marker = job.locked_at or job.updated_at
     stale_cutoff = utc_now() - timedelta(seconds=max(1, settings.worker_stale_job_seconds))
@@ -1965,29 +2370,7 @@ def rescue_import_job(
             detail="This import still has an active worker lock. Restart the app or wait for the stale-lock window before rescuing it.",
         )
 
-    previous = {
-        "status": job.status,
-        "current_step": job.current_step,
-        "attempts": job.attempts,
-        "locked_at": job.locked_at.isoformat() if job.locked_at else None,
-        "last_error": job.last_error,
-    }
-    job.status = "queued"
-    job.locked_at = None
-    job.last_error = None
-    if job.document:
-        job.document.processing_status = "queued"
-    if job.batch:
-        refresh_import_batch_progress(db, job.batch)
-    db.add(
-        ProcessingEvent(
-            import_job_id=job.id,
-            document_id=job.document_id,
-            event_type="manual_import_rescue",
-            message="Import job was manually requeued.",
-            payload={"previous": previous},
-        )
-    )
+    requeue_import_job(db, job)
     db.commit()
     db.refresh(job)
     model_preferences = get_analysis_models(db)
@@ -2017,6 +2400,14 @@ def read_backup_runs(
     db: Annotated[Session, Depends(get_db)],
 ) -> list[BackupRun]:
     return list_backup_runs(db)
+
+
+@app.get("/api/backups/estimate", response_model=BackupEstimateOut)
+def read_backup_estimate(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    return estimate_backup_size(db)
 
 
 @app.post("/api/backups/database", response_model=BackupRunOut)

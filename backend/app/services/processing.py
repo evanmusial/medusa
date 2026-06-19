@@ -377,9 +377,16 @@ def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
         ImportJob.batch_id == batch.id,
         ImportJob.status == "failed",
     ).count()
-    finished_files = batch.completed_files + batch.failed_files
+    cleared_files = db.query(ImportJob).filter(
+        ImportJob.batch_id == batch.id,
+        ImportJob.status == "cleared",
+    ).count()
+    finished_files = batch.completed_files + batch.failed_files + cleared_files
     if finished_files >= batch.total_files:
-        batch.status = "complete" if batch.failed_files == 0 else "complete_with_errors"
+        if cleared_files and batch.completed_files == 0 and batch.failed_files == 0:
+            batch.status = "cleared"
+        else:
+            batch.status = "complete" if batch.failed_files == 0 else "complete_with_errors"
     elif finished_files > 0:
         batch.status = "running"
     else:

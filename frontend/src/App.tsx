@@ -13,6 +13,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   Archive,
+  ArrowUpDown,
   Bookmark,
   BookOpen,
   ChevronLeft,
@@ -58,6 +59,7 @@ import type {
   AccessorySummary,
   AppPreferences,
   BackupArtifact,
+  BackupEstimate,
   BackupRun,
   Bibliography,
   CitationCandidate,
@@ -72,6 +74,7 @@ import type {
   DocumentRecommendation,
   DocumentSummary,
   DocumentUpdatePayload,
+  DoiStash,
   Domain,
   DuplicateImportStrategy,
   ImportDuplicateCheck,
@@ -88,7 +91,7 @@ import type {
   Tag,
 } from "./types";
 
-type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "budget" | "settings";
+type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "stashes" | "budget" | "settings";
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
@@ -163,6 +166,8 @@ const DUPLICATE_STATUS_OPTIONS: SelectMenuOption[] = [
 ];
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
+type StashSortKey = "created" | "doi" | "title" | "status";
+type SortDirection = "asc" | "desc";
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; align?: "end" }> = [
   { id: "library", label: "Library", icon: Library },
@@ -171,6 +176,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?
   { id: "queue", label: "Queue", icon: Inbox },
   { id: "notes", label: "Notes", icon: BookOpen },
   { id: "import", label: "Import", icon: Upload },
+  { id: "stashes", label: "Stashes", icon: Bookmark },
   { id: "budget", label: "Budget", icon: CircleDollarSign, shortcut: "B" },
   { id: "settings", label: "Settings", icon: Settings, align: "end" },
 ];
@@ -186,6 +192,15 @@ function authorLine(document: DocumentSummary | DocumentDetail) {
 
 function pageCountMarker(document: DocumentSummary | DocumentDetail) {
   return document.page_count > 0 ? `${document.page_count}pp` : "?pp";
+}
+
+function BookSearchIcon({ size = 15 }: { size?: number }) {
+  return (
+    <span className="book-search-icon" style={{ width: size, height: size }} aria-hidden="true">
+      <BookOpen size={size} />
+      <Search className="book-search-icon-lens" size={Math.max(8, Math.round(size * 0.56))} />
+    </span>
+  );
 }
 
 function recommendationAuthorLine(item: DocumentRecommendation) {
@@ -546,6 +561,16 @@ function backupArtifactLabel(artifact: BackupArtifact) {
     formatFileSize(artifact.size_bytes),
   ].filter(Boolean);
   return pieces.join(" - ");
+}
+
+function backupEstimateLabel(estimate?: BackupEstimate, loading = false) {
+  if (!estimate && loading) return "Likely backup size: calculating";
+  if (!estimate) return "Likely backup size: unavailable";
+  const size = formatFileSize(estimate.estimated_size_bytes);
+  if (!size) return "Likely backup size: unavailable";
+  if (estimate.basis === "database_size_upper_bound") return `Likely backup size: up to ${size} before compression`;
+  if (estimate.basis === "latest_backup") return `Likely backup size: about ${size} (last backup)`;
+  return `Likely backup size: about ${size}`;
 }
 
 function backgroundJobFromBackupRun(run: BackupRun): BackgroundJob {
@@ -969,12 +994,27 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
 }
 
 function canRescueImportJob(job: ImportJob) {
+  if (!job.document_id) return false;
   if (job.status === "failed" || job.status === "restored_paused") return true;
   if (job.status !== "running" || !job.locked_at) return false;
   return Date.now() - new Date(job.locked_at).getTime() > 15 * 60 * 1000;
 }
 
+function canRetryImportJob(job: ImportJob) {
+  if (!job.document_id) return false;
+  if (job.status === "complete" || job.status === "cleared") return false;
+  if (job.status === "running") return canRescueImportJob(job);
+  return true;
+}
+
+function importJobRetryTitle(job: ImportJob) {
+  if (!job.document_id) return "This queue row has no document record to retry";
+  if (job.status === "running" && !canRescueImportJob(job)) return "This import still has an active worker lock";
+  return "Retry this import job";
+}
+
 function isImportCompletedRowExpired(job: ImportJob, now: number) {
+  if (job.status === "cleared") return true;
   if (job.status !== "complete") return false;
   const completedAt = new Date(job.updated_at).getTime();
   if (Number.isNaN(completedAt)) return false;
@@ -1673,6 +1713,14 @@ function LibraryView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [confirmBatchConcordance]);
   useEffect(() => {
+    if (!readerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReaderOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [readerOpen]);
+  useEffect(() => {
     if (!batchConcordanceRunId || trackedBatchConcordanceJobs.length === 0) return;
     if (trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedBatchConcordanceJobs.find((job) => job.status === "failed");
@@ -1736,6 +1784,7 @@ function LibraryView({
           document={document}
           domains={domains}
           onCloseReader={() => setReaderOpen(false)}
+          preferences={preferences}
           projects={projects}
           query={query}
           readerExpanded
@@ -2153,15 +2202,17 @@ function DocumentPanel({
   );
 }
 
-function RecommendationsPanel({ document }: { document: DocumentDetail }) {
-  const [hideExisting, setHideExisting] = useStoredBoolean("medusa-recommendations-hide-existing", false);
+function RecommendationsPanel({ document, onClose }: { document: DocumentDetail; onClose?: () => void }) {
+  const [hideExisting, setHideExisting] = useStoredBoolean("medusa-recommendations-hide-existing-v2", true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
+  const autoRefreshKeyRef = useRef<string | null>(null);
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const refreshFeedback = useAsyncActionFeedback();
   const selectedDownloadFeedback = useAsyncActionFeedback();
   const newDownloadFeedback = useAsyncActionFeedback();
+  const stashFeedback = useAsyncActionFeedbackMap();
   const recommendations = useQuery({
     queryKey: ["document-recommendations", document.id, hideExisting],
     queryFn: () => api.documentRecommendations(document.id, hideExisting),
@@ -2177,6 +2228,27 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
     onError: (error) => {
       const message = actionFailureMessage("Could not refresh recommendations", error);
       refreshFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+  const stashDoi = useMutation({
+    mutationFn: (item: DocumentRecommendation) =>
+      api.createDoiStash({
+        doi: item.doi || "",
+        title: item.title,
+        source_url: item.source_url || undefined,
+        source_provider: item.source_provider,
+        source_document_id: item.source_document_id,
+        recommendation_id: item.id,
+      }),
+    onSuccess: (_stash, item) => {
+      stashFeedback.showSuccess(item.id);
+      setNotice(`Stashed DOI ${item.doi}`);
+      void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
+    },
+    onError: (error, item) => {
+      const message = actionFailureMessage("Could not stash DOI", error);
+      stashFeedback.showError(item.id, message);
       setNotice(message);
     },
   });
@@ -2218,6 +2290,32 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
   const newDownloadable = newRows.filter((item) => item.has_pdf).length;
   const canRefresh = document.processing_status === "ready" && Boolean(document.doi);
 
+  useEffect(() => {
+    const autoRefreshKey = `${document.id}:${hideExisting}`;
+    if (
+      !canRefresh ||
+      recommendations.isFetching ||
+      recommendations.isError ||
+      refresh.isPending ||
+      recommendations.data === undefined ||
+      rows.length > 0 ||
+      autoRefreshKeyRef.current === autoRefreshKey
+    ) {
+      return;
+    }
+    autoRefreshKeyRef.current = autoRefreshKey;
+    refresh.mutate();
+  }, [
+    canRefresh,
+    document.id,
+    hideExisting,
+    recommendations.data,
+    recommendations.isError,
+    recommendations.isFetching,
+    refresh,
+    rows.length,
+  ]);
+
   const toggleSelected = (id: string) => {
     setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   };
@@ -2253,6 +2351,11 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
               Refresh
             </button>
           </AsyncActionSlot>
+          {onClose ? (
+            <button className="icon-button compact" onClick={onClose} title="Close related papers" type="button">
+              <X size={15} />
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="recommendations-download-row">
@@ -2293,6 +2396,15 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
         <div className="recommendation-list">
           {rows.map((item) => {
             const inLibrary = Boolean(item.existing_document_id || item.imported_document_id);
+            const doiCopied = copiedKey === `doi-${item.id}`;
+            const titleCopied = copiedKey === `title-${item.id}`;
+            const statusPill = inLibrary ? (
+              <StatusPill value="In library" tone="good" />
+            ) : item.status === "download_failed" ? (
+              <StatusPill value="Download failed" tone="warn" />
+            ) : item.has_pdf ? (
+              <StatusPill value="PDF" tone="blue" />
+            ) : null;
             return (
               <article key={item.id} className={`recommendation-row ${inLibrary ? "in-library" : ""}`}>
                 <input
@@ -2302,11 +2414,9 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
                   disabled={inLibrary}
                   onChange={() => toggleSelected(item.id)}
                 />
+                <strong className="recommendation-title">{item.title}</strong>
+                <div className="recommendation-row-status">{statusPill}</div>
                 <div className="recommendation-copy">
-                  <div className="recommendation-title-line">
-                    <strong>{item.title}</strong>
-                    {inLibrary ? <StatusPill value="In library" tone="good" /> : item.has_pdf ? <StatusPill value="PDF" tone="blue" /> : null}
-                  </div>
                   <span>
                     {recommendationAuthorLine(item)}
                     {item.publication_year ? ` / ${item.publication_year}` : ""}
@@ -2321,25 +2431,57 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
                   </small>
                 </div>
                 <div className="recommendation-row-actions">
-                  <button
-                    className="icon-button"
-                    disabled={!item.doi}
-                    onClick={() => item.doi && void copyToClipboard(`doi-${item.id}`, item.doi)}
-                    title="Copy DOI"
-                    type="button"
-                  >
-                    {copiedKey === `doi-${item.id}` ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => void copyToClipboard(`title-${item.id}`, item.title)}
-                    title="Copy title"
-                    type="button"
-                  >
-                    {copiedKey === `title-${item.id}` ? <CheckCircle2 size={15} /> : <FileText size={15} />}
-                  </button>
+                  <div className="recommendation-left-actions">
+                    <button
+                      className={`secondary-button compact recommendation-copy-action${doiCopied ? " copy-acknowledged" : ""}`}
+                      disabled={!item.doi}
+                      onClick={() => item.doi && void copyToClipboard(`doi-${item.id}`, item.doi)}
+                      title="Copy DOI"
+                      type="button"
+                    >
+                      {doiCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+                      DOI
+                    </button>
+                    <button
+                      className={`secondary-button compact recommendation-copy-action${titleCopied ? " copy-acknowledged" : ""}`}
+                      onClick={() => void copyToClipboard(`title-${item.id}`, item.title)}
+                      title="Copy Title"
+                      type="button"
+                    >
+                      {titleCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+                      Title
+                    </button>
+                    <AsyncActionSlot feedback={stashFeedback.feedbackFor(item.id)}>
+                      <button
+                        className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(item.id))}
+                        disabled={!item.doi || stashDoi.isPending}
+                        onClick={() => stashDoi.mutate(item)}
+                        title="Stash DOI"
+                        type="button"
+                      >
+                        <Bookmark size={15} />
+                        Stash
+                      </button>
+                    </AsyncActionSlot>
+                    <a
+                      className="secondary-button compact recommendation-copy-action"
+                      href={item.scholar_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Search Google Scholar"
+                    >
+                      <Search size={15} />
+                      Scholar
+                    </a>
+                  </div>
                   {item.source_url ? (
-                    <a className="icon-button" href={item.source_url} target="_blank" rel="noreferrer" title="Open source">
+                    <a
+                      className="icon-button compact recommendation-source-action"
+                      href={item.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open source"
+                    >
                       <ExternalLink size={15} />
                     </a>
                   ) : null}
@@ -2351,7 +2493,7 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
       ) : (
         <div className="empty-inline">
           <Sparkles size={17} />
-          <span>Refresh to find related papers.</span>
+          <span>{refresh.isPending ? "Finding related papers." : "No related papers found yet."}</span>
         </div>
       )}
     </section>
@@ -2793,6 +2935,9 @@ function DocumentPanelContent({
     const text = citationText(document, kind);
     if (text) void copyToClipboard(`citation-${kind}`, decodeHtmlEntities(text));
   };
+  const copyDoi = () => {
+    if (document.doi) void copyToClipboard("document-doi", document.doi);
+  };
   const pages = useMemo(
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
     [document.pages],
@@ -3156,6 +3301,18 @@ function DocumentPanelContent({
   };
   const annotations = document.annotations || [];
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
+  const renderDoiSection = () => (
+    <section className="detail-section doi-section">
+      <h3>DOI</h3>
+      <div className="doi-value">{document.doi ? <code>{document.doi}</code> : <span>No DOI recorded.</span>}</div>
+      <div className="doi-actions">
+        <button className="secondary-button" disabled={!document.doi} onClick={copyDoi} type="button">
+          {copiedKey === "document-doi" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+          {copiedKey === "document-doi" ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </section>
+  );
   const renderCitationSection = (kind: CitationKind, title: string, empty: string) => {
     const text = citationText(document, kind);
     const isEditing = editingCitation === kind;
@@ -3384,24 +3541,28 @@ function DocumentPanelContent({
         ) : null}
         <button
           className="secondary-button"
-          disabled={document.processing_status !== "ready" || !document.doi}
+          aria-expanded={recommendationsOpen}
           onClick={() => setRecommendationsOpen((value) => !value)}
-          title={!document.doi ? "Recommendations need a DOI" : "View related papers"}
+          title={document.doi ? "View related papers" : "Show why related papers are unavailable"}
           type="button"
         >
-          <Sparkles size={15} />
+          <BookSearchIcon size={15} />
           Related
         </button>
-        {onCloseReader && readerExpanded ? (
-          <button className="secondary-button" onClick={onCloseReader} type="button">
-            <X size={15} />
-            Close reader
-          </button>
-        ) : null}
         <a className="secondary-button" href={`/api/documents/${document.id}/original`} target="_blank" rel="noreferrer">
           <FileSearch size={15} />
-          Open original
+          Open Original
         </a>
+        <a className="secondary-button" href={`/api/documents/${document.id}/original?download=1`} download>
+          <Download size={15} />
+          Download Original
+        </a>
+        {onCloseReader && readerExpanded ? (
+          <button className="secondary-button reader-close-action" onClick={onCloseReader} type="button">
+            <X size={15} />
+            Close
+          </button>
+        ) : null}
       </div>
       {compositionOpen ? (
         <CompositionDialog
@@ -3411,30 +3572,58 @@ function DocumentPanelContent({
           onClose={() => setCompositionOpen(false)}
         />
       ) : null}
-      <div className="reader-tabs" role="tablist" aria-label="Document reader">
-        <button className={readerMode === "pdf" ? "selected" : ""} type="button" onClick={() => setReaderMode("pdf")}>
-          <FileSearch size={15} />
-          PDF
-        </button>
-        <button className={readerMode === "text" ? "selected" : ""} type="button" onClick={() => setReaderMode("text")}>
-          <FileText size={15} />
-          Text
-        </button>
-        <button className={readerMode === "compare" ? "selected" : ""} type="button" onClick={() => setReaderMode("compare")}>
-          <BookOpen size={15} />
-          Compare
-        </button>
-      </div>
-      {readerMode === "pdf" ? (
-        renderPdfPreview()
-      ) : readerMode === "compare" ? (
-        <div className="reader-compare">
-          {renderPdfPreview(true)}
-          {renderTextReader(true)}
+      <div className="reader-surface">
+        <div className="reader-tabs" role="tablist" aria-label="Document reader">
+          <button
+            className={readerMode === "pdf" ? "selected" : ""}
+            type="button"
+            onClick={() => {
+              setRecommendationsOpen(false);
+              setReaderMode("pdf");
+            }}
+          >
+            <FileSearch size={15} />
+            PDF
+          </button>
+          <button
+            className={readerMode === "text" ? "selected" : ""}
+            type="button"
+            onClick={() => {
+              setRecommendationsOpen(false);
+              setReaderMode("text");
+            }}
+          >
+            <FileText size={15} />
+            Text
+          </button>
+          <button
+            className={readerMode === "compare" ? "selected" : ""}
+            type="button"
+            onClick={() => {
+              setRecommendationsOpen(false);
+              setReaderMode("compare");
+            }}
+          >
+            <BookOpen size={15} />
+            Compare
+          </button>
         </div>
-      ) : (
-        renderTextReader()
-      )}
+        {recommendationsOpen ? (
+          <div className="recommendations-popover">
+            <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} />
+          </div>
+        ) : null}
+        {readerMode === "pdf" ? (
+          renderPdfPreview()
+        ) : readerMode === "compare" ? (
+          <div className="reader-compare">
+            {renderPdfPreview(true)}
+            {renderTextReader(true)}
+          </div>
+        ) : (
+          renderTextReader()
+        )}
+      </div>
       {editing ? (
         <form
           className="document-editor"
@@ -3565,9 +3754,9 @@ function DocumentPanelContent({
           {saveError ? <p className="form-error">{saveError}</p> : null}
         </form>
       ) : null}
+      {renderDoiSection()}
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
       {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
-      {recommendationsOpen ? <RecommendationsPanel document={document} /> : null}
       <section className="detail-section">
         <h3>Summary</h3>
         <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
@@ -3950,6 +4139,238 @@ function domainPickerItems(domains: Domain[]): ImportPickerItem[] {
   return domains
     .map((domain) => ({ id: domain.id, name: labelFor(domain), meta: `${domain.document_count} documents` }))
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function stashStatusLabel(stash: DoiStash) {
+  if (stash.status === "imported") return "Imported";
+  if (stash.status === "import_queued") return stash.import_job_status === "running" ? "Import running" : "Import queued";
+  if (stash.status === "import_failed") return "Import failed";
+  return "Stashed";
+}
+
+function stashStatusTone(stash: DoiStash): "neutral" | "good" | "warn" | "blue" {
+  if (stash.status === "imported") return "good";
+  if (stash.status === "import_queued") return "blue";
+  if (stash.status === "import_failed") return "warn";
+  return "neutral";
+}
+
+function stashSortLabel(key: StashSortKey) {
+  if (key === "created") return "Created";
+  if (key === "doi") return "DOI";
+  if (key === "title") return "Title";
+  return "Status";
+}
+
+function StashesView({ stashes }: { stashes: DoiStash[] }) {
+  const [sortKey, setSortKey] = useState<StashSortKey>("created");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [draggingStashId, setDraggingStashId] = useState<string | null>(null);
+  const [uploadingStashId, setUploadingStashId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const queryClient = useQueryClient();
+  const uploadFeedback = useAsyncActionFeedbackMap();
+  const removeFeedback = useAsyncActionFeedbackMap();
+  const sortedStashes = useMemo(() => {
+    const direction = sortDirection === "asc" ? 1 : -1;
+    return [...stashes].sort((left, right) => {
+      const leftValue =
+        sortKey === "created"
+          ? left.created_at
+          : sortKey === "doi"
+            ? left.doi
+            : sortKey === "title"
+              ? left.title || left.doi
+              : stashStatusLabel(left);
+      const rightValue =
+        sortKey === "created"
+          ? right.created_at
+          : sortKey === "doi"
+            ? right.doi
+            : sortKey === "title"
+              ? right.title || right.doi
+              : stashStatusLabel(right);
+      return String(leftValue).localeCompare(String(rightValue)) * direction;
+    });
+  }, [sortDirection, sortKey, stashes]);
+
+  const upload = useMutation({
+    mutationFn: ({ stash, file }: { stash: DoiStash; file: File }) => api.uploadDoiStashPdf(stash.id, file),
+    onMutate: ({ stash }) => {
+      setUploadingStashId(stash.id);
+      setNotice(`Uploading PDF for ${stash.doi}`);
+    },
+    onSuccess: (_updated, { stash }) => {
+      uploadFeedback.showSuccess(stash.id);
+      setNotice(`Queued PDF for ${stash.doi}`);
+      void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error, { stash }) => {
+      const message = actionFailureMessage("Could not upload PDF", error);
+      uploadFeedback.showError(stash.id, message);
+      setNotice(message);
+    },
+    onSettled: () => {
+      setUploadingStashId(null);
+      setDraggingStashId(null);
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (stash: DoiStash) => api.deleteDoiStash(stash.id),
+    onSuccess: (_result, stash) => {
+      removeFeedback.showSuccess(stash.id);
+      setNotice(`Removed ${stash.doi}`);
+      void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
+    },
+    onError: (error, stash) => {
+      const message = actionFailureMessage("Could not remove stash", error);
+      removeFeedback.showError(stash.id, message);
+      setNotice(message);
+    },
+  });
+
+  const chooseSort = (key: StashSortKey) => {
+    if (key === sortKey) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDirection(key === "created" ? "desc" : "asc");
+  };
+
+  const handleUploadFiles = (stash: DoiStash, incomingFiles: FileList | File[]) => {
+    const files = Array.from(incomingFiles);
+    const pdf = files.find((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
+    if (!pdf) {
+      const message = "Choose a PDF file.";
+      uploadFeedback.showError(stash.id, message);
+      setNotice(message);
+      return;
+    }
+    upload.mutate({ stash, file: pdf });
+  };
+
+  return (
+    <section className="workbench stashes-view">
+      <div className="stashes-head">
+        <div>
+          <h2>DOI Stashes</h2>
+          <p>{stashes.length ? `${stashes.length} saved DOI${stashes.length === 1 ? "" : "s"}` : "No stashed DOIs yet"}</p>
+        </div>
+        <div className="stash-sort-controls" aria-label="Sort stashes">
+          <ArrowUpDown size={15} />
+          {(["created", "doi", "title", "status"] as StashSortKey[]).map((key) => (
+            <button
+              key={key}
+              className={`secondary-button compact ${sortKey === key ? "active" : ""}`}
+              onClick={() => chooseSort(key)}
+              type="button"
+            >
+              {stashSortLabel(key)}
+              {sortKey === key ? (sortDirection === "asc" ? " asc" : " desc") : ""}
+            </button>
+          ))}
+        </div>
+      </div>
+      {notice ? <p className="stash-notice">{notice}</p> : null}
+      {sortedStashes.length ? (
+        <div className="stash-list">
+          {sortedStashes.map((stash) => {
+            const inputId = `stash-upload-${stash.id}`;
+            const busy = uploadingStashId === stash.id;
+            return (
+              <article key={stash.id} className="stash-row">
+                <div className="stash-main">
+                  <div className="stash-title-line">
+                    <strong>{stash.title || stash.doi}</strong>
+                    <StatusPill value={stashStatusLabel(stash)} tone={stashStatusTone(stash)} />
+                  </div>
+                  <code>{stash.doi}</code>
+                  <span>
+                    {[stash.source_provider, stash.imported_document_title, backupDateLabel(stash.created_at)].filter(Boolean).join(" / ")}
+                  </span>
+                </div>
+                <div className="stash-actions">
+                  <input
+                    id={inputId}
+                    className="hidden-file-input"
+                    accept="application/pdf,.pdf"
+                    type="file"
+                    onChange={(event) => {
+                      if (event.currentTarget.files?.length) handleUploadFiles(stash, event.currentTarget.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <AsyncActionSlot busy={busy} feedback={uploadFeedback.feedbackFor(stash.id)} label="Stash PDF upload in progress">
+                    <label
+                      aria-disabled={busy}
+                      className={`stash-upload-button ${busy ? "disabled" : ""}`}
+                      htmlFor={inputId}
+                      role="button"
+                      tabIndex={busy ? -1 : 0}
+                    >
+                      <Upload size={14} />
+                      Upload PDF
+                    </label>
+                  </AsyncActionSlot>
+                  <label
+                    aria-disabled={busy}
+                    className={`stash-upload-drop ${draggingStashId === stash.id ? "dragging" : ""} ${busy ? "disabled" : ""}`}
+                    htmlFor={inputId}
+                    onDragEnter={(event) => {
+                      event.preventDefault();
+                      setDraggingStashId(stash.id);
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "copy";
+                    }}
+                    onDragLeave={() => setDraggingStashId(null)}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      setDraggingStashId(null);
+                      handleUploadFiles(stash, event.dataTransfer.files);
+                    }}
+                    role="button"
+                    tabIndex={busy ? -1 : 0}
+                  >
+                    <UploadCloud size={14} />
+                    Drag PDF Here To Upload
+                  </label>
+                  {stash.source_url ? (
+                    <a className="secondary-button compact" href={stash.source_url} target="_blank" rel="noreferrer">
+                      <ExternalLink size={14} />
+                      Source
+                    </a>
+                  ) : null}
+                  <AsyncActionSlot feedback={removeFeedback.feedbackFor(stash.id)}>
+                    <button
+                      className={asyncFeedbackClass("secondary-button compact", removeFeedback.feedbackFor(stash.id))}
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(stash)}
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                      Remove
+                    </button>
+                  </AsyncActionSlot>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty-inline">
+          <Bookmark size={17} />
+          <span>Stashed DOI recommendations will appear here.</span>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; domains: Domain[]; tags: Tag[]; projects: Project[] }) {
@@ -4497,7 +4918,22 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
 
 function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJob[] }) {
   const queryClient = useQueryClient();
+  const [queueActionMessage, setQueueActionMessage] = useState("");
   const rescueFeedback = useAsyncActionFeedbackMap();
+  const retryFailedFeedback = useAsyncActionFeedback();
+  const clearQueueFeedback = useAsyncActionFeedback();
+  const clearFailedFeedback = useAsyncActionFeedback();
+  const refreshQueueData = () => {
+    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+  };
+  const describeQueueAction = (verb: string, result: { updated_count: number; skipped_running_count?: number; skipped_unretryable_count?: number }) => {
+    const parts = [`${verb} ${result.updated_count}`];
+    if (result.skipped_running_count) parts.push(`kept ${result.skipped_running_count} running`);
+    if (result.skipped_unretryable_count) parts.push(`skipped ${result.skipped_unretryable_count} without documents`);
+    return parts.join("; ");
+  };
   const updateCandidate = useMutation({
     mutationFn: ({ id, status, apply }: { id: string; status: string; apply?: boolean }) =>
       api.updateCitationCandidate(id, { status, apply_to_document: Boolean(apply) }),
@@ -4512,15 +4948,50 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
     mutationFn: (jobId: string) => api.rescueImportJob(jobId),
     onSuccess: (_job, jobId) => {
       rescueFeedback.showSuccess(jobId);
-      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      setQueueActionMessage("Retry requested");
+      refreshQueueData();
     },
     onError: (error, jobId) => {
       rescueFeedback.showError(jobId, actionFailureMessage("Could not requeue import job", error));
     },
   });
   const queueJobs = jobs.filter(isQueueImportJob);
+  const failedQueueJobs = queueJobs.filter((job) => job.status === "failed");
+  const clearableQueueJobs = queueJobs.filter((job) => job.status !== "running");
+  const retryFailedJobs = useMutation({
+    mutationFn: api.retryFailedImportJobs,
+    onSuccess: (result) => {
+      retryFailedFeedback.showSuccess();
+      setQueueActionMessage(describeQueueAction("Retried", result));
+      refreshQueueData();
+    },
+    onError: (error) => {
+      retryFailedFeedback.showError(actionFailureMessage("Could not retry failed imports", error));
+    },
+  });
+  const clearQueue = useMutation({
+    mutationFn: api.clearImportQueue,
+    onSuccess: (result) => {
+      clearQueueFeedback.showSuccess();
+      setQueueActionMessage(describeQueueAction("Cleared", result));
+      refreshQueueData();
+    },
+    onError: (error) => {
+      clearQueueFeedback.showError(actionFailureMessage("Could not clear import queue", error));
+    },
+  });
+  const clearFailedJobs = useMutation({
+    mutationFn: api.clearFailedImportJobs,
+    onSuccess: (result) => {
+      clearFailedFeedback.showSuccess();
+      setQueueActionMessage(describeQueueAction("Cleared failed", result));
+      refreshQueueData();
+    },
+    onError: (error) => {
+      clearFailedFeedback.showError(actionFailureMessage("Could not clear failed imports", error));
+    },
+  });
+  const bulkActionBusy = retryFailedJobs.isPending || clearQueue.isPending || clearFailedJobs.isPending || rescueJob.isPending;
 
   return (
     <section className="workbench queue-workbench">
@@ -4528,13 +4999,50 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
         <div className="panel-title-row">
           <div>
             <h2>Import Queue</h2>
-            <span>{queueJobs.length ? `${queueJobs.length} active or waiting` : "No import jobs waiting"}</span>
+            <span>{queueActionMessage || (queueJobs.length ? `${queueJobs.length} active or waiting` : "No import jobs waiting")}</span>
           </div>
-          <Inbox size={20} />
+          <div className="queue-title-actions">
+            <AsyncActionSlot busy={retryFailedJobs.isPending} feedback={retryFailedFeedback.feedback} label="Retry failed imports in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button compact", retryFailedFeedback.feedback, retryFailedJobs.isPending)}
+                disabled={!failedQueueJobs.length || bulkActionBusy}
+                onClick={() => retryFailedJobs.mutate()}
+                type="button"
+              >
+                <RefreshCw className={retryFailedJobs.isPending ? "spin" : ""} size={15} />
+                Retry Failed
+              </button>
+            </AsyncActionSlot>
+            <AsyncActionSlot busy={clearQueue.isPending} feedback={clearQueueFeedback.feedback} label="Clear import queue in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button compact", clearQueueFeedback.feedback, clearQueue.isPending)}
+                disabled={!clearableQueueJobs.length || bulkActionBusy}
+                onClick={() => clearQueue.mutate()}
+                type="button"
+              >
+                <Eraser size={15} />
+                Clear
+              </button>
+            </AsyncActionSlot>
+            <AsyncActionSlot busy={clearFailedJobs.isPending} feedback={clearFailedFeedback.feedback} label="Clear failed imports in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button compact", clearFailedFeedback.feedback, clearFailedJobs.isPending)}
+                disabled={!failedQueueJobs.length || bulkActionBusy}
+                onClick={() => clearFailedJobs.mutate()}
+                type="button"
+              >
+                <X size={15} />
+                Clear Failed
+              </button>
+            </AsyncActionSlot>
+            <Inbox size={20} />
+          </div>
         </div>
         <div className="queue-job-list">
           {queueJobs.map((job) => {
             const progress = importJobProgress(job);
+            const retryFeedback = rescueFeedback.feedbackFor(job.id);
+            const retryDisabled = !canRetryImportJob(job) || bulkActionBusy;
             return (
               <div key={job.id} className="queue-job-row">
                 <span className="job-copy">
@@ -4543,19 +5051,6 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
                 </span>
                 <span className="queue-job-status">
                   <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
-                  {canRescueImportJob(job) ? (
-                    <AsyncActionSlot feedback={rescueFeedback.feedbackFor(job.id)}>
-                      <button
-                        className={asyncFeedbackClass("icon-button compact", rescueFeedback.feedbackFor(job.id))}
-                        disabled={rescueJob.isPending}
-                        onClick={() => rescueJob.mutate(job.id)}
-                        title="Requeue this import job"
-                        type="button"
-                      >
-                        <RefreshCw size={15} />
-                      </button>
-                    </AsyncActionSlot>
-                  ) : null}
                 </span>
                 <span
                   aria-label={`${importJobStage(job)}: ${progress}%`}
@@ -4568,6 +5063,17 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
                 >
                   <span style={{ width: `${progress}%` }} />
                 </span>
+                <AsyncActionSlot feedback={retryFeedback}>
+                  <button
+                    className={asyncFeedbackClass("icon-button compact queue-job-retry", retryFeedback)}
+                    disabled={retryDisabled}
+                    onClick={() => rescueJob.mutate(job.id)}
+                    title={importJobRetryTitle(job)}
+                    type="button"
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                </AsyncActionSlot>
               </div>
             );
           })}
@@ -5231,6 +5737,7 @@ function SettingsView({
   const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
   const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1000);
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
+  const [downloadNamingTemplate, setDownloadNamingTemplate] = useState(preferences?.download_naming_template || "$title ($year)");
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
@@ -5245,11 +5752,19 @@ function SettingsView({
   const serviceAccountUploadFeedback = useAsyncActionFeedback();
   const backupFeedback = useAsyncActionFeedback();
   const restoreFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const activeBackupRun = backupRuns.find((run) => run.status === "queued" || run.status === "running");
   const gcsBackupArtifacts = useQuery({
     queryKey: ["gcs-backups"],
     queryFn: api.gcsBackups,
     enabled: Boolean(preferences?.gcs_bucket),
     refetchInterval: 15000,
+    retry: false,
+  });
+  const backupEstimate = useQuery({
+    queryKey: ["backup-estimate"],
+    queryFn: api.backupEstimate,
+    enabled: Boolean(preferences),
+    refetchInterval: activeBackupRun ? 4000 : 30000,
     retry: false,
   });
 
@@ -5260,6 +5775,7 @@ function SettingsView({
       setAccentColorNight(preferences.accent_color_night);
       setDocumentCacheSizeMb(preferences.document_cache_size_mb);
       setLibraryAlternatingRows(preferences.library_alternating_rows);
+      setDownloadNamingTemplate(preferences.download_naming_template);
       setGcsBucket(preferences.gcs_bucket);
       setAnalysisModels(preferences.analysis_models);
     }
@@ -5322,6 +5838,7 @@ function SettingsView({
         accent_color_night: accentColorNight,
         document_cache_size_mb: documentCacheSizeMb,
         library_alternating_rows: libraryAlternatingRows,
+        download_naming_template: downloadNamingTemplate,
         gcs_bucket: gcsBucket,
         analysis_models: analysisModels,
       }),
@@ -5352,6 +5869,7 @@ function SettingsView({
     onSuccess: () => {
       backupFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
       void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
     },
     onError: (error) => {
@@ -5366,6 +5884,7 @@ function SettingsView({
       setRestoreUploadFile(null);
       if (restoreUploadInputRef.current) restoreUploadInputRef.current.value = "";
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
       void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
     },
     onError: (error) => {
@@ -5387,6 +5906,7 @@ function SettingsView({
         preferences.accent_color_night !== accentColorNight ||
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
         preferences.library_alternating_rows !== libraryAlternatingRows ||
+        preferences.download_naming_template !== downloadNamingTemplate ||
         preferences.gcs_bucket !== gcsBucket ||
         (Boolean(gcsBucket.trim()) && !preferences.gcs_bucket_saved) ||
         !sameStringMap(preferences.analysis_models, analysisModels)),
@@ -5398,8 +5918,10 @@ function SettingsView({
   const serviceAccountStatus =
     preferences?.google_service_account_source === "uploaded" ? "Uploaded" : "Missing";
   const backupArtifacts = gcsBackupArtifacts.data || [];
-  const activeBackupRun = backupRuns.find((run) => run.status === "queued" || run.status === "running");
   const latestBackupRun = backupRuns[0];
+  const verifiedBackupComplete = Boolean(latestBackupRun?.gcs_uri && latestBackupRun.status === "complete");
+  const verifiedBackupFilename = verifiedBackupComplete ? latestBackupRun?.filename || "Complete" : "Waiting";
+  const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestBackupRun?.size_bytes) : "";
   const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
   const restoreDisabled =
     Boolean(activeBackupRun) || startRestore.isPending || (!restoreUploadFile && !selectedBackupUri);
@@ -5555,6 +6077,27 @@ function SettingsView({
             value={documentCacheSizeMb}
           />
           <p>Default is 1,000 MB. Uploads still write originals to configured storage before cache rules apply.</p>
+        </div>
+        <div className="preference-control">
+          <label htmlFor="download-naming-template">
+            <span>Download Naming</span>
+            <strong>{downloadNamingTemplate.trim() || "$title ($year)"}</strong>
+          </label>
+          <input
+            autoComplete="off"
+            id="download-naming-template"
+            onChange={(event) => setDownloadNamingTemplate(event.target.value)}
+            placeholder="$title ($year)"
+            type="text"
+            value={downloadNamingTemplate}
+          />
+          <div className="template-token-row" aria-label="Download naming tokens">
+            <code>$title</code>
+            <code>$year</code>
+            <code>$authors</code>
+            <code>$author</code>
+            <code>$pages</code>
+          </div>
         </div>
         <label className="checkbox-row preference-checkbox">
           <input
@@ -5860,6 +6403,7 @@ function SettingsView({
                 {startBackup.isPending ? "Starting" : "Backup Database"}
               </button>
             </AsyncActionSlot>
+            <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isFetching)}</p>
           </div>
           <div className="restore-action-block">
             <div className="restore-source-grid">
@@ -5929,7 +6473,10 @@ function SettingsView({
           </div>
           <div>
             <span>Verified backup</span>
-            <strong>{latestBackupRun?.gcs_uri && latestBackupRun.status === "complete" ? latestBackupRun.filename || "Complete" : "Waiting"}</strong>
+            <div className="verified-backup-value">
+              <strong>{verifiedBackupFilename}</strong>
+              {verifiedBackupSize ? <small>{verifiedBackupSize}</small> : null}
+            </div>
           </div>
         </div>
         {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}
@@ -6016,6 +6563,7 @@ export default function App() {
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, enabled: Boolean(me.data), refetchInterval: 10000 });
   const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data), refetchInterval: 10000 });
   const review = useQuery({ queryKey: ["review"], queryFn: api.reviewQueue, enabled: Boolean(me.data), refetchInterval: 10000 });
+  const stashes = useQuery({ queryKey: ["doi-stashes"], queryFn: api.doiStashes, enabled: Boolean(me.data), refetchInterval: 4000 });
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => queryClient.clear(),
@@ -6156,6 +6704,7 @@ export default function App() {
     queue: (jobs.data || []).filter(isQueueImportJob).length + (review.data || []).length,
     notes: notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
+    stashes: stashes.data?.length ?? 0,
   };
   const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
   const activeServerBackgroundJobs = (concordanceRuns.data || [])
@@ -6220,6 +6769,7 @@ export default function App() {
         ) : null}
         {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
         {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
+        {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
         {activeView === "notes" ? (
           <NotesView
             documents={documents.data || []}

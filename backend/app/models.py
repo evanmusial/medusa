@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote_plus
 
 from sqlalchemy import (
     Boolean,
@@ -505,7 +506,39 @@ class DocumentRecommendation(Base, TimestampMixin):
     def has_pdf(self) -> bool:
         return bool(self.pdf_url)
 
+    @property
+    def scholar_url(self) -> str:
+        query = self.doi or self.title
+        return f"https://scholar.google.com/scholar?q={quote_plus(query)}"
+
     __table_args__ = (UniqueConstraint("source_document_id", "match_key", name="uq_document_recommendation_match"),)
+
+
+class DoiStash(Base, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "doi_stashes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    doi: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
+    title: Mapped[str | None] = mapped_column(String(800))
+    source_url: Mapped[str | None] = mapped_column(Text)
+    source_provider: Mapped[str | None] = mapped_column(String(160))
+    source_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    recommendation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("document_recommendations.id", ondelete="SET NULL"),
+        index=True,
+    )
+    imported_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    import_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("import_jobs.id", ondelete="SET NULL"), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="active", nullable=False, index=True)
+    uploaded_filename: Mapped[str | None] = mapped_column(String(512))
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stash_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    source_document: Mapped[Document | None] = relationship(foreign_keys=[source_document_id])
+    recommendation: Mapped[DocumentRecommendation | None] = relationship()
+    imported_document: Mapped[Document | None] = relationship(foreign_keys=[imported_document_id])
+    import_job: Mapped["ImportJob | None"] = relationship()
 
 
 class Project(Base, TimestampMixin, SoftDeleteMixin):

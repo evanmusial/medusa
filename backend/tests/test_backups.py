@@ -61,11 +61,13 @@ def test_backup_manifest_records_non_secret_settings(monkeypatch, tmp_path):
         "gs://bucket/medusa/backups/medusa-postgres-20260619-1405-host.dump.zst",
         123,
         "a" * 64,
+        database_size_bytes=456,
     )
 
     rendered = str(manifest)
     assert manifest["compression"] == "zstd"
     assert manifest["dump_format"] == "pg_dump_custom"
+    assert manifest["database_size_bytes"] == 456
     assert manifest["database"]["username"] == "medusa"
     assert "secret-openai-key" not in rendered
     assert "secret@db" not in rendered
@@ -95,3 +97,36 @@ def test_backup_runs_block_overlapping_work(monkeypatch, tmp_path):
             assert "already running" in str(exc)
         else:
             raise AssertionError("Expected active backup to block restore.")
+
+
+def test_backup_estimate_uses_latest_completed_backup_ratio(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import BackupRun, utc_now
+    from app.services import backups
+
+    Session = make_session()
+    monkeypatch.setattr(backups, "current_database_size_bytes", lambda db: 2000)
+
+    with Session() as db:
+        db.add(
+            BackupRun(
+                kind="backup",
+                reason="manual",
+                status="complete",
+                phase="complete",
+                progress=100,
+                size_bytes=400,
+                backup_metadata={"database_size_bytes": 1000},
+                completed_at=utc_now(),
+            )
+        )
+        db.commit()
+
+        estimate = backups.estimate_backup_size(db)
+
+    assert estimate["database_size_bytes"] == 2000
+    assert estimate["estimated_size_bytes"] == 800
+    assert estimate["latest_backup_size_bytes"] == 400
+    assert estimate["basis"] == "latest_backup_ratio"

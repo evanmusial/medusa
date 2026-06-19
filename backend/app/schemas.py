@@ -301,6 +301,7 @@ class DocumentRecommendationOut(ApiModel):
     status: str
     raw_metadata: dict[str, Any]
     has_pdf: bool = False
+    scholar_url: str
     last_seen_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -329,6 +330,40 @@ class DocumentRecommendationDownloadOut(BaseModel):
     skipped_existing_count: int
     unavailable_count: int
     failed_count: int
+
+
+class DoiStashCreate(BaseModel):
+    doi: str = Field(min_length=1, max_length=256)
+    title: str | None = Field(default=None, max_length=800)
+    source_url: str | None = None
+    source_provider: str | None = Field(default=None, max_length=160)
+    source_document_id: str | None = None
+    recommendation_id: str | None = None
+
+
+class DoiStashOut(ApiModel):
+    id: str
+    doi: str
+    title: str | None = None
+    source_url: str | None = None
+    source_provider: str | None = None
+    source_document_id: str | None = None
+    recommendation_id: str | None = None
+    imported_document_id: str | None = None
+    imported_document_title: str | None = None
+    import_job_id: str | None = None
+    import_job_status: str | None = None
+    status: str
+    uploaded_filename: str | None = None
+    imported_at: datetime | None = None
+    stash_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("doi", "title", "source_url", "source_provider", "uploaded_filename", mode="before")
+    @classmethod
+    def decode_stash_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
 
 
 class ImportDuplicateDocumentOut(BaseModel):
@@ -428,6 +463,13 @@ class ImportJobOut(ApiModel):
     locked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ImportQueueActionOut(ApiModel):
+    matched_count: int
+    updated_count: int
+    skipped_running_count: int = 0
+    skipped_unretryable_count: int = 0
 
 
 class ProcessingEventOut(ApiModel):
@@ -577,6 +619,14 @@ class BackupRunOut(ApiModel):
     updated_at: datetime
 
 
+class BackupEstimateOut(BaseModel):
+    database_size_bytes: int | None = None
+    estimated_size_bytes: int | None = None
+    latest_backup_size_bytes: int | None = None
+    latest_backup_completed_at: str | None = None
+    basis: str
+
+
 class BackupArtifactOut(BaseModel):
     id: str
     filename: str
@@ -618,6 +668,7 @@ class AppPreferencesOut(BaseModel):
     accent_color_night: str
     document_cache_size_mb: int
     library_alternating_rows: bool
+    download_naming_template: str
     gcs_bucket: str
     gcs_bucket_saved: bool
     google_service_account_name: str
@@ -636,6 +687,7 @@ class AppPreferencesPatch(BaseModel):
     accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     document_cache_size_mb: int | None = Field(default=None, ge=0)
     library_alternating_rows: bool | None = None
+    download_naming_template: str | None = Field(default=None, max_length=240)
     gcs_bucket: str | None = None
     analysis_models: dict[str, str] | None = None
 

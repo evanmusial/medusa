@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -153,6 +154,52 @@ def list_backup_runs(db: Session, limit: int = 50) -> list[BackupRun]:
     return db.query(BackupRun).order_by(BackupRun.created_at.desc()).limit(limit).all()
 
 
+def estimate_backup_size(db: Session) -> dict[str, Any]:
+    database_size_bytes = current_database_size_bytes(db)
+    latest_backup = (
+        db.query(BackupRun)
+        .filter(BackupRun.kind == "backup", BackupRun.status == "complete", BackupRun.size_bytes.is_not(None))
+        .order_by(BackupRun.completed_at.desc(), BackupRun.created_at.desc())
+        .first()
+    )
+    latest_backup_size = latest_backup.size_bytes if latest_backup else None
+    latest_backup_database_size = None
+    if latest_backup and isinstance(latest_backup.backup_metadata, dict):
+        metadata_database_size = latest_backup.backup_metadata.get("database_size_bytes")
+        latest_backup_database_size = metadata_database_size if isinstance(metadata_database_size, int) else None
+
+    basis = "unavailable"
+    estimated_size_bytes = None
+    if database_size_bytes and latest_backup_size and latest_backup_database_size:
+        ratio = latest_backup_size / max(1, latest_backup_database_size)
+        estimated_size_bytes = max(1, round(database_size_bytes * ratio))
+        basis = "latest_backup_ratio"
+    elif latest_backup_size:
+        estimated_size_bytes = latest_backup_size
+        basis = "latest_backup"
+    elif database_size_bytes:
+        estimated_size_bytes = database_size_bytes
+        basis = "database_size_upper_bound"
+
+    return {
+        "database_size_bytes": database_size_bytes,
+        "estimated_size_bytes": estimated_size_bytes,
+        "latest_backup_size_bytes": latest_backup_size,
+        "latest_backup_completed_at": latest_backup.completed_at.isoformat() if latest_backup and latest_backup.completed_at else None,
+        "basis": basis,
+    }
+
+
+def current_database_size_bytes(db: Session) -> int | None:
+    if not is_postgres():
+        return None
+    try:
+        value = db.execute(text("SELECT pg_database_size(current_database())")).scalar_one_or_none()
+    except Exception:
+        return None
+    return int(value) if isinstance(value, int) and value > 0 else None
+
+
 def list_gcs_backup_artifacts(db: Session, limit: int = 100) -> list[dict[str, Any]]:
     bucket, bucket_name, prefix = _gcs_bucket_from_db(db)
     artifacts: list[dict[str, Any]] = []
@@ -212,7 +259,11 @@ def _execute_backup_run(run_id: str) -> None:
             run.status_detail = "Initializing database backup."
             run.object_key = object_key
             run.gcs_uri = backup_storage_uri(bucket_name, object_key)
-            run.backup_metadata = {"manifest_key": manifest_key, "bucket": bucket_name}
+            run.backup_metadata = {
+                "manifest_key": manifest_key,
+                "bucket": bucket_name,
+                "database_size_bytes": current_database_size_bytes(db),
+            }
 
         work_dir.mkdir(parents=True, exist_ok=True)
         raw_path = work_dir / f"{basename}.dump"
@@ -253,7 +304,17 @@ def _execute_backup_run(run_id: str) -> None:
         if verified_sha256 != sha256:
             raise RuntimeError("Uploaded GCS object checksum did not match the local backup checksum.")
 
-        manifest = _backup_manifest(run_id, object_key, backup_storage_uri(bucket_name, object_key), size_bytes, sha256)
+        database_size_bytes = None
+        with session_scope() as db:
+            database_size_bytes = current_database_size_bytes(db)
+        manifest = _backup_manifest(
+            run_id,
+            object_key,
+            backup_storage_uri(bucket_name, object_key),
+            size_bytes,
+            sha256,
+            database_size_bytes=database_size_bytes,
+        )
         manifest["verified_at"] = datetime.now(timezone.utc).isoformat()
         manifest["verification_sha256"] = verified_sha256
         manifest_blob = bucket.blob(manifest_key)
@@ -399,7 +460,15 @@ def _ensure_no_active_backup_or_restore(db: Session) -> None:
         raise ValueError("A backup or restore is already running.")
 
 
-def _backup_manifest(run_id: str, object_key: str, gcs_uri: str, size_bytes: int, sha256: str) -> dict[str, Any]:
+def _backup_manifest(
+    run_id: str,
+    object_key: str,
+    gcs_uri: str,
+    size_bytes: int,
+    sha256: str,
+    *,
+    database_size_bytes: int | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
     database = _database_identity()
     return {
@@ -413,6 +482,7 @@ def _backup_manifest(run_id: str, object_key: str, gcs_uri: str, size_bytes: int
         "gcs_uri": gcs_uri,
         "size_bytes": size_bytes,
         "sha256": sha256,
+        "database_size_bytes": database_size_bytes,
         "compression": "zstd",
         "dump_format": "pg_dump_custom",
         "database": database,

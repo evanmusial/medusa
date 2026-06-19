@@ -29,6 +29,7 @@ ACCENT_COLOR_DAY_KEY = "accent_color_day"
 ACCENT_COLOR_NIGHT_KEY = "accent_color_night"
 DOCUMENT_CACHE_SIZE_MB_KEY = "document_cache_size_mb"
 LIBRARY_ALTERNATING_ROWS_KEY = "library_alternating_rows"
+DOWNLOAD_NAMING_TEMPLATE_KEY = "download_naming_template"
 ANALYSIS_MODEL_KEY_PREFIX = "analysis_model_"
 GCS_BUCKET_KEY = "gcs_bucket"
 GOOGLE_SERVICE_ACCOUNT_KEY = "google_service_account"
@@ -39,6 +40,8 @@ IMPORT_WORKER_COST_WARNING_THRESHOLD = 4
 DEFAULT_DOCUMENT_CACHE_SIZE_MB = 1000
 DEFAULT_DAY_ACCENT = "#2563eb"
 DEFAULT_NIGHT_ACCENT = "#6ea8ff"
+DEFAULT_DOWNLOAD_NAMING_TEMPLATE = "$title ($year)"
+DOWNLOAD_TEMPLATE_TOKENS = {"title", "year", "authors", "author", "pages"}
 
 SAFE_PREFERENCE_KEYS = {
     IMPORT_WORKER_CONCURRENCY_KEY,
@@ -46,11 +49,22 @@ SAFE_PREFERENCE_KEYS = {
     ACCENT_COLOR_NIGHT_KEY,
     DOCUMENT_CACHE_SIZE_MB_KEY,
     LIBRARY_ALTERNATING_ROWS_KEY,
+    DOWNLOAD_NAMING_TEMPLATE_KEY,
     GCS_BUCKET_KEY,
     *(f"{ANALYSIS_MODEL_KEY_PREFIX}{task.key}" for task in ANALYSIS_MODEL_TASKS),
 }
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+DOWNLOAD_TEMPLATE_TOKEN_RE = re.compile(r"\$(title|year|authors|author|pages)\b")
+INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+RESERVED_WINDOWS_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 def clamp_import_worker_concurrency(value: Any, default: int = MIN_IMPORT_WORKER_CONCURRENCY) -> int:
@@ -89,6 +103,13 @@ def normalize_bool(value: Any, default: bool) -> bool:
     if isinstance(value, int):
         return bool(value)
     return default
+
+
+def normalize_download_naming_template(value: Any) -> str:
+    if not isinstance(value, str):
+        return DEFAULT_DOWNLOAD_NAMING_TEMPLATE
+    candidate = " ".join(value.replace("\x00", "").split()).strip()
+    return candidate[:240] or DEFAULT_DOWNLOAD_NAMING_TEMPLATE
 
 
 def normalize_gcs_bucket(value: Any) -> str:
@@ -166,6 +187,63 @@ def get_analysis_model(db: Session, task_key: str) -> str:
 
 def get_document_cache_size_mb(db: Session) -> int:
     return clamp_document_cache_size_mb(_get_preference_value(db, DOCUMENT_CACHE_SIZE_MB_KEY), default_document_cache_size_mb())
+
+
+def get_download_naming_template(db: Session) -> str:
+    return normalize_download_naming_template(_get_preference_value(db, DOWNLOAD_NAMING_TEMPLATE_KEY))
+
+
+def author_display_name(author: Any) -> str:
+    if isinstance(author, str):
+        return " ".join(author.split())
+    if not isinstance(author, dict):
+        return ""
+    explicit_name = author.get("name")
+    if isinstance(explicit_name, str) and explicit_name.strip():
+        return " ".join(explicit_name.split())
+    parts = [author.get("given"), author.get("family")]
+    return " ".join(str(part).strip() for part in parts if isinstance(part, str) and part.strip())
+
+
+def sanitize_download_filename_stem(value: str) -> str:
+    candidate = INVALID_FILENAME_CHARS_RE.sub("_", value)
+    candidate = re.sub(r"\s+", " ", candidate).strip(" .")
+    candidate = re.sub(r"_+", "_", candidate).strip("_ ")
+    if candidate.lower().endswith(".pdf"):
+        candidate = candidate[:-4].rstrip(" ._")
+    if not candidate:
+        candidate = "document"
+    if candidate.upper() in RESERVED_WINDOWS_FILENAMES:
+        candidate = f"{candidate}_"
+    candidate = candidate[:180].rstrip(" .") or "document"
+    if candidate.upper() in RESERVED_WINDOWS_FILENAMES:
+        candidate = f"{candidate}_"
+    return candidate
+
+
+def render_download_filename(document: Any, template: str | None = None) -> str:
+    template = normalize_download_naming_template(template or DEFAULT_DOWNLOAD_NAMING_TEMPLATE)
+    authors = [author_display_name(author) for author in (getattr(document, "authors", None) or [])]
+    authors = [author for author in authors if author]
+    replacements = {
+        "title": getattr(document, "title", None) or original_filename_stem(getattr(document, "original_filename", None)) or "Untitled document",
+        "year": str(getattr(document, "publication_year", None) or "n.d."),
+        "authors": ", ".join(authors) or "Unknown author",
+        "author": authors[0] if authors else "Unknown author",
+        "pages": str(getattr(document, "page_count", None) or ""),
+    }
+
+    def replace_token(match: re.Match[str]) -> str:
+        return replacements.get(match.group(1), "")
+
+    stem = sanitize_download_filename_stem(DOWNLOAD_TEMPLATE_TOKEN_RE.sub(replace_token, template))
+    return f"{stem}.pdf"
+
+
+def original_filename_stem(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].removesuffix(".pdf").strip()
 
 
 def default_gcs_bucket() -> str:
@@ -296,6 +374,7 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "accent_color_night": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_NIGHT_KEY), DEFAULT_NIGHT_ACCENT),
         "document_cache_size_mb": get_document_cache_size_mb(db),
         "library_alternating_rows": normalize_bool(_get_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY), True),
+        "download_naming_template": get_download_naming_template(db),
         "gcs_bucket": gcs_bucket,
         "gcs_bucket_saved": _has_preference(db, GCS_BUCKET_KEY),
         "analysis_models": analysis_models,
@@ -313,6 +392,7 @@ def update_app_preferences(
     accent_color_night: str | None = None,
     document_cache_size_mb: int | None = None,
     library_alternating_rows: bool | None = None,
+    download_naming_template: str | None = None,
     gcs_bucket: str | None = None,
     analysis_models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -330,6 +410,8 @@ def update_app_preferences(
         _set_preference_value(db, DOCUMENT_CACHE_SIZE_MB_KEY, clamp_document_cache_size_mb(document_cache_size_mb))
     if library_alternating_rows is not None:
         _set_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY, bool(library_alternating_rows))
+    if download_naming_template is not None:
+        _set_preference_value(db, DOWNLOAD_NAMING_TEMPLATE_KEY, normalize_download_naming_template(download_naming_template))
     if gcs_bucket is not None:
         _set_preference_value(db, GCS_BUCKET_KEY, normalize_gcs_bucket(gcs_bucket))
     if analysis_models is not None:

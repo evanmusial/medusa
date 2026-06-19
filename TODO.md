@@ -83,6 +83,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add richer recommendation source/import management.
   - Acceptance: related-paper recommendations can be refreshed on a schedule or Concordance scope, source/provider failures are visible in Settings, downloads run as durable background fetch jobs instead of request-time fetches, and non-open recommendations can be triaged into a wishlist without pretending a PDF is available.
+  - Partial: recommendation refresh now enriches OpenAlex/Semantic Scholar/Crossref candidates with Unpaywall and arXiv open-PDF availability, resets previously failed candidates when a refreshed match is seen, and exposes manual Google Scholar search links. Remaining work is scheduled/Concordance refreshes, Settings-visible provider failures, durable background download jobs, and fuller wishlist triage.
 
 - [ ] Add arbitrary-filter Concordance scopes.
   - Acceptance: Concordance can run against the current filtered result set, not only whole library, document, domain, project, search text, or saved search.

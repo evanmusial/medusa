@@ -24,6 +24,7 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     from app.models import AppPreference
     from app.services.preferences import (
         ACCENT_COLOR_DAY_KEY,
+        DOWNLOAD_NAMING_TEMPLATE_KEY,
         IMPORT_WORKER_CONCURRENCY_KEY,
         LIBRARY_ALTERNATING_ROWS_KEY,
         clamp_import_worker_concurrency,
@@ -43,30 +44,57 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     Session = make_session()
     with Session() as db:
         assert get_app_preferences(db)["library_alternating_rows"] is True
+        assert get_app_preferences(db)["download_naming_template"] == "$title ($year)"
 
         preferences = update_app_preferences(
             db,
             import_worker_concurrency=3,
             accent_color_day="#14b8a6",
             library_alternating_rows=False,
+            download_naming_template="$author - $title [$pages]",
         )
 
         stored = db.get(AppPreference, IMPORT_WORKER_CONCURRENCY_KEY)
         accent = db.get(AppPreference, ACCENT_COLOR_DAY_KEY)
         alternating_rows = db.get(AppPreference, LIBRARY_ALTERNATING_ROWS_KEY)
+        download_naming = db.get(AppPreference, DOWNLOAD_NAMING_TEMPLATE_KEY)
         assert stored is not None
         assert accent is not None
         assert alternating_rows is not None
+        assert download_naming is not None
         assert stored.value == {"value": 3}
         assert accent.value == {"value": "#14b8a6"}
         assert alternating_rows.value == {"value": False}
+        assert download_naming.value == {"value": "$author - $title [$pages]"}
         assert preferences["import_worker_concurrency"] == 3
         assert preferences["accent_color_day"] == "#14b8a6"
         assert preferences["library_alternating_rows"] is False
+        assert preferences["download_naming_template"] == "$author - $title [$pages]"
         assert get_import_worker_concurrency(db) == 3
 
         update_app_preferences(db, import_worker_concurrency=99)
         assert get_app_preferences(db)["import_worker_concurrency"] == 99
+
+
+def test_download_filename_template_sanitizes_document_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document
+    from app.services.preferences import render_download_filename
+
+    document = Document(
+        title='An <Invalid>/Paper: "Study"?',
+        authors=[{"given": "Ada", "family": "Lovelace"}, {"given": "Grace", "family": "Hopper"}],
+        publication_year=1843,
+        original_filename="fallback.pdf",
+        checksum_sha256="a" * 64,
+        page_count=12,
+    )
+
+    assert render_download_filename(document, "$title ($year)") == "An _Invalid_Paper_ _Study_ (1843).pdf"
+    assert render_download_filename(document, "$author - $authors - $pages") == "Ada Lovelace - Ada Lovelace, Grace Hopper - 12.pdf"
+    assert render_download_filename(document, "CON") == "CON_.pdf"
 
 
 def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_path):

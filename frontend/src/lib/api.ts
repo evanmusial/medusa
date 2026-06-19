@@ -5,6 +5,7 @@ import type {
   AnnotationPayload,
   AppPreferences,
   BackupArtifact,
+  BackupEstimate,
   BackupRun,
   Bibliography,
   CitationCandidate,
@@ -22,10 +23,13 @@ import type {
   DocumentSummary,
   DocumentTextScrubPayload,
   DocumentUpdatePayload,
+  DoiStash,
+  DoiStashPayload,
   Domain,
   DuplicateImportStrategy,
   ImportDuplicateCheck,
   ImportJob,
+  ImportQueueActionResult,
   Note,
   NotePayload,
   OpenAIUsage,
@@ -62,6 +66,7 @@ export const api = {
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
   backupRuns: () => request<BackupRun[]>("/api/backups/runs"),
+  backupEstimate: () => request<BackupEstimate>("/api/backups/estimate"),
   gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
   startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),
   startDatabaseRestore: (gcsUri: string) =>
@@ -81,6 +86,7 @@ export const api = {
         | "accent_color_night"
         | "document_cache_size_mb"
         | "library_alternating_rows"
+        | "download_naming_template"
         | "gcs_bucket"
         | "analysis_models"
       >
@@ -154,6 +160,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  doiStashes: () => request<DoiStash[]>("/api/doi-stashes"),
+  createDoiStash: (body: DoiStashPayload) =>
+    request<DoiStash>("/api/doi-stashes", { method: "POST", body: JSON.stringify(body) }),
+  deleteDoiStash: (id: string) => request<{ status: string }>(`/api/doi-stashes/${id}`, { method: "DELETE" }),
+  uploadDoiStashPdf: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<DoiStash>(`/api/doi-stashes/${id}/upload`, { method: "POST", body: form });
+  },
   annotations: (documentId: string) => request<Annotation[]>(`/api/documents/${documentId}/annotations`),
   createAnnotation: (documentId: string, body: AnnotationPayload) =>
     request<Annotation>(`/api/documents/${documentId}/annotations`, { method: "POST", body: JSON.stringify(body) }),
@@ -179,6 +194,9 @@ export const api = {
   deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
   rescueImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/rescue`, { method: "POST" }),
+  retryFailedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/retry-failed", { method: "POST" }),
+  clearImportQueue: () => request<ImportQueueActionResult>("/api/imports/jobs/clear", { method: "POST" }),
+  clearFailedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/clear-failed", { method: "POST" }),
   checkImportDuplicates: (files: File[]) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));

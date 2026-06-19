@@ -12,7 +12,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Batch PDF upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, checksum duplicate detection, explicit skip/overwrite/import-anyway choices, and progress-shaded import processing rows with model/cost detail
 - GCS storage adapter with local fallback when credentials are not configured
 - Raw text extraction preference with Local choices for Docling, Marker, and PyMuPDF; Marker is the default preference and PyMuPDF remains the bundled local fallback
-- Authenticated original PDF preview/open route in the document detail pane and expanded Reader mode
+- Authenticated original PDF preview/open/download route in the document detail pane and expanded Reader mode
 - Parsed full-text reader with normalized one-page navigation, PDF/Text switching, side-by-side compare mode for editing extracted text beside the original PDF, and Scrub cleanup for repeated selected text
 - Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, and page geometry
 - OpenAI adapter for structured metadata, visible author contact emails, summaries, topics, keywords, page text normalization, and embeddings
@@ -20,9 +20,10 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Per-document Cost Composition tracking for imports, including stage timings, provider/model spend, local processing duration, processing issues, and the exact pipeline/method/model path used to generate the document
 - Citation generation in Markdown APA 7 reference-list and in-text forms, with model/provenance tracking, plus BibTeX, RIS, and CSL JSON
 - Live document-level citation check/refresh controls backed by durable Concordance jobs
+- Related-paper recommendations with default hidden-existing filtering, Unpaywall/arXiv PDF availability enrichment, Google Scholar search links, DOI/title copy actions, DOI stashing, a sortable Stashes view, and stash PDF uploads that enter the normal import queue
 - Reserved header progress control for imports, Concordance, and citation-check work, so job feedback continues after navigating away from the page that started the work without shifting the header actions
 - Async action feedback: job-starting buttons turn soft blue with the button icon spinning and a slim progress bar while work is in flight, blend through green on success, flash red on failure, and show a concise error popover when startup or completion fails
-- Queue view for compact import-work status and bounded citation-review cards, with accept/reject actions and correction history
+- Queue view for compact import-work status with row retry, Retry Failed, Clear, and Clear Failed controls, plus bounded citation-review cards with accept/reject actions and correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
@@ -30,7 +31,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
 - Stored document annotations/highlights with page, color, note body, soft delete, and search indexing; Library creation controls are deferred for a quieter redesign
 - Notes and reminders attached to documents, domains, projects, or the general library
-- Full PostgreSQL database backup/restore from Settings, using GCS, zstd compression, SHA-256 upload verification, header progress, and mandatory pre-restore safety backups
+- Full PostgreSQL database backup/restore from Settings, using GCS, zstd compression, likely backup-size estimates, SHA-256 upload verification, header progress, and mandatory pre-restore safety backups
 - Authenticated JSON backup exports for metadata and storage manifests, excluding secrets and session tokens
 - CLI restore tooling for metadata exports, with dry-run validation by default and parked restored job queues
 
@@ -100,6 +101,26 @@ MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS=90
 MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS=60
 ```
 
+Recommendations:
+
+```bash
+MEDUSA_RECOMMENDATIONS_ENABLE_OPENALEX=true
+MEDUSA_RECOMMENDATIONS_ENABLE_SEMANTIC_SCHOLAR=true
+MEDUSA_RECOMMENDATIONS_ENABLE_CROSSREF=true
+MEDUSA_RECOMMENDATIONS_ENABLE_UNPAYWALL=true
+MEDUSA_RECOMMENDATIONS_ENABLE_ARXIV=true
+MEDUSA_RECOMMENDATIONS_MAX_PER_SOURCE=40
+MEDUSA_RECOMMENDATIONS_REQUEST_TIMEOUT_SECONDS=16
+MEDUSA_RECOMMENDATIONS_ARXIV_TITLE_LOOKUPS=8
+MEDUSA_RECOMMENDATION_DOWNLOAD_TIMEOUT_SECONDS=60
+MEDUSA_RECOMMENDATION_DOWNLOAD_MAX_MB=80
+MEDUSA_OPENALEX_MAILTO=
+MEDUSA_UNPAYWALL_EMAIL=
+SEMANTIC_SCHOLAR_API_KEY=
+```
+
+Related-paper discovery uses OpenAlex, Semantic Scholar, and Crossref to find candidates. Unpaywall and arXiv enrich those candidates with open PDF links before they are queued for import; set `MEDUSA_UNPAYWALL_EMAIL` to a real contact email to enable Unpaywall lookups. Google Scholar is available as a manual per-item search link rather than an automated scraper.
+
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
 Gemini Developer API keys can be stored outside tracked files at `data/secrets/gemini.env`:
@@ -115,7 +136,7 @@ OpenAI enrichment runs asynchronously during imports and Concordance Runs. By de
 
 Page text normalization is local-first: `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=auto` locally cleans normal pages and escalates only low-text or artifact-heavy pages, capped by `MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES`. Auto mode sends page text only, not the full PDF per page. Set the mode to `always` only when you intentionally want the older all-pages OpenAI normalization behavior. Graphics are stored as cropped assets with labels/captions rather than converted into Markdown. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
 
-Reader compare mode shows the authenticated original PDF and the current parsed page side by side. The parsed page can be edited in place, saves as manual normalized text, rebuilds document search, and writes a `DocumentVersion` row with page-level before/after snapshots. The editor tool strip includes Scrub, which removes the selected exact text from all parsed page text and shows the document-wide match count while text is highlighted. Compare mode keeps the panes vertically synchronized by scroll ratio when the browser exposes the PDF iframe scroll surface. History entries can be stepped through and restored with Restore as Current, which applies the chosen snapshot to the live searchable document while appending a new history row.
+Reader compare mode shows the authenticated original PDF and the current parsed page side by side. The parsed page can be edited in place, saves as manual normalized text, rebuilds document search, and writes a `DocumentVersion` row with page-level before/after snapshots. The editor tool strip includes Scrub, which removes the selected exact text from all parsed page text and shows the document-wide match count while text is highlighted. Compare mode keeps the panes vertically synchronized by scroll ratio when the browser exposes the PDF iframe scroll surface. History entries can be stepped through and restored with Restore as Current, which applies the chosen snapshot to the live searchable document while appending a new history row. Escape closes expanded Reader mode, and Download Original uses Settings > Download Naming to render attachment filenames; the default template is `$title ($year)` and `.pdf` is implicit.
 
 Raw text extraction is controlled separately in Settings. The Raw Text Extraction selector is grouped into Local options (Docling, Marker, PyMuPDF) and OpenAI model fallbacks. Settings has Save All controls at the top and bottom of the view so display, cache, runtime, accent, and model preferences are saved together. Marker is the default preference and is installed in the backend/worker image; its model cache lives under `data/model-cache` through the Compose volume, so a first use may download local weights but later imports reuse them. PyMuPDF remains the built-in no-credential fallback when Marker is unavailable or times out.
 
@@ -137,7 +158,7 @@ Medusa defaults to four concurrent import jobs. The env var sets the startup def
 
 Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
 
-The document cache size defaults to 1,000 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time.
+The document cache size defaults to 1,000 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time. Settings > Download Naming controls suggested original-PDF download names with `$title`, `$year`, `$authors`, `$author`, and `$pages` tokens.
 
 ## Development
 
@@ -183,7 +204,7 @@ pytest
 
 Full database backup and restore:
 
-Use Settings at the bottom of the app for the normal backup workflow. Backup Database creates a `pg_dump` custom-format snapshot, compresses it with zstd, uploads it to the active GCS bucket under `GCS_PREFIX/backups`, and verifies the uploaded checksum. Restore Database can use a listed GCS backup or an uploaded dump file; it always completes and verifies a fresh safety backup before applying the restore.
+Use Settings at the bottom of the app for the normal backup workflow. Backup Database shows a likely compressed size, then creates a `pg_dump` custom-format snapshot, compresses it with zstd, uploads it to the active GCS bucket under `GCS_PREFIX/backups`, and verifies the uploaded checksum. Restore Database can use a listed GCS backup or an uploaded dump file; it always completes and verifies a fresh safety backup before applying the restore.
 
 Legacy metadata JSON restore drill:
 
@@ -203,11 +224,11 @@ Duplicate uploads are checked before queueing. When an exact checksum match is f
 
 If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint. In-flight documents may repeat the current step, and page normalization resumes from persisted page checkpoints when possible.
 
-The Import screen can also rescue failed imports or stale locked imports by requeueing the job. Fresh running jobs are protected from manual requeue to avoid racing an active worker.
+The Import Queue can retry failed imports in bulk, retry individual queued/failed/restored jobs, and clear queued/failed/restored rows into a terminal `cleared` state. Fresh running jobs are protected from manual requeue or clear to avoid racing an active worker.
 
 Concordance Runs and citation checks are also safe to leave in progress from the UI. Once the backend accepts the request, the durable database run continues through the worker queue independently of the currently open page, and the shell-level progress shelf reconciles with refreshed run/job state.
 
-Settings includes full database backup and restore controls. Backups are named with `YYYYMMDD-HHMM` plus the short hostname, compressed with zstd, uploaded to GCS, and checksum-verified after upload. Restore from GCS or an uploaded dump is gated by a fresh verified safety backup, then applies with `pg_restore` and runs migrations. A full database restore may replace session rows, so the browser may need to sign in again afterward.
+Settings includes full database backup and restore controls. Backups are named with `YYYYMMDD-HHMM` plus the short hostname, compressed with zstd, uploaded to GCS, and checksum-verified after upload. The Backup Database control shows a likely backup size based on current PostgreSQL database size and the latest completed backup when available. Restore from GCS or an uploaded dump is gated by a fresh verified safety backup, then applies with `pg_restore` and runs migrations. A full database restore may replace session rows, so the browser may need to sign in again afterward.
 
 Settings also keeps legacy metadata export links. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. These JSON exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 

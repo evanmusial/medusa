@@ -37,6 +37,111 @@ def test_refresh_import_batch_progress_flushes_pending_job_status(monkeypatch, t
         assert batch.status == "complete"
 
 
+def test_refresh_import_batch_progress_treats_cleared_jobs_as_terminal(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.database import Base
+    from app.models import ImportBatch, ImportJob
+    from app.services.processing import refresh_import_batch_progress
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine, tables=[ImportBatch.__table__, ImportJob.__table__])
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    with Session() as db:
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        job = ImportJob(batch=batch, status="cleared", current_step="cleared")
+        db.add_all([batch, job])
+        db.commit()
+
+        refresh_import_batch_progress(db, batch)
+
+        assert batch.completed_files == 0
+        assert batch.failed_files == 0
+        assert batch.status == "cleared"
+
+
+def test_clear_import_queue_parks_non_running_jobs(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.database import Base
+    from app.models import Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    with Session() as db:
+        batch = ImportBatch(total_files=4, shared_defaults={})
+        queued_document = Document(title="Queued", original_filename="queued.pdf", checksum_sha256="a" * 64, processing_status="queued")
+        failed_document = Document(title="Failed", original_filename="failed.pdf", checksum_sha256="b" * 64, processing_status="failed")
+        running_document = Document(title="Running", original_filename="running.pdf", checksum_sha256="c" * 64, processing_status="running")
+        restored_document = Document(
+            title="Restored",
+            original_filename="restored.pdf",
+            checksum_sha256="d" * 64,
+            processing_status="restored_paused",
+        )
+        queued_job = ImportJob(batch=batch, document=queued_document, status="queued", current_step="stored")
+        failed_job = ImportJob(batch=batch, document=failed_document, status="failed", current_step="enriching", last_error="boom")
+        running_job = ImportJob(batch=batch, document=running_document, status="running", current_step="extracting", locked_at=utc_now())
+        restored_job = ImportJob(batch=batch, document=restored_document, status="restored_paused", current_step="stored")
+        db.add_all([batch, queued_job, failed_job, running_job, restored_job])
+        db.commit()
+
+        result = main.clear_import_queue(object(), db)
+
+        assert result.matched_count == 4
+        assert result.updated_count == 3
+        assert result.skipped_running_count == 1
+        assert queued_job.status == "cleared"
+        assert failed_job.status == "cleared"
+        assert restored_job.status == "cleared"
+        assert running_job.status == "running"
+        assert queued_document.processing_status == "cleared"
+        assert failed_document.processing_status == "cleared"
+        assert restored_document.processing_status == "cleared"
+        assert running_document.processing_status == "running"
+        assert batch.status == "running"
+        assert db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "manual_import_clear").count() == 3
+
+
+def test_retry_failed_import_jobs_requeues_document_jobs_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.database import Base
+    from app.models import Document, ImportBatch, ImportJob, ProcessingEvent
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    with Session() as db:
+        batch = ImportBatch(total_files=2, shared_defaults={})
+        document = Document(title="Failed", original_filename="failed.pdf", checksum_sha256="e" * 64, processing_status="failed")
+        retryable = ImportJob(batch=batch, document=document, status="failed", current_step="enriching", last_error="boom")
+        unretryable = ImportJob(batch=batch, document_id=None, status="failed", current_step="download_failed", last_error="no pdf")
+        db.add_all([batch, retryable, unretryable])
+        db.commit()
+
+        result = main.retry_failed_import_jobs(object(), db)
+
+        assert result.matched_count == 2
+        assert result.updated_count == 1
+        assert result.skipped_unretryable_count == 1
+        assert retryable.status == "queued"
+        assert retryable.last_error is None
+        assert document.processing_status == "queued"
+        assert unretryable.status == "failed"
+        event = db.query(ProcessingEvent).filter(ProcessingEvent.import_job_id == retryable.id).one()
+        assert event.event_type == "manual_import_retry_failed"
+
+
 def test_claim_import_job_recovers_stale_running_job(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

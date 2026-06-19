@@ -213,7 +213,9 @@ def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
     Session = make_session()
     with Session() as db:
         document = Document(
-            title="Stored Paper",
+            title='Stored/Paper: Study?',
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            publication_year=1843,
             original_filename="paper.pdf",
             checksum_sha256="a" * 64,
             gcs_uri="gs://bucket/documents/paper.pdf",
@@ -227,6 +229,12 @@ def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
         assert response.body == b"%PDF-1.4 fake"
         assert response.media_type == "application/pdf"
         assert 'filename="paper.pdf"' in response.headers["content-disposition"]
+
+        download_response = document_original(document.id, object(), db, download=True)
+
+        assert download_response.body == b"%PDF-1.4 fake"
+        assert "attachment" in download_response.headers["content-disposition"]
+        assert 'filename="Stored_Paper_ Study_ (1843).pdf"' in download_response.headers["content-disposition"]
 
 
 def test_document_detail_schema_includes_parsed_pages(monkeypatch, tmp_path):

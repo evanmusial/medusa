@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -72,6 +75,161 @@ def test_refresh_recommendations_caches_and_marks_existing_match(monkeypatch, tm
         assert rows[0].has_pdf is True
 
 
+def test_refresh_recommendations_enriches_pdf_availability_and_resets_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.models import Document, DocumentRecommendation
+    from app.services import recommendations as service
+    from app.services.recommendations import RecommendationCandidate, refresh_document_recommendations
+
+    get_settings.cache_clear()
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+        )
+        db.add(source)
+        db.flush()
+        stale_failure = DocumentRecommendation(
+            source_document_id=source.id,
+            match_key="doi:10.1000/related",
+            title="Related Paper",
+            doi="10.1000/related",
+            source_provider="crossref",
+            pdf_url="https://publisher.test/blocked.pdf",
+            status="download_failed",
+            raw_metadata={},
+        )
+        db.add(stale_failure)
+        db.commit()
+
+        def fake_fetcher(_document, _limit):
+            return [
+                RecommendationCandidate(
+                    title="Related Paper",
+                    doi="10.1000/related",
+                    provider="crossref",
+                    relation="reference",
+                    pdf_url="https://publisher.test/blocked.pdf",
+                    raw_metadata={"provider": "crossref"},
+                )
+            ]
+
+        def fake_enricher(_candidates, _limit):
+            return [
+                RecommendationCandidate(
+                    title="Related Paper",
+                    doi="10.1000/related",
+                    provider="unpaywall",
+                    relation="open_access",
+                    pdf_url="https://repository.test/related.pdf",
+                    raw_metadata={"provider": "unpaywall"},
+                )
+            ]
+
+        monkeypatch.setattr(service, "_enabled_fetchers", lambda: [("crossref", fake_fetcher)])
+        monkeypatch.setattr(service, "_enabled_enrichers", lambda: [("unpaywall", fake_enricher)])
+
+        rows = refresh_document_recommendations(db, source)
+        db.commit()
+
+        assert len(rows) == 1
+        assert rows[0].source_provider == "crossref, unpaywall"
+        assert rows[0].source_relation == "reference, open_access"
+        assert rows[0].pdf_url == "https://repository.test/related.pdf"
+        assert rows[0].status == "candidate"
+        assert rows[0].scholar_url.startswith("https://scholar.google.com/scholar?q=10.1000")
+
+
+def test_unpaywall_candidate_uses_best_oa_pdf():
+    from app.services.recommendations import RecommendationCandidate, _unpaywall_work_to_candidate
+
+    source = RecommendationCandidate(title="Open Article", doi="10.1000/open", provider="crossref")
+    candidate = _unpaywall_work_to_candidate(
+        source,
+        {
+            "doi": "10.1000/open",
+            "title": "Open Article",
+            "year": 2024,
+            "journal_name": "Repository Journal",
+            "is_oa": True,
+            "oa_status": "green",
+            "best_oa_location": {
+                "url": "https://repository.test/open",
+                "url_for_pdf": "https://repository.test/open.pdf",
+            },
+            "z_authors": [{"given": "Ada", "family": "Lovelace"}],
+        },
+    )
+
+    assert candidate is not None
+    assert candidate.provider == "unpaywall"
+    assert candidate.pdf_url == "https://repository.test/open.pdf"
+    assert candidate.source_url == "https://repository.test/open"
+    assert candidate.authors[0]["family"] == "Lovelace"
+
+
+def test_arxiv_enrichment_uses_metadata_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.services.recommendations import RecommendationCandidate, enrich_arxiv_recommendations
+
+    get_settings.cache_clear()
+    candidate = RecommendationCandidate(
+        title="Preprint Article",
+        doi="10.1000/preprint",
+        provider="semantic_scholar",
+        raw_metadata={"paper": {"externalIds": {"ArXiv": "2402.04607"}}},
+    )
+
+    rows = enrich_arxiv_recommendations([candidate], 40)
+
+    assert len(rows) == 1
+    assert rows[0].provider == "arxiv"
+    assert rows[0].source_url == "https://arxiv.org/abs/2402.04607"
+    assert rows[0].pdf_url == "https://arxiv.org/pdf/2402.04607"
+
+
+def test_arxiv_feed_parser_matches_titles():
+    from app.services.recommendations import (
+        RecommendationCandidate,
+        _arxiv_entry_to_candidate,
+        _best_arxiv_entry,
+        _parse_arxiv_feed,
+    )
+
+    feed = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+      <entry>
+        <id>http://arxiv.org/abs/2402.04607v1</id>
+        <title>Google Scholar is manipulatable</title>
+        <summary>A compact abstract.</summary>
+        <published>2024-02-07T06:08:23Z</published>
+        <author><name>Hazem Ibrahim</name></author>
+        <arxiv:doi>10.48550/arXiv.2402.04607</arxiv:doi>
+        <link href="http://arxiv.org/abs/2402.04607v1" rel="alternate" type="text/html"/>
+        <link title="pdf" href="http://arxiv.org/pdf/2402.04607v1" rel="related" type="application/pdf"/>
+      </entry>
+    </feed>
+    """
+    entries = _parse_arxiv_feed(feed)
+    match = _best_arxiv_entry(RecommendationCandidate(title="Google Scholar is manipulatable", provider="test"), entries)
+
+    assert match is not None
+    candidate = _arxiv_entry_to_candidate(RecommendationCandidate(title="Google Scholar is manipulatable", provider="test"), match)
+    assert candidate.external_id == "arXiv:2402.04607v1"
+    assert candidate.publication_year == 2024
+    assert candidate.pdf_url == "http://arxiv.org/pdf/2402.04607v1"
+
+
 def test_queue_recommendation_imports_reuses_import_pipeline(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -128,3 +286,136 @@ def test_queue_recommendation_imports_reuses_import_pipeline(monkeypatch, tmp_pa
         assert jobs[0].document.priority == "high"
         assert jobs[0].document.doi == "10.1000/new"
         assert recommendation.imported_document_id == jobs[0].document_id
+
+
+def test_queue_recommendation_imports_records_download_failures(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentRecommendation, ImportJob, ProcessingEvent
+    from app.services import recommendations as service
+    from app.services.recommendations import queue_recommendation_imports
+
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="c" * 64,
+            priority="high",
+            processing_status="ready",
+        )
+        db.add(source)
+        db.flush()
+        recommendation = DocumentRecommendation(
+            source_document_id=source.id,
+            match_key="doi:10.1000/blocked",
+            title="Blocked Related Paper",
+            doi="10.1000/blocked",
+            source_provider="test",
+            pdf_url="https://example.test/blocked.pdf",
+            raw_metadata={},
+        )
+        db.add(recommendation)
+        db.commit()
+
+        monkeypatch.setattr(service, "_download_pdf", lambda _url: (_ for _ in ()).throw(RuntimeError("403 Forbidden")))
+
+        result = queue_recommendation_imports(db, source, [recommendation])
+        db.commit()
+
+        job = db.query(ImportJob).one()
+        event = db.query(ProcessingEvent).one()
+        db.refresh(recommendation)
+
+        assert result["failed_count"] == 1
+        assert job.status == "failed"
+        assert job.current_step == "download_failed"
+        assert job.document_id is None
+        assert job.last_error == "403 Forbidden"
+        assert event.payload["title"] == "Blocked Related Paper"
+        assert recommendation.status == "download_failed"
+
+
+def test_doi_stash_status_tracks_import_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import doi_stash_out, sync_doi_stash_import_status
+    from app.models import Document, DoiStash, ImportBatch, ImportJob
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Queued Paper",
+            doi="10.1000/stashed",
+            original_filename="queued.pdf",
+            checksum_sha256="d" * 64,
+            processing_status="queued",
+        )
+        batch = ImportBatch(label="Stash: 10.1000/stashed", total_files=1, shared_defaults={})
+        db.add_all([document, batch])
+        db.flush()
+        job = ImportJob(
+            batch_id=batch.id,
+            document_id=document.id,
+            status="complete",
+            current_step="complete",
+        )
+        stash = DoiStash(
+            doi="10.1000/stashed",
+            title="Queued Paper",
+            imported_document_id=document.id,
+            import_job=job,
+            status="import_queued",
+            stash_metadata={},
+        )
+        db.add_all([job, stash])
+        db.commit()
+
+        assert sync_doi_stash_import_status(stash) is True
+        rendered = doi_stash_out(stash)
+
+        assert stash.status == "imported"
+        assert stash.imported_at is not None
+        assert rendered.import_job_status == "complete"
+        assert rendered.imported_document_title == "Queued Paper"
+
+
+def test_doi_stash_upload_duplicate_marks_imported(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import upload_doi_stash_pdf
+    from app.models import Document, DoiStash, ImportJob
+
+    class FakeUpload:
+        filename = "duplicate.pdf"
+        content_type = "application/pdf"
+
+        async def read(self):
+            return b"%PDF-1.4 duplicate"
+
+    checksum = hashlib.sha256(b"%PDF-1.4 duplicate").hexdigest()
+    Session = make_session()
+    with Session() as db:
+        existing = Document(
+            title="Existing PDF",
+            doi="10.1000/existing",
+            original_filename="existing.pdf",
+            checksum_sha256=checksum,
+            processing_status="ready",
+        )
+        stash = DoiStash(doi="10.1000/stashed", title="Stashed Paper", status="active", stash_metadata={})
+        db.add_all([existing, stash])
+        db.commit()
+
+        result = asyncio.run(upload_doi_stash_pdf(stash.id, FakeUpload(), object(), db))
+        job = db.query(ImportJob).one()
+
+        assert result.status == "imported"
+        assert result.imported_document_id == existing.id
+        assert result.uploaded_filename == "duplicate.pdf"
+        assert job.status == "complete"
+        assert job.current_step == "duplicate_skipped"

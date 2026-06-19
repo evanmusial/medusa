@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from html import unescape
 from pathlib import Path
@@ -23,6 +24,20 @@ from app.services.verifier import normalized_title_similarity
 DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 TRAILING_DOI_PUNCTUATION = ".,;:)]}>"
 OPENALEX_WORK_RE = re.compile(r"W\d+")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+ARXIV_ABS_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([^?#]+)", re.IGNORECASE)
+ARXIV_ID_RE = re.compile(r"^(?:arxiv:)?([a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?|\d{4}\.\d{4,5}(?:v\d+)?)$", re.IGNORECASE)
+ARXIV_NS = {
+    "atom": "http://www.w3.org/2005/Atom",
+    "arxiv": "http://arxiv.org/schemas/atom",
+}
+PDF_PROVIDER_PRIORITY = {
+    "unpaywall": 90,
+    "arxiv": 85,
+    "semantic_scholar": 70,
+    "openalex": 60,
+    "crossref": 45,
+}
 
 
 @dataclass
@@ -111,6 +126,15 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
     for provider, fetcher in _enabled_fetchers():
         try:
             for candidate in fetcher(document, limit):
+                if not candidate.title.strip():
+                    continue
+                _merge_candidate(candidates, candidate)
+        except Exception as exc:
+            errors[provider] = str(exc)
+
+    for provider, enricher in _enabled_enrichers():
+        try:
+            for candidate in enricher(list(candidates.values()), limit):
                 if not candidate.title.strip():
                     continue
                 _merge_candidate(candidates, candidate)
@@ -309,6 +333,14 @@ def _enabled_fetchers():
         yield "crossref", fetch_crossref_recommendations
 
 
+def _enabled_enrichers():
+    settings = get_settings()
+    if settings.recommendations_enable_unpaywall:
+        yield "unpaywall", enrich_unpaywall_recommendations
+    if settings.recommendations_enable_arxiv:
+        yield "arxiv", enrich_arxiv_recommendations
+
+
 def _client() -> httpx.Client:
     settings = get_settings()
     headers = {"User-Agent": "Medusa local research library (mailto:admin@medusa.local)"}
@@ -440,19 +472,79 @@ def fetch_crossref_recommendations(document: Document, limit: int) -> list[Recom
     return candidates[:limit]
 
 
+def enrich_unpaywall_recommendations(
+    candidates: list[RecommendationCandidate],
+    _limit: int,
+) -> list[RecommendationCandidate]:
+    email = _unpaywall_contact_email()
+    if not email:
+        return []
+    doi_candidates = [candidate for candidate in candidates if normalize_doi(candidate.doi)]
+    if not doi_candidates:
+        return []
+    enriched: list[RecommendationCandidate] = []
+    with _client() as client:
+        for candidate in doi_candidates:
+            doi = normalize_doi(candidate.doi)
+            if not doi:
+                continue
+            response = client.get(f"https://api.unpaywall.org/v2/{quote(doi, safe='')}", params={"email": email})
+            if response.status_code == 404:
+                continue
+            response.raise_for_status()
+            if unpaywall_candidate := _unpaywall_work_to_candidate(candidate, response.json()):
+                enriched.append(unpaywall_candidate)
+    return enriched
+
+
+def enrich_arxiv_recommendations(
+    candidates: list[RecommendationCandidate],
+    _limit: int,
+) -> list[RecommendationCandidate]:
+    settings = get_settings()
+    enriched: list[RecommendationCandidate] = []
+    direct_keys: set[str] = set()
+    for candidate in candidates:
+        if candidate.pdf_url:
+            continue
+        arxiv_id = _arxiv_id_from_candidate(candidate)
+        if not arxiv_id:
+            continue
+        direct_keys.add(candidate.match_key)
+        enriched.append(_arxiv_id_candidate(candidate, arxiv_id, relation="metadata_id"))
+
+    lookup_limit = max(0, settings.recommendations_arxiv_title_lookups)
+    if lookup_limit <= 0:
+        return enriched
+    title_candidates = [
+        candidate
+        for candidate in candidates
+        if not candidate.pdf_url and candidate.match_key not in direct_keys and _arxiv_query_phrase(candidate.title)
+    ][:lookup_limit]
+    if not title_candidates:
+        return enriched
+    with _client() as client:
+        enriched.extend(_fetch_arxiv_title_matches(client, title_candidates))
+    return enriched
+
+
 def _merge_candidate(candidates: dict[str, RecommendationCandidate], candidate: RecommendationCandidate) -> None:
     key = candidate.match_key
     existing = candidates.get(key)
     if not existing:
         candidates[key] = candidate
         return
+    existing_pdf_priority = _candidate_pdf_priority(existing)
+    candidate_pdf_priority = _candidate_pdf_priority(candidate)
     providers = unique_join(existing.provider, candidate.provider)
     relations = unique_join(existing.relation, candidate.relation)
     existing.provider = providers
     existing.relation = relations
-    for attr in ("doi", "journal", "description", "external_id", "source_url", "pdf_url", "publication_year"):
+    for attr in ("doi", "journal", "description", "external_id", "source_url", "publication_year"):
         if getattr(existing, attr) in (None, "", []):
             setattr(existing, attr, getattr(candidate, attr))
+    if candidate.pdf_url and (not existing.pdf_url or candidate_pdf_priority > existing_pdf_priority):
+        existing.pdf_url = candidate.pdf_url
     if not existing.authors and candidate.authors:
         existing.authors = candidate.authors
     if candidate.score is not None:
@@ -472,6 +564,275 @@ def unique_join(left: str | None, right: str | None) -> str:
     return ", ".join(parts)
 
 
+def _candidate_pdf_priority(candidate: RecommendationCandidate) -> int:
+    if not candidate.pdf_url:
+        return 0
+    priority = 1
+    for provider in str(candidate.provider or "").split(","):
+        priority = max(priority, PDF_PROVIDER_PRIORITY.get(provider.strip(), 1))
+    return priority
+
+
+def _unpaywall_contact_email() -> str | None:
+    settings = get_settings()
+    for value in (settings.unpaywall_email, settings.openalex_mailto, settings.admin_email):
+        email = (value or "").strip()
+        if EMAIL_RE.fullmatch(email) and not email.lower().endswith(".local"):
+            return email
+    return None
+
+
+def _unpaywall_work_to_candidate(
+    source: RecommendationCandidate,
+    work: dict[str, Any],
+) -> RecommendationCandidate | None:
+    location = _unpaywall_best_location(work)
+    pdf_url = _unpaywall_pdf_url(location, work)
+    if not pdf_url:
+        return None
+    title = unescape(work.get("title") or source.title).strip()
+    if not title:
+        return None
+    return RecommendationCandidate(
+        title=title,
+        provider="unpaywall",
+        relation="open_access",
+        doi=normalize_doi(work.get("doi") or source.doi),
+        authors=_unpaywall_authors(work) or source.authors,
+        publication_year=_int(work.get("year")) or source.publication_year,
+        journal=unescape(work.get("journal_name") or "") or source.journal,
+        description=source.description,
+        external_id=normalize_doi(work.get("doi") or source.doi),
+        source_url=(location or {}).get("url") or work.get("doi_url") or source.source_url,
+        pdf_url=pdf_url,
+        score=source.score,
+        raw_metadata={
+            "provider": "unpaywall",
+            "relation": "open_access",
+            "is_oa": work.get("is_oa"),
+            "oa_status": work.get("oa_status"),
+            "best_oa_location": location,
+            "doi": work.get("doi"),
+            "title": work.get("title"),
+            "year": work.get("year"),
+            "journal_name": work.get("journal_name"),
+        },
+    )
+
+
+def _unpaywall_best_location(work: dict[str, Any]) -> dict[str, Any] | None:
+    best = work.get("best_oa_location")
+    if isinstance(best, dict) and (best.get("url_for_pdf") or best.get("url")):
+        return best
+    for location in work.get("oa_locations") or []:
+        if isinstance(location, dict) and (location.get("url_for_pdf") or location.get("url")):
+            return location
+    return None
+
+
+def _unpaywall_pdf_url(location: dict[str, Any] | None, work: dict[str, Any]) -> str | None:
+    if isinstance(location, dict) and location.get("url_for_pdf"):
+        return location["url_for_pdf"]
+    for item in work.get("oa_locations") or []:
+        if isinstance(item, dict) and item.get("url_for_pdf"):
+            return item["url_for_pdf"]
+    return None
+
+
+def _unpaywall_authors(work: dict[str, Any]) -> list[dict[str, Any]]:
+    authors = []
+    for author in work.get("z_authors") or []:
+        given = unescape(author.get("given") or "")
+        family = unescape(author.get("family") or "")
+        name = unescape(author.get("name") or "")
+        if not family and name:
+            parts = name.split()
+            given = " ".join(parts[:-1])
+            family = parts[-1] if parts else name
+        if given or family:
+            authors.append({"given": given, "family": family, "affiliation": None})
+    return authors
+
+
+def _arxiv_id_from_candidate(candidate: RecommendationCandidate) -> str | None:
+    for value in _candidate_raw_values(candidate.raw_metadata):
+        if arxiv_id := _normalize_arxiv_id(value):
+            return arxiv_id
+    if arxiv_id := _normalize_arxiv_id(candidate.external_id):
+        return arxiv_id
+    if arxiv_id := _normalize_arxiv_id(candidate.source_url):
+        return arxiv_id
+    if arxiv_id := _normalize_arxiv_id(candidate.pdf_url):
+        return arxiv_id
+    return None
+
+
+def _candidate_raw_values(value: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower() in {"arxiv", "arxiv_id"} and isinstance(child, str):
+                values.append(child)
+            elif str(key).lower() in {"externalids", "ids"} and isinstance(child, dict):
+                values.extend(str(item) for subkey, item in child.items() if str(subkey).lower() == "arxiv")
+            values.extend(_candidate_raw_values(child))
+    elif isinstance(value, list):
+        for child in value:
+            values.extend(_candidate_raw_values(child))
+    elif isinstance(value, str) and ("arxiv" in value.lower() or ARXIV_ID_RE.match(value.strip())):
+        values.append(value)
+    return values
+
+
+def _normalize_arxiv_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if match := ARXIV_ABS_RE.search(text):
+        text = match.group(1)
+    text = text.removesuffix(".pdf").strip("/")
+    match = ARXIV_ID_RE.match(text)
+    return match.group(1) if match else None
+
+
+def _arxiv_id_candidate(source: RecommendationCandidate, arxiv_id: str, *, relation: str) -> RecommendationCandidate:
+    clean_id = _normalize_arxiv_id(arxiv_id) or arxiv_id
+    return RecommendationCandidate(
+        title=source.title,
+        provider="arxiv",
+        relation=relation,
+        doi=source.doi,
+        authors=source.authors,
+        publication_year=source.publication_year,
+        journal=source.journal,
+        description=source.description,
+        external_id=f"arXiv:{clean_id}",
+        source_url=f"https://arxiv.org/abs/{clean_id}",
+        pdf_url=f"https://arxiv.org/pdf/{clean_id}",
+        score=source.score,
+        raw_metadata={"provider": "arxiv", "relation": relation, "arxiv_id": clean_id},
+    )
+
+
+def _fetch_arxiv_title_matches(
+    client: httpx.Client,
+    candidates: list[RecommendationCandidate],
+) -> list[RecommendationCandidate]:
+    query_parts = [f'ti:"{phrase}"' for candidate in candidates if (phrase := _arxiv_query_phrase(candidate.title))]
+    if not query_parts:
+        return []
+    search_query = f"({' OR '.join(query_parts)})" if len(query_parts) > 1 else query_parts[0]
+    response = client.get(
+        "https://export.arxiv.org/api/query",
+        params={
+            "search_query": search_query,
+            "start": "0",
+            "max_results": str(max(len(candidates) * 3, 12)),
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        },
+    )
+    response.raise_for_status()
+    entries = _parse_arxiv_feed(response.text)
+    if not entries:
+        return []
+    enriched: list[RecommendationCandidate] = []
+    for candidate in candidates:
+        match = _best_arxiv_entry(candidate, entries)
+        if match:
+            enriched.append(_arxiv_entry_to_candidate(candidate, match))
+    return enriched
+
+
+def _arxiv_query_phrase(title: str | None) -> str:
+    text = " ".join(unescape(title or "").replace('"', " ").split())
+    return text[:180]
+
+
+def _parse_arxiv_feed(xml_text: str) -> list[dict[str, Any]]:
+    root = ET.fromstring(xml_text)
+    entries: list[dict[str, Any]] = []
+    for entry in root.findall("atom:entry", ARXIV_NS):
+        title = " ".join((entry.findtext("atom:title", default="", namespaces=ARXIV_NS) or "").split())
+        arxiv_id = _normalize_arxiv_id(entry.findtext("atom:id", default="", namespaces=ARXIV_NS))
+        if not title or not arxiv_id:
+            continue
+        links = []
+        pdf_url = None
+        source_url = f"https://arxiv.org/abs/{arxiv_id}"
+        for link in entry.findall("atom:link", ARXIV_NS):
+            href = link.attrib.get("href")
+            if not href:
+                continue
+            links.append(dict(link.attrib))
+            link_type = str(link.attrib.get("type") or "").lower()
+            link_title = str(link.attrib.get("title") or "").lower()
+            if link_title == "pdf" or "pdf" in link_type:
+                pdf_url = href
+            elif link.attrib.get("rel") == "alternate":
+                source_url = href
+        entries.append(
+            {
+                "title": title,
+                "arxiv_id": arxiv_id,
+                "doi": entry.findtext("arxiv:doi", default=None, namespaces=ARXIV_NS),
+                "journal_ref": entry.findtext("arxiv:journal_ref", default=None, namespaces=ARXIV_NS),
+                "summary": " ".join((entry.findtext("atom:summary", default="", namespaces=ARXIV_NS) or "").split()),
+                "published": entry.findtext("atom:published", default=None, namespaces=ARXIV_NS),
+                "authors": [
+                    {"given": " ".join(name.split()[:-1]), "family": name.split()[-1], "affiliation": None}
+                    for author in entry.findall("atom:author", ARXIV_NS)
+                    if (name := " ".join((author.findtext("atom:name", default="", namespaces=ARXIV_NS) or "").split()))
+                    and name.split()
+                ],
+                "source_url": source_url,
+                "pdf_url": pdf_url or f"https://arxiv.org/pdf/{arxiv_id}",
+                "links": links,
+            }
+        )
+    return entries
+
+
+def _best_arxiv_entry(candidate: RecommendationCandidate, entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best_score = 0.0
+    best_entry: dict[str, Any] | None = None
+    candidate_doi = normalize_doi(candidate.doi)
+    for entry in entries:
+        entry_doi = normalize_doi(entry.get("doi"))
+        if candidate_doi and entry_doi == candidate_doi:
+            return entry
+        score = normalized_title_similarity(candidate.title, entry.get("title") or "")
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+    return best_entry if best_score >= 0.94 else None
+
+
+def _arxiv_entry_to_candidate(
+    source: RecommendationCandidate,
+    entry: dict[str, Any],
+) -> RecommendationCandidate:
+    year = None
+    published = entry.get("published")
+    if isinstance(published, str) and len(published) >= 4 and published[:4].isdigit():
+        year = int(published[:4])
+    return RecommendationCandidate(
+        title=entry.get("title") or source.title,
+        provider="arxiv",
+        relation="title_match",
+        doi=normalize_doi(entry.get("doi")) or source.doi,
+        authors=entry.get("authors") or source.authors,
+        publication_year=year or source.publication_year,
+        journal=entry.get("journal_ref") or source.journal,
+        description=entry.get("summary") or source.description,
+        external_id=f"arXiv:{entry.get('arxiv_id')}",
+        source_url=entry.get("source_url"),
+        pdf_url=entry.get("pdf_url"),
+        score=source.score,
+        raw_metadata={"provider": "arxiv", "relation": "title_match", "entry": entry},
+    )
+
+
 def _apply_candidate(row: DocumentRecommendation, candidate: RecommendationCandidate) -> None:
     row.match_key = candidate.match_key
     row.title = candidate.title[:800]
@@ -486,7 +847,7 @@ def _apply_candidate(row: DocumentRecommendation, candidate: RecommendationCandi
     row.source_url = candidate.source_url or doi_url(candidate.doi)
     row.pdf_url = candidate.pdf_url
     row.score = candidate.score
-    row.status = "candidate" if row.status == "stale" else row.status or "candidate"
+    row.status = "candidate" if row.status in {"stale", "download_failed"} else row.status or "candidate"
     row.raw_metadata = candidate.raw_metadata or {}
     row.last_seen_at = utc_now()
 
@@ -523,7 +884,15 @@ def _first_active_checksum_match(db: Session, checksum: str) -> Document | None:
 
 def _download_pdf(url: str) -> tuple[bytes, str]:
     settings = get_settings()
-    response = httpx.get(url, timeout=settings.recommendation_download_timeout_seconds, follow_redirects=True)
+    response = httpx.get(
+        url,
+        timeout=settings.recommendation_download_timeout_seconds,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Medusa local research library (mailto:admin@medusa.local)",
+            "Accept": "application/pdf, application/octet-stream;q=0.9, */*;q=0.2",
+        },
+    )
     response.raise_for_status()
     data = response.content
     max_bytes = settings.recommendation_download_max_mb * 1024 * 1024
@@ -552,7 +921,13 @@ def _add_recommendation_skip_event(
     status: str = "complete",
     matched_document_id: str | None = None,
 ) -> None:
-    job = ImportJob(batch_id=batch.id, document_id=matched_document_id, status=status, current_step=step)
+    job = ImportJob(
+        batch_id=batch.id,
+        document_id=matched_document_id,
+        status=status,
+        current_step=step,
+        last_error=reason if status == "failed" else None,
+    )
     db.add(job)
     db.flush()
     db.add(

@@ -83,6 +83,11 @@ class Settings(BaseSettings):
         validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_SEMANTIC_SCHOLAR",
     )
     recommendations_enable_crossref: bool = Field(default=True, validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_CROSSREF")
+    recommendations_enable_unpaywall: bool = Field(
+        default=True,
+        validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_UNPAYWALL",
+    )
+    recommendations_enable_arxiv: bool = Field(default=True, validation_alias="MEDUSA_RECOMMENDATIONS_ENABLE_ARXIV")
     recommendations_max_results_per_source: int = Field(default=40, validation_alias="MEDUSA_RECOMMENDATIONS_MAX_PER_SOURCE")
     recommendations_request_timeout_seconds: float = Field(
         default=16.0,
@@ -94,6 +99,11 @@ class Settings(BaseSettings):
     )
     recommendation_download_max_mb: int = Field(default=80, validation_alias="MEDUSA_RECOMMENDATION_DOWNLOAD_MAX_MB")
     openalex_mailto: str | None = Field(default=None, validation_alias="MEDUSA_OPENALEX_MAILTO")
+    unpaywall_email: str | None = Field(default=None, validation_alias="MEDUSA_UNPAYWALL_EMAIL")
+    recommendations_arxiv_title_lookups: int = Field(
+        default=8,
+        validation_alias="MEDUSA_RECOMMENDATIONS_ARXIV_TITLE_LOOKUPS",
+    )
     semantic_scholar_api_key: str | None = Field(default=None, validation_alias="SEMANTIC_SCHOLAR_API_KEY")
 
     enable_google_vision: bool = Field(default=True, validation_alias="MEDUSA_ENABLE_GOOGLE_VISION")

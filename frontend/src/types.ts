@@ -43,6 +43,7 @@ export type AppPreferences = {
   accent_color_night: string;
   document_cache_size_mb: number;
   library_alternating_rows: boolean;
+  download_naming_template: string;
   gcs_bucket: string;
   gcs_bucket_saved: boolean;
   google_service_account_name: string;
@@ -93,6 +94,14 @@ export type BackupArtifact = {
   hostname?: string | null;
   verified: boolean;
   manifest: Record<string, unknown>;
+};
+
+export type BackupEstimate = {
+  database_size_bytes?: number | null;
+  estimated_size_bytes?: number | null;
+  latest_backup_size_bytes?: number | null;
+  latest_backup_completed_at?: string | null;
+  basis: "latest_backup_ratio" | "latest_backup" | "database_size_upper_bound" | "unavailable" | string;
 };
 
 export type AnalysisModelTask = {
@@ -420,6 +429,7 @@ export type DocumentRecommendation = {
   status: string;
   raw_metadata: Record<string, unknown>;
   has_pdf: boolean;
+  scholar_url: string;
   last_seen_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -437,6 +447,35 @@ export type DocumentRecommendationDownload = {
   skipped_existing_count: number;
   unavailable_count: number;
   failed_count: number;
+};
+
+export type DoiStash = {
+  id: string;
+  doi: string;
+  title?: string | null;
+  source_url?: string | null;
+  source_provider?: string | null;
+  source_document_id?: string | null;
+  recommendation_id?: string | null;
+  imported_document_id?: string | null;
+  imported_document_title?: string | null;
+  import_job_id?: string | null;
+  import_job_status?: string | null;
+  status: string;
+  uploaded_filename?: string | null;
+  imported_at?: string | null;
+  stash_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DoiStashPayload = {
+  doi: string;
+  title?: string | null;
+  source_url?: string | null;
+  source_provider?: string | null;
+  source_document_id?: string | null;
+  recommendation_id?: string | null;
 };
 
 export type DocumentUpdatePayload = Partial<DocumentDetail> & {
@@ -511,6 +550,13 @@ export type ImportJob = {
   locked_at?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ImportQueueActionResult = {
+  matched_count: number;
+  updated_count: number;
+  skipped_running_count: number;
+  skipped_unretryable_count: number;
 };
 
 export type DuplicateImportStrategy = "skip" | "overwrite" | "import_anyway";
