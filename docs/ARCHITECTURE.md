@@ -113,6 +113,17 @@ Frontend modules:
 - `frontend/src/types.ts`: shared frontend response types.
 - `frontend/src/styles.css`: design system tokens, layout, and responsive rules.
 
+Frontend async-work contract:
+
+- The app shell owns user-visible progress for durable Concordance work. Page controls start runs through a shell-level `startConcordanceRun` helper so the request is recorded in shell state before the API call returns.
+- The shell reconciles local "starting" jobs with `/api/concordance/runs` and `/api/concordance/jobs` polling data, then renders the compact Background Work shelf near the dashboard metrics.
+- Background Work rows show starting, queued, running, complete, and failed states, keep active work ahead of recent terminal work, and retain completion/error state briefly so the user sees what happened.
+- Page-level controls still own their local disabled state and transient result flash. A successful start or completion flashes green; a failed start or failed watched job flashes red and shows a concise popover error.
+- The Library citation Check action queues a forced `citation_refresh` Concordance Run for the current document. If the user stays on the document pane, the button-level watcher can flash completion/failure; if the user navigates away, the app shell still follows the durable run and displays terminal state.
+- Settings, selected-document batch Concordance, and document-level Concordance controls use the same shell-owned starter so navigation away from those pages does not abandon UI reconciliation.
+- Import jobs remain represented by Queue rows and the sidebar import-progress block because their progress is already dashboard-backed; rescue/requeue buttons use the same transient button-feedback convention.
+- Recommendation refresh/download actions are not full Concordance runs today, but their buttons follow the same local success/error feedback convention until recommendation downloads become durable background fetch jobs.
+
 ## Data Model
 
 Current core entities:
@@ -209,6 +220,7 @@ Implemented foundation:
 - `ConcordanceRun` records scope, requested capability keys, status, and progress counters.
 - `ConcordanceJob` records document/capability work items with target version, attempts, errors, and completion state.
 - The worker processes import jobs first, up to the configured import concurrency preference, then Concordance jobs from the same durable database queue pattern.
+- The frontend app shell tracks started Concordance runs independently from the page that launched them and reconciles progress from run/job polling so navigation does not hide accepted work.
 - Settings includes a Concordance panel that can start scoped runs and display current capability/run/job status.
 - The document detail pane can start a Concordance Run for the current document.
 
@@ -702,3 +714,30 @@ Consequences:
 - `/api/imports/jobs/{job_id}/rescue` can requeue failed/restored import jobs and running jobs whose worker lock is stale. Fresh running jobs are rejected to avoid racing an active worker thread.
 - `/api/dashboard` includes import queued/running counts plus active batch progress totals, active step, and elapsed seconds so the sidebar can render progress without scanning the recent job list.
 - The sidebar progress block is hidden when no imports are queued or running and is not shown on the collapsed rail.
+
+### 2026-06-19: Shell-owned async progress and action feedback
+
+Decision: Move Concordance-starting UI through an app-shell starter and render a persistent Background Work shelf for durable async work, while keeping local button-level success/error flashes for immediate action feedback.
+
+Why: A user can start small-looking work, such as an APA citation Check, then switch views. The backend should still finish the durable job, and the UI should make it obvious that Medusa received the request, is processing it, and eventually completed or failed.
+
+Consequences:
+
+- Citation Check queues a forced `citation_refresh` Concordance Run instead of relying on a page-local request lifecycle.
+- The app shell records a local "starting" job immediately, reconciles it with persisted Concordance run/job state, and displays queued/running/complete/failed status in the Background Work shelf.
+- Page-local controls can unmount without losing the shell's progress/error display. If the originating page remains mounted, its button can still flash completion/failure from the watched job.
+- Buttons that start async work use the same restrained feedback language: green for success, red plus a short error popover for failure, then a fade back to the normal button color.
+- Import progress remains in the sidebar/Queue path because imports already have dashboard-backed progress, but import requeue buttons use the same transient feedback convention.
+- Recommendation refresh/download buttons use the same local feedback convention until recommendation downloads become durable background fetch jobs.
+
+### 2026-06-19: Project controls stay inside their pane
+
+Decision: Constrain the Projects add-resource select/button row to the project-detail pane and clip panel overflow so long native select option labels cannot visually intrude into the Bibliography panel.
+
+Why: Project run sheets can contain many long scholarly titles. Native select controls can carry awkward intrinsic widths, and a tight three-pane workspace must not let controls overlap adjacent bibliography actions.
+
+Consequences:
+
+- The project add-resource row uses bounded flexible sizing and wraps/stacks at small widths.
+- Project, detail, and bibliography panels hide overflow at their edges rather than allowing one pane's controls to spill into another.
+- Future Project controls should be checked at desktop and narrow breakpoints before assuming native select/button intrinsic sizes are safe.

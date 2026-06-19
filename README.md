@@ -17,8 +17,10 @@ Medusa is a local-first research library, document aggregator, and intelligent t
 - OpenAI adapter for structured metadata, visible author contact emails, summaries, topics, keywords, page text normalization, and embeddings
 - Citation generation in Markdown APA 7, BibTeX, RIS, and CSL JSON
 - Live document-level citation check/refresh controls backed by durable Concordance jobs
+- Persistent Background Work shelf for Concordance and citation-check progress, so job feedback continues after navigating away from the page that started the work
+- Transient async action feedback: job-starting buttons flash green on success, flash red on failure, and show a concise error popover when startup or completion fails
 - Queue view for import work and accepting or rejecting ambiguous citations with correction history
-- Projects/run sheets with add/remove resources, status/priority/used tracking, notes, and bibliography generation
+- Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
 - Document correction pane for metadata, tags, domains, custom attributes, rendered Markdown summaries/citations, duplicate visibility, and correction history
@@ -87,6 +89,8 @@ MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS=60
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
 OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5` for GPT-backed document-analysis tasks, lets Settings override models per task, sends the original PDF as file context when the file is below the configured size cap, extracts visible author affiliations/contact emails, and normalizes extracted page text into standard readable flow across columns and around graphics. Graphics are stored as cropped assets with labels/captions rather than converted into Markdown. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
+
+Async document work is started from the app shell, not only from the page-level component that owns the button. Citation checks and Concordance controls immediately show that the request was received, then the Background Work shelf follows the durable run through queued/running/complete/failed states even if the user switches views. Page-local buttons still give a short green or red result flash; failures also surface a concise error message.
 
 Worker recovery:
 
@@ -163,6 +167,8 @@ Duplicate uploads are checked before queueing. When an exact checksum match is f
 If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint. In-flight documents may repeat the current step, and page normalization resumes from persisted page checkpoints when possible.
 
 The Import screen can also rescue failed imports or stale locked imports by requeueing the job. Fresh running jobs are protected from manual requeue to avoid racing an active worker.
+
+Concordance Runs and citation checks are also safe to leave in progress from the UI. Once the backend accepts the request, the durable database run continues through the worker queue independently of the currently open page, and the shell-level progress shelf reconciles with refreshed run/job state.
 
 Settings includes backup export controls. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. Exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 
