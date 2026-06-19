@@ -27,7 +27,7 @@ Medusa should feel like a serious research cockpit: dense, calm, polished, and f
 
 Current UI architecture:
 
-- Fixed top header with the Medusa emblem, global search aligned by default to the Library document-list pane, theme toggle, and session action.
+- Fixed top header with the Medusa emblem, global search aligned by default to the Library document-list pane, subtle build version stamp, theme toggle, and session action.
 - Resizable/collapsible left sidebar navigation: Library, Domains, Projects, Queue, Notes, Import, Settings.
 - Main Library view uses a tri-pane layout:
   - Resizable left filter pane for domains, tags, smart filters, and saved searches. The pane has a content-aware minimum so select controls and their affordances remain visible.
@@ -48,6 +48,7 @@ Visual decisions:
 
 - The header brand uses the user-provided transparent Medusa emblem SVG plus a large lowercase `medusa` wordmark in Century Schoolbook Bold, falling back to compatible local serif faces. The emblem is borderless and sized to visually match the wordmark height.
 - The header brand lockup should have restrained, generous top/bottom padding plus modest side padding so the emblem and wordmark breathe without turning the header into a hero element.
+- The header build stamp sits in the action cluster before the theme toggle and uses the frontend build date plus optional short Git SHA (`YYYY.MM.DD+hash`) so the running UI can be identified without opening developer tools. `MEDUSA_BUILD_DATE` and `MEDUSA_BUILD_SHA` can override the stamp for release or CI builds.
 - The emblem source remains black with transparency; night mode inverts it with CSS so the glyph reads light while keeping the transparent background intact. The same SVG is used as the browser favicon.
 - The sidebar owns its collapse/expand control. The control belongs at the bottom of the navigation column, and collapsed navigation should retain a narrow restore rail instead of moving that control back into the header.
 - Day mode uses cool white surfaces, ink text, restrained blue primary actions, teal success, amber warnings.

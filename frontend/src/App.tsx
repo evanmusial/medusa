@@ -67,6 +67,8 @@ import type {
   Tag,
 } from "./types";
 
+declare const __MEDUSA_BUILD_VERSION__: string;
+
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "settings";
 
 const FILTER_PANE_MIN = 260;
@@ -598,6 +600,9 @@ function Header({
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents, notes, figures, citations..." />
       </label>
       <div className="topbar-actions">
+        <span className="build-version" title={`Medusa build ${__MEDUSA_BUILD_VERSION__}`}>
+          v{__MEDUSA_BUILD_VERSION__}
+        </span>
         <button className="icon-button" title="Toggle theme" onClick={() => setTheme(theme === "day" ? "night" : "day")}>
           {theme === "day" ? <Moon size={18} /> : <Sun size={18} />}
         </button>
@@ -2925,7 +2930,9 @@ function ModelSelect({
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const uniqueOptions = Array.from(new Set([value, defaultModel, ...options].filter(Boolean)));
+  const uniqueOptions = Array.from(new Set([value, defaultModel, ...options].filter(Boolean))).sort((left, right) =>
+    left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+  );
 
   return (
     <div
