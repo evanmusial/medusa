@@ -182,7 +182,7 @@ def test_create_concordance_run_from_saved_search(monkeypatch, tmp_path):
 def test_concordance_citation_refresh_fills_missing_fields_from_stored_crossref(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr("app.services.concordance.crossref_lookup", lambda _doi, _title: None)
+    monkeypatch.setattr("app.services.concordance.crossref_lookup", lambda *_args, **_kwargs: None)
 
     from app.models import CitationCandidate, ConcordanceJob, ConcordanceRun, Document
     from app.services.concordance import ConcordanceProcessor

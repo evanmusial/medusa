@@ -12,20 +12,21 @@ Medusa is a local-first research library, document aggregator, and intelligent t
 - GCS storage adapter with local fallback when credentials are not configured
 - Raw text extraction preference with Local choices for Docling, Marker, and PyMuPDF; Marker is the default preference and PyMuPDF remains the bundled local fallback
 - Authenticated original PDF preview/open route in the document detail pane and expanded Reader mode
-- Parsed full-text reader with normalized one-page navigation and page note entry
+- Parsed full-text reader with normalized one-page navigation
 - Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, and page geometry
 - OpenAI adapter for structured metadata, visible author contact emails, summaries, topics, keywords, page text normalization, and embeddings
 - OpenAI usage ledger with Budget rollups for last day/month/3 months/all time, calls, tokens, estimated known-model costs, cached input tokens, PDF/file context bytes, recent errors, and task/model breakdowns
 - Citation generation in Markdown APA 7, BibTeX, RIS, and CSL JSON
 - Live document-level citation check/refresh controls backed by durable Concordance jobs
-- Persistent Background Work shelf for Concordance and citation-check progress, so job feedback continues after navigating away from the page that started the work
+- Reserved header progress control for imports, Concordance, and citation-check work, so job feedback continues after navigating away from the page that started the work without shifting the header actions
 - Async action feedback: job-starting buttons turn green with a small progress bar while work is in flight, flash green on success, flash red on failure, and show a concise error popover when startup or completion fails
 - Queue view for import work and accepting or rejecting ambiguous citations with correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
 - Document correction pane for metadata, tags, domains, custom attributes, rendered Markdown summaries/citations, duplicate visibility, and correction history
-- Document annotations/highlights with page, color, note body, soft delete, and search indexing
+- Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
+- Stored document annotations/highlights with page, color, note body, soft delete, and search indexing; Library creation controls are deferred for a quieter redesign
 - Notes and reminders attached to documents, domains, projects, or the general library
 - Authenticated JSON backup exports for metadata and storage manifests, excluding secrets and session tokens
 - CLI restore tooling for metadata exports, with dry-run validation by default and parked restored job queues
@@ -80,6 +81,8 @@ OPENAI_MODEL=gpt-5.5
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 MEDUSA_OPENAI_SEND_PDF=true
 MEDUSA_OPENAI_PDF_FILE_MAX_MB=24
+MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE=false
+MEDUSA_OPENAI_PROMPT_CACHE_RETENTION=24h
 MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true
 MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=auto
 MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES=4
@@ -91,13 +94,15 @@ MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS=60
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
-OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5` for GPT-backed document-analysis tasks, lets Settings override models per task, sends the original PDF as file context when the file is below the configured size cap, and extracts visible author affiliations/contact emails. Page text normalization is local-first: `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=auto` locally cleans normal pages and escalates only low-text or artifact-heavy pages, capped by `MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES`. Auto mode sends page text only, not the full PDF per page. Set the mode to `always` only when you intentionally want the older all-pages OpenAI normalization behavior. Graphics are stored as cropped assets with labels/captions rather than converted into Markdown. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
+OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa keeps citation-critical metadata and APA fallback matching on `gpt-5.5`, runs summaries on `gpt-5.4`, and runs keywords/topics on `gpt-5.4-mini`; Settings can override each task. Metadata extraction may send the original PDF as file context when the file is below the configured size cap, but summary and keyword/topic calls use extracted text only. APA text is generated deterministically from DOI/Crossref evidence whenever possible; `gpt-5.5` APA matching is used only when Crossref/DOI evidence is missing or ambiguous. `MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE=true` restores the previous single structured `core_document_intelligence` Responses call for metadata, summary, APA candidate, and keywords/topics. `MEDUSA_OPENAI_PROMPT_CACHE_RETENTION=24h` sends prompt-cache hints keyed by document checksum for retries and Concordance reruns.
+
+Page text normalization is local-first: `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=auto` locally cleans normal pages and escalates only low-text or artifact-heavy pages, capped by `MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES`. Auto mode sends page text only, not the full PDF per page. Set the mode to `always` only when you intentionally want the older all-pages OpenAI normalization behavior. Graphics are stored as cropped assets with labels/captions rather than converted into Markdown. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
 
 Raw text extraction is controlled separately in Settings. The Raw Text Extraction selector is grouped into Local options (Docling, Marker, PyMuPDF) and OpenAI model fallbacks. Marker is the default preference and is installed in the backend/worker image; its model cache lives under `data/model-cache` through the Compose volume, so a first use may download local weights but later imports reuse them. PyMuPDF remains the built-in no-credential fallback when Marker is unavailable or times out.
 
 Budget records and displays OpenAI usage from completed and failed Responses/embeddings calls: task, model, document/job context, token counts, cached input tokens, output tokens, PDF/file context bytes, and recent errors. Dollar totals are estimates from Medusa's local known-model standard pricing table; unknown models are counted as unpriced because model pricing can change independently of the local app.
 
-Async document work is started from the app shell, not only from the page-level component that owns the button. Citation checks and Concordance controls immediately turn green with a small in-button progress bar, then the Background Work shelf follows the durable run through queued/running/complete/failed states even if the user switches views. Page-local buttons still give a short green or red result flash; failures also surface a concise error message.
+Async document work is started from the app shell, not only from the page-level component that owns the button. Citation checks and Concordance controls immediately turn green with a small in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green or red result flash; failures also surface a concise error message.
 
 Worker recovery:
 
@@ -111,7 +116,7 @@ Medusa defaults to four concurrent import jobs. The env var sets the startup def
 
 Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
 
-The document cache size defaults to 1,000 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and future custom-summary work; originals are still written to GCS or local durable storage at upload time.
+The document cache size defaults to 1,000 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time.
 
 ## Development
 

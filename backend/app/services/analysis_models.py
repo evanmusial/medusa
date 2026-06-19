@@ -8,6 +8,9 @@ from app.config import get_settings
 
 
 DEFAULT_GPT_MODEL = "gpt-5.5"
+DEFAULT_SUMMARY_MODEL = "gpt-5.4"
+DEFAULT_KEYWORDS_TOPICS_MODEL = "gpt-5.4-mini"
+DEFAULT_ACCESSORY_SUMMARIES_MODEL = "gpt-5.4"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_RAW_TEXT_EXTRACTOR = "marker"
 
@@ -19,6 +22,7 @@ MODEL_KEYWORDS_TOPICS = "keywords_topics"
 MODEL_PAGE_TEXT_NORMALIZATION = "page_text_normalization"
 MODEL_TEXT_CHUNK_ENCODING = "text_chunk_encoding"
 MODEL_ACCESSORY_SUMMARIES = "accessory_summaries"
+MODEL_CORE_DOCUMENT_INTELLIGENCE = "core_document_intelligence"
 
 GPT_MODEL_OPTIONS = (
     "gpt-4o",
@@ -73,25 +77,25 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_METADATA,
         label="Metadata",
         model_kind="gpt",
-        description="Extracts scholarly identity fields from the original PDF context: title, authors, affiliations, normalized author emails, venue, publisher, DOI, abstract, and review reasons.",
+        description="Extracts scholarly identity fields from the original PDF context. This stays on the high-quality GPT default because citation matching depends on correct title, author, year, venue, and DOI fields.",
     ),
     AnalysisModelTask(
         key=MODEL_SUMMARY,
         label="Summary",
         model_kind="gpt",
-        description="Generates the concise Markdown research summary used in document rows, detail panes, and later review surfaces.",
+        description="Generates the concise Markdown research summary from extracted text. This defaults to GPT-5.4 so synthesis is cheaper than the citation-critical metadata/APA path.",
     ),
     AnalysisModelTask(
         key=MODEL_APA_CITATION,
         label="APA Citation Matching",
         model_kind="gpt",
-        description="Generates an evidence-bounded APA 7 citation candidate and warnings; verified status still depends on Crossref, DOI evidence, or user acceptance.",
+        description="Generates or checks an evidence-bounded APA 7 citation candidate only when DOI/Crossref evidence cannot produce a verified deterministic citation.",
     ),
     AnalysisModelTask(
         key=MODEL_KEYWORDS_TOPICS,
         label="Keywords & Topics",
         model_kind="gpt",
-        description="Suggests topic and keyword tags from the document context so imports and Concordance refreshes can enrich organization surfaces.",
+        description="Suggests topic and keyword tags from extracted text. This defaults to GPT-5.4-mini because organization tags are lower-risk and reviewable.",
     ),
     AnalysisModelTask(
         key=MODEL_PAGE_TEXT_NORMALIZATION,
@@ -109,7 +113,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_ACCESSORY_SUMMARIES,
         label="Accessory Summaries",
         model_kind="gpt",
-        description="Reserved for future user-prompted custom summaries; those runs should use the original PDF plus the user's prompt.",
+        description="Reserved for future user-prompted custom summaries; those runs should default to GPT-5.4 and use the original PDF plus the user's prompt when requested.",
     ),
 )
 
@@ -131,6 +135,12 @@ def default_model_for_task(task_key: str) -> str:
         return DEFAULT_RAW_TEXT_EXTRACTOR
     if task and task.model_kind == "embedding":
         return normalize_model_id(settings.openai_embedding_model, DEFAULT_EMBEDDING_MODEL)
+    if task_key == MODEL_SUMMARY:
+        return DEFAULT_SUMMARY_MODEL
+    if task_key == MODEL_KEYWORDS_TOPICS:
+        return DEFAULT_KEYWORDS_TOPICS_MODEL
+    if task_key == MODEL_ACCESSORY_SUMMARIES:
+        return DEFAULT_ACCESSORY_SUMMARIES_MODEL
     return normalize_model_id(settings.openai_model, DEFAULT_GPT_MODEL)
 
 

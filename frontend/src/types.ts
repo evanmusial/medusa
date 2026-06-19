@@ -18,9 +18,11 @@ export type Dashboard = {
   import_active_step?: string | null;
   import_active_elapsed_seconds?: number | null;
   active_concordance_jobs: number;
+  active_accessory_summary_jobs: number;
   failed_jobs: number;
   failed_import_jobs: number;
   failed_concordance_jobs: number;
+  failed_accessory_summary_jobs: number;
   projects: number;
 };
 
@@ -221,6 +223,29 @@ export type AnnotationPayload = {
   color?: string | null;
 };
 
+export type AccessorySummary = {
+  id: string;
+  document_id: string;
+  title?: string | null;
+  prompt: string;
+  summary?: string | null;
+  model: string;
+  status: string;
+  attempts: number;
+  last_error?: string | null;
+  evidence: Record<string, unknown>;
+  locked_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AccessorySummaryPayload = {
+  prompt: string;
+  model?: string | null;
+  title?: string | null;
+};
+
 export type DocumentSummary = {
   id: string;
   title: string;
@@ -258,6 +283,7 @@ export type DocumentDetail = DocumentSummary & {
   versions: DocumentVersion[];
   pages: DocumentPage[];
   figures: Figure[];
+  accessory_summaries: AccessorySummary[];
   annotations: Annotation[];
   duplicate_document_ids: string[];
 };

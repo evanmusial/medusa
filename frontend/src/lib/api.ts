@@ -1,4 +1,6 @@
 import type {
+  AccessorySummary,
+  AccessorySummaryPayload,
   Annotation,
   AnnotationPayload,
   AppPreferences,
@@ -105,6 +107,10 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   refreshDocumentCitation: (id: string) =>
     request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
+  createAccessorySummary: (documentId: string, body: AccessorySummaryPayload) =>
+    request<AccessorySummary>(`/api/documents/${documentId}/accessory-summaries`, { method: "POST", body: JSON.stringify(body) }),
+  updateAccessorySummary: (id: string, body: Partial<AccessorySummaryPayload>) =>
+    request<AccessorySummary>(`/api/accessory-summaries/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   documentRecommendations: (id: string, hideExisting = false) =>
     request<DocumentRecommendation[]>(`/api/documents/${id}/recommendations${hideExisting ? "?hide_existing=true" : ""}`),
   refreshDocumentRecommendations: (id: string) =>

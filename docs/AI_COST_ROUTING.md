@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-19
 
-This page captures the proposed model and tool routing strategy for reducing cloud LLM spend while preserving rigorous academic quality in Medusa. It is a planning document, not an implemented contract. Before wiring any of these routes into import or Concordance processing, validate them against a small gold set of representative papers and keep the current usage ledger as the measurement surface.
+This page captures the current and proposed model/tool routing strategy for reducing cloud LLM spend while preserving rigorous academic quality in Medusa. Implemented defaults are called out in the pipeline table; candidate routes should be validated against a small gold set of representative papers before becoming defaults.
 
 ## Goals
 
@@ -12,20 +12,30 @@ This page captures the proposed model and tool routing strategy for reducing clo
 - Use cheap cloud models for low-risk enrichment and premium models only for synthesis, ambiguity, or high-value documents.
 - Keep every cloud route observable through durable usage records, including provider, model, task, token counts, file/PDF bytes, status, and errors.
 
-## Proposed Pipeline
+## Current Implemented Defaults
 
-| Medusa step | Proposed default | Fallbacks | Escalation path | Cost-control rule |
+- Raw extraction prefers local Marker, with PyMuPDF as the bundled fallback.
+- Page text normalization is local-first and escalates only flagged pages in `auto` mode.
+- Metadata and APA fallback matching stay on `gpt-5.5`.
+- Summary and Accessory Summary generation default to `gpt-5.4`.
+- Keywords/topics default to `gpt-5.4-mini`.
+- DOI regex plus Crossref DOI/title/author/year matching runs before GPT APA fallback; Crossref-backed APA can be formatted locally.
+- The Budget ledger currently records OpenAI calls. Gemini, Anthropic, and local model accounting remain backlog work.
+- OpenAI text chunk encoding remains the current embedding default; local BGE-M3 is a candidate, not yet the app default.
+
+## Pipeline
+
+| Medusa step | Current/default route | Fallbacks | Escalation path | Cost-control rule |
 | --- | --- | --- | --- | --- |
 | PDF hashing, duplicate detection, storage | Local checksum and storage adapter only | None | None | No LLM use. |
 | Raw text and layout extraction | Marker by default, with model weights cached under `data/model-cache`; PyMuPDF remains the bundled fallback | Docling for an alternate local parser; GROBID for scholarly TEI/full text and references; local Qwen-VL or olmOCR-style OCR for hard pages | Gemini Flash or Claude/GPT PDF analysis only when local extraction fails on important documents | First Marker use may download local weights once per cache. Do not send full PDFs by default just to obtain text. |
 | Text normalization | Local cleanup by default after Marker/PyMuPDF extraction | Auto-escalate only low-text or artifact-heavy pages, capped per document and text-only by default | Gemini 2.5 Flash-Lite/Flash, Claude, or GPT only for flagged pages; premium models only for exceptional pages | Never send the full PDF once per page by default. `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=always` is the explicit override for all-pages cloud normalization. |
-| Metadata | GROBID + PDF metadata + DOI regex + Crossref/Semantic Scholar/OpenAlex evidence | Gemini Flash-Lite, Claude Haiku, or GPT nano/mini on first pages/references only | GPT-5.5, Claude Sonnet, or Gemini Pro only for conflicting or high-value records | Treat metadata as extractive. Local/evidence first; cheap model second; premium model last. |
-| DOI and source verification | Deterministic DOI/title matching through Crossref, Semantic Scholar, OpenAlex, DOI.org, publisher/static source evidence | Search targeted evidence and compare normalized titles | LLM only to classify ambiguity or explain conflicting evidence for Queue review | Verified status must come from evidence or explicit user acceptance, not model confidence alone. |
-| APA citation candidate | Deterministic formatter from verified metadata when enough fields exist | Cheap model can draft a candidate when fields are incomplete, but candidate stays reviewable | Premium model for ambiguous bibliographic form, unusual document types, or high-value papers | The model assists citation text; verification remains evidence-backed. |
-| Keywords and topics | Local keyphrase extraction, taxonomy cleanup, and near-duplicate clustering | Gemini Flash-Lite, Gemini Flash, Claude Haiku, GPT nano/mini, or a local text LLM | Premium model only if keywords are used for a final scholarly deliverable | This is a cheap/local task by default because mistakes are editable and low-risk. |
-| Summary | Premium synthesis model such as GPT-5.5 | Claude Sonnet or Gemini Pro as challengers in evals; Gemini Flash for cheap drafts | Batch/Flex or provider batch APIs for non-urgent Concordance refreshes | Keep high-quality synthesis available, but avoid repeated full-PDF calls for the same document. |
-| Accessory summaries | User-selectable draft vs deep analysis mode | Gemini Flash or cheap GPT/Claude tier for drafts | GPT-5.5, Claude Sonnet, or Gemini Pro for final/important summaries | Let task importance drive cost. Accessory summaries should not silently run premium full-PDF analysis. |
-| Text chunk encoding | Local BGE-M3 embeddings | Gemini Embedding, Voyage, or OpenAI embeddings if local runtime is impractical | None needed for quality beyond embedding evals | Strong local candidate. Reindex through Concordance when switching embedding models. |
+| Metadata and citation identity | GPT-5.5 metadata extraction with PDF context when size-safe | Local DOI regex plus Crossref DOI/title/author/year matching | GPT-5.5 compact APA fallback only when DOI/Crossref cannot verify the citation | Do not ask GPT to create APA when Crossref metadata can format it deterministically. |
+| Summary | GPT-5.4 text-only structured summary | GPT-5.5 only for selected high-value reruns | Gemini/Claude alternatives only after quality evaluation | Avoid attaching the PDF for routine summaries. |
+| Keywords/topics | GPT-5.4-mini text-only extraction | Local keyword extraction or Gemini Flash-Lite after eval | Premium model only if organization quality is poor | Organization tags are reviewable and should use the cheap path first. |
+| DOI and source verification | Deterministic DOI/title/author/year matching through Crossref, with DOI regex over extracted text | Semantic Scholar, OpenAlex, DOI.org, publisher/static source evidence | GPT-5.5 only to adjudicate ambiguity from a compact evidence packet | Verified status must come from evidence or explicit user acceptance, not model confidence alone. |
+| Accessory summaries | Current-document durable prompt summaries defaulting to GPT-5.4 | Gemini Flash or cheap GPT/Claude tier for drafts after provider support exists | GPT-5.5, Claude Sonnet, or Gemini Pro for important summaries | Not part of import; let task importance drive cost. |
+| Text chunk encoding | Current OpenAI embedding model; proposed target is local BGE-M3 after evaluation | Gemini Embedding, Voyage, or OpenAI embeddings if local runtime is impractical | None needed for quality beyond embedding evals | Strong local candidate. Reindex through Concordance when switching embedding models. |
 | Figure and caption gists | Local figure extraction and nearby caption parsing | Local Qwen-VL for targeted page/figure understanding | Gemini Flash for visual gists; premium model only for critical figures | Send cropped figure/page regions, not whole PDFs, whenever possible. |
 | Retroactive refreshes | Concordance Runs with provider/model recorded per capability version | Batch or Flex-style cloud processing for slow non-urgent refreshes | Premium model only for selected scope or failed cheap/local pass | Large library refreshes should default to async discounted processing. |
 

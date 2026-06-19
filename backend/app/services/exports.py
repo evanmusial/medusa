@@ -17,6 +17,7 @@ from app.models import (
     ConcordanceJob,
     ConcordanceRun,
     Document,
+    DocumentAccessorySummary,
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
@@ -389,6 +390,10 @@ def _document_export(document: Document) -> dict[str, Any]:
         "pages": [_page_export(page) for page in sorted(document.pages, key=lambda value: value.page_number)],
         "text_chunks": [_chunk_export(chunk) for chunk in sorted(document.chunks, key=lambda value: (value.page_start or 0, value.id))],
         "figures": [_figure_export(figure) for figure in sorted(document.figures, key=lambda value: (value.page_number or 0, value.id))],
+        "accessory_summaries": [
+            _accessory_summary_export(summary)
+            for summary in sorted(document.accessory_summaries, key=lambda value: (value.created_at, value.id))
+        ],
         "annotations": [
             _annotation_export(annotation)
             for annotation in sorted(document.annotations, key=lambda value: (value.page_number or 0, value.created_at, value.id))
@@ -481,6 +486,23 @@ def _annotation_export(annotation: Annotation) -> dict[str, Any]:
         "color": annotation.color,
         **_timestamps(annotation),
         **_soft_delete(annotation),
+    }
+
+
+def _accessory_summary_export(summary: DocumentAccessorySummary) -> dict[str, Any]:
+    return {
+        "id": summary.id,
+        "title": summary.title,
+        "prompt": summary.prompt,
+        "summary": summary.summary,
+        "model": summary.model,
+        "status": summary.status,
+        "attempts": summary.attempts,
+        "last_error": summary.last_error,
+        "evidence": summary.evidence,
+        "locked_at": _value(summary.locked_at),
+        "completed_at": _value(summary.completed_at),
+        **_timestamps(summary),
     }
 
 

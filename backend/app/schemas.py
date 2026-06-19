@@ -183,6 +183,38 @@ class AnnotationOut(ApiModel):
     updated_at: datetime
 
 
+class AccessorySummaryCreate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    model: str | None = None
+    title: str | None = Field(default=None, max_length=240)
+
+
+class AccessorySummaryPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=240)
+
+
+class AccessorySummaryOut(ApiModel):
+    id: str
+    document_id: str
+    title: str | None = None
+    prompt: str
+    summary: str | None = None
+    model: str
+    status: str
+    attempts: int
+    last_error: str | None = None
+    evidence: dict[str, Any]
+    locked_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("title", "prompt", "summary", "last_error", mode="before")
+    @classmethod
+    def decode_summary_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
 class DocumentSummary(ApiModel):
     id: str
     title: str
@@ -225,6 +257,7 @@ class DocumentDetail(DocumentSummary):
     versions: list[DocumentVersionOut] = Field(default_factory=list)
     pages: list[DocumentPageOut] = Field(default_factory=list)
     figures: list[FigureOut] = Field(default_factory=list)
+    accessory_summaries: list[AccessorySummaryOut] = Field(default_factory=list)
     annotations: list[AnnotationOut] = Field(default_factory=list)
     duplicate_document_ids: list[str] = Field(default_factory=list)
 
@@ -452,9 +485,11 @@ class DashboardOut(BaseModel):
     import_active_step: str | None = None
     import_active_elapsed_seconds: int | None = None
     active_concordance_jobs: int
+    active_accessory_summary_jobs: int = 0
     failed_jobs: int
     failed_import_jobs: int
     failed_concordance_jobs: int
+    failed_accessory_summary_jobs: int = 0
     projects: int
 
 

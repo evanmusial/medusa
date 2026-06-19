@@ -9,6 +9,7 @@ import {
   ChevronRight,
   CheckCircle2,
   CheckSquare,
+  CircleDollarSign,
   Clipboard,
   Cloud,
   Download,
@@ -21,13 +22,11 @@ import {
   Gauge,
   Info,
   Image,
+  Inbox,
   Library,
   ListChecks,
-  ListTodo,
   LogOut,
   Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
   Plus,
   RefreshCw,
   Save,
@@ -37,13 +36,13 @@ import {
   Sun,
   Tags,
   Trash2,
+  Upload,
   UploadCloud,
-  WalletCards,
   X,
 } from "lucide-react";
 import { api } from "./lib/api";
 import type {
-  AnnotationPayload,
+  AccessorySummary,
   AppPreferences,
   Bibliography,
   CitationCandidate,
@@ -73,7 +72,7 @@ import type {
 } from "./types";
 
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "budget" | "settings";
-type SidebarCounts = Partial<Record<View, number>>;
+type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
 type BackgroundJobStatus = "starting" | "queued" | "running" | "complete" | "failed";
@@ -105,6 +104,7 @@ type ConcordanceRunRequest = {
 };
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
 
+const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
@@ -121,15 +121,15 @@ const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> =
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task";
 
-const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; separated?: boolean }> = [
+const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; align?: "end" }> = [
   { id: "library", label: "Library", icon: Library },
   { id: "domains", label: "Domains", icon: FolderTree },
   { id: "projects", label: "Projects", icon: ListChecks },
-  { id: "queue", label: "Queue", icon: ListTodo },
+  { id: "queue", label: "Queue", icon: Inbox },
   { id: "notes", label: "Notes", icon: BookOpen },
-  { id: "import", label: "Import", icon: UploadCloud },
-  { id: "budget", label: "Budget", icon: WalletCards, shortcut: "B" },
-  { id: "settings", label: "Settings", icon: Settings, separated: true },
+  { id: "import", label: "Import", icon: Upload },
+  { id: "budget", label: "Budget", icon: CircleDollarSign, shortcut: "B" },
+  { id: "settings", label: "Settings", icon: Settings, align: "end" },
 ];
 
 function authorLine(document: DocumentSummary | DocumentDetail) {
@@ -167,7 +167,7 @@ function recommendationProviderLabel(value: string) {
     .join(", ");
 }
 
-function formatSidebarCount(value: number | undefined) {
+function formatNavCount(value: number | undefined) {
   if (value === undefined || !Number.isFinite(value)) return "";
   if (Math.abs(value) < 1000) return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1, notation: "compact" }).format(value);
@@ -318,6 +318,17 @@ function isActiveConcordanceStatus(status: string) {
   return status === "queued" || status === "running";
 }
 
+function isActiveAccessorySummaryStatus(status: string) {
+  return status === "queued" || status === "running";
+}
+
+function accessorySummaryTone(summary: AccessorySummary): "neutral" | "good" | "warn" | "blue" {
+  if (summary.status === "complete") return "good";
+  if (summary.status === "failed") return "warn";
+  if (isActiveAccessorySummaryStatus(summary.status)) return "blue";
+  return "neutral";
+}
+
 function statusFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[]): BackgroundJobStatus {
   if (run.status === "complete_with_errors" || run.failed_jobs > 0 || runJobs.some((job) => job.status === "failed")) return "failed";
   if (run.status === "complete") return "complete";
@@ -369,51 +380,68 @@ function backgroundStatusLabel(job: BackgroundJob) {
   return "Complete";
 }
 
-function BackgroundJobShelf({ jobs }: { jobs: BackgroundJob[] }) {
-  if (!jobs.length) return null;
-  const activeCount = jobs.filter((job) => !isTerminalBackgroundStatus(job.status)).length;
+function HeaderWorkProgress({
+  dashboard,
+  jobs,
+  onOpenQueue,
+}: {
+  dashboard?: Dashboard;
+  jobs: BackgroundJob[];
+  onOpenQueue: () => void;
+}) {
+  const importActive = Boolean(dashboard && dashboard.active_import_jobs > 0);
+  const activeJobs = jobs.filter((job) => !isTerminalBackgroundStatus(job.status));
+  if (!importActive && !activeJobs.length) return <div className="header-work-slot empty" aria-hidden="true" />;
+
+  let label = "Background work";
+  let detail = "Processing";
+  let progress = 10;
+  let activeClass = "running";
+
+  if (importActive && dashboard) {
+    const total = dashboard.import_progress_total || dashboard.active_import_jobs;
+    const finished = Math.min(total, dashboard.import_progress_completed + dashboard.import_progress_failed);
+    const percent = total > 0 ? Math.round((finished / total) * 100) : 0;
+    progress = Math.max(0, Math.min(100, dashboard.import_running_jobs > 0 && percent === 0 ? 6 : percent));
+    label = "Imports";
+    activeClass = dashboard.import_running_jobs > 0 ? "running" : "queued";
+    const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
+    const activeElapsed = formatDuration(dashboard.import_active_elapsed_seconds);
+    detail = activeStep
+      ? `${activeStep}${activeElapsed ? ` - ${activeElapsed}` : ""}`
+      : `${dashboard.import_running_jobs} importing / ${dashboard.import_queued_jobs} queued`;
+  } else {
+    const job = activeJobs[0];
+    progress = backgroundProgress(job);
+    label = activeJobs.length > 1 ? `${activeJobs.length} background jobs` : job.label;
+    detail = job.detail || backgroundStatusLabel(job);
+    activeClass = job.status;
+  }
+
   return (
-    <section className="background-jobs" aria-label="Background work">
-      <div className="background-jobs-head">
-        <span>Background work</span>
-        <strong>{activeCount ? `${activeCount} active` : "Done"}</strong>
-      </div>
-      <div className="background-job-list">
-        {jobs.slice(0, 4).map((job) => {
-          const progress = backgroundProgress(job);
-          return (
-            <div key={job.id} className={`background-job-row ${job.status}`}>
-              <span className="background-job-icon">
-                {job.status === "complete" ? (
-                  <CheckCircle2 size={15} />
-                ) : job.status === "failed" ? (
-                  <X size={15} />
-                ) : (
-                  <RefreshCw className={job.status === "running" ? "spin" : ""} size={15} />
-                )}
-              </span>
-              <div className="background-job-copy">
-                <div className="background-job-copy-main">
-                  <strong>{job.label}</strong>
-                  <small>{job.error || job.detail || backgroundStatusLabel(job)}</small>
-                </div>
-                <div
-                  aria-label={`${job.label}: ${progress}%`}
-                  aria-valuemax={100}
-                  aria-valuemin={0}
-                  aria-valuenow={progress}
-                  className="background-job-progress"
-                  role="progressbar"
-                >
-                  <span style={{ width: `${progress}%` }} />
-                </div>
-              </div>
-              <span className="background-job-state">{backgroundStatusLabel(job)}</span>
-            </div>
-          );
-        })}
-      </div>
-    </section>
+    <div className="header-work-slot">
+      <button className={`header-work-progress ${activeClass}`} type="button" aria-label="Open import queue" onClick={onOpenQueue}>
+        <span className="header-work-main">
+          <span className="header-work-icon">
+            <RefreshCw className={activeClass === "running" ? "spin" : ""} size={15} />
+          </span>
+          <span className="header-work-copy">
+            <strong>{label}</strong>
+            <small>{detail}</small>
+          </span>
+        </span>
+        <span
+          aria-label={`${label}: ${progress}%`}
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={progress}
+          className="header-work-track"
+          role="progressbar"
+        >
+          <span style={{ width: `${progress}%` }} />
+        </span>
+      </button>
+    </div>
   );
 }
 
@@ -673,17 +701,35 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 }
 
 function markdownExcerpt(markdown: string, maxChars = 360): string {
+  const paragraphLines: string[] = [];
   const lines = decodeHtmlEntities(markdown)
     .replace(/\r/g, "")
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const usefulLines = lines.filter((line) => !/^#{1,6}\s+/.test(line)).slice(0, 4);
-  const joined = usefulLines.join("\n");
-  if (joined.length <= maxChars) return joined;
-  const sentenceEnd = joined.slice(0, maxChars).search(/[.!?]\s+[A-Z0-9*`]/);
-  if (sentenceEnd > 120) return joined.slice(0, sentenceEnd + 1).trim();
-  const trimmed = joined.slice(0, maxChars).trimEnd();
+    .map((line) => line.trim());
+  for (const line of lines) {
+    if (!line) {
+      if (paragraphLines.length) break;
+      continue;
+    }
+    if (/^#{1,6}\s+/.test(line)) {
+      if (paragraphLines.length) break;
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (bullet || ordered) {
+      if (paragraphLines.length) break;
+      paragraphLines.push((bullet?.[1] || ordered?.[1] || "").trim());
+      break;
+    }
+    paragraphLines.push(line);
+  }
+  const paragraph = paragraphLines.join(" ");
+  if (paragraph.length <= maxChars) return paragraph;
+  const excerpt = paragraph.slice(0, maxChars);
+  const sentenceEnd = [...excerpt.matchAll(/[.!?](?=\s+[A-Z0-9*`]|$)/g)].at(-1)?.index;
+  if (sentenceEnd && sentenceEnd > 120) return paragraph.slice(0, sentenceEnd + 1).trim();
+  const trimmed = excerpt.trimEnd();
   return `${trimmed.replace(/[,\s;:]+$/, "")}...`;
 }
 
@@ -888,12 +934,18 @@ function Login() {
 }
 
 function Header({
+  backgroundJobs,
+  dashboard,
+  onOpenQueue,
   query,
   setQuery,
   theme,
   setTheme,
   onLogout,
 }: {
+  backgroundJobs: BackgroundJob[];
+  dashboard?: Dashboard;
+  onOpenQueue: () => void;
   query: string;
   setQuery: (query: string) => void;
   theme: "day" | "night";
@@ -917,6 +969,7 @@ function Header({
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents, notes, figures, citations..." />
       </label>
       <div className="topbar-actions">
+        <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
         <span className="build-version" title={`Medusa build ${MEDUSA_BUILD_VERSION}`}>
           v{MEDUSA_BUILD_VERSION}
         </span>
@@ -931,102 +984,38 @@ function Header({
   );
 }
 
-function Sidebar({
+function WorkspaceNav({
   activeView,
-  collapsed,
-  activeImportJobs,
   counts,
-  dashboard,
-  onOpenQueue,
-  onToggleSidebar,
   setActiveView,
 }: {
   activeView: View;
-  collapsed: boolean;
-  activeImportJobs: number;
-  counts: SidebarCounts;
-  dashboard?: Dashboard;
-  onOpenQueue: () => void;
-  onToggleSidebar: () => void;
+  counts: NavCounts;
   setActiveView: (view: View) => void;
 }) {
   return (
-    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
-      {!collapsed ? (
-        <nav>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const count = formatSidebarCount(counts[item.id]);
-            return (
-              <button
-                key={item.id}
-                aria-keyshortcuts={item.shortcut}
-                className={`${activeView === item.id ? "active" : ""}${item.separated ? " nav-separated" : ""}`}
-                onClick={() => setActiveView(item.id)}
-                title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
-              >
-                <Icon size={18} />
-                <span>
-                  {item.label}
-                  {count ? <span className="sidebar-count"> ({count})</span> : null}
-                </span>
-                {item.id === "import" && activeImportJobs > 0 ? <small>{activeImportJobs}</small> : null}
-              </button>
-            );
-          })}
-        </nav>
-      ) : null}
-      <div className="sidebar-bottom">
-        {!collapsed ? <SidebarImportProgress dashboard={dashboard} onOpenQueue={onOpenQueue} /> : null}
-        <button
-          className="icon-button sidebar-toggle"
-          title={collapsed ? "Show navigation" : "Hide navigation"}
-          onClick={onToggleSidebar}
-          type="button"
-        >
-          {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-        </button>
-      </div>
-    </aside>
-  );
-}
-
-function SidebarImportProgress({ dashboard, onOpenQueue }: { dashboard?: Dashboard; onOpenQueue: () => void }) {
-  if (!dashboard || dashboard.active_import_jobs <= 0) return null;
-  const total = dashboard.import_progress_total || dashboard.active_import_jobs;
-  const finished = Math.min(total, dashboard.import_progress_completed + dashboard.import_progress_failed);
-  const percent = total > 0 ? Math.round((finished / total) * 100) : 0;
-  const visiblePercent = dashboard.import_running_jobs > 0 && percent === 0 ? 6 : percent;
-  const fillWidth = `${Math.max(0, Math.min(100, visiblePercent))}%`;
-  const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
-  const activeElapsed = formatDuration(dashboard.import_active_elapsed_seconds);
-
-  return (
-    <button className="sidebar-import-progress" type="button" aria-label="Open import queue" onClick={onOpenQueue}>
-      <div className="sidebar-progress-head">
-        <span>Imports</span>
-        <strong>{percent}%</strong>
-      </div>
-      <div
-        className={`sidebar-progress-track${dashboard.import_running_jobs > 0 ? " active" : ""}`}
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-      >
-        <span style={{ width: fillWidth }} />
-      </div>
-      {activeStep ? (
-        <div className="sidebar-progress-step">
-          <span>{activeStep}</span>
-          {activeElapsed ? <strong>{activeElapsed}</strong> : null}
-        </div>
-      ) : null}
-      <div className="sidebar-progress-meta">
-        <span>{dashboard.import_running_jobs} importing</span>
-        <span>{dashboard.import_queued_jobs} queued</span>
-      </div>
-    </button>
+    <nav className="workspace-nav" aria-label="Main sections">
+      {navItems.map((item) => {
+        const Icon = item.icon;
+        const rawCount = counts[item.id];
+        const count = rawCount !== undefined && (item.id === "library" || rawCount > 0) ? formatNavCount(rawCount) : "";
+        return (
+          <button
+            key={item.id}
+            aria-current={activeView === item.id ? "page" : undefined}
+            aria-keyshortcuts={item.shortcut}
+            className={`workspace-nav-item${activeView === item.id ? " active" : ""}${item.align === "end" ? " settings" : ""}`}
+            onClick={() => setActiveView(item.id)}
+            title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
+            type="button"
+          >
+            <Icon size={17} />
+            <span>{item.label}</span>
+            {count ? <small className="workspace-nav-count">{count}</small> : null}
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -1129,6 +1118,7 @@ function LibraryView({
   startConcordanceRun,
   loading,
   alternatingRows,
+  preferences,
 }: {
   documents: DocumentSummary[];
   document?: DocumentDetail;
@@ -1146,6 +1136,7 @@ function LibraryView({
   startConcordanceRun: StartConcordanceRun;
   loading: boolean;
   alternatingRows: boolean;
+  preferences?: AppPreferences;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
   const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
@@ -1159,6 +1150,7 @@ function LibraryView({
   const [bulkDomainId, setBulkDomainId] = useState("");
   const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
   const [batchConcordanceRunId, setBatchConcordanceRunId] = useState<string | null>(null);
+  const [confirmBatchConcordance, setConfirmBatchConcordance] = useState(false);
   const queryClient = useQueryClient();
   const batchConcordanceFeedback = useAsyncActionFeedback();
   const saveSearch = useMutation({
@@ -1228,6 +1220,14 @@ function LibraryView({
   const batchConcordanceBusy =
     batchConcordance.isPending ||
     Boolean(batchConcordanceRunId && (!trackedBatchConcordanceJobs.length || trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))));
+  useEffect(() => {
+    if (!confirmBatchConcordance) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setConfirmBatchConcordance(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmBatchConcordance]);
   useEffect(() => {
     if (!batchConcordanceRunId || trackedBatchConcordanceJobs.length === 0) return;
     if (trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
@@ -1434,13 +1434,17 @@ function LibraryView({
             <div className="bulk-bar">
               <span>{selectedIds.length} selected</span>
               <select value={bulkReadStatus} onChange={(event) => setBulkReadStatus(event.target.value)}>
-                <option value="">Read status</option>
+                <option value="" disabled hidden>
+                  Read status
+                </option>
                 <option value="unread">Unread</option>
                 <option value="skimmed">Skimmed</option>
                 <option value="read">Read</option>
               </select>
               <select value={bulkPriority} onChange={(event) => setBulkPriority(event.target.value)}>
-                <option value="">Priority</option>
+                <option value="" disabled hidden>
+                  Priority
+                </option>
                 <option value="urgent">Urgent</option>
                 <option value="high">High</option>
                 <option value="normal">Normal</option>
@@ -1463,7 +1467,9 @@ function LibraryView({
                 selectedIds={bulkTagIds}
               />
               <select value={bulkDomainId} onChange={(event) => setBulkDomainId(event.target.value)}>
-                <option value="">Domain</option>
+                <option value="" disabled hidden>
+                  Domain
+                </option>
                 {domains.map((domain) => (
                   <option key={domain.id} value={domain.id}>
                     {domain.name}
@@ -1485,7 +1491,7 @@ function LibraryView({
                 <button
                   className={asyncFeedbackClass("secondary-button", batchConcordanceFeedback.feedback, batchConcordanceBusy)}
                   disabled={batchConcordanceBusy}
-                  onClick={() => batchConcordance.mutate()}
+                  onClick={() => setConfirmBatchConcordance(true)}
                 >
                   <RefreshCw className={batchConcordanceBusy ? "spin" : ""} size={15} />
                   {batchConcordanceBusy ? "Concording" : "Concord"}
@@ -1494,6 +1500,46 @@ function LibraryView({
             </div>
           ) : null}
         </div>
+        {confirmBatchConcordance ? (
+          <div
+            className="confirm-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setConfirmBatchConcordance(false);
+            }}
+          >
+            <section aria-labelledby="confirm-concordance-title" aria-modal="true" className="confirm-dialog" role="dialog">
+              <div className="confirm-dialog-heading">
+                <div>
+                  <h2 id="confirm-concordance-title">Confirm Concordance</h2>
+                  <span>
+                    {selectedIds.length} selected {selectedIds.length === 1 ? "document" : "documents"}
+                  </span>
+                </div>
+                <RefreshCw size={20} />
+              </div>
+              <p>
+                You're about to start a Concordance Run for the selected documents. Depending on your current model settings, this can queue AI
+                processing and incur cost.
+              </p>
+              <div className="confirm-dialog-actions">
+                <button className="secondary-button" onClick={() => setConfirmBatchConcordance(false)} type="button">
+                  Cancel
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={batchConcordanceBusy}
+                  onClick={() => {
+                    setConfirmBatchConcordance(false);
+                    batchConcordance.mutate();
+                  }}
+                  type="button"
+                >
+                  Confirm
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
         <div className={`rows ${alternatingRows ? "alternating-rows" : ""}`}>
           {documents.map((item) => (
             <div
@@ -1511,7 +1557,7 @@ function LibraryView({
                 type="checkbox"
               />
               <button className="doc-row-main" onClick={() => activateDocument(item.id)} type="button">
-                <strong>{item.title}</strong>
+                <span className="doc-row-title">{item.title}</span>
                 <span className="doc-row-byline">
                   <span className="doc-row-pages">{pageCountMarker(item)}</span>
                   <span className="doc-row-year">{item.publication_year || "n.d."}</span>
@@ -1544,6 +1590,7 @@ function LibraryView({
         document={document}
         domains={domains}
         onOpenReader={() => setReaderOpen(true)}
+        preferences={preferences}
         projects={projects}
         query={query}
         startConcordanceRun={startConcordanceRun}
@@ -1575,13 +1622,6 @@ type DocumentDraft = {
   tag_names: string;
   domain_ids: string[];
   attributes: AttributeDraft[];
-};
-
-type AnnotationDraft = {
-  page_number: string;
-  kind: string;
-  body: string;
-  color: string;
 };
 
 type ReaderMode = "pdf" | "text";
@@ -1616,6 +1656,7 @@ function DocumentPanel({
   domains,
   onCloseReader,
   onOpenReader,
+  preferences,
   projects,
   query,
   readerExpanded = false,
@@ -1627,6 +1668,7 @@ function DocumentPanel({
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
+  preferences?: AppPreferences;
   projects: Project[];
   query: string;
   readerExpanded?: boolean;
@@ -1649,6 +1691,7 @@ function DocumentPanel({
       domains={domains}
       onCloseReader={onCloseReader}
       onOpenReader={onOpenReader}
+      preferences={preferences}
       projects={projects}
       query={query}
       readerExpanded={readerExpanded}
@@ -1869,6 +1912,7 @@ function DocumentPanelContent({
   domains,
   onCloseReader,
   onOpenReader,
+  preferences,
   projects,
   query,
   readerExpanded = false,
@@ -1880,6 +1924,7 @@ function DocumentPanelContent({
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
+  preferences?: AppPreferences;
   projects: Project[];
   query: string;
   readerExpanded?: boolean;
@@ -1892,12 +1937,14 @@ function DocumentPanelContent({
   const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "text" : "pdf"));
   const [readerPageIndex, setReaderPageIndex] = useState(0);
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
-  const [annotationDraft, setAnnotationDraft] = useState<AnnotationDraft>({
-    page_number: "",
-    kind: "highlight",
-    body: "",
-    color: "#f6c343",
-  });
+  const accessorySummaryTask = preferences?.analysis_model_tasks.find((task) => task.key === ACCESSORY_SUMMARIES_MODEL_KEY);
+  const accessorySummaryDefaultModel =
+    preferences?.analysis_models[ACCESSORY_SUMMARIES_MODEL_KEY] || accessorySummaryTask?.selected_model || accessorySummaryTask?.default_model || "gpt-5.4";
+  const [accessoryComposerOpen, setAccessoryComposerOpen] = useState(false);
+  const [accessoryPrompt, setAccessoryPrompt] = useState("");
+  const [accessoryModel, setAccessoryModel] = useState(accessorySummaryDefaultModel);
+  const [trackedAccessorySummaryId, setTrackedAccessorySummaryId] = useState<string | null>(null);
+  const [accessoryTitleDrafts, setAccessoryTitleDrafts] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const [documentConcordanceRunId, setDocumentConcordanceRunId] = useState<string | null>(null);
   const [citationRunId, setCitationRunId] = useState<string | null>(null);
@@ -1905,6 +1952,7 @@ function DocumentPanelContent({
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
   const citationFeedback = useAsyncActionFeedback();
+  const accessorySummaryFeedback = useAsyncActionFeedback();
   const updateDocument = useMutation({
     mutationFn: (body: DocumentUpdatePayload) => api.updateDocument(document.id, body),
     onSuccess: () => {
@@ -1968,14 +2016,6 @@ function DocumentPanelContent({
       citationFeedback.showError(actionFailureMessage("Could not start citation check", error));
     },
   });
-  const createAnnotation = useMutation({
-    mutationFn: (body: AnnotationPayload) => api.createAnnotation(document.id, body),
-    onSuccess: () => {
-      setAnnotationDraft({ page_number: "", kind: "highlight", body: "", color: "#f6c343" });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    },
-  });
   const deleteAnnotation = useMutation({
     mutationFn: (annotationId: string) => api.deleteAnnotation(annotationId),
     onSuccess: () => {
@@ -1983,17 +2023,48 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
   });
+  const createAccessorySummary = useMutation({
+    mutationFn: () =>
+      api.createAccessorySummary(document.id, {
+        prompt: accessoryPrompt.trim(),
+        model: accessoryModel || accessorySummaryDefaultModel,
+      }),
+    onSuccess: (summary) => {
+      setTrackedAccessorySummaryId(summary.id);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+    },
+    onError: (error) => {
+      accessorySummaryFeedback.showError(actionFailureMessage("Could not queue accessory summary", error));
+    },
+  });
+  const updateAccessorySummary = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) => api.updateAccessorySummary(id, { title }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    },
+  });
 
   useEffect(() => {
     setDraft(draftFromDocument(document));
-    setAnnotationDraft({ page_number: "", kind: "highlight", body: "", color: "#f6c343" });
     setReaderPageIndex(0);
     setEditing(false);
     setRecommendationsOpen(false);
+    setAccessoryComposerOpen(false);
+    setAccessoryPrompt("");
+    setAccessoryTitleDrafts({});
+    setTrackedAccessorySummaryId(null);
     setSaveError(null);
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
   }, [document.id]);
+
+  useEffect(() => {
+    setAccessoryModel(accessorySummaryDefaultModel);
+  }, [accessorySummaryDefaultModel, document.id]);
 
   const copyCitation = () => {
     if (document.apa_citation) void copyToClipboard("citation", decodeHtmlEntities(document.apa_citation));
@@ -2030,6 +2101,16 @@ function DocumentPanelContent({
         (!trackedDocumentConcordanceJobs.length || trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))),
     );
   const citationBusy = refreshCitation.isPending || citationRefreshActive || Boolean(citationRunId);
+  const accessorySummaries = document.accessory_summaries || [];
+  const trackedAccessorySummary = trackedAccessorySummaryId
+    ? accessorySummaries.find((summary) => summary.id === trackedAccessorySummaryId)
+    : undefined;
+  const accessorySummaryBusy =
+    createAccessorySummary.isPending ||
+    Boolean(
+      trackedAccessorySummaryId &&
+        (!trackedAccessorySummary || isActiveAccessorySummaryStatus(trackedAccessorySummary.status)),
+    );
 
   useEffect(() => {
     if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
@@ -2072,12 +2153,32 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["documents"] });
     void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
   }, [citationFeedback.showError, citationFeedback.showSuccess, citationRunId, document.id, queryClient, trackedCitationJobs]);
+
+  useEffect(() => {
+    if (!trackedAccessorySummaryId || !trackedAccessorySummary) return;
+    if (isActiveAccessorySummaryStatus(trackedAccessorySummary.status)) return;
+    if (trackedAccessorySummary.status === "failed") {
+      accessorySummaryFeedback.showError(
+        actionFailureMessage("Accessory summary failed", trackedAccessorySummary.last_error || "The accessory summary failed without a detailed error"),
+      );
+      setTrackedAccessorySummaryId(null);
+      return;
+    }
+    accessorySummaryFeedback.showSuccess();
+    setAccessoryComposerOpen(false);
+    setAccessoryPrompt("");
+    setTrackedAccessorySummaryId(null);
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+  }, [
+    accessorySummaryFeedback.showError,
+    accessorySummaryFeedback.showSuccess,
+    queryClient,
+    trackedAccessorySummary,
+    trackedAccessorySummaryId,
+  ]);
   const copyFullText = () => {
     if (fullText) void copyToClipboard("full-text", fullText);
-  };
-  const startPageNote = (pageNumber: number) => {
-    setReaderMode("text");
-    setAnnotationDraft({ page_number: String(pageNumber), kind: "note", body: "", color: "#60a5fa" });
   };
 
   const setDraftValue = <K extends keyof DocumentDraft>(key: K, value: DocumentDraft[K]) => {
@@ -2107,6 +2208,16 @@ function DocumentPanelContent({
       ...current,
       attributes: current.attributes.filter((_, attributeIndex) => attributeIndex !== index),
     }));
+  };
+
+  const submitAccessorySummary = () => {
+    if (!accessoryPrompt.trim() || accessorySummaryBusy) return;
+    createAccessorySummary.mutate();
+  };
+
+  const saveAccessorySummaryTitle = (summary: AccessorySummary) => {
+    const title = accessoryTitleDrafts[summary.id] ?? summary.title ?? "";
+    updateAccessorySummary.mutate({ id: summary.id, title });
   };
 
   const saveCorrection = () => {
@@ -2139,17 +2250,8 @@ function DocumentPanelContent({
       attribute_values: nextAttributes,
     });
   };
-  const saveAnnotation = () => {
-    const pageNumber = Number(annotationDraft.page_number);
-    createAnnotation.mutate({
-      page_number: Number.isFinite(pageNumber) && annotationDraft.page_number.trim() ? pageNumber : null,
-      kind: annotationDraft.kind,
-      body: annotationDraft.body.trim() || null,
-      geometry: {},
-      color: annotationDraft.color || null,
-    });
-  };
   const annotations = document.annotations || [];
+  const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
@@ -2250,12 +2352,6 @@ function DocumentPanelContent({
               >
                 <ChevronRight size={18} />
               </button>
-              {currentPage ? (
-                <button className="secondary-button compact" type="button" onClick={() => startPageNote(currentPage.page_number)}>
-                  <Bookmark size={14} />
-                  Note
-                </button>
-              ) : null}
               <button className="secondary-button compact" onClick={copyFullText} disabled={!fullText}>
                 {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
                 {copiedKey === "full-text" ? "Copied" : "Copy"}
@@ -2438,45 +2534,99 @@ function DocumentPanelContent({
         <h3>Summary</h3>
         <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
       </section>
+      <section className="detail-section accessory-summary-section">
+        <div className="detail-section-title-row">
+          <h3>Accessory Summaries</h3>
+          <button
+            className="secondary-button compact"
+            disabled={accessorySummaryBusy}
+            onClick={() => setAccessoryComposerOpen((value) => !value)}
+            type="button"
+          >
+            {accessoryComposerOpen ? <X size={14} /> : <Plus size={14} />}
+            {accessoryComposerOpen ? "Cancel" : "Add"}
+          </button>
+        </div>
+        {accessoryComposerOpen ? (
+          <form
+            className="accessory-summary-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitAccessorySummary();
+            }}
+          >
+            <textarea
+              disabled={accessorySummaryBusy}
+              onChange={(event) => setAccessoryPrompt(event.target.value)}
+              placeholder="Ask a question or specify a focused topic"
+              rows={6}
+              value={accessoryPrompt}
+            />
+            <div className="accessory-summary-actions">
+              <ModelSelect
+                defaultModel={accessorySummaryDefaultModel}
+                onChange={setAccessoryModel}
+                options={accessoryModelOptions}
+                value={accessoryModel || accessorySummaryDefaultModel}
+              />
+              <AsyncActionSlot busy={accessorySummaryBusy} feedback={accessorySummaryFeedback.feedback} label="Accessory summary in progress">
+                <button
+                  className={asyncFeedbackClass("primary-button", accessorySummaryFeedback.feedback, accessorySummaryBusy)}
+                  disabled={accessorySummaryBusy || !accessoryPrompt.trim()}
+                  type="submit"
+                >
+                  <Sparkles className={accessorySummaryBusy ? "spin" : ""} size={15} />
+                  {accessorySummaryBusy ? "Summarizing" : "Summarize"}
+                </button>
+              </AsyncActionSlot>
+            </div>
+          </form>
+        ) : null}
+        {accessorySummaries.length ? (
+          <div className="accessory-summary-list">
+            {accessorySummaries.map((summary) => {
+              const titleValue = accessoryTitleDrafts[summary.id] ?? summary.title ?? "";
+              return (
+                <article key={summary.id} className={`accessory-summary-card ${summary.status}`}>
+                  <div className="accessory-summary-head">
+                    <input
+                      aria-label="Accessory summary title"
+                      disabled={updateAccessorySummary.isPending}
+                      onBlur={() => {
+                        if (titleValue !== (summary.title ?? "")) saveAccessorySummaryTitle(summary);
+                      }}
+                      onChange={(event) =>
+                        setAccessoryTitleDrafts((current) => ({ ...current, [summary.id]: event.target.value }))
+                      }
+                      placeholder="Title"
+                      value={titleValue}
+                    />
+                    <StatusPill value={summary.status} tone={accessorySummaryTone(summary)} />
+                  </div>
+                  <p className="accessory-summary-prompt">{summary.prompt}</p>
+                  {summary.status === "complete" ? (
+                    <MarkdownBlock content={summary.summary} empty="Summary pending." />
+                  ) : summary.status === "failed" ? (
+                    <p className="form-error">{summary.last_error || "Accessory summary failed."}</p>
+                  ) : (
+                    <div className="empty-inline">
+                      <RefreshCw className="spin" size={17} />
+                      <span>{summary.status === "running" ? "Summarizing" : "Queued"}</span>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        ) : !accessoryComposerOpen ? (
+          <div className="empty-inline">
+            <Sparkles size={17} />
+            <span>None yet.</span>
+          </div>
+        ) : null}
+      </section>
       <section className="detail-section">
         <h3>Annotations</h3>
-        <form
-          className="annotation-composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            saveAnnotation();
-          }}
-        >
-          <select
-            value={annotationDraft.kind}
-            onChange={(event) => setAnnotationDraft((current) => ({ ...current, kind: event.target.value }))}
-          >
-            <option value="highlight">Highlight</option>
-            <option value="note">Note</option>
-            <option value="reminder">Reminder</option>
-          </select>
-          <input
-            inputMode="numeric"
-            placeholder="Page"
-            value={annotationDraft.page_number}
-            onChange={(event) => setAnnotationDraft((current) => ({ ...current, page_number: event.target.value }))}
-          />
-          <input
-            type="color"
-            title="Annotation color"
-            value={annotationDraft.color}
-            onChange={(event) => setAnnotationDraft((current) => ({ ...current, color: event.target.value }))}
-          />
-          <textarea
-            placeholder="Annotation note"
-            value={annotationDraft.body}
-            onChange={(event) => setAnnotationDraft((current) => ({ ...current, body: event.target.value }))}
-          />
-          <button className="primary-button" type="submit" disabled={createAnnotation.isPending || !annotationDraft.body.trim()}>
-            <Plus size={15} />
-            Add
-          </button>
-        </form>
         {annotations.length ? (
           <div className="annotation-list">
             {annotations.map((annotation) => (
@@ -3256,7 +3406,7 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
             <h2>Import Queue</h2>
             <span>{queueJobs.length ? `${queueJobs.length} active or waiting` : "No import jobs waiting"}</span>
           </div>
-          <ListTodo size={20} />
+          <Inbox size={20} />
         </div>
         <div className="queue-job-list">
           {queueJobs.map((job) => {
@@ -3639,7 +3789,7 @@ function BudgetView() {
             <h2>Budget</h2>
             <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isFetching ? "Loading usage" : "No recorded calls"}</span>
           </div>
-          <WalletCards size={20} />
+          <CircleDollarSign size={20} />
         </div>
         <div className="budget-controls">
           <label>
@@ -4283,8 +4433,6 @@ export default function App() {
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
-  const [sidebarWidth, setSidebarWidth] = useStoredPaneSize("medusa-sidebar-width", 220, 168, 304);
-  const [sidebarCollapsed, setSidebarCollapsed] = useStoredBoolean("medusa-sidebar-collapsed", false);
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const queryClient = useQueryClient();
 
@@ -4459,17 +4607,16 @@ export default function App() {
     theme === "night" ? "#6ea8ff" : "#2563eb",
   );
   const shellStyle = {
-    "--sidebar-width": sidebarCollapsed ? "52px" : `${sidebarWidth}px`,
-    "--sidebar-resizer-width": sidebarCollapsed ? "0px" : "8px",
     "--accent": activeAccent,
     "--accent-soft": accentSoftColor(activeAccent, theme),
   } as CSSProperties;
-  const sidebarCounts: SidebarCounts = {
+  const navCounts: NavCounts = {
     library: dashboard.data?.documents ?? 0,
     domains: domains.data?.length ?? 0,
     projects: projects.data?.length ?? dashboard.data?.projects ?? 0,
     queue: (jobs.data || []).filter(isQueueImportJob).length + (review.data || []).length,
     notes: notes.data?.length ?? 0,
+    import: dashboard.data?.active_import_jobs ?? 0,
   };
   const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
   const activeServerBackgroundJobs = (concordanceRuns.data || [])
@@ -4489,55 +4636,20 @@ export default function App() {
   );
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={shellStyle}>
+    <div className="app-shell" style={shellStyle}>
       <Header
+        backgroundJobs={visibleBackgroundJobs}
+        dashboard={dashboard.data}
+        onOpenQueue={() => setActiveView("queue")}
         query={query}
         setQuery={setQuery}
         theme={theme}
         setTheme={setTheme}
         onLogout={() => logout.mutate()}
       />
-      <Sidebar
-        activeView={activeView}
-        collapsed={sidebarCollapsed}
-        activeImportJobs={dashboard.data?.active_import_jobs || 0}
-        counts={sidebarCounts}
-        dashboard={dashboard.data}
-        onOpenQueue={() => setActiveView("queue")}
-        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-        setActiveView={setActiveView}
-      />
-      {!sidebarCollapsed ? (
-        <ResizeHandle
-          className="sidebar-resizer"
-          label="Resize navigation pane"
-          max={304}
-          min={168}
-          setValue={setSidebarWidth}
-          value={sidebarWidth}
-        />
-      ) : null}
       <main className="content">
-        <section className={`content-top ${visibleBackgroundJobs.length ? "has-background-jobs" : ""}`}>
-          <section className="metrics">
-            <div>
-              <strong>{dashboard.data?.documents ?? 0}</strong>
-              <span>Documents</span>
-            </div>
-            <div>
-              <strong>{dashboard.data?.unread ?? 0}</strong>
-              <span>Unread</span>
-            </div>
-            <div>
-              <strong>{dashboard.data?.needs_review ?? 0}</strong>
-              <span>Review</span>
-            </div>
-            <div>
-              <strong>{dashboard.data?.queued_jobs ?? 0}</strong>
-              <span>Jobs</span>
-            </div>
-          </section>
-          <BackgroundJobShelf jobs={visibleBackgroundJobs} />
+        <section className="content-top">
+          <WorkspaceNav activeView={activeView} counts={navCounts} setActiveView={setActiveView} />
         </section>
         {activeView === "library" || activeView === "domains" ? (
           <LibraryView
@@ -4557,6 +4669,7 @@ export default function App() {
             startConcordanceRun={startConcordanceRun}
             loading={documents.isFetching}
             alternatingRows={preferences.data?.library_alternating_rows ?? true}
+            preferences={preferences.data}
           />
         ) : null}
         {activeView === "import" ? (

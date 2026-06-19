@@ -27,18 +27,17 @@ Medusa should feel like a serious research cockpit: dense, calm, polished, and f
 
 Current UI architecture:
 
-- Fixed top header with the Medusa emblem, global search aligned by default to the Library document-list pane, subtle build version stamp, theme toggle, and session action.
-- Resizable/collapsible left sidebar navigation: Library, Domains, Projects, Queue, Notes, Import, Budget, Settings. Budget sits above a small divider before Settings and can be opened with the `B` keyboard shortcut when focus is not inside an editable control. Library, Domains, Projects, Queue, and Notes show auto-refreshing parenthesized counts in the expanded sidebar.
+- Fixed top header with the Medusa emblem, global search, a reserved active-work progress control to the left of the build/version controls, subtle build version stamp, theme toggle, and session action. The active-work slot keeps its width while idle so the header does not jump when imports, Concordance, or citation refresh work starts.
+- Horizontal work navigation replaces the old left sidebar: Library, Domains, Projects, Queue, Notes, Import, Budget, and Settings are laid out left-to-right in the former dashboard-metric strip, styled as quiet no-background buttons with Settings pushed to the far right. Budget can still be opened with the `B` keyboard shortcut when focus is not inside an editable control.
 - Main Library view uses a tri-pane layout:
   - Resizable left filter pane for domains, tags, smart filters, and saved searches. The pane has a content-aware minimum so select controls and their affordances remain visible.
-  - Center dense document results with selected-document bulk edit and batch Concordance controls. Document row bylines show fixed aligned columns for page count, publication year, and author list.
-  - Resizable right document detail/correction pane for authenticated original PDF preview, normalized one-page parsed text reading, annotations, citation, summary, extracted figures, tags, domains, attributes, history, and evidence.
-- Library Reader mode can expand the selected document to the whole lower work area while preserving document controls, PDF/Text tabs, citation actions, notes, and metadata sections.
+  - Center dense document results with selected-document bulk edit and batch Concordance controls. Selected-document Concordance shows an in-app cost-aware confirmation dialog before queuing work. Document rows use visible-but-quiet alternate shading when enabled, true black/white title text by theme, first-paragraph inline summary excerpts, and fixed aligned byline columns for page count, publication year, and author list.
+  - Resizable right document detail/correction pane for authenticated original PDF preview, normalized one-page parsed text reading, citation, summary, Accessory Summaries, existing annotations, extracted figures, tags, domains, attributes, history, and evidence. Accessory Summaries are user-prompted focused summaries queued as durable worker jobs and displayed inline with optional titles. Library annotation creation controls are deferred pending a quieter pane-aware redesign.
+- Library Reader mode can expand the selected document to the whole lower work area while preserving document controls, PDF/Text tabs, citation actions, the annotation list, and metadata sections.
 - Completed DOI-bearing documents expose a Library detail-pane Recommendations panel. The panel refreshes related papers from scholarly metadata services, shows title, DOI, venue, year, source, short abstract/description, existing-library status, and open-PDF availability, supports hiding existing matches, copying just the DOI or title, and queues selected or all-new open PDFs for import.
 - Import view centers immediate drag/drop upload plus a batch-defaults intake panel for optional label, priority, read status, domains, tags, and projects. Domains, tags, and projects use searchable chip pickers with restrained inline creation so bulk uploads can be organized before files are dropped.
 - Import view also provides active drop-target feedback, duplicate-decision handling, and live job status with per-file step labels.
-- The sidebar Import badge shows active import jobs only; the bottom of the expanded sidebar shows a clickable import progress bar with running and queued import counts, active step, and elapsed time while uploads are queued or processing. Clicking it opens Queue. The top-level Jobs metric may include imports plus Concordance work.
-- The main work area includes a compact persistent Background Work shelf when Concordance or other tracked async work is starting, queued, running, complete, or failed recently. Job-starting controls hand work to the app shell so progress and completion/error handling continue even if the originating page unmounts.
+- The reserved header active-work control shows import progress first when imports are active, otherwise active Concordance/citation background work. It is visually hidden when no work is active, keeps its layout slot reserved, and clicking it opens Queue.
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation, with run-sheet controls constrained to their pane so long document titles cannot spill into bibliography controls.
 - Queue shows queued/running import jobs with per-job stage progress and citation candidates that need human attention, and supports accepting or rejecting citation candidates.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
@@ -51,13 +50,13 @@ Visual decisions:
 - The header brand lockup should have restrained, generous top/bottom padding plus modest side padding so the emblem and wordmark breathe without turning the header into a hero element.
 - The header build stamp sits in the action cluster before the theme toggle and uses the frontend build date plus optional short Git SHA (`YYYY.MM.DD+hash`) so the running UI can be identified without opening developer tools. `MEDUSA_BUILD_DATE` and `MEDUSA_BUILD_SHA` can override the stamp for release or CI builds.
 - The emblem source remains black with transparency; night mode inverts it with CSS so the glyph reads light while keeping the transparent background intact. The same SVG is used as the browser favicon.
-- The sidebar owns its collapse/expand control. The control belongs at the bottom of the navigation column, and collapsed navigation should retain a narrow restore rail instead of moving that control back into the header.
+- The primary navigation should not consume a persistent left rail. Top-level destinations belong in the quiet horizontal work navigation so the research panes can use the full application width.
 - Day mode uses cool white surfaces, ink text, restrained blue primary actions, teal success, amber warnings.
 - Night mode uses charcoal surfaces, high-contrast text, blue/teal accents, and soft borders.
 - Avoid loud gradients, marketing-style hero layouts, decorative blobs, or oversized display typography inside the work surface.
 - Use icons for actions and navigation where they improve scanning.
 - Buttons that start background jobs should show a green in-flight state with a small progress bar while work is active, flash green on completion, flash red with a concise error popover on failure, then fade back to their normal button color.
-- Dashboard metrics should read as quiet text on the work-surface background, not as button-like cards.
+- Top-level navigation and lightweight status should read as quiet text on the work-surface background, not as button-like cards.
 - Keep cards for framed tools or repeated items; do not nest cards.
 - Keep cockpit spacing dense and practical; panes should prioritize scanning and repeated work over airy presentation.
 
@@ -93,7 +92,7 @@ Backend modules:
 - `backend/app/services/analysis_models.py`: canonical raw extraction/document-analysis task registry, default model ids, model option lists, grouped option metadata, and task descriptions used by Settings.
 - `backend/app/services/document_cache.py`: bounded local PDF cache registration, lookup, storage rehydration, and pruning.
 - `backend/app/services/extraction.py`: layout-aware PDF text extraction, deterministic page text cleanup, table normalization, and chunking.
-- `backend/app/services/ai.py`: OpenAI Responses API structured metadata, PDF-file context, separately configurable summary, APA candidate, topic/keyword, page text normalization calls with bounded fallback, embedding adapter, and call-site usage instrumentation.
+- `backend/app/services/ai.py`: OpenAI Responses API document-intelligence extraction, PDF-file context for citation-critical metadata, routed text-only summary/topic calls, compact APA fallback calls for uncertain citations, optional legacy combined metadata/summary/APA/topic-keyword calls, page text normalization calls with bounded fallback, embedding adapter, and call-site usage instrumentation.
 - `backend/app/services/openai_usage.py`: durable OpenAI usage recorder and Budget/Settings rollup builder for token/file-context counts and conservative estimated costs by task, model, document, import job, and Concordance job.
 - `backend/app/services/ocr.py`: Google Vision adapter placeholder.
 - `backend/app/services/processing.py`: import processing orchestration.
@@ -117,12 +116,13 @@ Frontend modules:
 Frontend async-work contract:
 
 - The app shell owns user-visible progress for durable Concordance work. Page controls start runs through a shell-level `startConcordanceRun` helper so the request is recorded in shell state before the API call returns.
-- The shell reconciles local "starting" jobs with `/api/concordance/runs` and `/api/concordance/jobs` polling data, then renders the compact Background Work shelf near the dashboard metrics.
-- Background Work rows show starting, queued, running, complete, and failed states, keep active work ahead of recent terminal work, and retain completion/error state briefly so the user sees what happened.
+- The shell reconciles local "starting" jobs with `/api/concordance/runs` and `/api/concordance/jobs` polling data, then renders active work in the reserved header progress slot while work is starting, queued, or running.
+- Header progress shows imports first when imports are active, otherwise the first active Concordance/citation background run or an active-count summary. It is hidden but width-preserving when idle and opens Queue when clicked.
 - Page-level controls still own their local disabled state, green in-flight button/progress treatment, and transient result flash. Completion flashes green; a failed start or failed watched job flashes red and shows a concise popover error.
 - The Library citation Check action queues a forced `citation_refresh` Concordance Run for the current document. If the user stays on the document pane, the button-level watcher can flash completion/failure; if the user navigates away, the app shell still follows the durable run and displays terminal state.
 - Settings, selected-document batch Concordance, and document-level Concordance controls use the same shell-owned starter so navigation away from those pages does not abandon UI reconciliation.
-- Import jobs remain represented by Queue rows and the sidebar import-progress block because their progress is already dashboard-backed; rescue/requeue buttons use the same transient button-feedback convention.
+- Import jobs remain represented by Queue rows and the header active-work progress control because their progress is already dashboard-backed; rescue/requeue buttons use the same transient button-feedback convention.
+- Accessory Summary creation writes a durable queued row and then relies on the worker plus selected-document polling to show queued/running/complete/failed state inline in the detail pane. The Summarize button uses the same transient in-flight/success/error treatment as Concordance and citation checks while the new row is being queued and tracked.
 - Recommendation refresh/download actions are not full Concordance runs today, but their buttons follow the same local success/error feedback convention until recommendation downloads become durable background fetch jobs.
 
 ## Data Model
@@ -139,6 +139,7 @@ Current core entities:
 - `DocumentCapability`: per-document completion state for versioned import/concordance capabilities.
 - `OpenAIUsageRecord`: per-call OpenAI Responses/embeddings usage ledger with document/job/run context, model, task, token counts, cached input tokens, PDF/file-context bytes, status, and recent error text.
 - `DocumentRecommendation`: cached DOI/title-based related-paper recommendations for a source document, including provider/relation evidence, DOI, title, authors, venue, description, open PDF/source URLs, existing-library/import matches, and import status.
+- `DocumentAccessorySummary`: user-prompted focused summaries owned by a document, with prompt, optional title, selected model, generated Markdown body, status/attempt/lock fields, completion timestamp, and model/evidence metadata.
 - `DocumentPage`: raw extracted per-page text, normalized reader text, source, low-text flags, and optional page image URI; the document detail API exposes these pages for the full-text reader.
 - `TextChunk`: chunked full text and optional embedding vector.
 - `Figure`: extracted figure, chart, photo, and diagram crops with durable asset URIs, page geometry, labels, captions, and searchable gists.
@@ -194,13 +195,16 @@ Current import path:
 16. PDF figure/photo/chart assets are extracted with PyMuPDF as cropped page graphics. Embedded raster images, page image blocks, and vector-drawn graphic clusters are stored through the configured storage adapter and recorded as `Figure` rows with page number, crop geometry, source kind, label, and nearby caption when available. Captions and labels such as `Figure 1.` remain text anchors in normalized page text; the actual graphic remains an asset instead of Markdown.
 17. Normalized text is chunked for search/embedding, falling back to raw extracted text when needed.
 18. OpenAI metadata extraction runs only when `OPENAI_API_KEY` exists; otherwise a low-confidence review record is produced. Metadata extraction asks for visible authors, affiliations, and normalized contact emails and stores them in `Document.authors`.
-19. Extraction and async document-intelligence work are split into Settings-selectable tasks: Raw Text Extraction, Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and future Accessory Summaries. GPT-backed tasks default to `OPENAI_MODEL=gpt-5.5`; Text Chunk Encoding defaults to `OPENAI_EMBEDDING_MODEL`.
-20. When `MEDUSA_OPENAI_SEND_PDF=true`, Medusa sends the original PDF as a Responses API file input alongside extracted text when the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`; Concordance reruns hydrate the original PDF from the local document cache or durable storage.
-21. Each OpenAI Responses or embeddings request records a durable `OpenAIUsageRecord` when usage data is available, including task/model, import or Concordance context, token counts, cached input tokens, PDF/file-context bytes, and failure status. Settings reads `/api/openai/usage` to show totals, task/model rollups, and recent calls.
-22. Crossref lookup is attempted by DOI/title. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
-23. APA citation is generated. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
-24. Uncertain citations create `CitationCandidate` review records.
-25. Successful jobs retain their local PDF cache copy up to the configured Document Cache Size. Budget pruning deletes oldest non-active cache files and leaves GCS/local original storage untouched.
+19. Extraction and async document-intelligence work are split into Settings-selectable tasks: Raw Text Extraction, Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and Accessory Summaries. Metadata and APA fallback matching default to `OPENAI_MODEL=gpt-5.5`; Summary defaults to `gpt-5.4`; Keywords & Topics defaults to `gpt-5.4-mini`; Accessory Summaries defaults to `gpt-5.4`; Text Chunk Encoding defaults to `OPENAI_EMBEDDING_MODEL`.
+20. By default, document intelligence is routed by task. Metadata extraction may send the original PDF as a Responses API file input when `MEDUSA_OPENAI_SEND_PDF=true` and the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`; summary and keyword/topic extraction use extracted text only. `MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE=true` is an opt-in legacy mode that runs Metadata, Summary, APA Citation Matching, and Keywords & Topics as one structured `core_document_intelligence` Responses call using the Metadata model selection.
+21. OpenAI Responses calls pass stable prompt-cache keys derived from the document checksum and use `MEDUSA_OPENAI_PROMPT_CACHE_RETENTION` when configured; Concordance reruns hydrate original PDFs from the local document cache or durable storage when a task needs PDF context.
+22. Each OpenAI Responses or embeddings request records a durable `OpenAIUsageRecord` when usage data is available, including task/model, import, Concordance, or Accessory Summary context, token counts, cached input tokens, PDF/file-context bytes, and failure status. Settings reads `/api/openai/usage` to show totals, task/model rollups, and recent calls.
+23. Stored `rich_summary` text must begin with the semantic substance of the summary itself, not a standalone heading such as `Summary`, `Overview`, `Abstract`, `Synopsis`, or similar. The AI prompts request this style, and import/Concordance cleanup strips those standalone first-line headings before persistence.
+24. DOI is discovered from AI metadata and local DOI regex over extracted text. Crossref lookup is attempted by DOI first, otherwise by title with optional first-author and publication-year constraints. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
+25. APA citation is generated deterministically from Crossref/document metadata when DOI/Crossref evidence is available. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
+26. When DOI/Crossref cannot verify the citation, Medusa asks the Settings-selected APA Citation Matching model, defaulting to `gpt-5.5`, to generate/check an APA candidate from compact metadata and extracted-text excerpts without attaching the PDF. The result remains `needs_review` unless later verified or accepted.
+27. Uncertain citations create `CitationCandidate` review records.
+28. Successful jobs retain their local PDF cache copy up to the configured Document Cache Size. Budget pruning deletes oldest non-active cache files and leaves GCS/local original storage untouched.
 
 Durability decisions:
 
@@ -233,8 +237,8 @@ Current first capabilities:
 
 - `page_text_normalization` v3: conforms raw extracted page text into standard readable paragraph flow using OpenAI when configured and local cleanup as a fallback; it preserves headings, labels, captions, citations, equations, lists, tables, and reading flow across columns/graphics without converting graphics to Markdown. Concordance reruns use the original PDF context when available.
 - `search_index` v3: rebuilds `Document.search_text` from title, authors, visible author contact emails, abstract, summary, APA citation, normalized pages, figure labels/captions/gists, notes, custom attributes, tags, and domains.
-- `citation_refresh` v2: regenerates Markdown APA 7 text with Crossref-backed fields and refreshes citation status; uncertain output stays in Queue for citation review.
-- `summary_topics` v5: uses the configured AI adapter with extracted text plus original PDF context when available to fill missing metadata, visible author contacts, concise Markdown summaries, APA candidates, topics, and keywords without overwriting user-corrected identity metadata.
+- `citation_refresh` v3: regenerates Markdown APA 7 text from DOI/Crossref evidence first, fills missing fields, and uses compact GPT-5.5 APA fallback only when evidence cannot verify the citation; uncertain output stays in Queue for citation review.
+- `summary_topics` v7: uses the configured AI adapter to fill missing metadata, visible author contacts, concise Markdown summaries, topics, and keywords without overwriting user-corrected identity metadata. The default path routes metadata through the high-quality model, summaries through GPT-5.4 text-only calls, and keywords/topics through GPT-5.4-mini text-only calls; legacy combined `core_document_intelligence` remains opt-in.
 - `figure_assets` v2: extracts embedded images plus page-image and vector graphic crops into durable storage and attaches them to document records with geometry, labels, captions, and source kind.
 - `recommendations` v1: refreshes DOI-based related-paper recommendations from OpenAlex, Semantic Scholar, and Crossref, marks already-present library matches, and caches provider evidence without importing full text automatically.
 
@@ -318,24 +322,27 @@ Known gaps:
 - Concordance capability coverage is still early; OCR, figure caption/gist enrichment, richer layout upgrades, and arbitrary-filter scope need follow-up implementation.
 - OCR path is adapter-ready but not integrated into the page extraction retry loop.
 - GROBID/local scholarly parser is not wired yet.
-- DOI/source-link resolution is not exhaustive yet. Citation refresh should expand beyond current DOI/title Crossref lookup to search extracted text, references, Crossref, Semantic Scholar, DOI.org, publisher pages, and web evidence before giving up on DOI discovery.
+- DOI/source-link resolution is not exhaustive yet. Citation refresh should expand beyond current DOI regex plus Crossref DOI/title/author/year matching to search references, Semantic Scholar, DOI.org, publisher pages, and web evidence before giving up on DOI discovery.
+- Gemini/Anthropic provider routes and local embedding defaults are not wired yet. The current cost-saving baseline is routed OpenAI plus local extraction/normalization; provider abstraction, provider-specific usage accounting, and local embedding evaluation remain future work.
 - Figure extraction stores embedded PDF images and previews them in the detail pane; figure caption/gist enrichment and region-aware figure/table geometry are still future work.
 - Table extraction is basic Markdown normalization; richer table objects/cell geometry are not modeled yet.
-- Original PDF preview/open is implemented through authenticated routes, and normalized parsed page text is available in a one-page reader with page arrows and page note entry. Geometric text selection/highlight overlay remains future work.
+- Original PDF preview/open is implemented through authenticated routes, and normalized parsed page text is available in a one-page reader with page arrows. Geometric text selection/highlight overlay remains future work.
 - Saved searches, smart filters, and bulk edit controls are implemented; richer multi-condition filter builders are still future work.
 - Metadata correction UI exists for core identity fields, citation status, read/priority state, tags, domains, summaries, and custom attributes. Correction history is captured as `DocumentVersion` snapshots, but a fuller history diff viewer is still future work.
 - Auth is single-user only; no roles or sharing model.
 - Backup/export is implemented as authenticated JSON downloads. Metadata restore from those exports is implemented as a CLI-first dry-run/apply workflow; browser-based restore controls and scheduled backup drills remain future work.
-- Accessory Summaries are not implemented yet; Settings already reserves a model selection for future user-prompted custom summaries that should run against the original PDF context.
+- Accessory Summaries are implemented for current-document Library detail runs. Batch Accessory Summary prompts across selected documents, saved searches, or Concordance scopes remain future work.
 
 High-value next steps:
 
 - Wire OCR fallback for low-text pages with Google Vision.
 - Add exhaustive DOI/source-link resolution, robust citation verification beyond Crossref basics, and richer field-level evidence review.
 - Add arbitrary-filter scopes and richer saved-search management for Concordance Runs.
+- Add provider abstraction and usage accounting for Gemini, Anthropic, and local embedding routes before changing non-OpenAI defaults.
 - Build richer history review/diff UI for manual corrections and imported metadata candidates.
 - Add AI figure caption/gist enrichment and include figure gists in richer semantic search.
-- Add Accessory Summaries as user-prompted custom summary jobs backed by the original PDF and the Settings-selected model.
+- Evaluate local BGE-M3 or comparable embeddings against the current OpenAI embedding path.
+- Extend Accessory Summaries to selected-document, saved-search, and Concordance-style scoped runs.
 - Add richer layout fixtures for two-column PDFs, multi-page tables, and table-heavy papers.
 - Add real PDF viewer with highlights/notes.
 - Add geometric PDF highlight overlays on top of the current annotation records.
@@ -407,7 +414,7 @@ Consequences:
 
 Decision: `data/processing-cache` is managed local working storage and a bounded document cache. Successful jobs retain cache copies until the configured Document Cache Size budget prunes older non-active files.
 
-Why: Originals still belong in GCS or the configured local fallback store, but keeping recent imported PDFs locally makes Concordance and future Accessory Summary runs faster and less dependent on immediate storage reads.
+Why: Originals still belong in GCS or the configured local fallback store, but keeping recent imported PDFs locally makes Concordance and Accessory Summary runs faster and less dependent on immediate storage reads.
 
 Consequences:
 
@@ -456,15 +463,15 @@ Consequences:
 
 ### 2026-06-18: Navigation and batch workbench controls
 
-Decision: Add a persistent header toggle for the left navigation, make dashboard metrics visually quiet, and expose Concordance Runs from selected rows in the document list.
+Decision: Replace the left navigation rail with quiet horizontal work navigation, reserve header space for active-work progress, and expose Concordance Runs from selected rows in the document list.
 
-Why: The cockpit should be dense without making passive information look clickable. The left navigation should get out of the way when the user wants more horizontal workspace, and selected-document workflows should support both metadata edits and retroactive processing.
+Why: The cockpit should be dense without making passive information look clickable. The research panes need the full available width, and selected-document workflows should support both metadata edits and retroactive processing.
 
 Consequences:
 
-- The sidebar collapsed state is stored locally and can be toggled from the header even while hidden.
-- Dashboard metrics render directly on the grey work surface while retaining their spacing and text alignment.
-- The Library bulk toolbar can queue a `documents`-scoped Concordance Run for selected document ids.
+- Primary navigation renders left-to-right above the work surface, with Settings pushed to the far right and no persistent left rail.
+- The active-work progress control lives in a reserved header slot to the left of build/version/theme/session controls, so it can appear without shifting those controls.
+- The Library bulk toolbar can queue a `documents`-scoped Concordance Run for selected document ids after a custom confirmation dialog warns that model settings can make the run costly.
 - The existing Settings Concordance panel remains the place for whole-library, saved-search, domain, and project scoped runs.
 
 ### 2026-06-18: Header and bulk tag refinement
@@ -505,27 +512,50 @@ Why: Citation accuracy includes retrievability. A correct-looking APA string is 
 
 Consequences:
 
-- Citation refresh should become more exhaustive than the current DOI/title Crossref lookup.
+- Citation refresh should become more exhaustive than the current DOI regex plus Crossref DOI/title/author/year matching.
 - Future DOI discovery should inspect document metadata, extracted text, references, Crossref, Semantic Scholar, DOI.org, publisher pages, and targeted web evidence.
 - Every attempted source, conflict, and fallback source-link choice should be recorded as evidence for Queue inspection.
 - DOI links should win over source URLs in APA output; stable PDF/static-source URLs are acceptable only when DOI resolution fails.
 
-### 2026-06-18: Task-level model controls and PDF-context enrichment
+### 2026-06-19: Cost-routed document intelligence and DOI-first APA
 
-Decision: Use `gpt-5.5` as the default GPT model for asynchronous OpenAI document-intelligence work, expose task-level overrides in Settings, default Raw Text Extraction to local Marker, and include original PDF file input when configured and size-safe.
+Decision: Route document-intelligence work by task cost and quality risk. Keep citation-critical Metadata and APA fallback matching on `gpt-5.5`, default Summary and Accessory Summaries to `gpt-5.4`, default Keywords & Topics to `gpt-5.4-mini`, and use DOI/Crossref evidence to generate APA citations deterministically before asking GPT for citation fallback judgment.
 
-Why: Import and Concordance jobs already run asynchronously, so Medusa can afford a slower high-quality default model, while the user may want cheaper/faster models for lower-risk tasks. Extracted text is useful, but original PDFs may preserve layout, figures, page images, and front-matter boundaries that improve extraction.
+Why: APA correctness is brittle and citation verification should be evidence-backed, while summaries and organization tags are lower-risk and reviewable. DOI/Crossref metadata can often provide the reference for free once title, authors, year, or DOI are known. GPT should not regenerate what trusted citation metadata can format deterministically.
 
 Consequences:
 
 - `.env` should hold the private API key and `OPENAI_MODEL=gpt-5.5` as the startup default.
-- Settings exposes eight extraction/analysis model controls: Raw Text Extraction, Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and future Accessory Summaries.
+- Settings exposes eight extraction/analysis model controls: Raw Text Extraction, Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and Accessory Summaries.
 - Raw Text Extraction uses grouped Settings options: Local includes Docling, Marker, and PyMuPDF with Marker as the default preference; OpenAI includes the enabled GPT model options for cloud fallback choices. Marker is installed in the worker image and uses the mounted `data/model-cache` path for downloaded weights. PyMuPDF remains the built-in fallback; Docling remains a listed local option until its runtime is wired.
 - Text on Pages (Normalization) is local-first by default. `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=auto` escalates only low-text or artifact-heavy pages, sends extracted page text without repeated PDF file context, and caps escalations per document. Use `always` only for intentional all-pages cloud normalization.
-- Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), and future Accessory Summaries are GPT/Responses tasks. Text Chunk Encoding remains the embeddings endpoint and defaults to `OPENAI_EMBEDDING_MODEL`.
+- Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), and Accessory Summaries are GPT/Responses tasks. Metadata and APA Citation Matching remain the high-quality citation path; Summary and Accessory Summaries default to `gpt-5.4`; Keywords & Topics defaults to `gpt-5.4-mini`; Text Chunk Encoding remains the embeddings endpoint and defaults to `OPENAI_EMBEDDING_MODEL`.
 - `MEDUSA_OPENAI_SEND_PDF=true` enables Responses API file input for original PDFs below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`.
-- AI-generated APA citations remain candidates/evidence unless normalized metadata and trusted citation evidence support verification.
-- `page_text_normalization` was raised to v2 and `summary_topics` to v4 for task-level model evidence and Concordance PDF-context reruns.
+- `MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE=false` is the default routed mode. Setting it to `true` restores the previous single-call `core_document_intelligence` mode for metadata, summary, APA candidate, and keywords/topics, but that mode cannot use separate cheaper models for summary/tags.
+- `MEDUSA_OPENAI_PROMPT_CACHE_RETENTION=24h` adds OpenAI prompt-cache hints keyed by document checksum for retries and Concordance reruns.
+- DOI regex extraction plus Crossref DOI/title/author/year matching runs before GPT APA fallback. Crossref-backed citations are formatted locally and can be verified; GPT APA fallback uses compact metadata/excerpts without PDF context and remains a reviewable candidate.
+- `citation_refresh` was raised to v3 and `summary_topics` to v7 for DOI-first APA fallback, routed summaries, routed keyword/topic extraction, and updated model evidence.
+
+### 2026-06-19: Accessory Summaries
+
+Decision: Add current-document Accessory Summaries as durable document-owned rows, generated by the worker from a user prompt and Settings-selected model.
+
+Why: Focused research questions should not overwrite the canonical document summary. They need their own prompt, model, body, title, evidence, status, and retry surface so arbitrary topic summaries remain auditable and cost-visible.
+
+Consequences:
+
+- `DocumentAccessorySummary` stores prompt, optional title, selected model, generated Markdown summary, evidence, status, attempts, lock time, and completion time.
+- `/api/documents/{document_id}/accessory-summaries` queues a row; `/api/accessory-summaries/{summary_id}` saves optional titles.
+- The worker processes queued Accessory Summaries after imports and Concordance jobs, requeues interrupted running rows on startup, and marks failed rows with visible errors.
+- Accessory Summary OpenAI calls use task key `accessory_summaries`, record Budget usage, may include original PDF file context when configured and under size limits, and use prompt-cache keys derived from document checksum plus summary id.
+- Completed Accessory Summaries contribute title, prompt, and body text to document search.
+- Metadata exports include Accessory Summaries as document children; restored queued/running rows are parked unless restore is explicitly allowed to reactivate jobs.
+
+### 2026-06-18: Task-level model controls and PDF-context enrichment
+
+Decision: Use task-level model controls in Settings, default Raw Text Extraction to local Marker, and include original PDF file input when configured and size-safe.
+
+Why: Import and Concordance jobs already run asynchronously, so Medusa can afford high-quality models for the tasks that need them, while the user may want cheaper/faster models for lower-risk tasks. Extracted text is useful, but original PDFs may preserve layout, figures, page images, and front-matter boundaries that improve extraction.
 
 ### 2026-06-17: Local GCS credential mounting
 
@@ -572,7 +602,7 @@ Why: Research work shifts between browsing, triage, metadata review, and reading
 
 Consequences:
 
-- The sidebar, Library filter pane, and Library detail pane should be resizable on desktop.
+- The Library filter pane and Library detail pane should be resizable on desktop.
 - Splitters should remain subtle, keyboard-accessible, and visually consistent with the quiet cockpit style.
 - Small screens should collapse to a single-column layout and hide drag splitters.
 - Default spacing should stay dense enough for research scanning, with stable dimensions so text and controls do not jump while resizing.
@@ -683,19 +713,19 @@ Consequences:
 - The detail pane embeds the original PDF and provides an open-in-new-tab control.
 - `Annotation` rows are now exposed through CRUD endpoints and included in document detail.
 - Annotation body text contributes to document search, and soft-deleted annotations are excluded from active detail/search rebuilds.
-- The current annotation UI captures page, kind, color, and body; precise geometric overlay selection is future work using the existing `geometry` field.
+- Existing annotation rows remain exposed in the detail pane, but the earlier inline Library annotation composer is deferred pending a quieter pane-aware redesign for page, kind, color, note body, and eventual geometric overlay selection using the existing `geometry` field.
 
 ### 2026-06-18: Parsed full-text reader
 
 Decision: Expose extracted `DocumentPage` rows through the document detail API and add a PDF/Text reader switch in the document pane.
 
-Why: Original PDFs need to remain viewable, but parsed scholarly text also deserves a clean reading surface for review, search validation, and page-specific notes.
+Why: Original PDFs need to remain viewable, but parsed scholarly text also deserves a clean reading surface for review and search validation.
 
 Consequences:
 
 - `/api/documents/{document_id}` includes page text, source, low-text flags, and page image URI references.
 - The document pane can switch between the authenticated original PDF and parsed page text.
-- Reader page note actions prefill page-aware annotations with `kind="note"` so notes stay searchable and can later map onto geometric overlays.
+- Reader annotation creation actions are deferred with the broader Library annotation-capture redesign; existing page-aware annotation records remain searchable and can later map onto geometric overlays.
 - Low-text pages are visible in the reader, giving the future Google Vision OCR path an obvious review surface.
 
 ### 2026-06-18: Alembic migrations
@@ -711,9 +741,9 @@ Consequences:
 - The initial migration is idempotent for existing local PostgreSQL databases by creating current tables and supporting indexes only when missing.
 - Future model changes must include an Alembic revision and corresponding tests or smoke verification.
 
-### 2026-06-18: Import throughput and sidebar progress
+### 2026-06-18: Import throughput and active-work progress
 
-Decision: Add DB-backed import worker concurrency preferences, default concurrent imports to four per worker process while allowing higher user-selected values, and show active import progress at the bottom of the expanded sidebar.
+Decision: Add DB-backed import worker concurrency preferences, default concurrent imports to four per worker process while allowing higher user-selected values, and show active import progress in the persistent active-work progress surface.
 
 Why: Large batches should keep moving without requiring multiple worker containers, while the user still needs a quiet, persistent signal that queued/importing documents are making progress outside the Import view.
 
@@ -723,22 +753,22 @@ Consequences:
 - The worker claims multiple import jobs up to the current preference, keeps Concordance work behind active imports, and excludes in-process import IDs from stale recovery claims.
 - Import page normalization records and commits per-page checkpoint events so slow OpenAI page-normalization calls are visible as `normalizing_page_<n>` rather than a single opaque extraction step. On restart, already-normalized pages are reused when possible and missing pages are processed again.
 - `/api/imports/jobs/{job_id}/rescue` can requeue failed/restored import jobs and running jobs whose worker lock is stale. Fresh running jobs are rejected to avoid racing an active worker thread.
-- `/api/dashboard` includes import queued/running counts plus active batch progress totals, active step, and elapsed seconds so the sidebar can render progress without scanning the recent job list.
-- The sidebar progress block is hidden when no imports are queued or running and is not shown on the collapsed rail.
+- `/api/dashboard` includes import queued/running counts plus active batch progress totals, active step, and elapsed seconds so the header active-work control can render progress without scanning the recent job list.
+- The active-work progress control is visually hidden when no imports or background runs are queued/running but keeps its reserved header slot.
 
 ### 2026-06-19: Shell-owned async progress and action feedback
 
-Decision: Move Concordance-starting UI through an app-shell starter and render a persistent Background Work shelf for durable async work, while keeping local button-level in-flight, success, and error feedback for immediate action visibility.
+Decision: Move Concordance-starting UI through an app-shell starter and render active durable async work in the reserved header progress control, while keeping local button-level in-flight, success, and error feedback for immediate action visibility.
 
 Why: A user can start small-looking work, such as an APA citation Check, then switch views. The backend should still finish the durable job, and the UI should make it obvious that Medusa received the request, is processing it, and eventually completed or failed.
 
 Consequences:
 
 - Citation Check queues a forced `citation_refresh` Concordance Run instead of relying on a page-local request lifecycle.
-- The app shell records a local "starting" job immediately, reconciles it with persisted Concordance run/job state, and displays queued/running/complete/failed status in the Background Work shelf.
+- The app shell records a local "starting" job immediately, reconciles it with persisted Concordance run/job state, and displays starting/queued/running status in the header active-work control.
 - Page-local controls can unmount without losing the shell's progress/error display. If the originating page remains mounted, its button can still flash completion/failure from the watched job.
 - Buttons that start async work use the same restrained feedback language: green plus a slim progress bar while work is in flight, green success flash on completion, red plus a short error popover for failure, then a fade back to the normal button color.
-- Import progress remains in the sidebar/Queue path because imports already have dashboard-backed progress, but import requeue buttons use the same transient feedback convention.
+- Import progress shares the header active-work control because imports already have dashboard-backed progress, while import requeue buttons use the same transient feedback convention.
 - Recommendation refresh/download buttons use the same local feedback convention until recommendation downloads become durable background fetch jobs.
 
 ### 2026-06-19: Project controls stay inside their pane

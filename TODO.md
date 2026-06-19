@@ -7,18 +7,27 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Highest Priority
 
 - [ ] Implement exhaustive DOI/source-link resolution for APA citations.
-  - Acceptance: citation refresh searches document metadata, extracted text, references, Crossref, Semantic Scholar, DOI.org, publisher pages, and targeted web evidence to locate a DOI whenever one exists; APA output favors DOI links; when no DOI can be verified, APA output uses the best direct stable source link, preferably a PDF or other static document; all evidence, attempted sources, conflicts, and confidence are recorded for Queue inspection.
+  - Acceptance: build on the current DOI regex plus Crossref DOI/title/author/year baseline by searching document metadata, extracted text, references, Semantic Scholar, DOI.org, publisher pages, and targeted web evidence to locate a DOI whenever one exists; APA output favors DOI links; when no DOI can be verified, APA output uses the best direct stable source link, preferably a PDF or other static document; all evidence, attempted sources, conflicts, and confidence are recorded for Queue inspection.
 
 - [ ] Add real low-text OCR fallback with Google Vision.
   - Acceptance: low-text/scanned PDF pages are detected, OCR is run only when needed, OCR text is stored per page, and processing remains resumable.
 
 - [ ] Add robust citation verification beyond current Crossref basics.
-  - Acceptance: DOI, Crossref, Semantic Scholar, publisher, PDF/static-source, and web evidence can be compared; uncertain conflicts create Queue candidates instead of overwriting trusted metadata.
+  - Acceptance: DOI, Crossref, Semantic Scholar, DOI.org, publisher, PDF/static-source, and web evidence can be compared field by field; uncertain conflicts create Queue candidates instead of overwriting trusted metadata.
 
 - [ ] Add richer citation review evidence UI.
   - Acceptance: Queue shows source evidence side by side, supports partial field-level acceptance, and records which source supplied each accepted field.
 
 ## Document Processing And Intelligence
+
+- [ ] Evaluate alternate core document-intelligence providers and cheaper GPT models.
+  - Acceptance: representative already-processed papers are compared side by side across the current routed GPT baseline, cheaper GPT options, Gemini, and Claude for metadata, summary, APA fallback, and keywords/topics; quality gaps, failure modes, latency, and recorded cost are documented before changing defaults.
+
+- [ ] Add provider abstraction and usage accounting for non-OpenAI routes.
+  - Acceptance: Gemini, Anthropic, and local-model calls can be configured without committing credentials; every cloud call records provider, endpoint, model, task, token/file context where available, status, latency, and errors; Budget distinguishes provider costs and marks unknown pricing explicitly.
+
+- [ ] Add discounted async processing for non-urgent Concordance refreshes.
+  - Acceptance: large library refreshes can opt into discounted batch/flex-style provider modes where available, remain resumable through durable Concordance jobs, and clearly show delayed completion expectations before the run starts.
 
 - [ ] Wire Docling and OpenAI raw extraction fallbacks.
   - Acceptance: Docling can be installed for the worker without requiring cloud credentials; the Raw Text Extraction Settings preference selects Docling, PyMuPDF, or an OpenAI fallback intentionally; unavailable local extractors record a clear processing event and fall back safely; imports and Concordance extraction refreshes both honor the selected engine without breaking page-level reader state.
@@ -29,8 +38,8 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add AI figure caption and gist enrichment.
   - Acceptance: extracted figure assets get AI-enriched captions/gists, confidence/evidence, and searchable text without overwriting imported labels/captions or user edits.
 
-- [ ] Add Accessory Summaries.
-  - Acceptance: users can define custom summary prompts, run them against selected documents or Concordance scopes, and each run uses the original PDF context plus the Settings-selected Accessory Summaries model without overwriting core summaries.
+- [ ] Extend Accessory Summaries beyond current-document runs.
+  - Acceptance: the current Library detail Accessory Summary flow can also run one prompt against selected documents, saved searches, or Concordance scopes, with durable per-document summary rows and the same Settings-selected default model behavior.
 
 - [ ] Add richer table geometry and layout rendering.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data, figure geometry can be rendered inline with parsed pages, and source regions can support future overlays/evidence views.
@@ -44,6 +53,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add semantic search and embedding refresh as a fuller Concordance capability.
   - Acceptance: embeddings are generated or refreshed for chunks/assets when configured, and search can combine lexical and semantic matches.
 
+- [ ] Evaluate local text chunk encoding before replacing OpenAI embeddings.
+  - Acceptance: BGE-M3 or a comparable local embedding model is benchmarked against the current OpenAI embedding path on Medusa search queries; vector dimensions, runtime footprint, indexing speed, retrieval quality, and Concordance reindex behavior are documented before changing the default.
+
 - [ ] Add image/figure gist search surfaces.
   - Acceptance: figure gists, captions, and image-derived descriptions participate in full-text and semantic search.
 
@@ -54,6 +66,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add a more capable PDF reader.
   - Acceptance: page navigation, zoom, search-within-document, page thumbnails, and stable annotation overlays work inside the document pane.
+
+- [ ] Redesign Library detail annotation creation.
+  - Acceptance: the inline annotation composer stays out of the Library summary/detail flow until annotation capture has a quieter pane-aware UI for page, kind, color, note body, and eventual geometry selection.
 
 - [ ] Add annotation editing.
   - Acceptance: existing annotations can be edited in place, not just created or deleted.

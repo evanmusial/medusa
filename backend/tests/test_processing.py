@@ -42,7 +42,15 @@ def test_claim_import_job_recovers_stale_running_job(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import ConcordanceJob, ConcordanceRun, Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+    from app.models import (
+        ConcordanceJob,
+        ConcordanceRun,
+        Document,
+        ImportBatch,
+        ImportJob,
+        ProcessingEvent,
+        utc_now,
+    )
     from app.worker import claim_import_job
 
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -99,7 +107,15 @@ def test_claim_import_job_leaves_fresh_running_job_alone(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import ConcordanceJob, ConcordanceRun, Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+    from app.models import (
+        ConcordanceJob,
+        ConcordanceRun,
+        Document,
+        ImportBatch,
+        ImportJob,
+        ProcessingEvent,
+        utc_now,
+    )
     from app.worker import claim_import_job
 
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -145,7 +161,15 @@ def test_claim_import_job_skips_excluded_inflight_job(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import ConcordanceJob, ConcordanceRun, Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+    from app.models import (
+        ConcordanceJob,
+        ConcordanceRun,
+        Document,
+        ImportBatch,
+        ImportJob,
+        ProcessingEvent,
+        utc_now,
+    )
     from app.worker import claim_import_job
 
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -200,7 +224,16 @@ def test_worker_start_requeues_interrupted_running_import(monkeypatch, tmp_path)
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import ConcordanceJob, ConcordanceRun, Document, ImportBatch, ImportJob, ProcessingEvent, utc_now
+    from app.models import (
+        ConcordanceJob,
+        ConcordanceRun,
+        Document,
+        DocumentAccessorySummary,
+        ImportBatch,
+        ImportJob,
+        ProcessingEvent,
+        utc_now,
+    )
     from app.worker import recover_interrupted_jobs_on_start
 
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -213,6 +246,7 @@ def test_worker_start_requeues_interrupted_running_import(monkeypatch, tmp_path)
             ProcessingEvent.__table__,
             ConcordanceRun.__table__,
             ConcordanceJob.__table__,
+            DocumentAccessorySummary.__table__,
         ],
     )
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
@@ -236,10 +270,11 @@ def test_worker_start_requeues_interrupted_running_import(monkeypatch, tmp_path)
         db.add_all([document, batch, job])
         db.commit()
 
-        import_count, concordance_count = recover_interrupted_jobs_on_start(db)
+        import_count, concordance_count, accessory_summary_count = recover_interrupted_jobs_on_start(db)
 
         assert import_count == 1
         assert concordance_count == 0
+        assert accessory_summary_count == 0
         assert job.status == "queued"
         assert job.current_step == "normalizing_pages"
         assert job.locked_at is None

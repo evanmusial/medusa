@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import init_db, session_scope
-from app.models import ConcordanceJob, ImportJob, ProcessingEvent, utc_now
+from app.models import ConcordanceJob, DocumentAccessorySummary, ImportJob, ProcessingEvent, utc_now
 from app.security import ensure_admin_user
+from app.services.accessory_summaries import AccessorySummaryProcessor
 from app.services.concordance import ConcordanceProcessor, refresh_concordance_run_progress
 from app.services.processing import DocumentProcessor, refresh_import_batch_progress
 from app.services.preferences import get_import_worker_concurrency
@@ -100,7 +101,25 @@ def claim_concordance_job(db: Session, stale_after_seconds: int) -> str | None:
     return job.id
 
 
-def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int]:
+def claim_accessory_summary(db: Session, stale_after_seconds: int) -> str | None:
+    cutoff = stale_cutoff(stale_after_seconds)
+    summary = (
+        db.query(DocumentAccessorySummary)
+        .filter(or_(DocumentAccessorySummary.status == "queued", stale_running_filter(DocumentAccessorySummary, cutoff)))
+        .order_by(asc(DocumentAccessorySummary.created_at))
+        .first()
+    )
+    if not summary:
+        return None
+
+    summary.status = "running"
+    summary.locked_at = utc_now()
+    summary.last_error = None
+    db.flush()
+    return summary.id
+
+
+def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int, int]:
     import_jobs = db.query(ImportJob).filter(ImportJob.status == "running").all()
     for job in import_jobs:
         previous_locked_at = job.locked_at
@@ -134,8 +153,13 @@ def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int]:
     for run in touched_runs.values():
         refresh_concordance_run_progress(db, run)
 
+    accessory_summaries = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "running").all()
+    for summary in accessory_summaries:
+        summary.status = "queued"
+        summary.locked_at = None
+
     db.flush()
-    return len(import_jobs), len(concordance_jobs)
+    return len(import_jobs), len(concordance_jobs), len(accessory_summaries)
 
 
 def claim_next_import_job(exclude_ids: set[str] | None = None):
@@ -150,16 +174,31 @@ def claim_next_concordance_job():
         return claim_concordance_job(db, settings.worker_stale_job_seconds)
 
 
-def process_once(import_processor: DocumentProcessor, concordance_processor: ConcordanceProcessor) -> bool:
+def claim_next_accessory_summary():
+    settings = get_settings()
+    with session_scope() as db:
+        return claim_accessory_summary(db, settings.worker_stale_job_seconds)
+
+
+def process_once(
+    import_processor: DocumentProcessor,
+    concordance_processor: ConcordanceProcessor,
+    accessory_processor: AccessorySummaryProcessor | None = None,
+) -> bool:
+    accessory_processor = accessory_processor or AccessorySummaryProcessor()
     job_id = claim_next_import_job()
     if not job_id:
         concordance_job_id = claim_next_concordance_job()
-        if not concordance_job_id:
+        if concordance_job_id:
+            with session_scope() as db:
+                job = db.get(ConcordanceJob, concordance_job_id)
+                if job:
+                    concordance_processor.process_job(db, job)
+            return True
+        accessory_summary_id = claim_next_accessory_summary()
+        if not accessory_summary_id:
             return False
-        with session_scope() as db:
-            job = db.get(ConcordanceJob, concordance_job_id)
-            if job:
-                concordance_processor.process_job(db, job)
+        process_accessory_summary(accessory_summary_id, accessory_processor)
         return True
     with session_scope() as db:
         job = db.get(ImportJob, job_id)
@@ -180,6 +219,13 @@ def process_concordance_job(job_id: str) -> None:
         job = db.get(ConcordanceJob, job_id)
         if job:
             ConcordanceProcessor().process_job(db, job)
+
+
+def process_accessory_summary(summary_id: str, processor: AccessorySummaryProcessor | None = None) -> None:
+    with session_scope() as db:
+        summary = db.get(DocumentAccessorySummary, summary_id)
+        if summary:
+            (processor or AccessorySummaryProcessor()).process_summary(db, summary)
 
 
 def configured_import_concurrency() -> int:
@@ -235,6 +281,11 @@ def main() -> None:
             if concordance_job_id:
                 process_concordance_job(concordance_job_id)
                 worked = True
+            else:
+                accessory_summary_id = claim_next_accessory_summary()
+                if accessory_summary_id:
+                    process_accessory_summary(accessory_summary_id)
+                    worked = True
 
         if not worked:
             time.sleep(settings.worker_poll_seconds)

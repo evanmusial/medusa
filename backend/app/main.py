@@ -23,6 +23,7 @@ from app.models import (
     ConcordanceJob,
     ConcordanceRun,
     Document,
+    DocumentAccessorySummary,
     DocumentAttributeValue,
     DocumentRecommendation,
     DocumentVersion,
@@ -41,6 +42,9 @@ from app.models import (
     utc_now,
 )
 from app.schemas import (
+    AccessorySummaryCreate,
+    AccessorySummaryOut,
+    AccessorySummaryPatch,
     AnnotationCreate,
     AnnotationOut,
     AnnotationPatch,
@@ -90,16 +94,13 @@ from app.schemas import (
     UserOut,
 )
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
+from app.services.accessory_summaries import create_accessory_summary
 from app.services.concordance import create_concordance_run, current_capabilities
 from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
 from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
-from app.services.extraction import sanitize_extracted_text
 from app.services.processing import (
-    author_search_text,
     document_metadata,
-    document_reading_text,
-    figure_search_text,
     refresh_import_batch_progress,
 )
 from app.services.preferences import get_app_preferences, update_app_preferences
@@ -109,6 +110,7 @@ from app.services.recommendations import (
     queue_recommendation_imports,
     refresh_document_recommendations,
 )
+from app.services.search import rebuild_document_search_text
 from app.services.storage import get_storage_service
 
 
@@ -304,12 +306,6 @@ def normalize_attribute_value(value: Any) -> dict[str, Any]:
     return {"value": value}
 
 
-def attribute_value_text(value: dict[str, Any]) -> str:
-    if "value" in value:
-        return str(value["value"])
-    return json.dumps(value, sort_keys=True)
-
-
 def document_correction_snapshot(document: Document) -> dict[str, Any]:
     return {
         "title": document.title,
@@ -331,35 +327,6 @@ def document_correction_snapshot(document: Document) -> dict[str, Any]:
         "domains": [domain.id for domain in document.domains],
         "attributes": {value.definition.name: value.value for value in document.attributes if value.definition},
     }
-
-
-def rebuild_document_search_text(document: Document) -> str:
-    page_text = document_reading_text(document)
-    notes = "\n\n".join(note.body for note in document.notes if not note.deleted_at)
-    annotations = "\n\n".join(annotation.body or "" for annotation in document.annotations if not annotation.deleted_at)
-    attributes = "\n\n".join(
-        f"{value.definition.name}: {attribute_value_text(value.value)}" for value in document.attributes if value.definition
-    )
-    return sanitize_extracted_text(
-        "\n\n".join(
-            part
-            for part in [
-                document.title,
-                author_search_text(document.authors),
-                document.abstract,
-                document.rich_summary,
-                document.apa_citation,
-                page_text,
-                figure_search_text(document.figures),
-                notes,
-                annotations,
-                attributes,
-                " ".join(tag.name for tag in document.tags),
-                " ".join(domain.name for domain in document.domains),
-            ]
-            if part
-        )
-    )
 
 
 def json_download(payload: dict[str, Any], filename_prefix: str) -> FastAPIResponse:
@@ -418,8 +385,12 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
     import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
     active_import_jobs = import_queued_jobs + import_running_jobs
     active_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status.in_(["queued", "running"])).count()
+    active_accessory_summary_jobs = (
+        db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status.in_(["queued", "running"])).count()
+    )
     failed_import_jobs = db.query(ImportJob).filter(ImportJob.status == "failed").count()
     failed_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "failed").count()
+    failed_accessory_summary_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "failed").count()
     active_batch_ids = [
         row[0]
         for row in db.query(ImportJob.batch_id).filter(ImportJob.status.in_(["queued", "running"])).distinct().all()
@@ -442,7 +413,7 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
         documents=db.query(Document).filter(Document.deleted_at.is_(None)).count(),
         unread=db.query(Document).filter(Document.deleted_at.is_(None), Document.read_status == "unread").count(),
         needs_review=db.query(Document).filter(Document.deleted_at.is_(None), Document.citation_status == "needs_review").count(),
-        queued_jobs=active_import_jobs + active_concordance_jobs,
+        queued_jobs=active_import_jobs + active_concordance_jobs + active_accessory_summary_jobs,
         active_import_jobs=active_import_jobs,
         import_queued_jobs=import_queued_jobs,
         import_running_jobs=import_running_jobs,
@@ -452,9 +423,11 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
         import_active_step=active_import_job.current_step if active_import_job else None,
         import_active_elapsed_seconds=active_elapsed_seconds,
         active_concordance_jobs=active_concordance_jobs,
-        failed_jobs=failed_import_jobs + failed_concordance_jobs,
+        active_accessory_summary_jobs=active_accessory_summary_jobs,
+        failed_jobs=failed_import_jobs + failed_concordance_jobs + failed_accessory_summary_jobs,
         failed_import_jobs=failed_import_jobs,
         failed_concordance_jobs=failed_concordance_jobs,
+        failed_accessory_summary_jobs=failed_accessory_summary_jobs,
         projects=db.query(Project).filter(Project.deleted_at.is_(None)).count(),
     )
 
@@ -772,6 +745,51 @@ def refresh_document_citation(
     db.commit()
     db.refresh(run)
     return run
+
+
+@app.post("/api/documents/{document_id}/accessory-summaries", response_model=AccessorySummaryOut)
+def queue_document_accessory_summary(
+    document_id: str,
+    payload: AccessorySummaryCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentAccessorySummary:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        summary = create_accessory_summary(
+            db,
+            document,
+            prompt=payload.prompt,
+            model=payload.model,
+            title=payload.title,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(summary)
+    return summary
+
+
+@app.patch("/api/accessory-summaries/{summary_id}", response_model=AccessorySummaryOut)
+def patch_accessory_summary(
+    summary_id: str,
+    payload: AccessorySummaryPatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentAccessorySummary:
+    summary = db.get(DocumentAccessorySummary, summary_id)
+    if not summary or not summary.document or summary.document.deleted_at:
+        raise HTTPException(status_code=404, detail="Accessory summary not found")
+    if payload.title is not None:
+        title = " ".join(payload.title.strip().split())
+        summary.title = title[:240] or None
+    if summary.document and not summary.document.deleted_at:
+        summary.document.search_text = rebuild_document_search_text(summary.document)
+    db.commit()
+    db.refresh(summary)
+    return summary
 
 
 @app.get("/api/documents/{document_id}/recommendations", response_model=list[DocumentRecommendationOut])

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,15 +28,11 @@ from app.services.analysis_models import (
 )
 from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
 from app.services.document_cache import ensure_document_pdf_bytes
-from app.services.extraction import sanitize_extracted_text
 from app.services.figures import process_document_figures_from_storage
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.processing import (
-    author_search_text,
     document_metadata,
-    document_reading_text,
-    figure_search_text,
     fill_missing_document_metadata,
     get_or_create_tag,
     log_event,
@@ -45,7 +40,13 @@ from app.services.processing import (
     rebuild_document_text_chunks,
 )
 from app.services.recommendations import refresh_document_recommendations
-from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
+from app.services.search import rebuild_document_search_text
+from app.services.verifier import (
+    crossref_lookup,
+    crossref_to_citation_metadata,
+    enough_metadata_for_verified_citation,
+    extract_doi_from_text,
+)
 
 
 @dataclass(frozen=True)
@@ -72,14 +73,14 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="citation_refresh",
         label="Citation refresh",
-        version=2,
-        description="Regenerate APA citation text and refresh verification evidence without hiding uncertain cases.",
+        version=3,
+        description="Regenerate APA citation text from DOI/Crossref evidence first, using compact GPT-5.5 APA fallback only for uncertain cases.",
     ),
     CapabilityDefinition(
         key="summary_topics",
         label="AI metadata and summary",
-        version=5,
-        description="Use the configured AI adapter with PDF context to fill missing metadata, author contacts, concise markdown summaries, APA candidates, and topic tags.",
+        version=7,
+        description="Use routed document intelligence: high-quality metadata, GPT-5.4 summaries from text, and GPT-5.4-mini topic tags without generating APA unless citation refresh needs it.",
     ),
     CapabilityDefinition(
         key="figure_assets",
@@ -296,12 +297,6 @@ def mark_document_capability(
     state.completed_at = utc_now()
 
 
-def _stringify_attribute_value(value: dict[str, Any]) -> str:
-    if "value" in value:
-        return str(value["value"])
-    return json.dumps(value, sort_keys=True)
-
-
 class ConcordanceProcessor:
     def process_job(self, db: Session, job: ConcordanceJob) -> None:
         document = job.document
@@ -329,7 +324,7 @@ class ConcordanceProcessor:
             elif job.capability_key == "search_index":
                 evidence = self._rebuild_search_index(document)
             elif job.capability_key == "citation_refresh":
-                evidence = self._refresh_citation(db, document)
+                evidence = self._refresh_citation(db, document, job)
             elif job.capability_key == "summary_topics":
                 evidence = self._refresh_summary_topics(db, document, job)
             elif job.capability_key == "figure_assets":
@@ -374,30 +369,7 @@ class ConcordanceProcessor:
             db.commit()
 
     def _rebuild_search_index(self, document: Document) -> dict[str, Any]:
-        page_text = document_reading_text(document)
-        notes = "\n\n".join(note.body for note in document.notes if not note.deleted_at)
-        attributes = "\n\n".join(
-            f"{value.definition.name}: {_stringify_attribute_value(value.value)}" for value in document.attributes if value.definition
-        )
-        document.search_text = sanitize_extracted_text(
-            "\n\n".join(
-                part
-                for part in [
-                    document.title,
-                    author_search_text(document.authors),
-                    document.abstract,
-                    document.rich_summary,
-                    document.apa_citation,
-                    page_text,
-                    figure_search_text(document.figures),
-                    notes,
-                    attributes,
-                    " ".join(tag.name for tag in document.tags),
-                    " ".join(domain.name for domain in document.domains),
-                ]
-                if part
-            )
-        )
+        document.search_text = rebuild_document_search_text(document)
         return {"indexed_characters": len(document.search_text or ""), "pages": len(document.pages)}
 
     def _usage_context(self, document: Document, job: ConcordanceJob, capability_key: str | None = None) -> OpenAIUsageContext:
@@ -442,9 +414,11 @@ class ConcordanceProcessor:
             "with_pdf": sum(1 for item in recommendations if item.pdf_url),
         }
 
-    def _refresh_citation(self, db: Session, document: Document) -> dict[str, Any]:
+    def _refresh_citation(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
         evidence = dict(document.metadata_evidence or {})
-        crossref = crossref_lookup(document.doi, document.title) or evidence.get("crossref")
+        if not document.doi:
+            document.doi = extract_doi_from_text(document.search_text)
+        crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year) or evidence.get("crossref")
         filled_fields: list[str] = []
         crossref_metadata: dict[str, Any] = {}
         if crossref:
@@ -455,7 +429,27 @@ class ConcordanceProcessor:
                 evidence["crossref_filled_fields"] = sorted(set([*evidence.get("crossref_filled_fields", []), *filled_fields]))
         document.metadata_evidence = evidence
         metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
-        document.apa_citation = format_apa_citation(metadata)
+        if crossref:
+            document.apa_citation = format_apa_citation(metadata)
+        else:
+            ai = get_ai_service()
+            model_preferences = get_analysis_models(db)
+            apa_candidate = ai.generate_apa_citation_candidate(
+                document.original_filename,
+                document.search_text or "",
+                metadata,
+                model=model_preferences[MODEL_APA_CITATION],
+                usage_context=self._usage_context(document, job, "citation_refresh"),
+                prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:apa",
+            )
+            evidence["ai_apa"] = {
+                "confidence": apa_candidate.get("confidence"),
+                "citation_warnings": apa_candidate.get("citation_warnings") or [],
+                "needs_review_reasons": apa_candidate.get("needs_review_reasons") or [],
+                **(apa_candidate.get("_openai") or {}),
+            }
+            document.metadata_evidence = evidence
+            document.apa_citation = decode_html_entities(apa_candidate.get("apa_citation")) or format_apa_citation(metadata)
         verified = enough_metadata_for_verified_citation(metadata) and bool(document.doi or crossref)
         document.citation_status = "verified" if verified else "needs_review"
         if verified:
@@ -502,6 +496,7 @@ class ConcordanceProcessor:
                 MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
             },
             usage_context=self._usage_context(document, job, "summary_topics"),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}",
         )
         evidence = dict(document.metadata_evidence or {})
         evidence["concordance_ai"] = {

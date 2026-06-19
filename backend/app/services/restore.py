@@ -15,6 +15,7 @@ from app.models import (
     ConcordanceJob,
     ConcordanceRun,
     Document,
+    DocumentAccessorySummary,
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
@@ -214,6 +215,7 @@ def restore_metadata_export(
             _section(data, "documents"),
             id_maps,
             preserve_ids,
+            park_active_jobs,
         )
         restored_counts["projects"] = _restore_projects(db, _section(data, "projects"), id_maps, preserve_ids)
         restored_counts["project_bibliographies"] = _restore_project_bibliographies(
@@ -380,7 +382,13 @@ def _restore_attribute_definitions(
     return count
 
 
-def _restore_documents(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, dict[str, str]], preserve_ids: bool) -> int:
+def _restore_documents(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+    park_active_jobs: bool,
+) -> int:
     count = 0
     for row in rows:
         original_id = row.get("id")
@@ -407,7 +415,7 @@ def _restore_documents(db: Session, rows: list[dict[str, Any]], id_maps: dict[st
 
         document.domains = _mapped_rows(db, Domain, id_maps["domains"], row.get("domain_ids") or [])
         document.tags = _mapped_rows(db, Tag, id_maps["tags"], row.get("tag_ids") or [])
-        _replace_document_children(db, document, row, id_maps, preserve_ids)
+        _replace_document_children(db, document, row, id_maps, preserve_ids, park_active_jobs)
         count += 1
     db.flush()
     return count
@@ -766,12 +774,14 @@ def _replace_document_children(
     row: dict[str, Any],
     id_maps: dict[str, dict[str, str]],
     preserve_ids: bool,
+    park_active_jobs: bool,
 ) -> None:
     for model in (
         DocumentVersion,
         DocumentPage,
         TextChunk,
         Figure,
+        DocumentAccessorySummary,
         Annotation,
         DocumentAttributeValue,
         DocumentCapability,
@@ -875,6 +885,27 @@ def _replace_document_children(
         )
         _apply_timestamps(annotation, annotation_row)
         db.add(annotation)
+
+    for summary_row in row.get("accessory_summaries", []):
+        summary = DocumentAccessorySummary(
+            **_restore_kwargs(
+                summary_row,
+                preserve_ids,
+            document_id=document.id,
+            title=summary_row.get("title"),
+            prompt=summary_row.get("prompt") or "Restored accessory summary",
+            summary=summary_row.get("summary"),
+            model=summary_row.get("model") or "gpt-5.4",
+            status=_parked_status(summary_row.get("status"), park_active_jobs),
+            attempts=summary_row.get("attempts") or 0,
+            last_error=_restored_job_error(summary_row.get("last_error"), summary_row.get("status"), park_active_jobs),
+            evidence=summary_row.get("evidence") or {},
+            locked_at=None if park_active_jobs else _dt(summary_row.get("locked_at")),
+            completed_at=_dt(summary_row.get("completed_at")),
+            ),
+        )
+        _apply_timestamps(summary, summary_row)
+        db.add(summary)
 
     for recommendation_row in row.get("recommendations", []):
         recommendation = DocumentRecommendation(

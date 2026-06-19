@@ -40,7 +40,12 @@ from app.services.extraction import extract_pdf_text, normalize_extracted_text, 
 from app.services.figures import process_document_figures
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
-from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
+from app.services.verifier import (
+    crossref_lookup,
+    crossref_to_citation_metadata,
+    enough_metadata_for_verified_citation,
+    extract_doi_from_text,
+)
 
 
 IMPORT_STEP_ORDER = {
@@ -526,6 +531,7 @@ class DocumentProcessor:
                 source="import",
                 capability_key="summary_topics",
             ),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}",
         )
         document.title = metadata.get("title") or document.title
         document.subtitle = metadata.get("subtitle")
@@ -548,7 +554,10 @@ class DocumentProcessor:
             },
         }
 
-        crossref = crossref_lookup(document.doi, document.title)
+        if not document.doi:
+            document.doi = extract_doi_from_text(document.search_text)
+
+        crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year)
         crossref_metadata: dict[str, Any] = {}
         if crossref:
             document.metadata_evidence["crossref"] = crossref
@@ -558,11 +567,29 @@ class DocumentProcessor:
                 document.metadata_evidence["crossref_filled_fields"] = filled_fields
 
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
-        document.apa_citation = (
-            format_apa_citation(citation_metadata)
-            if crossref
-            else decode_html_entities(metadata.get("apa_citation")) or format_apa_citation(citation_metadata)
-        )
+        if crossref:
+            document.apa_citation = format_apa_citation(citation_metadata)
+        else:
+            apa_candidate = ai.generate_apa_citation_candidate(
+                document.original_filename,
+                document.search_text or "",
+                citation_metadata,
+                model=model_preferences[MODEL_APA_CITATION],
+                usage_context=OpenAIUsageContext(
+                    document_id=document.id,
+                    import_job_id=job.id,
+                    source="import",
+                    capability_key="citation_refresh",
+                ),
+                prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:apa",
+            )
+            document.metadata_evidence["ai_apa"] = {
+                "confidence": apa_candidate.get("confidence"),
+                "citation_warnings": apa_candidate.get("citation_warnings") or [],
+                "needs_review_reasons": apa_candidate.get("needs_review_reasons") or [],
+                **(apa_candidate.get("_openai") or {}),
+            }
+            document.apa_citation = decode_html_entities(apa_candidate.get("apa_citation")) or format_apa_citation(citation_metadata)
         if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref):
             document.citation_status = "verified"
         else:

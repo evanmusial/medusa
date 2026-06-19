@@ -218,6 +218,11 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     pages: Mapped[list["DocumentPage"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     chunks: Mapped[list["TextChunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     figures: Mapped[list["Figure"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    accessory_summaries: Mapped[list["DocumentAccessorySummary"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentAccessorySummary.created_at.desc()",
+    )
     annotations: Mapped[list["Annotation"]] = relationship(
         back_populates="document",
         cascade="all, delete-orphan",
@@ -303,6 +308,25 @@ class Annotation(Base, TimestampMixin, SoftDeleteMixin):
     color: Mapped[str | None] = mapped_column(String(32))
 
     document: Mapped[Document] = relationship(back_populates="annotations")
+
+
+class DocumentAccessorySummary(Base, TimestampMixin):
+    __tablename__ = "document_accessory_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(240))
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    document: Mapped[Document] = relationship(back_populates="accessory_summaries")
 
 
 class Note(Base, TimestampMixin, SoftDeleteMixin):

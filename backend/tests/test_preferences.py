@@ -69,7 +69,14 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.models import AppPreference
-    from app.services.analysis_models import MODEL_METADATA, MODEL_PAGE_TEXT_NORMALIZATION, MODEL_RAW_TEXT_EXTRACTION
+    from app.services.analysis_models import (
+        MODEL_ACCESSORY_SUMMARIES,
+        MODEL_KEYWORDS_TOPICS,
+        MODEL_METADATA,
+        MODEL_PAGE_TEXT_NORMALIZATION,
+        MODEL_RAW_TEXT_EXTRACTION,
+        MODEL_SUMMARY,
+    )
     from app.services.preferences import (
         DOCUMENT_CACHE_SIZE_MB_KEY,
         get_app_preferences,
@@ -93,6 +100,9 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert preferences["document_cache_size_mb"] == 512
         assert preferences["analysis_models"][MODEL_RAW_TEXT_EXTRACTION] == "marker"
         assert preferences["analysis_models"][MODEL_METADATA] == "gpt-5.4-mini"
+        assert preferences["analysis_models"][MODEL_SUMMARY] == "gpt-5.4"
+        assert preferences["analysis_models"][MODEL_KEYWORDS_TOPICS] == "gpt-5.4-mini"
+        assert preferences["analysis_models"][MODEL_ACCESSORY_SUMMARIES] == "gpt-5.4"
         assert preferences["analysis_models"][MODEL_PAGE_TEXT_NORMALIZATION] == "gpt-5.4-nano"
 
         payload = get_app_preferences(db)
