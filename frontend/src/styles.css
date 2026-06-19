@@ -779,10 +779,30 @@ textarea {
   margin-bottom: 14px;
 }
 
+.filter-field {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .filter-controls select,
 .filter-controls input {
   width: 100%;
   min-width: 0;
+}
+
+.filter-controls .bulk-multi-select,
+.filter-controls .bulk-multi-trigger {
+  width: 100%;
+}
+
+.filter-controls .bulk-multi-menu {
+  right: auto;
+  left: 0;
+  min-width: 100%;
+  width: min(320px, calc(100vw - 36px));
 }
 
 .saved-search-form {
@@ -907,7 +927,7 @@ textarea {
   flex: 1;
 }
 
-.bulk-bar span {
+.bulk-bar > span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -961,6 +981,10 @@ textarea {
   transform: rotate(90deg);
 }
 
+.library-single-select .bulk-multi-trigger:not(.has-value) span {
+  color: var(--muted);
+}
+
 .bulk-multi-menu {
   position: absolute;
   z-index: 35;
@@ -998,6 +1022,47 @@ textarea {
 }
 
 .bulk-multi-menu label span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.single-select-menu button {
+  width: 100%;
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  padding: 0 8px;
+  text-align: left;
+}
+
+.single-select-menu button::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.single-select-menu button.selected,
+.single-select-menu button:hover {
+  background: var(--blue-soft);
+}
+
+.single-select-menu button.selected::before {
+  background: var(--blue);
+}
+
+.single-select-menu button span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

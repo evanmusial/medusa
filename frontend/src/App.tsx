@@ -118,6 +118,7 @@ type ConcordanceRunRequest = {
   scope_type?: string;
 };
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
+type SelectMenuOption = { id: string; name: string };
 
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
 const FILTER_PANE_MIN = 260;
@@ -130,11 +131,32 @@ const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "resto
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
+const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
   { value: "last_month", label: "Last month" },
   { value: "last_3_months", label: "Last 3 months" },
   { value: "all_time", label: "All time" },
+];
+const READ_STATUS_OPTIONS: SelectMenuOption[] = [
+  { id: "unread", name: "Unread" },
+  { id: "skimmed", name: "Skimmed" },
+  { id: "read", name: "Read" },
+];
+const PRIORITY_OPTIONS: SelectMenuOption[] = [
+  { id: "urgent", name: "Urgent" },
+  { id: "high", name: "High" },
+  { id: "normal", name: "Normal" },
+  { id: "low", name: "Low" },
+];
+const CITATION_STATUS_OPTIONS: SelectMenuOption[] = [
+  { id: "needs_review", name: "Needs review" },
+  { id: "verified", name: "Verified" },
+  { id: "rejected", name: "Rejected" },
+];
+const DUPLICATE_STATUS_OPTIONS: SelectMenuOption[] = [
+  { id: "duplicates", name: "Has duplicates" },
+  { id: "unique", name: "No exact duplicates" },
 ];
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
@@ -899,6 +921,13 @@ function canRescueImportJob(job: ImportJob) {
   return Date.now() - new Date(job.locked_at).getTime() > 15 * 60 * 1000;
 }
 
+function isImportCompletedRowExpired(job: ImportJob, now: number) {
+  if (job.status !== "complete") return false;
+  const completedAt = new Date(job.updated_at).getTime();
+  if (Number.isNaN(completedAt)) return false;
+  return now - completedAt >= IMPORT_COMPLETED_ROW_RETENTION_MS;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -1393,6 +1422,76 @@ function BulkMultiSelect({
   );
 }
 
+function LibrarySingleSelect({
+  emptyLabel,
+  onChange,
+  options,
+  placeholder,
+  value,
+}: {
+  emptyLabel: string;
+  onChange: (value: string) => void;
+  options: SelectMenuOption[];
+  placeholder: string;
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.id === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", closeOnOutsideClick);
+    return () => window.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open]);
+
+  const choose = (nextValue: string) => {
+    onChange(nextValue);
+    setOpen(false);
+  };
+
+  return (
+    <div className="bulk-multi-select library-single-select" ref={wrapperRef}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className={`bulk-multi-trigger ${selected ? "has-value" : ""}`}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span>{selected?.name || placeholder}</span>
+        <ChevronRight size={14} />
+      </button>
+      {open ? (
+        <div className="bulk-multi-menu single-select-menu" role="listbox">
+          <button aria-selected={!value} className={!value ? "selected" : ""} role="option" type="button" onClick={() => choose("")}>
+            <span>{placeholder}</span>
+          </button>
+          {options.length ? (
+            options.map((option) => (
+              <button
+                aria-selected={value === option.id}
+                className={value === option.id ? "selected" : ""}
+                key={option.id}
+                role="option"
+                type="button"
+                onClick={() => choose(option.id)}
+              >
+                <span>{option.name}</span>
+              </button>
+            ))
+          ) : (
+            <div className="bulk-multi-empty">{emptyLabel}</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LibraryView({
   documents,
   document,
@@ -1540,9 +1639,20 @@ function LibraryView({
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
   } as CSSProperties;
-  const allVisibleSelected = documents.length > 0 && documents.every((item) => selectedIds.includes(item.id));
+  const sortedDocuments = useMemo(
+    () =>
+      [...documents].sort((left, right) => {
+        const titleOrder = left.title.trim().localeCompare(right.title.trim(), undefined, { sensitivity: "base", numeric: true });
+        return titleOrder || left.id.localeCompare(right.id);
+      }),
+    [documents],
+  );
+  const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
+  const domainOptions = useMemo(() => domainPickerItems(domains).map(({ id, name }) => ({ id, name })), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
+  const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
+  const projectOptions = useMemo(() => sortedProjects.map(({ id, name }) => ({ id, name })), [sortedProjects]);
   const hasBulkUpdate = Boolean(
     bulkReadStatus || bulkPriority || bulkTagIds.length || bulkCustomTag.trim() || bulkDomainId || bulkProjectIds.length,
   );
@@ -1591,64 +1701,66 @@ function LibraryView({
           Filters
         </div>
         <div className="filter-controls">
-          <label>
-            Domain
-            <select value={filters.domain_id || ""} onChange={(event) => setFilterValue("domain_id", event.target.value)}>
-              <option value="">Any domain</option>
-              {domains.map((domain) => (
-                <option key={domain.id} value={domain.id}>
-                  {domain.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Tag
-            <select value={filters.tag_id || ""} onChange={(event) => setFilterValue("tag_id", event.target.value)}>
-              <option value="">Any tag</option>
-              {tags.map((tag) => (
-                <option key={tag.id} value={tag.id}>
-                  {tag.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Read
-            <select value={filters.read_status || ""} onChange={(event) => setFilterValue("read_status", event.target.value)}>
-              <option value="">Any read status</option>
-              <option value="unread">Unread</option>
-              <option value="skimmed">Skimmed</option>
-              <option value="read">Read</option>
-            </select>
-          </label>
-          <label>
-            Priority
-            <select value={filters.priority || ""} onChange={(event) => setFilterValue("priority", event.target.value)}>
-              <option value="">Any priority</option>
-              <option value="urgent">Urgent</option>
-              <option value="high">High</option>
-              <option value="normal">Normal</option>
-              <option value="low">Low</option>
-            </select>
-          </label>
-          <label>
-            Citation
-            <select value={filters.citation_status || ""} onChange={(event) => setFilterValue("citation_status", event.target.value)}>
-              <option value="">Any citation status</option>
-              <option value="needs_review">Needs review</option>
-              <option value="verified">Verified</option>
-              <option value="rejected">Rejected</option>
-            </select>
-          </label>
-          <label>
-            Duplicates
-            <select value={filters.duplicate_status || ""} onChange={(event) => setFilterValue("duplicate_status", event.target.value)}>
-              <option value="">Any duplicate status</option>
-              <option value="duplicates">Has duplicates</option>
-              <option value="unique">No exact duplicates</option>
-            </select>
-          </label>
+          <div className="filter-field">
+            <span>Domain</span>
+            <LibrarySingleSelect
+              emptyLabel="No domains"
+              onChange={(value) => setFilterValue("domain_id", value)}
+              options={domainOptions}
+              placeholder="Any domain"
+              value={filters.domain_id || ""}
+            />
+          </div>
+          <div className="filter-field">
+            <span>Tag</span>
+            <LibrarySingleSelect
+              emptyLabel="No tags"
+              onChange={(value) => setFilterValue("tag_id", value)}
+              options={tagOptions}
+              placeholder="Any tag"
+              value={filters.tag_id || ""}
+            />
+          </div>
+          <div className="filter-field">
+            <span>Read</span>
+            <LibrarySingleSelect
+              emptyLabel="No read statuses"
+              onChange={(value) => setFilterValue("read_status", value)}
+              options={READ_STATUS_OPTIONS}
+              placeholder="Any read status"
+              value={filters.read_status || ""}
+            />
+          </div>
+          <div className="filter-field">
+            <span>Priority</span>
+            <LibrarySingleSelect
+              emptyLabel="No priorities"
+              onChange={(value) => setFilterValue("priority", value)}
+              options={PRIORITY_OPTIONS}
+              placeholder="Any priority"
+              value={filters.priority || ""}
+            />
+          </div>
+          <div className="filter-field">
+            <span>Citation</span>
+            <LibrarySingleSelect
+              emptyLabel="No citation statuses"
+              onChange={(value) => setFilterValue("citation_status", value)}
+              options={CITATION_STATUS_OPTIONS}
+              placeholder="Any citation status"
+              value={filters.citation_status || ""}
+            />
+          </div>
+          <div className="filter-field">
+            <span>Duplicates</span>
+            <LibrarySingleSelect
+              emptyLabel="No duplicate statuses"
+              onChange={(value) => setFilterValue("duplicate_status", value)}
+              options={DUPLICATE_STATUS_OPTIONS}
+              placeholder="Any duplicate status"
+              value={filters.duplicate_status || ""}
+            />
+          </div>
           <button className="secondary-button" onClick={() => setFilters(emptyFilters())}>
             <X size={15} />
             Clear
@@ -1716,32 +1828,29 @@ function LibraryView({
                   setSelectedIds([]);
                   return;
                 }
-                setSelectedIds(documents.map((item) => item.id));
-                if (documents[0]) activateDocument(documents[0].id);
+                setSelectedIds(sortedDocuments.map((item) => item.id));
+                if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id);
               }}
             />
-            <strong>{loading ? "Searching..." : `${documents.length} documents`}</strong>
+            <strong>{loading ? "Searching..." : `${sortedDocuments.length} documents`}</strong>
           </label>
           {selectedIds.length ? (
             <div className="bulk-bar">
               <span>{selectedIds.length} selected</span>
-              <select value={bulkReadStatus} onChange={(event) => setBulkReadStatus(event.target.value)}>
-                <option value="" disabled hidden>
-                  Read status
-                </option>
-                <option value="unread">Unread</option>
-                <option value="skimmed">Skimmed</option>
-                <option value="read">Read</option>
-              </select>
-              <select value={bulkPriority} onChange={(event) => setBulkPriority(event.target.value)}>
-                <option value="" disabled hidden>
-                  Priority
-                </option>
-                <option value="urgent">Urgent</option>
-                <option value="high">High</option>
-                <option value="normal">Normal</option>
-                <option value="low">Low</option>
-              </select>
+              <LibrarySingleSelect
+                emptyLabel="No read statuses"
+                onChange={setBulkReadStatus}
+                options={READ_STATUS_OPTIONS}
+                placeholder="Read status"
+                value={bulkReadStatus}
+              />
+              <LibrarySingleSelect
+                emptyLabel="No priorities"
+                onChange={setBulkPriority}
+                options={PRIORITY_OPTIONS}
+                placeholder="Priority"
+                value={bulkPriority}
+              />
               <BulkMultiSelect
                 emptyLabel="No tags"
                 extraCount={bulkCustomTag.trim() ? 1 : 0}
@@ -1755,24 +1864,21 @@ function LibraryView({
                 }
                 label="Tags"
                 onChange={setBulkTagIds}
-                options={sortedTags}
+                options={tagOptions}
                 selectedIds={bulkTagIds}
               />
-              <select value={bulkDomainId} onChange={(event) => setBulkDomainId(event.target.value)}>
-                <option value="" disabled hidden>
-                  Domain
-                </option>
-                {domains.map((domain) => (
-                  <option key={domain.id} value={domain.id}>
-                    {domain.name}
-                  </option>
-                ))}
-              </select>
+              <LibrarySingleSelect
+                emptyLabel="No domains"
+                onChange={setBulkDomainId}
+                options={domainOptions}
+                placeholder="Domain"
+                value={bulkDomainId}
+              />
               <BulkMultiSelect
                 emptyLabel="No projects"
                 label="Project"
                 onChange={setBulkProjectIds}
-                options={sortedProjects}
+                options={projectOptions}
                 selectedIds={bulkProjectIds}
               />
               <button className="primary-button" disabled={!hasBulkUpdate || bulkUpdate.isPending} onClick={() => bulkUpdate.mutate()}>
@@ -1833,7 +1939,7 @@ function LibraryView({
           </div>
         ) : null}
         <div className={`rows ${alternatingRows ? "alternating-rows" : ""}`}>
-          {documents.map((item) => (
+          {sortedDocuments.map((item) => (
             <div
               key={item.id}
               className={`doc-row ${selectedId === item.id ? "selected" : ""}`}
@@ -2403,6 +2509,7 @@ function DocumentPanelContent({
   const [compositionOpen, setCompositionOpen] = useState(false);
   const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "compare" : "pdf"));
   const [readerPageIndex, setReaderPageIndex] = useState(0);
+  const titleEditInputRef = useRef<HTMLInputElement | null>(null);
   const comparePdfRef = useRef<HTMLIFrameElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
@@ -2916,6 +3023,15 @@ function DocumentPanelContent({
     refreshCitation.mutate(kind);
   };
 
+  const toggleDocumentEditing = () => {
+    if (editing) {
+      setEditing(false);
+      return;
+    }
+    setEditing(true);
+    window.requestAnimationFrame(() => titleEditInputRef.current?.focus());
+  };
+
   const setDraftValue = <K extends keyof DocumentDraft>(key: K, value: DocumentDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
@@ -3189,7 +3305,7 @@ function DocumentPanelContent({
         </div>
       </div>
       <div className="detail-actions">
-        <button className="secondary-button" onClick={() => setEditing((value) => !value)}>
+        <button className="secondary-button" onClick={toggleDocumentEditing}>
           {editing ? <X size={15} /> : <Edit3 size={15} />}
           {editing ? "Cancel" : "Edit"}
         </button>
@@ -3276,7 +3392,7 @@ function DocumentPanelContent({
         >
           <label>
             Title
-            <input value={draft.title} onChange={(event) => setDraftValue("title", event.target.value)} />
+            <input ref={titleEditInputRef} value={draft.title} onChange={(event) => setDraftValue("title", event.target.value)} />
           </label>
           <label>
             Subtitle
@@ -3794,6 +3910,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const [dropMessage, setDropMessage] = useState("Ready");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [duplicateCheck, setDuplicateCheck] = useState<ImportDuplicateCheck | null>(null);
+  const [processingListNow, setProcessingListNow] = useState(() => Date.now());
   const queryClient = useQueryClient();
   const rescueFeedback = useAsyncActionFeedbackMap();
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
@@ -3892,6 +4009,13 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const isDraggingFiles = dragDepth > 0;
   const importBusy = upload.isPending || duplicatePreflight.isPending;
   const duplicateFiles = duplicateCheck?.files.filter((file) => file.duplicate_in_upload || file.existing_documents.length > 0) || [];
+  const processingJobs = jobs.filter((job) => !isImportCompletedRowExpired(job, processingListNow)).slice(0, 20);
+
+  useEffect(() => {
+    if (!jobs.some((job) => job.status === "complete")) return undefined;
+    const interval = window.setInterval(() => setProcessingListNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [jobs]);
 
   const hasDraggedFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
   const importFiles = (incomingFiles: FileList | File[]) => {
@@ -4062,7 +4186,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
       </section>
       <section className="job-list">
         <h2>Processing</h2>
-        {jobs.slice(0, 20).map((job) => {
+        {processingJobs.map((job) => {
           const progress = importJobProgress(job);
           return (
             <div
