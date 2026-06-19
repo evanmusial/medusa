@@ -122,7 +122,13 @@ from app.services.processing import (
     document_metadata,
     refresh_import_batch_progress,
 )
-from app.services.preferences import get_analysis_model, get_analysis_models, get_app_preferences, update_app_preferences
+from app.services.preferences import (
+    get_analysis_model,
+    get_analysis_models,
+    get_app_preferences,
+    store_google_service_account,
+    update_app_preferences,
+)
 from app.services.openai_usage import estimated_cost_usd_for_record, openai_usage_summary
 from app.services.recommendations import (
     list_document_recommendations,
@@ -619,8 +625,28 @@ def patch_preferences(
         accent_color_night=payload.accent_color_night,
         document_cache_size_mb=payload.document_cache_size_mb,
         library_alternating_rows=payload.library_alternating_rows,
+        gcs_bucket=payload.gcs_bucket,
         analysis_models=payload.analysis_models,
     )
+    db.commit()
+    return preferences
+
+
+@app.post("/api/preferences/google-service-account", response_model=AppPreferencesOut)
+async def upload_google_service_account(
+    file: Annotated[UploadFile, File()],
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Upload a service account JSON file.")
+    if len(content) > 512 * 1024:
+        raise HTTPException(status_code=400, detail="Service account JSON is unexpectedly large.")
+    try:
+        preferences = store_google_service_account(db, content, file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     return preferences
 

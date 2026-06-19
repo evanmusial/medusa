@@ -69,11 +69,17 @@ export const api = {
         | "accent_color_night"
         | "document_cache_size_mb"
         | "library_alternating_rows"
+        | "gcs_bucket"
         | "analysis_models"
       >
     >,
   ) =>
     request<AppPreferences>("/api/preferences", { method: "PATCH", body: JSON.stringify(body) }),
+  uploadGoogleServiceAccount: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<AppPreferences>("/api/preferences/google-service-account", { method: "POST", body: form });
+  },
   domains: () => request<Domain[]>("/api/domains"),
   createDomain: (name: string, parentId?: string | null) =>
     request<Domain>("/api/domains", { method: "POST", body: JSON.stringify({ name, parent_id: parentId || null }) }),

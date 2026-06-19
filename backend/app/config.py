@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     gcs_bucket: str | None = Field(default=None, validation_alias="GCS_BUCKET")
     gcs_prefix: str = Field(default="medusa", validation_alias="GCS_PREFIX")
+    google_cloud_project: str | None = Field(default=None, validation_alias="GOOGLE_CLOUD_PROJECT")
+    google_cloud_location: str = Field(default="global", validation_alias="GOOGLE_CLOUD_LOCATION")
     google_application_credentials: str | None = Field(
         default=None,
         validation_alias="GOOGLE_APPLICATION_CREDENTIALS",

@@ -43,6 +43,13 @@ export type AppPreferences = {
   accent_color_night: string;
   document_cache_size_mb: number;
   library_alternating_rows: boolean;
+  gcs_bucket: string;
+  gcs_bucket_saved: boolean;
+  google_service_account_name: string;
+  google_service_account_project_id?: string | null;
+  google_service_account_uploaded: boolean;
+  google_service_account_source: string;
+  google_service_account_uploaded_at?: string | null;
   analysis_models: Record<string, string>;
   analysis_model_tasks: AnalysisModelTask[];
   model_options: Record<string, string[]>;

@@ -574,6 +574,13 @@ class AppPreferencesOut(BaseModel):
     accent_color_night: str
     document_cache_size_mb: int
     library_alternating_rows: bool
+    gcs_bucket: str
+    gcs_bucket_saved: bool
+    google_service_account_name: str
+    google_service_account_project_id: str | None = None
+    google_service_account_uploaded: bool
+    google_service_account_source: str
+    google_service_account_uploaded_at: str | None = None
     analysis_models: dict[str, str]
     analysis_model_tasks: list[AnalysisModelTaskOut]
     model_options: dict[str, list[str]]
@@ -585,6 +592,7 @@ class AppPreferencesPatch(BaseModel):
     accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     document_cache_size_mb: int | None = Field(default=None, ge=0)
     library_alternating_rows: bool | None = None
+    gcs_bucket: str | None = None
     analysis_models: dict[str, str] | None = None
 
 

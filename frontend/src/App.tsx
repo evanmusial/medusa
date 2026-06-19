@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { ChangeEvent, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Background,
@@ -5052,11 +5052,14 @@ function SettingsView({
   const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
   const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1000);
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
+  const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
+  const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
+  const serviceAccountUploadFeedback = useAsyncActionFeedback();
 
   useEffect(() => {
     if (preferences) {
@@ -5065,6 +5068,7 @@ function SettingsView({
       setAccentColorNight(preferences.accent_color_night);
       setDocumentCacheSizeMb(preferences.document_cache_size_mb);
       setLibraryAlternatingRows(preferences.library_alternating_rows);
+      setGcsBucket(preferences.gcs_bucket);
       setAnalysisModels(preferences.analysis_models);
     }
   }, [preferences]);
@@ -5117,6 +5121,7 @@ function SettingsView({
         accent_color_night: accentColorNight,
         document_cache_size_mb: documentCacheSizeMb,
         library_alternating_rows: libraryAlternatingRows,
+        gcs_bucket: gcsBucket,
         analysis_models: analysisModels,
       }),
     onSuccess: (updatedPreferences) => {
@@ -5126,6 +5131,19 @@ function SettingsView({
     },
     onError: (error) => {
       savePreferencesFeedback.showError(actionFailureMessage("Could not save preferences", error));
+    },
+  });
+  const uploadServiceAccount = useMutation({
+    mutationFn: (file: File) => api.uploadGoogleServiceAccount(file),
+    onSuccess: (updatedPreferences) => {
+      serviceAccountUploadFeedback.showSuccess();
+      queryClient.setQueryData(["preferences"], updatedPreferences);
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      if (serviceAccountInputRef.current) serviceAccountInputRef.current.value = "";
+    },
+    onError: (error) => {
+      serviceAccountUploadFeedback.showError(actionFailureMessage("Could not upload service account", error));
+      if (serviceAccountInputRef.current) serviceAccountInputRef.current.value = "";
     },
   });
   const latestRun = runs[0];
@@ -5143,10 +5161,20 @@ function SettingsView({
         preferences.accent_color_night !== accentColorNight ||
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
         preferences.library_alternating_rows !== libraryAlternatingRows ||
+        preferences.gcs_bucket !== gcsBucket ||
+        (Boolean(gcsBucket.trim()) && !preferences.gcs_bucket_saved) ||
         !sameStringMap(preferences.analysis_models, analysisModels)),
   );
   const importCostWarning = importWorkerConcurrency > warningThreshold;
   const savePreferencesDisabled = !preferences || !preferenceDirty || savePreferences.isPending;
+  const serviceAccountName =
+    preferences?.google_service_account_name || "None, please upload a service account JSON";
+  const serviceAccountStatus =
+    preferences?.google_service_account_source === "uploaded" ? "Uploaded" : "Missing";
+  const handleServiceAccountUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) uploadServiceAccount.mutate(file);
+  };
   const renderSaveAllButton = (placement: "top" | "bottom") => (
     <AsyncActionSlot feedback={savePreferencesFeedback.feedback}>
       <button
@@ -5173,12 +5201,69 @@ function SettingsView({
       <div className="settings-tile">
         <Cloud size={22} />
         <h2>Storage</h2>
-        <p>Set GCS_BUCKET and GOOGLE_APPLICATION_CREDENTIALS to use Google Cloud Storage and Vision OCR.</p>
+        <p>GCS bucket defaults and Google credentials are managed below.</p>
       </div>
       <div className="settings-tile">
         <Sparkles size={22} />
         <h2>AI</h2>
         <p>Set OPENAI_API_KEY to enable structured metadata, summaries, topics, and embeddings.</p>
+      </div>
+      <div className="storage-settings-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Storage & Google</h2>
+            <span>{preferences?.gcs_bucket_saved ? "Saved bucket" : "Current default"}</span>
+          </div>
+          <Cloud size={20} />
+        </div>
+        <div className="storage-settings-grid">
+          <div className="preference-control">
+            <label htmlFor="gcs-bucket">
+              <span>GCS bucket</span>
+              <strong>{gcsBucket.trim() || "Local fallback"}</strong>
+            </label>
+            <input
+              autoComplete="off"
+              id="gcs-bucket"
+              onChange={(event) => setGcsBucket(event.target.value)}
+              placeholder="your-gcs-bucket"
+              type="text"
+              value={gcsBucket}
+            />
+            <p>{preferences?.gcs_bucket_saved ? "Saved for future storage operations." : "Save All stores this default."}</p>
+          </div>
+          <div className="preference-control">
+            <label htmlFor="google-service-account-name">
+              <span>Service account name</span>
+              <strong>{serviceAccountStatus}</strong>
+            </label>
+            <input id="google-service-account-name" readOnly type="text" value={serviceAccountName} />
+            {preferences?.google_service_account_project_id ? (
+              <p>Project: {preferences.google_service_account_project_id}</p>
+            ) : (
+              <p>Upload a JSON key to stop relying on pass-through Google credentials.</p>
+            )}
+            <AsyncActionSlot feedback={serviceAccountUploadFeedback.feedback}>
+              <button
+                className={asyncFeedbackClass("secondary-button", serviceAccountUploadFeedback.feedback, uploadServiceAccount.isPending)}
+                disabled={uploadServiceAccount.isPending}
+                onClick={() => serviceAccountInputRef.current?.click()}
+                type="button"
+              >
+                <UploadCloud className={uploadServiceAccount.isPending ? "spin" : ""} size={16} />
+                {uploadServiceAccount.isPending ? "Uploading" : "Upload JSON"}
+              </button>
+            </AsyncActionSlot>
+            <input
+              ref={serviceAccountInputRef}
+              accept="application/json,.json"
+              className="hidden-file-input"
+              disabled={uploadServiceAccount.isPending}
+              onChange={handleServiceAccountUpload}
+              type="file"
+            />
+          </div>
+        </div>
       </div>
       <div className="preferences-panel">
         <div className="panel-title-row">

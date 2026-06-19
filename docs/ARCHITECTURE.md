@@ -41,7 +41,7 @@ Current UI architecture:
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation, with run-sheet controls constrained to their pane so long document titles cannot spill into bibliography controls.
 - Queue shows queued/running import jobs with per-job stage progress and compact bounded citation-review cards. Citation cards use the owning document title, source/provenance chips, a constrained citation preview, and attached accept/reject actions so long titles and provider labels cannot collide.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
-- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls. Settings places Save All controls at both the top and bottom of the view, and each Save All action persists all preference groups together.
+- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, GCS bucket configuration, managed Google service-account upload/status, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls. Settings places Save All controls at both the top and bottom of the view, and each Save All action persists all preference groups together; uploaded service-account JSON is saved through its own authenticated file action.
 - Metadata restore is CLI-first: dry-run by default, explicit `--apply`, and intended for backup drills or fresh-database recovery.
 
 Visual decisions:
@@ -78,9 +78,9 @@ Data storage:
 - PostgreSQL is the system of record.
 - Alembic is the schema migration system for PostgreSQL. SQLite tests still use SQLAlchemy metadata creation for fast isolated test schemas.
 - Original files are checksum-addressed. Current storage keys use `documents/<first-two-sha256-chars>/<sha256>/<original-filename>` under the configured prefix.
-- GCS is the intended original-object store when `GCS_BUCKET` and Google credentials are configured.
+- GCS is the intended original-object store when a saved Settings GCS bucket or `GCS_BUCKET` and Google credentials are configured.
 - Local filesystem storage under `data/originals` is the fallback so the app can boot and import without cloud credentials.
-- GCS service-account files live locally under ignored `data/secrets`; Compose mounts that directory read-only at `/app/data/secrets`. Compose also mounts host ADC from `~/.config/gcloud` into the container home for Google/Gemini clients that use Application Default Credentials.
+- Hand-managed GCS service-account files live locally under ignored `data/secrets`; Compose mounts that directory read-only at `/app/data/secrets`. Settings-managed service-account uploads are written under ignored `data/managed-secrets` with restrictive file permissions and are preferred by GCS, Google Vision, and Gemini/Vertex calls. Compose also mounts host ADC from `~/.config/gcloud` into the container home for Google clients that use Application Default Credentials when no managed JSON is available.
 - The GCS service account needs object-level create/read/delete access for the configured bucket and prefix. `storage.buckets.get` is useful for diagnostics, but object upload requires `storage.objects.create`.
 - Processing/document cache lives under `data/processing-cache`, is ignored by git, and keeps local PDF copies for queued/running/failed work plus recently completed imports within the configured document cache budget.
 
@@ -90,16 +90,17 @@ Backend modules:
 - `backend/app/database.py`: database engine, session scope, Alembic startup migration runner, and SQLite/test metadata fallback.
 - `backend/app/models.py`: ORM entities and relationships.
 - `backend/app/worker.py`: long-running durable job loop.
-- `backend/app/services/storage.py`: GCS/local storage adapter.
+- `backend/app/services/storage.py`: GCS/local storage adapter that resolves the saved GCS bucket and managed Google credentials before falling back to env/ADC or local storage.
 - `backend/app/services/analysis_models.py`: canonical raw extraction/document-analysis task registry, default model ids, OpenAI/Google model option lists, grouped option metadata, and task descriptions used by Settings.
 - `backend/app/services/document_cache.py`: bounded local PDF cache registration, lookup, storage rehydration, and pruning.
 - `backend/app/services/extraction.py`: layout-aware PDF text extraction, deterministic page text cleanup, table normalization, and chunking.
-- `backend/app/services/ai.py`: OpenAI Responses API document-intelligence extraction, Gemini Developer API text-generation routing for selected Gemini models, PDF-file context for citation-critical OpenAI metadata, routed text-only summary/topic calls, compact APA fallback calls for uncertain citations, optional legacy combined metadata/summary/APA/topic-keyword calls, page text normalization calls with bounded fallback, embedding adapter, and call-site usage instrumentation.
+- `backend/app/services/ai.py`: OpenAI Responses API document-intelligence extraction, Gemini text-generation routing for selected Gemini models through uploaded service-account Vertex credentials or the Developer API key fallback, PDF-file context for citation-critical OpenAI metadata, routed text-only summary/topic calls, compact APA fallback calls for uncertain citations, optional legacy combined metadata/summary/APA/topic-keyword calls, page text normalization calls with bounded fallback, embedding adapter, and call-site usage instrumentation.
 - `backend/app/services/openai_usage.py`: durable AI usage recorder and Budget/Settings rollup builder for OpenAI/Gemini token/file-context counts and conservative estimated costs by task, model, document, calendar day/hour, import job, and Concordance job.
 - `backend/app/services/composition.py`: per-document import composition ledger helpers, cost summarization, provider rollups, local duration rollups, processing issue tracking, pipeline chart data construction, and active-import cost estimation.
 - `backend/app/services/ocr.py`: Google Vision adapter placeholder.
 - `backend/app/services/processing.py`: import processing orchestration.
-- `backend/app/services/preferences.py`: DB-backed local preferences such as import worker concurrency, Library alternate-row shading, accent colors, document cache size, and document-analysis model selections.
+- `backend/app/services/preferences.py`: DB-backed local preferences such as import worker concurrency, Library alternate-row shading, accent colors, saved GCS bucket, managed Google service-account status, document cache size, and document-analysis model selections.
+- `backend/app/services/google_credentials.py`: service-account JSON validation, secure managed-key storage under ignored data paths, and scoped Google credential loading.
 - `backend/app/services/concordance.py`: retroactive capability registry, run creation, and Concordance job processing.
 - `backend/app/services/figures.py`: embedded PDF figure extraction, durable asset storage, and figure row creation.
 - `backend/app/services/exports.py`: authenticated metadata export and durable storage manifest builders.
@@ -134,7 +135,7 @@ Frontend async-work contract:
 Current core entities:
 
 - `User`, `SessionToken`
-- `AppPreference`: local DB-backed operational preferences such as import worker concurrency, Library alternate-row shading, day/night accent colors, document-analysis model choices, and document cache size.
+- `AppPreference`: local DB-backed operational preferences such as import worker concurrency, Library alternate-row shading, day/night accent colors, saved GCS bucket, service-account display metadata/path, document-analysis model choices, and document cache size. Service-account private key material is stored only on disk under ignored managed-secret paths, not in PostgreSQL.
 - `Domain`: nestable knowledge hierarchy.
 - `Tag`: flat keyword/topic label.
 - `SavedSearch`: named query and filter presets for repeated research views and Concordance scopes.
@@ -285,6 +286,7 @@ Secrets:
 - `.env` is ignored.
 - `.env.example` documents expected variables.
 - Google service-account JSON files are ignored under `data/secrets`.
+- Settings can upload a Google service-account JSON key into ignored `data/managed-secrets/google-service-account.json`; Medusa writes the managed directory as `0700` and the key as `0600` where the host filesystem supports POSIX modes. PostgreSQL stores only display metadata and the managed path, never the private key JSON.
 - GCS service accounts must be able to create original PDFs and extracted assets, read them back for preview/export/reprocessing, and delete temporary smoke-test objects when verifying credentials.
 - Do not track API keys, service-account JSON, or generated data.
 
@@ -295,12 +297,14 @@ Network:
 
 Operational settings:
 
+- The active GCS bucket can be saved from Settings as an `AppPreference`. If no saved bucket exists, Medusa falls back to `GCS_BUCKET`; saving an empty bucket intentionally disables GCS and leaves local storage as the active backend.
+- Uploaded Google service-account JSON is preferred for GCS, Google Vision, and Gemini calls. Gemini uses the service account through Vertex AI with `GOOGLE_CLOUD_PROJECT` or the JSON `project_id` and `GOOGLE_CLOUD_LOCATION` defaulting to `global`; when no managed JSON is available, the existing Gemini Developer API key and ADC/gcloud fallbacks remain available.
 - `MEDUSA_IMPORT_WORKER_CONCURRENCY` sets the startup default for concurrent import processing. The built-in default is 4, and Settings accepts any positive value while warning that higher values can create a burst of OpenAI calls and cost.
 - `MEDUSA_DOCUMENT_CACHE_SIZE_MB` sets the startup default for the bounded local document cache. The built-in default is 1,000 MB, and Settings can change the active value without affecting GCS/local original storage writes.
 - `MEDUSA_RAW_TEXT_EXTRACTION_TIMEOUT_SECONDS` bounds local raw extraction tools such as Marker before falling back or failing the current extraction attempt.
 - `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE` controls page-normalization spend. `auto` is the default local-first mode; `always` sends every page through the configured OpenAI page-normalization model; `never` keeps page normalization local. `MEDUSA_OPENAI_PAGE_NORMALIZATION_AUTO_MAX_PAGES` caps auto-mode cloud escalations per document.
 - Docker sets `HOME`, `XDG_CACHE_HOME`, `HF_HOME`, `TORCH_HOME`, and `MPLCONFIGDIR` under `/app/data` so local ML model downloads and ADC config survive container recreation through the existing `./data:/app/data` volume instead of entering the image.
-- The active import concurrency, Library alternate-row shading preference, accent color preferences, document cache size, and model selections are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`.
+- The active import concurrency, Library alternate-row shading preference, accent color preferences, saved GCS bucket, managed service-account display/path metadata, document cache size, and model selections are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`; private credential JSON remains outside PostgreSQL and outside exports.
 
 Safe deletion:
 
@@ -831,10 +835,24 @@ Why: Medusa needs model/method preferences that can compare OpenAI and Google ch
 Consequences:
 
 - `data/secrets/gemini.env` is the preferred ignored local secret file for `GEMINI_API_KEY`; backend and worker also honor direct `GEMINI_API_KEY` environment configuration.
+- Settings-managed Google service-account JSON is preferred over `GEMINI_API_KEY` for Gemini model calls and routes through Vertex AI using the saved key plus `GOOGLE_CLOUD_PROJECT`/JSON `project_id` and `GOOGLE_CLOUD_LOCATION`.
 - Settings > Models groups compatible text-generation choices under OpenAI and Google, and excludes Gemini model ids containing `preview` plus deprecated/shutdown Gemini defaults from the Google section.
-- Gemini text-generation calls use the Developer API `generateContent` route and extracted text only. Original PDF file attachment remains an OpenAI Responses path until Gemini PDF-context handling is explicitly wired and verified.
+- Gemini text-generation calls use Vertex AI `generateContent` when managed service-account credentials are available, otherwise the Developer API `generateContent` route with `GEMINI_API_KEY`; both paths use extracted text only. Original PDF file attachment remains an OpenAI Responses path until Gemini PDF-context handling is explicitly wired and verified.
 - Budget records Gemini calls with provider `google` in the existing `OpenAIUsageRecord` table, estimates known Gemini text-model costs from the local pricing table, and leaves unknown/ambiguous models unpriced.
 - Budget rollups now include model, task, document, calendar day, and calendar hour views so expensive documents or time windows can be isolated.
+
+### 2026-06-19: Settings-managed GCS and Google service account
+
+Decision: Let Settings save the active GCS bucket and upload a Google service-account JSON key for managed Google credentials.
+
+Why: Medusa should not require editing `.env` or relying on pass-through gcloud/ADC credentials for routine GCS, Vision, and Gemini work once the user has supplied a service account.
+
+Consequences:
+
+- `/api/preferences` exposes the active GCS bucket, whether it has been saved, and a non-secret service-account status summary. `PATCH /api/preferences` saves the bucket through `AppPreference`.
+- `/api/preferences/google-service-account` accepts an authenticated JSON upload, validates that it is a service-account key, stores it under ignored `data/managed-secrets` with restrictive permissions, and stores only display/path metadata in PostgreSQL.
+- Storage, Google Vision, and Gemini prefer the managed JSON. Gemini uses Vertex AI with the JSON/project configuration when service-account credentials are available and keeps the Developer API key path as the no-managed-key fallback.
+- Metadata exports include the saved bucket because it is not secret, but do not include the uploaded JSON or service-account metadata that would trip restore secret guards.
 
 ### 2026-06-19: Document Cost Composition and pipeline provenance
 

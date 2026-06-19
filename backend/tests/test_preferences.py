@@ -1,3 +1,8 @@
+import json
+import os
+import stat
+from pathlib import Path
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -123,3 +128,103 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert "gpt-5.2-pro" in payload["model_options"]["gpt"]
         assert "gpt-5.5" in payload["model_options"]["gpt"]
         assert payload["model_options"]["raw_text_extraction"][:3] == ["docling", "marker", "pymupdf"]
+
+
+def test_gcs_bucket_preference_falls_back_to_env_and_can_be_saved(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("GCS_BUCKET", "env-bucket")
+
+    from app.config import get_settings
+    from app.models import AppPreference
+    from app.services.preferences import GCS_BUCKET_KEY, get_app_preferences, update_app_preferences
+
+    get_settings.cache_clear()
+    Session = make_session()
+    with Session() as db:
+        preferences = get_app_preferences(db)
+        assert preferences["gcs_bucket"] == "env-bucket"
+        assert preferences["gcs_bucket_saved"] is False
+
+        preferences = update_app_preferences(db, gcs_bucket="gs://saved-bucket/ignored-prefix")
+
+        stored = db.get(AppPreference, GCS_BUCKET_KEY)
+        assert stored is not None
+        assert stored.value == {"value": "saved-bucket"}
+        assert preferences["gcs_bucket"] == "saved-bucket"
+        assert preferences["gcs_bucket_saved"] is True
+
+
+def test_google_service_account_upload_stores_json_outside_preferences(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    from app.config import get_settings
+    from app.models import AppPreference
+    from app.services.google_credentials import SERVICE_ACCOUNT_NONE_LABEL
+    from app.services.preferences import GOOGLE_SERVICE_ACCOUNT_KEY, get_app_preferences, store_google_service_account
+
+    get_settings.cache_clear()
+    content = json.dumps(
+        {
+            "type": "service_account",
+            "project_id": "medusa-test",
+            "private_key_id": "key-id",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+            "client_email": "medusa@medusa-test.iam.gserviceaccount.com",
+            "client_id": "123",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    ).encode("utf-8")
+
+    Session = make_session()
+    with Session() as db:
+        assert get_app_preferences(db)["google_service_account_name"] == SERVICE_ACCOUNT_NONE_LABEL
+
+        preferences = store_google_service_account(db, content, "medusa-test.json")
+
+        stored = db.get(AppPreference, GOOGLE_SERVICE_ACCOUNT_KEY)
+        assert stored is not None
+        stored_value = stored.value["value"]
+        stored_path = Path(stored_value["path"])
+        assert stored_path.exists()
+        assert stored_value["display_name"] == "medusa@medusa-test.iam.gserviceaccount.com"
+        assert "private_key" not in json.dumps(stored_value)
+        assert preferences["google_service_account_name"] == "medusa@medusa-test.iam.gserviceaccount.com"
+        assert preferences["google_service_account_project_id"] == "medusa-test"
+        assert preferences["google_service_account_uploaded"] is True
+        if os.name != "nt":
+            assert stat.S_IMODE(stored_path.stat().st_mode) == 0o600
+            assert stat.S_IMODE(stored_path.parent.stat().st_mode) == 0o700
+
+
+def test_service_account_name_field_requires_settings_upload(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    env_key = tmp_path / "env-service-account.json"
+    env_key.write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "env-project",
+                "private_key": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+                "client_email": "env@env-project.iam.gserviceaccount.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(env_key))
+
+    from app.config import get_settings
+    from app.services.google_credentials import SERVICE_ACCOUNT_NONE_LABEL
+    from app.services.preferences import get_app_preferences, get_google_service_account_path
+
+    get_settings.cache_clear()
+    Session = make_session()
+    with Session() as db:
+        preferences = get_app_preferences(db)
+        assert preferences["google_service_account_name"] == SERVICE_ACCOUNT_NONE_LABEL
+        assert preferences["google_service_account_source"] == "none"
+        assert get_google_service_account_path(db) == str(env_key)

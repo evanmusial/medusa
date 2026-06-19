@@ -70,10 +70,13 @@ Google Cloud Storage:
 GCS_BUCKET=your-bucket
 GCS_PREFIX=medusa
 GOOGLE_CLOUD_PROJECT=your-project
+GOOGLE_CLOUD_LOCATION=global
 GOOGLE_APPLICATION_CREDENTIALS=/app/data/secrets/service-account.json
 ```
 
 Put the service-account JSON under ignored `data/secrets/`; Docker Compose mounts that directory read-only into backend and worker containers. The service account needs object create/read/delete access on the configured bucket and prefix.
+
+Settings > Storage & Google now shows the active GCS bucket and can save it to the local preferences table so future backend and worker operations default to that saved bucket. The same panel accepts an uploaded Google service-account JSON key; uploaded keys are stored under ignored `data/managed-secrets` with restrictive file permissions, and only the service account name/project/path summary is stored in PostgreSQL. When an uploaded key is available, Medusa prefers it for GCS, Google Vision, and Gemini/Vertex operations. If no Settings-managed key has been uploaded, the service account name field reads `None, please upload a service account JSON`, and Google clients may still fall back to configured env JSON or mounted ADC/gcloud credentials where available.
 
 OpenAI:
 

@@ -141,6 +141,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add GCS manifest validation.
   - Acceptance: Medusa can check that every stored URI in Postgres exists in GCS/local storage and report missing objects.
 
+- [x] Add Settings-managed GCS bucket and Google service-account upload.
+  - Acceptance: Settings shows the active bucket, can save it for future backend/worker operations, accepts a service-account JSON upload, stores the key outside tracked files with restrictive permissions, displays the service account name/project without exposing private key material, and uses the managed key for GCS, Google Vision, and Gemini when available.
+
 - [x] Add AI usage dashboard.
   - Acceptance: Budget shows recorded OpenAI Responses/embeddings calls and Gemini `generateContent` calls across last-day, last-month, last-3-month, and all-time windows, including success/failure counts, token totals, cached input tokens when available, conservative known-model cost estimates, unpriced-call counts, PDF/file context bytes, model/task/document/calendar-day/calendar-hour rollups, and recent errors from the durable `OpenAIUsageRecord` ledger.
 

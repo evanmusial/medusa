@@ -3196,6 +3196,7 @@ pre {
 .settings-tile h2,
 .export-panel h2,
 .preferences-panel h2,
+.storage-settings-panel h2,
 .model-settings-panel h2,
 .openai-usage-panel h2,
 .budget-panel h2,
@@ -3207,6 +3208,7 @@ pre {
 .settings-tile p,
 .export-panel p,
 .preferences-panel p,
+.storage-settings-panel p,
 .model-settings-panel p,
 .capability-grid p {
   margin: 0;
@@ -3218,6 +3220,30 @@ pre {
   grid-column: span 2;
   display: grid;
   gap: 12px;
+}
+
+.storage-settings-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+
+.storage-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.storage-settings-grid input[readonly] {
+  color: var(--muted);
+}
+
+.hidden-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .model-settings-panel {
@@ -3906,6 +3932,7 @@ pre {
   }
 
   .preferences-panel,
+  .storage-settings-panel,
   .model-settings-panel,
   .openai-usage-panel,
   .budget-panel,
@@ -3915,6 +3942,7 @@ pre {
   }
 
   .accent-settings,
+  .storage-settings-grid,
   .model-task-row,
   .budget-metric-grid,
   .usage-metric-grid,

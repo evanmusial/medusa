@@ -5,6 +5,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.config import get_settings
+from app.services.google_credentials import load_service_account_credentials
+from app.services.preferences import get_active_storage_settings
 
 
 @dataclass(frozen=True)
@@ -38,10 +40,12 @@ class LocalStorageService(StorageService):
 
 
 class GcsStorageService(StorageService):
-    def __init__(self, bucket_name: str, prefix: str):
+    def __init__(self, bucket_name: str, prefix: str, credentials_path: str | None = None):
         from google.cloud import storage
 
-        self.client = storage.Client()
+        credentials = load_service_account_credentials(credentials_path) if credentials_path else None
+        project = getattr(credentials, "project_id", None) if credentials else None
+        self.client = storage.Client(project=project, credentials=credentials)
         self.bucket = self.client.bucket(bucket_name)
         self.bucket_name = bucket_name
         self.prefix = prefix.strip("/")
@@ -63,9 +67,15 @@ class GcsStorageService(StorageService):
 
 def get_storage_service() -> StorageService:
     settings = get_settings()
-    if settings.gcs_bucket:
+    storage_settings = get_active_storage_settings()
+    gcs_bucket = storage_settings.get("gcs_bucket")
+    if gcs_bucket:
         try:
-            return GcsStorageService(settings.gcs_bucket, settings.gcs_prefix)
+            return GcsStorageService(
+                gcs_bucket,
+                storage_settings.get("gcs_prefix") or settings.gcs_prefix,
+                storage_settings.get("google_credentials_path"),
+            )
         except Exception:
             # The app must still boot and import locally if GCS credentials are not ready yet.
             return LocalStorageService(settings.local_storage_dir)

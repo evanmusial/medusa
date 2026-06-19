@@ -29,7 +29,9 @@ from app.services.analysis_models import (
     is_google_text_model,
 )
 from app.services.extraction import normalize_extracted_text
+from app.services.google_credentials import load_service_account_credentials
 from app.services.openai_usage import OpenAIUsageContext, record_openai_usage
+from app.services.preferences import get_active_google_project_id, get_active_google_service_account_path
 
 
 METADATA_EXTRACTION_PROMPT = (
@@ -327,7 +329,17 @@ class AiService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = None
-        self.gemini_api_key = _load_gemini_api_key(self.settings)
+        self.google_credentials = None
+        self.google_project_id = get_active_google_project_id()
+        self.google_vertex_location = (self.settings.google_cloud_location or "global").strip() or "global"
+        google_credentials_path = get_active_google_service_account_path()
+        if google_credentials_path:
+            try:
+                self.google_credentials = load_service_account_credentials(google_credentials_path)
+                self.google_project_id = self.google_project_id or getattr(self.google_credentials, "project_id", None)
+            except Exception:
+                self.google_credentials = None
+        self.gemini_api_key = None if self.google_credentials else _load_gemini_api_key(self.settings)
         if self.settings.openai_api_key:
             from openai import OpenAI
 
@@ -338,7 +350,7 @@ class AiService:
 
     def _can_call_text_model(self, model: str | None) -> bool:
         if is_google_text_model(model):
-            return bool(self.gemini_api_key)
+            return bool((self.google_credentials and self.google_project_id) or self.gemini_api_key)
         return bool(self.client)
 
     @staticmethod
@@ -972,6 +984,16 @@ class AiService:
         input_text: str,
         timeout: float,
     ) -> dict[str, Any]:
+        if self.google_credentials and self.google_project_id:
+            return self._gemini_generate_content_vertex(
+                model=model,
+                schema=schema,
+                prompt=prompt,
+                input_text=input_text,
+                timeout=timeout,
+            )
+        if not self.gemini_api_key:
+            raise RuntimeError("Gemini API key or service account is not configured.")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         body = {
             "systemInstruction": {"parts": [{"text": prompt}]},
@@ -997,6 +1019,52 @@ class AiService:
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Gemini request failed with HTTP {exc.code}: {error_body[:800]}") from exc
+
+    def _gemini_generate_content_vertex(
+        self,
+        *,
+        model: str,
+        schema: dict[str, Any],
+        prompt: str,
+        input_text: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        if not self.google_credentials or not self.google_project_id:
+            raise RuntimeError("Google service account credentials are not configured.")
+        location = self.google_vertex_location
+        host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+        url = (
+            f"https://{host}/v1/projects/{self.google_project_id}/locations/{location}"
+            f"/publishers/google/models/{model}:generateContent"
+        )
+        body = {
+            "systemInstruction": {"parts": [{"text": prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": input_text}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": schema,
+            },
+        }
+        data = json.dumps(body).encode("utf-8")
+        from google.auth.transport.requests import Request
+
+        if not self.google_credentials.valid:
+            self.google_credentials.refresh(Request())
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {self.google_credentials.token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Gemini Vertex request failed with HTTP {exc.code}: {error_body[:800]}") from exc
 
     @staticmethod
     def _gemini_input_text(input_content: list[dict[str, Any]]) -> str:
