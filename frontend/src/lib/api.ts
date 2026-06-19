@@ -49,7 +49,14 @@ export const api = {
   me: () => request<User>("/api/me"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
-  updatePreferences: (body: Partial<Pick<AppPreferences, "import_worker_concurrency" | "accent_color_day" | "accent_color_night">>) =>
+  updatePreferences: (
+    body: Partial<
+      Pick<
+        AppPreferences,
+        "import_worker_concurrency" | "accent_color_day" | "accent_color_night" | "document_cache_size_mb" | "analysis_models"
+      >
+    >,
+  ) =>
     request<AppPreferences>("/api/preferences", { method: "PATCH", body: JSON.stringify(body) }),
   domains: () => request<Domain[]>("/api/domains"),
   createDomain: (name: string, parentId?: string | null) =>

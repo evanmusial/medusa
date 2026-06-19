@@ -86,18 +86,21 @@ MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS=60
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
-OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5`, sends the original PDF as file context when the file is below the configured size cap, and normalizes extracted page text into readable paragraph flow. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
+OpenAI enrichment runs asynchronously during imports and Concordance Runs. By default, Medusa uses `gpt-5.5` for GPT-backed document-analysis tasks, lets Settings override models per task, sends the original PDF as file context when the file is below the configured size cap, and normalizes extracted page text into readable paragraph flow. If OpenAI is unavailable or a page-normalization request times out, Medusa falls back to local whitespace, hyphenation, and paragraph cleanup.
 
 Worker recovery:
 
 ```bash
 MEDUSA_IMPORT_WORKER_CONCURRENCY=4
 MEDUSA_WORKER_STALE_JOB_SECONDS=900
+MEDUSA_DOCUMENT_CACHE_SIZE_MB=1000
 ```
 
 Medusa defaults to four concurrent import jobs. The env var sets the startup default, and Settings lets the local user change the active preference without editing tracked files. Values above four are allowed but can generate many OpenAI calls and costs over a short period.
 
 Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
+
+The document cache size defaults to 1,000 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and future custom-summary work; originals are still written to GCS or local durable storage at upload time.
 
 ## Development
 

@@ -15,6 +15,7 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
+    from app.config import get_settings
     from app.models import AppPreference
     from app.services.preferences import (
         ACCENT_COLOR_DAY_KEY,
@@ -32,6 +33,7 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     assert normalize_hex_color("#AbC123", "#000000") == "#abc123"
     assert normalize_hex_color("blue", "#000000") == "#000000"
 
+    get_settings.cache_clear()
     Session = make_session()
     with Session() as db:
         preferences = update_app_preferences(db, import_worker_concurrency=3, accent_color_day="#14b8a6")
@@ -48,3 +50,38 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
 
         update_app_preferences(db, import_worker_concurrency=99)
         assert get_app_preferences(db)["import_worker_concurrency"] == 99
+
+
+def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import AppPreference
+    from app.services.analysis_models import MODEL_METADATA, MODEL_PAGE_TEXT_NORMALIZATION
+    from app.services.preferences import (
+        DOCUMENT_CACHE_SIZE_MB_KEY,
+        get_app_preferences,
+        update_app_preferences,
+    )
+
+    Session = make_session()
+    with Session() as db:
+        preferences = update_app_preferences(
+            db,
+            document_cache_size_mb=512,
+            analysis_models={
+                MODEL_METADATA: "gpt-5.4-mini",
+                MODEL_PAGE_TEXT_NORMALIZATION: "gpt-5.4-nano",
+            },
+        )
+
+        stored_cache = db.get(AppPreference, DOCUMENT_CACHE_SIZE_MB_KEY)
+        assert stored_cache is not None
+        assert stored_cache.value == {"value": 512}
+        assert preferences["document_cache_size_mb"] == 512
+        assert preferences["analysis_models"][MODEL_METADATA] == "gpt-5.4-mini"
+        assert preferences["analysis_models"][MODEL_PAGE_TEXT_NORMALIZATION] == "gpt-5.4-nano"
+
+        payload = get_app_preferences(db)
+        assert len(payload["analysis_model_tasks"]) == 7
+        assert payload["model_options"]["gpt"][0] == "gpt-5.5"

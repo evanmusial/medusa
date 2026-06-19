@@ -329,7 +329,10 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(
         processing,
         "normalize_document_pages",
-        lambda document, ai=None, db=None, job=None, resume_existing=False: {"pages": 1, "sources": {"test": 1}},
+        lambda document, ai=None, db=None, job=None, resume_existing=False, model=None, pdf_bytes=None: {
+            "pages": 1,
+            "sources": {"test": 1},
+        },
     )
     monkeypatch.setattr(processing, "get_ai_service", lambda: object())
 
@@ -368,7 +371,7 @@ def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tm
         def __init__(self):
             self.pages: list[int] = []
 
-        def normalize_page_text(self, filename, page_number, text):
+        def normalize_page_text(self, filename, page_number, text, **_):
             self.pages.append(page_number)
             return {"normalized_text": f"normalized {page_number}", "source": "test", "notes": []}
 

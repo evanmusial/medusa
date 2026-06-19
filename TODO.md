@@ -26,6 +26,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add AI figure caption and gist enrichment.
   - Acceptance: extracted figure assets get captions/gists, confidence/evidence, and searchable text without overwriting user edits.
 
+- [ ] Add Accessory Summaries.
+  - Acceptance: users can define custom summary prompts, run them against selected documents or Concordance scopes, and each run uses the original PDF context plus the Settings-selected Accessory Summaries model without overwriting core summaries.
+
 - [ ] Add region-aware figure/table geometry.
   - Acceptance: figures and tables can be mapped back to page regions for future overlays and source evidence.
 

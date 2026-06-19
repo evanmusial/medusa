@@ -19,6 +19,7 @@ import {
   Filter,
   FolderTree,
   Gauge,
+  Info,
   Image,
   Library,
   ListChecks,
@@ -2895,6 +2896,74 @@ function NotesView({
   );
 }
 
+function sameStringMap(left: Record<string, string>, right: Record<string, string>) {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if ((left[key] || "") !== (right[key] || "")) return false;
+  }
+  return true;
+}
+
+function InfoPopup({ text }: { text: string }) {
+  return (
+    <span className="info-popover" tabIndex={0}>
+      <Info size={14} aria-hidden="true" />
+      <span role="tooltip">{text}</span>
+    </span>
+  );
+}
+
+function ModelSelect({
+  value,
+  options,
+  defaultModel,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  defaultModel: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const uniqueOptions = Array.from(new Set([value, defaultModel, ...options].filter(Boolean)));
+
+  return (
+    <div
+      className="model-select"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <button className="model-select-trigger" type="button" onClick={() => setOpen((current) => !current)}>
+        <span>{value}</span>
+        <ChevronRight size={14} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="model-options" role="listbox">
+          {uniqueOptions.map((option) => (
+            <button
+              aria-selected={option === value}
+              className={option === value ? "selected" : ""}
+              key={option}
+              onClick={() => {
+                onChange(option);
+                setOpen(false);
+              }}
+              role="option"
+              type="button"
+            >
+              <span>{option}</span>
+              {option === defaultModel ? <span className="model-default-marker">(Default)</span> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SettingsView({
   capabilities,
   runs,
@@ -2924,6 +2993,8 @@ function SettingsView({
   const [importWorkerConcurrency, setImportWorkerConcurrency] = useState(preferences?.import_worker_concurrency || 4);
   const [accentColorDay, setAccentColorDay] = useState(preferences?.accent_color_day || "#2563eb");
   const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
+  const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1000);
+  const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const queryClient = useQueryClient();
 
@@ -2932,6 +3003,8 @@ function SettingsView({
       setImportWorkerConcurrency(preferences.import_worker_concurrency);
       setAccentColorDay(preferences.accent_color_day);
       setAccentColorNight(preferences.accent_color_night);
+      setDocumentCacheSizeMb(preferences.document_cache_size_mb);
+      setAnalysisModels(preferences.analysis_models);
     }
   }, [preferences]);
 
@@ -2975,6 +3048,8 @@ function SettingsView({
         import_worker_concurrency: importWorkerConcurrency,
         accent_color_day: accentColorDay,
         accent_color_night: accentColorNight,
+        document_cache_size_mb: documentCacheSizeMb,
+        analysis_models: analysisModels,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["preferences"] });
@@ -2989,7 +3064,9 @@ function SettingsView({
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
         preferences.accent_color_day !== accentColorDay ||
-        preferences.accent_color_night !== accentColorNight),
+        preferences.accent_color_night !== accentColorNight ||
+        preferences.document_cache_size_mb !== documentCacheSizeMb ||
+        !sameStringMap(preferences.analysis_models, analysisModels)),
   );
   const importCostWarning = importWorkerConcurrency > warningThreshold;
 
@@ -3035,6 +3112,20 @@ function SettingsView({
             <p className="preference-warning">Higher concurrency can incur a large OpenAI cost over a short amount of time.</p>
           ) : null}
         </div>
+        <div className="preference-control">
+          <label htmlFor="document-cache-size">
+            <span>Document Cache Size</span>
+            <strong>{documentCacheSizeMb.toLocaleString()} MB</strong>
+          </label>
+          <input
+            id="document-cache-size"
+            min={0}
+            onChange={(event) => setDocumentCacheSizeMb(Math.max(0, Number(event.target.value) || 0))}
+            type="number"
+            value={documentCacheSizeMb}
+          />
+          <p>Default is 1,000 MB. Uploads still write originals to configured storage before cache rules apply.</p>
+        </div>
         <div className="accent-settings">
           <label>
             <span>Day accent</span>
@@ -3055,6 +3146,44 @@ function SettingsView({
         >
           <Save size={16} />
           Save
+        </button>
+      </div>
+      <div className="model-settings-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Models</h2>
+            <span>{preferences?.analysis_model_tasks.length || 7} document-analysis tasks</span>
+          </div>
+          <Sparkles size={20} />
+        </div>
+        <div className="models-note">
+          <Info size={15} />
+          <span>Changing a model affects new work. Run Concordance for older documents that need matching analysis.</span>
+        </div>
+        <div className="model-task-grid">
+          {(preferences?.analysis_model_tasks || []).map((task) => (
+            <div className="model-task-row" key={task.key}>
+              <div className="model-task-label">
+                <span>{task.label}</span>
+                <InfoPopup text={task.description} />
+              </div>
+              <ModelSelect
+                defaultModel={task.default_model}
+                onChange={(model) => setAnalysisModels((current) => ({ ...current, [task.key]: model }))}
+                options={preferences?.model_options[task.model_kind] || []}
+                value={analysisModels[task.key] || task.selected_model || task.default_model}
+              />
+            </div>
+          ))}
+        </div>
+        <button
+          className="primary-button"
+          disabled={!preferences || !preferenceDirty || savePreferences.isPending}
+          onClick={() => savePreferences.mutate()}
+          type="button"
+        >
+          <Save size={16} />
+          Save models
         </button>
       </div>
       <div className="export-panel">

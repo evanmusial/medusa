@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     worker_import_concurrency: int = Field(default=4, validation_alias="MEDUSA_IMPORT_WORKER_CONCURRENCY")
     worker_stale_job_seconds: int = Field(default=900, validation_alias="MEDUSA_WORKER_STALE_JOB_SECONDS")
+    document_cache_size_mb: int = Field(default=1000, validation_alias="MEDUSA_DOCUMENT_CACHE_SIZE_MB")
 
     cors_origins: list[str] = [
         "http://localhost:3737",

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.models import Document, DocumentRecommendation, ImportBatch, ImportJob, ProcessingEvent, utc_now
+from app.services.document_cache import document_cache_path, document_cache_root, register_document_cache
 from app.services.processing import refresh_import_batch_progress
 from app.services.storage import get_storage_service
 from app.services.verifier import normalized_title_similarity
@@ -173,7 +174,6 @@ def queue_recommendation_imports(
     skip_existing: bool = True,
 ) -> dict[str, Any]:
     now = utc_now()
-    settings = get_settings()
     batch = ImportBatch(
         label=f"Recommendations: {source_document.title[:180]}",
         total_files=len(recommendations),
@@ -193,8 +193,7 @@ def queue_recommendation_imports(
         "unavailable_count": 0,
         "failed_count": 0,
     }
-    cache_dir = settings.data_dir / "processing-cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    document_cache_root()
     storage = get_storage_service()
 
     mark_existing_library_matches(db, recommendations, source_document_id=source_document.id)
@@ -256,7 +255,7 @@ def queue_recommendation_imports(
 
             key = f"documents/{checksum[:2]}/{checksum}/{document.id}/{filename}"
             stored = storage.put_bytes(key, data, content_type)
-            cache_path = cache_dir / f"{document.id}.pdf"
+            cache_path = document_cache_path(document.id)
             cache_path.write_bytes(data)
             document.gcs_uri = stored.uri
             document.storage_status = stored.backend
@@ -264,6 +263,7 @@ def queue_recommendation_imports(
             document.metadata_evidence = {
                 "file_size_bytes": len(data),
                 "local_cache_path": str(cache_path),
+                "document_cache_path": str(cache_path),
                 "recommendation_import": {
                     "source_document_id": source_document.id,
                     "source_document_title": source_document.title,
@@ -275,6 +275,7 @@ def queue_recommendation_imports(
                     "downloaded_at": now.isoformat(),
                 },
             }
+            register_document_cache(document, cache_path, source="recommendation")
             job = ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored")
             db.add(job)
             recommendation.imported_document_id = document.id

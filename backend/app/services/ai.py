@@ -9,10 +9,19 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
+from app.services.analysis_models import (
+    MODEL_APA_CITATION,
+    MODEL_KEYWORDS_TOPICS,
+    MODEL_METADATA,
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_SUMMARY,
+    MODEL_TEXT_CHUNK_ENCODING,
+    default_analysis_models,
+)
 from app.services.extraction import normalize_extracted_text
 
 
-METADATA_SCHEMA: dict[str, Any] = {
+METADATA_IDENTITY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -37,11 +46,6 @@ METADATA_SCHEMA: dict[str, Any] = {
         "publisher": {"type": ["string", "null"]},
         "doi": {"type": ["string", "null"]},
         "abstract": {"type": ["string", "null"]},
-        "rich_summary": {"type": "string"},
-        "apa_citation": {"type": ["string", "null"]},
-        "citation_warnings": {"type": "array", "items": {"type": "string"}},
-        "topics": {"type": "array", "items": {"type": "string"}},
-        "keywords": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "number"},
         "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
     },
@@ -55,14 +59,44 @@ METADATA_SCHEMA: dict[str, Any] = {
         "publisher",
         "doi",
         "abstract",
-        "rich_summary",
-        "apa_citation",
-        "citation_warnings",
-        "topics",
-        "keywords",
         "confidence",
         "needs_review_reasons",
     ],
+}
+
+SUMMARY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "rich_summary": {"type": "string"},
+        "confidence": {"type": "number"},
+        "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["rich_summary", "confidence", "needs_review_reasons"],
+}
+
+APA_CITATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "apa_citation": {"type": ["string", "null"]},
+        "citation_warnings": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+        "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["apa_citation", "citation_warnings", "confidence", "needs_review_reasons"],
+}
+
+KEYWORDS_TOPICS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "topics": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+        "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["topics", "keywords", "confidence", "needs_review_reasons"],
 }
 
 PAGE_TEXT_NORMALIZATION_SCHEMA: dict[str, Any] = {
@@ -112,7 +146,14 @@ class AiService:
                 timeout=self.settings.openai_request_timeout_seconds,
             )
 
-    def extract_metadata(self, filename: str, text: str, pdf_bytes: bytes | None = None) -> dict[str, Any]:
+    def extract_metadata(
+        self,
+        filename: str,
+        text: str,
+        pdf_bytes: bytes | None = None,
+        *,
+        models: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         if not self.client:
             title = Path(filename).stem.replace("_", " ").replace("-", " ").strip() or "Untitled document"
             return {
@@ -134,17 +175,103 @@ class AiService:
                 "needs_review_reasons": ["OpenAI metadata extraction is not configured."],
             }
 
-        prompt = (
-            "Extract scholarly metadata from this PDF text. The beginning may contain unrelated cover "
-            "or front matter before the true article/chapter begins. Prefer DOI and publisher metadata "
-            "when present. Generate rich_summary as concise Markdown, not one dense paragraph: use a "
-            "short overview plus 3-5 labeled bullets for methods, findings, usefulness, and caveats when "
-            "the evidence supports them. Generate topic tags, keywords, and an APA 7 citation candidate "
-            "as Markdown-compatible text with italicized publication titles where APA requires italics, "
-            "using only evidence visible in the supplied document context. Return cautious confidence and "
-            "review reasons. If exact citation fields are uncertain, leave fields null and explain the "
-            "ambiguity in citation_warnings."
+        models = {**default_analysis_models(), **(models or {})}
+        input_content, used_pdf_file = self._document_input_content(filename, text, pdf_bytes)
+        identity = self._responses_json(
+            model=models[MODEL_METADATA],
+            schema_name="medusa_document_metadata",
+            schema=METADATA_IDENTITY_SCHEMA,
+            prompt=(
+                "Extract scholarly identity metadata from this PDF context. The beginning may contain unrelated cover "
+                "or front matter before the true article/chapter begins. Prefer DOI and publisher metadata when present. "
+                "Return cautious confidence and review reasons. If a field is uncertain, leave it null or empty."
+            ),
+            input_content=input_content,
+            timeout=self.settings.openai_request_timeout_seconds,
         )
+        summary = self._responses_json(
+            model=models[MODEL_SUMMARY],
+            schema_name="medusa_document_summary",
+            schema=SUMMARY_SCHEMA,
+            prompt=(
+                "Generate rich_summary as concise Markdown from only the supplied document context. Use a short overview "
+                "plus 3-5 labeled bullets for methods, findings, usefulness, and caveats when the evidence supports them. "
+                "Do not invent claims beyond the original PDF context."
+            ),
+            input_content=input_content,
+            timeout=self.settings.openai_request_timeout_seconds,
+        )
+        citation = self._responses_json(
+            model=models[MODEL_APA_CITATION],
+            schema_name="medusa_apa_citation_candidate",
+            schema=APA_CITATION_SCHEMA,
+            prompt=(
+                "Generate an APA 7 citation candidate as Markdown-compatible text with italicized publication titles where APA "
+                "requires italics, using only evidence visible in the supplied document context. If exact citation fields are "
+                "uncertain, return null or explain the ambiguity in citation_warnings."
+            ),
+            input_content=input_content,
+            timeout=self.settings.openai_request_timeout_seconds,
+        )
+        keywords = self._responses_json(
+            model=models[MODEL_KEYWORDS_TOPICS],
+            schema_name="medusa_keywords_topics",
+            schema=KEYWORDS_TOPICS_SCHEMA,
+            prompt=(
+                "Extract concise topic tags and keywords that would help organize and search this scholarly document. "
+                "Use only the supplied original PDF context and extracted text."
+            ),
+            input_content=input_content,
+            timeout=self.settings.openai_request_timeout_seconds,
+        )
+        confidences = [
+            value
+            for value in [
+                identity.get("confidence"),
+                summary.get("confidence"),
+                citation.get("confidence"),
+                keywords.get("confidence"),
+            ]
+            if isinstance(value, (int, float))
+        ]
+        metadata = {
+            **identity,
+            "rich_summary": summary.get("rich_summary") or "",
+            "apa_citation": citation.get("apa_citation"),
+            "citation_warnings": citation.get("citation_warnings") or [],
+            "topics": keywords.get("topics") or [],
+            "keywords": keywords.get("keywords") or [],
+            "confidence": min(confidences) if confidences else identity.get("confidence"),
+            "needs_review_reasons": self._unique_strings(
+                [
+                    *(identity.get("needs_review_reasons") or []),
+                    *(summary.get("needs_review_reasons") or []),
+                    *(citation.get("needs_review_reasons") or []),
+                    *(keywords.get("needs_review_reasons") or []),
+                ]
+            ),
+            "_openai": {
+                "model": models[MODEL_METADATA],
+                "models": {
+                    MODEL_METADATA: models[MODEL_METADATA],
+                    MODEL_SUMMARY: models[MODEL_SUMMARY],
+                    MODEL_APA_CITATION: models[MODEL_APA_CITATION],
+                    MODEL_KEYWORDS_TOPICS: models[MODEL_KEYWORDS_TOPICS],
+                },
+                "used_pdf_file": used_pdf_file,
+                "pdf_file_bytes": len(pdf_bytes or b"") if used_pdf_file else 0,
+            },
+        }
+        return metadata
+
+    def _document_input_content(
+        self,
+        filename: str,
+        text: str,
+        pdf_bytes: bytes | None,
+        *,
+        page_number: int | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         sample = text[:28_000]
         input_content: list[dict[str, Any]] = []
         used_pdf_file = self._should_send_pdf_file(pdf_bytes)
@@ -156,38 +283,69 @@ class AiService:
                     "file_data": f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode('ascii')}",
                 }
             )
-        input_content.append({"type": "input_text", "text": f"Filename: {filename}\n\nExtracted PDF text:\n{sample}"})
-        with hard_timeout(self.settings.openai_request_timeout_seconds):
+        heading = f"Filename: {filename}"
+        if page_number is not None:
+            heading = f"{heading}\nPage: {page_number}"
+        input_content.append({"type": "input_text", "text": f"{heading}\n\nExtracted PDF text:\n{sample}"})
+        return input_content, used_pdf_file
+
+    def _responses_json(
+        self,
+        *,
+        model: str,
+        schema_name: str,
+        schema: dict[str, Any],
+        prompt: str,
+        input_content: list[dict[str, Any]],
+        timeout: float,
+    ) -> dict[str, Any]:
+        with hard_timeout(timeout):
             response = self.client.responses.create(
-                model=self.settings.openai_model,
+                model=model,
                 input=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": input_content},
                 ],
                 text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "medusa_document_metadata",
-                        "schema": METADATA_SCHEMA,
-                        "strict": True,
-                    }
-                },
-                timeout=self.settings.openai_request_timeout_seconds,
+                        "format": {
+                            "type": "json_schema",
+                            "name": schema_name,
+                            "schema": schema,
+                            "strict": True,
+                        }
+                    },
+                timeout=timeout,
             )
-        metadata = json.loads(response.output_text)
-        metadata["_openai"] = {
-            "model": self.settings.openai_model,
-            "used_pdf_file": used_pdf_file,
-            "pdf_file_bytes": len(pdf_bytes or b"") if used_pdf_file else 0,
-        }
-        return metadata
+        return json.loads(response.output_text)
+
+    @staticmethod
+    def _unique_strings(values: list[Any]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
 
     def _should_send_pdf_file(self, pdf_bytes: bytes | None) -> bool:
         if not pdf_bytes or not self.settings.openai_send_pdf_file:
             return False
         return len(pdf_bytes) <= self.settings.openai_pdf_file_max_mb * 1024 * 1024
 
-    def normalize_page_text(self, filename: str, page_number: int, text: str | None) -> dict[str, Any]:
+    def normalize_page_text(
+        self,
+        filename: str,
+        page_number: int,
+        text: str | None,
+        *,
+        model: str | None = None,
+        pdf_bytes: bytes | None = None,
+    ) -> dict[str, Any]:
         fallback = normalize_extracted_text(text)
         if not fallback:
             return {
@@ -213,19 +371,15 @@ class AiService:
             "plain-text or Markdown-style tables when a table is evident."
         )
         sample = fallback[: self.settings.openai_text_normalization_page_max_chars]
+        input_content, used_pdf_file = self._document_input_content(filename, sample, pdf_bytes, page_number=page_number)
+        selected_model = model or default_analysis_models()[MODEL_PAGE_TEXT_NORMALIZATION]
         try:
             with hard_timeout(self.settings.openai_page_normalization_timeout_seconds):
                 response = self.client.responses.create(
-                    model=self.settings.openai_model,
+                    model=selected_model,
                     input=[
                         {"role": "system", "content": prompt},
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Filename: {filename}\nPage: {page_number}\n\n"
-                                f"PDF-extracted page text to normalize:\n{sample}"
-                            ),
-                        },
+                        {"role": "user", "content": input_content},
                     ],
                     text={
                         "format": {
@@ -245,8 +399,9 @@ class AiService:
                 "confidence": result.get("confidence"),
                 "notes": result.get("notes") or [],
                 "_openai": {
-                    "model": self.settings.openai_model,
+                    "model": selected_model,
                     "input_characters": len(sample),
+                    "used_pdf_file": used_pdf_file,
                 },
             }
         except Exception as exc:
@@ -257,12 +412,13 @@ class AiService:
                 "notes": [f"OpenAI page text normalization failed: {exc}"],
             }
 
-    def embed(self, text: str) -> list[float] | None:
+    def embed(self, text: str, *, model: str | None = None) -> list[float] | None:
         if not self.client or not text.strip():
             return None
+        selected_model = model or default_analysis_models()[MODEL_TEXT_CHUNK_ENCODING]
         with hard_timeout(self.settings.openai_embedding_timeout_seconds):
             response = self.client.embeddings.create(
-                model=self.settings.openai_embedding_model,
+                model=selected_model,
                 input=text[:24_000],
                 encoding_format="float",
                 timeout=self.settings.openai_embedding_timeout_seconds,

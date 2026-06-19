@@ -457,18 +457,33 @@ class DashboardOut(BaseModel):
     projects: int
 
 
+class AnalysisModelTaskOut(BaseModel):
+    key: str
+    label: str
+    model_kind: str
+    default_model: str
+    selected_model: str
+    description: str
+
+
 class AppPreferencesOut(BaseModel):
     import_worker_concurrency: int
     recommended_import_worker_concurrency: int
     import_worker_cost_warning_threshold: int
     accent_color_day: str
     accent_color_night: str
+    document_cache_size_mb: int
+    analysis_models: dict[str, str]
+    analysis_model_tasks: list[AnalysisModelTaskOut]
+    model_options: dict[str, list[str]]
 
 
 class AppPreferencesPatch(BaseModel):
     import_worker_concurrency: int | None = Field(default=None, ge=1)
     accent_color_day: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    document_cache_size_mb: int | None = Field(default=None, ge=0)
+    analysis_models: dict[str, str] | None = None
 
 
 class BibliographyOut(BaseModel):

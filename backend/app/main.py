@@ -91,6 +91,7 @@ from app.schemas import (
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.concordance import create_concordance_run, current_capabilities
 from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
+from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.processing import document_metadata, document_reading_text, refresh_import_batch_progress
 from app.services.preferences import get_app_preferences, update_app_preferences
@@ -448,7 +449,7 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
 
 
 @app.get("/api/preferences", response_model=AppPreferencesOut)
-def read_preferences(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> dict[str, int | str]:
+def read_preferences(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
     return get_app_preferences(db)
 
 
@@ -457,12 +458,14 @@ def patch_preferences(
     payload: AppPreferencesPatch,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> dict[str, int | str]:
+) -> dict[str, Any]:
     preferences = update_app_preferences(
         db,
         import_worker_concurrency=payload.import_worker_concurrency,
         accent_color_day=payload.accent_color_day,
         accent_color_night=payload.accent_color_night,
+        document_cache_size_mb=payload.document_cache_size_mb,
+        analysis_models=payload.analysis_models,
     )
     db.commit()
     return preferences
@@ -1264,8 +1267,7 @@ async def create_import_batch(
     tags = db.query(Tag).filter(Tag.id.in_(parsed_tag_ids)).all() if parsed_tag_ids else []
     projects = db.query(Project).filter(Project.id.in_(parsed_project_ids)).all() if parsed_project_ids else []
     storage = get_storage_service()
-    cache_dir = settings.data_dir / "processing-cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = document_cache_root()
 
     batch_documents_by_checksum: dict[str, Document] = {}
     for upload in files:
@@ -1328,12 +1330,14 @@ async def create_import_batch(
         document.metadata_evidence = {
             "file_size_bytes": len(data),
             "local_cache_path": str(cache_path),
+            "document_cache_path": str(cache_path),
             "import_defaults": batch.shared_defaults,
             "duplicate_import": {
                 "strategy": duplicate_strategy,
                 "matched_document_ids": duplicate_source_ids,
             },
         }
+        register_document_cache(document, cache_path, source="upload")
         document.domains = domains.copy()
         document.tags = tags.copy()
         apply_project_defaults(db, document, projects, priority)

@@ -30,6 +30,19 @@ export type AppPreferences = {
   import_worker_cost_warning_threshold: number;
   accent_color_day: string;
   accent_color_night: string;
+  document_cache_size_mb: number;
+  analysis_models: Record<string, string>;
+  analysis_model_tasks: AnalysisModelTask[];
+  model_options: Record<string, string[]>;
+};
+
+export type AnalysisModelTask = {
+  key: string;
+  label: string;
+  model_kind: "gpt" | "embedding" | string;
+  default_model: string;
+  selected_model: string;
+  description: string;
 };
 
 export type Domain = {

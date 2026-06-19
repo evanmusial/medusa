@@ -41,7 +41,7 @@ Current UI architecture:
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation.
 - Queue shows queued/running import jobs with per-job stage progress and citation candidates that need human attention, and supports accepting or rejecting citation candidates.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
-- Settings exposes preferences, day/night accent color controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
+- Settings exposes preferences, day/night accent color controls, document-analysis model controls, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
 - Metadata restore is CLI-first: dry-run by default, explicit `--apply`, and intended for backup drills or fresh-database recovery.
 
 Visual decisions:
@@ -78,7 +78,7 @@ Data storage:
 - Local filesystem storage under `data/originals` is the fallback so the app can boot and import without cloud credentials.
 - GCS service-account files live locally under ignored `data/secrets`; Compose mounts that directory read-only at `/app/data/secrets`.
 - The GCS service account needs object-level create/read/delete access for the configured bucket and prefix. `storage.buckets.get` is useful for diagnostics, but object upload requires `storage.objects.create`.
-- Processing cache lives under `data/processing-cache`, is ignored by git, and should only contain temporary files for queued/running/failed work.
+- Processing/document cache lives under `data/processing-cache`, is ignored by git, and keeps local PDF copies for queued/running/failed work plus recently completed imports within the configured document cache budget.
 
 Backend modules:
 
@@ -87,11 +87,13 @@ Backend modules:
 - `backend/app/models.py`: ORM entities and relationships.
 - `backend/app/worker.py`: long-running durable job loop.
 - `backend/app/services/storage.py`: GCS/local storage adapter.
+- `backend/app/services/analysis_models.py`: canonical document-analysis task registry, default model ids, model option lists, and task descriptions used by Settings.
+- `backend/app/services/document_cache.py`: bounded local PDF cache registration, lookup, storage rehydration, and pruning.
 - `backend/app/services/extraction.py`: layout-aware PDF text extraction, deterministic page text cleanup, table normalization, and chunking.
-- `backend/app/services/ai.py`: OpenAI Responses API structured metadata, PDF-file context, APA candidate, summary/topic, page text normalization with bounded fallback, and embedding adapter.
+- `backend/app/services/ai.py`: OpenAI Responses API structured metadata, PDF-file context, separately configurable summary, APA candidate, topic/keyword, page text normalization calls with bounded fallback, and embedding adapter.
 - `backend/app/services/ocr.py`: Google Vision adapter placeholder.
 - `backend/app/services/processing.py`: import processing orchestration.
-- `backend/app/services/preferences.py`: DB-backed local preferences such as import worker concurrency.
+- `backend/app/services/preferences.py`: DB-backed local preferences such as import worker concurrency, accent colors, document cache size, and document-analysis model selections.
 - `backend/app/services/concordance.py`: retroactive capability registry, run creation, and Concordance job processing.
 - `backend/app/services/figures.py`: embedded PDF figure extraction, durable asset storage, and figure row creation.
 - `backend/app/services/exports.py`: authenticated metadata export and durable storage manifest builders.
@@ -113,7 +115,7 @@ Frontend modules:
 Current core entities:
 
 - `User`, `SessionToken`
-- `AppPreference`: local DB-backed operational preferences such as import worker concurrency and day/night accent colors.
+- `AppPreference`: local DB-backed operational preferences such as import worker concurrency, day/night accent colors, document-analysis model choices, and document cache size.
 - `Domain`: nestable knowledge hierarchy.
 - `Tag`: flat keyword/topic label.
 - `SavedSearch`: named query and filter presets for repeated research views and Concordance scopes.
@@ -163,22 +165,22 @@ Current import path:
 5. Backend applies the duplicate strategy. Skip creates a completed `duplicate_skipped` job, overwrite reuses and reprocesses the selected existing document record, and import-anyway creates another document with the same checksum.
 6. Backend applies batch defaults to each imported document and creates project run-sheet items for selected projects.
 7. Original is written to GCS when configured, otherwise to local storage.
-8. A document-specific local processing cache copy is saved under `data/processing-cache`.
+8. A document-specific local cache copy is saved under `data/processing-cache` and recorded as `document_cache_path`; the original has already been written to GCS/local storage before cache policy applies.
 9. `Document`, `ImportBatch`, and `ImportJob` records are committed.
 10. Worker claims queued jobs and moves them through extraction, enrichment, indexing, and completion. Import processing defaults to 4 concurrent jobs from one worker process and can be changed to any positive value in Settings.
 11. PDF text and pages are extracted with PyMuPDF using layout-aware block ordering.
 12. Two-column pages should read down the left column before crossing to the right column, while full-width headers/sections remain in vertical order.
 13. Detected tables are converted to Markdown and included in page text so table content is searchable and available to metadata/summarization.
-14. Page text is normalized into readable paragraph flow. If `OPENAI_API_KEY` and `MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true` are configured, OpenAI conforms the text while preserving wording/order; otherwise local cleanup removes common spacing and hyphenation artifacts. Page-normalization requests use `MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS` and fall back locally on timeout/error.
+14. Page text is normalized into readable paragraph flow. If `OPENAI_API_KEY` and `MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT=true` are configured, OpenAI conforms the text with the Settings-selected Text on Pages model while preserving wording/order; otherwise local cleanup removes common spacing and hyphenation artifacts. Page-normalization requests use `MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS` and fall back locally on timeout/error.
 15. Embedded PDF figures/images are extracted with PyMuPDF, stored through the configured storage adapter, and recorded as `Figure` rows.
 16. Normalized text is chunked for search/embedding, falling back to raw extracted text when needed.
 17. OpenAI metadata extraction runs only when `OPENAI_API_KEY` exists; otherwise a low-confidence review record is produced.
-18. Async document-intelligence work defaults to `OPENAI_MODEL=gpt-5.5` because import/Concordance quality matters more than latency.
-19. When `MEDUSA_OPENAI_SEND_PDF=true`, Medusa sends the original PDF as a Responses API file input alongside extracted text when the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`.
+18. Async document-intelligence work is split into Settings-selectable tasks: Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and future Accessory Summaries. GPT-backed tasks default to `OPENAI_MODEL=gpt-5.5`; Text Chunk Encoding defaults to `OPENAI_EMBEDDING_MODEL`.
+19. When `MEDUSA_OPENAI_SEND_PDF=true`, Medusa sends the original PDF as a Responses API file input alongside extracted text when the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`; Concordance reruns hydrate the original PDF from the local document cache or durable storage.
 20. Crossref lookup is attempted by DOI/title. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
 21. APA citation is generated. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
 22. Uncertain citations create `CitationCandidate` review records.
-23. Successful jobs delete their local processing-cache PDF copy after indexing.
+23. Successful jobs retain their local PDF cache copy up to the configured Document Cache Size. Budget pruning deletes oldest non-active cache files and leaves GCS/local original storage untouched.
 
 Durability decisions:
 
@@ -190,8 +192,8 @@ Durability decisions:
 - Import jobs checkpoint visible steps before long phases (`extracting`, `normalizing_pages`, `normalizing_page_<n>`, `extracting_figures`, `enriching`, `indexing`, `cleaning_cache`) so Queue does not appear frozen at `stored` during real processing.
 - Container shutdown is intentionally restart-safe rather than interrupt-perfect: in-flight import threads may be terminated with the container, and the next worker startup requeues those `running` rows. The current document may repeat its current step to preserve correctness. Page normalization commits each completed page and resumes from persisted normalized pages when possible.
 - Import processors should stay idempotent where possible and avoid duplicating pages/chunks when a step reruns.
-- Completed jobs should not leave durable document copies in `data/processing-cache`; originals are retained in GCS or the configured local fallback store.
-- Failed jobs may keep their processing-cache copy to support retry and debugging.
+- Completed jobs may keep local PDF cache copies in `data/processing-cache` within the configured budget. Originals are retained in GCS or the configured local fallback store regardless of cache pruning.
+- Failed jobs may keep their processing-cache copy to support retry and debugging and are protected from budget pruning while still active/recoverable.
 
 ## Concordance Runs
 
@@ -208,10 +210,10 @@ Implemented foundation:
 
 Current first capabilities:
 
-- `page_text_normalization` v1: conforms raw extracted page text into readable paragraph flow using OpenAI when configured and local cleanup as a fallback.
+- `page_text_normalization` v2: conforms raw extracted page text into readable paragraph flow using OpenAI when configured and local cleanup as a fallback; Concordance reruns use the original PDF context when available.
 - `search_index` v2: rebuilds `Document.search_text` from title, authors, abstract, summary, APA citation, normalized pages, notes, custom attributes, tags, and domains.
 - `citation_refresh` v2: regenerates Markdown APA 7 text with Crossref-backed fields and refreshes citation status; uncertain output stays in Queue for citation review.
-- `summary_topics` v3: uses the configured AI adapter with extracted text plus original PDF context when available to fill missing metadata, concise Markdown summaries, APA candidates, topics, and keywords without overwriting user-corrected identity metadata.
+- `summary_topics` v4: uses the configured AI adapter with extracted text plus original PDF context when available to fill missing metadata, concise Markdown summaries, APA candidates, topics, and keywords without overwriting user-corrected identity metadata.
 - `figure_assets` v1: extracts embedded PDF figures/images into durable storage and attaches them to document records.
 - `recommendations` v1: refreshes DOI-based related-paper recommendations from OpenAlex, Semantic Scholar, and Crossref, marks already-present library matches, and caches provider evidence without importing full text automatically.
 
@@ -233,6 +235,7 @@ Expected behavior:
 - Concordance jobs must be durable, resumable, idempotent, and visible through processing events/progress.
 - A run should avoid overwriting user-corrected metadata unless explicitly requested or unless it records a reviewable candidate.
 - Ambiguous or low-confidence output should go to Queue for citation review rather than silently replacing trusted data.
+- Model changes in Settings affect new work; older documents should be refreshed through Concordance when their derived analysis needs to match the newly selected model set.
 
 ## Security And Operations
 
@@ -258,7 +261,8 @@ Network:
 Operational settings:
 
 - `MEDUSA_IMPORT_WORKER_CONCURRENCY` sets the startup default for concurrent import processing. The built-in default is 4, and Settings accepts any positive value while warning that higher values can create a burst of OpenAI calls and cost.
-- The active import concurrency and accent color preferences are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`.
+- `MEDUSA_DOCUMENT_CACHE_SIZE_MB` sets the startup default for the bounded local document cache. The built-in default is 1,000 MB, and Settings can change the active value without affecting GCS/local original storage writes.
+- The active import concurrency, accent color preferences, document cache size, and model selections are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`.
 
 Safe deletion:
 
@@ -297,6 +301,7 @@ Known gaps:
 - Metadata correction UI exists for core identity fields, citation status, read/priority state, tags, domains, summaries, and custom attributes. Correction history is captured as `DocumentVersion` snapshots, but a fuller history diff viewer is still future work.
 - Auth is single-user only; no roles or sharing model.
 - Backup/export is implemented as authenticated JSON downloads. Metadata restore from those exports is implemented as a CLI-first dry-run/apply workflow; browser-based restore controls and scheduled backup drills remain future work.
+- Accessory Summaries are not implemented yet; Settings already reserves a model selection for future user-prompted custom summaries that should run against the original PDF context.
 
 High-value next steps:
 
@@ -305,6 +310,7 @@ High-value next steps:
 - Add arbitrary-filter scopes and richer saved-search management for Concordance Runs.
 - Build richer history review/diff UI for manual corrections and imported metadata candidates.
 - Add AI figure caption/gist enrichment and include figure gists in richer semantic search.
+- Add Accessory Summaries as user-prompted custom summary jobs backed by the original PDF and the Settings-selected model.
 - Add richer layout fixtures for two-column PDFs, multi-page tables, and table-heavy papers.
 - Add real PDF viewer with highlights/notes.
 - Add geometric PDF highlight overlays on top of the current annotation records.
@@ -372,17 +378,18 @@ Consequences:
 - Search and AI enrichment receive table text as structured Markdown inside page text.
 - Future extraction upgrades should preserve or improve this contract rather than reverting to raw `page.get_text("text")`.
 
-### 2026-06-17: Ephemeral processing cache
+### 2026-06-18: Bounded processing/document cache
 
-Decision: `data/processing-cache` is temporary working storage, not a durable document store. Successful jobs delete their cache copy after indexing.
+Decision: `data/processing-cache` is managed local working storage and a bounded document cache. Successful jobs retain cache copies until the configured Document Cache Size budget prunes older non-active files.
 
-Why: Originals belong in GCS or the configured local fallback store. The cache exists only to decouple uploads from worker processing and retries.
+Why: Originals still belong in GCS or the configured local fallback store, but keeping recent imported PDFs locally makes Concordance and future Accessory Summary runs faster and less dependent on immediate storage reads.
 
 Consequences:
 
-- Queued/running/failed jobs may retain cache files.
-- Completed jobs should remove `local_cache_path` from metadata evidence and record cache cleanup.
-- Future retry-from-GCS work should rehydrate cache from the original object URI when needed.
+- Queued/running/failed jobs retain cache files and are protected from budget pruning while recoverable.
+- Completed jobs remove `local_cache_path`, retain `document_cache_path` when the file remains cached, and record budget checks in processing events.
+- Cache pruning does not affect GCS/local original storage writes at upload time.
+- Concordance can rehydrate a missing local cache copy from the original object URI when needed.
 
 ### 2026-06-17: Conservative title-only citation evidence
 
@@ -478,18 +485,20 @@ Consequences:
 - Every attempted source, conflict, and fallback source-link choice should be recorded as evidence for Queue inspection.
 - DOI links should win over source URLs in APA output; stable PDF/static-source URLs are acceptable only when DOI resolution fails.
 
-### 2026-06-18: GPT-5.5 PDF-context enrichment
+### 2026-06-18: Task-level model controls and PDF-context enrichment
 
-Decision: Use `gpt-5.5` for asynchronous OpenAI document-intelligence work and include original PDF file input when configured and size-safe.
+Decision: Use `gpt-5.5` as the default GPT model for asynchronous OpenAI document-intelligence work, expose task-level overrides in Settings, and include original PDF file input when configured and size-safe.
 
-Why: Import and Concordance jobs already run asynchronously, so Medusa can afford a slower high-quality model for scholarly metadata, scientific summaries, topic extraction, and APA candidates. Extracted text is useful, but original PDFs may preserve layout, figures, page images, and front-matter boundaries that improve extraction.
+Why: Import and Concordance jobs already run asynchronously, so Medusa can afford a slower high-quality default model, while the user may want cheaper/faster models for lower-risk tasks. Extracted text is useful, but original PDFs may preserve layout, figures, page images, and front-matter boundaries that improve extraction.
 
 Consequences:
 
-- `.env` should hold the private API key and `OPENAI_MODEL=gpt-5.5`.
+- `.env` should hold the private API key and `OPENAI_MODEL=gpt-5.5` as the startup default.
+- Settings exposes seven document-analysis model controls: Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and future Accessory Summaries.
+- The first five and future Accessory Summaries are GPT/Responses tasks. Text Chunk Encoding remains the embeddings endpoint and defaults to `OPENAI_EMBEDDING_MODEL`.
 - `MEDUSA_OPENAI_SEND_PDF=true` enables Responses API file input for original PDFs below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`.
 - AI-generated APA citations remain candidates/evidence unless normalized metadata and trusted citation evidence support verification.
-- `summary_topics` was raised for PDF-aware AI context and later raised again for concise Markdown summaries.
+- `page_text_normalization` was raised to v2 and `summary_topics` to v4 for task-level model evidence and Concordance PDF-context reruns.
 
 ### 2026-06-17: Local GCS credential mounting
 
@@ -683,7 +692,7 @@ Why: Large batches should keep moving without requiring multiple worker containe
 
 Consequences:
 
-- `/api/preferences` exposes active import worker and day/night accent preferences, and Settings saves them as `AppPreference`.
+- `/api/preferences` exposes active import worker, day/night accent, document cache size, model task registry, model options, and selected model preferences. Settings saves user changes as `AppPreference`.
 - The worker claims multiple import jobs up to the current preference, keeps Concordance work behind active imports, and excludes in-process import IDs from stale recovery claims.
 - Import page normalization records and commits per-page checkpoint events so slow OpenAI page-normalization calls are visible as `normalizing_page_<n>` rather than a single opaque extraction step. On restart, already-normalized pages are reused when possible and missing pages are processed again.
 - `/api/imports/jobs/{job_id}/rescue` can requeue failed/restored import jobs and running jobs whose worker lock is stale. Fresh running jobs are rejected to avoid racing an active worker thread.

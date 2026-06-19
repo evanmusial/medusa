@@ -19,9 +19,24 @@ from app.models import (
     utc_now,
 )
 from app.services.ai import get_ai_service
+from app.services.analysis_models import (
+    MODEL_APA_CITATION,
+    MODEL_KEYWORDS_TOPICS,
+    MODEL_METADATA,
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_SUMMARY,
+    MODEL_TEXT_CHUNK_ENCODING,
+)
 from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
+from app.services.document_cache import (
+    enforce_document_cache_budget,
+    ensure_document_cache_file,
+    mark_processing_cache_retained,
+    metadata_cache_path,
+)
 from app.services.extraction import extract_pdf_text, split_text_into_chunks
 from app.services.figures import process_document_figures
+from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
 
 
@@ -143,9 +158,12 @@ def normalize_document_pages(
     db: Session | None = None,
     job: ImportJob | None = None,
     resume_existing: bool = False,
+    model: str | None = None,
+    pdf_bytes: bytes | None = None,
 ) -> dict[str, Any]:
     ai = ai or get_ai_service()
     source_counts: dict[str, int] = {}
+    model_counts: dict[str, int] = {}
     changed_pages = 0
     failed_notes: list[str] = []
     pages = sorted(document.pages, key=lambda page: page.page_number)
@@ -167,10 +185,14 @@ def normalize_document_pages(
             )
             db.commit()
         before = page.normalized_text or ""
-        result = ai.normalize_page_text(document.original_filename, page.page_number, page.text)
+        result = ai.normalize_page_text(document.original_filename, page.page_number, page.text, model=model, pdf_bytes=pdf_bytes)
         page.normalized_text = result.get("normalized_text") or None
         source = result.get("source") or "unknown"
         source_counts[source] = source_counts.get(source, 0) + 1
+        openai = result.get("_openai") or {}
+        used_model = openai.get("model")
+        if isinstance(used_model, str) and used_model:
+            model_counts[used_model] = model_counts.get(used_model, 0) + 1
         if (page.normalized_text or "") != before:
             changed_pages += 1
         failed_notes.extend(note for note in result.get("notes") or [] if "failed" in note.lower())
@@ -182,6 +204,8 @@ def normalize_document_pages(
         "changed_pages": changed_pages,
         "sources": source_counts,
     }
+    if model_counts:
+        summary["models"] = model_counts
     if failed_notes:
         summary["warnings"] = failed_notes[:5]
     return summary
@@ -273,12 +297,12 @@ class DocumentProcessor:
             document.pages
         )
         if not resume_normalization:
-            local_path = document.metadata_evidence.get("local_cache_path")
-            if not local_path or not Path(local_path).exists():
+            local_path = ensure_document_cache_file(db, document, source="import_retry")
+            if not local_path or not local_path.exists():
                 raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
 
             checkpoint_job_step(db, job, document, "extracting", "Extracting PDF text.")
-            extracted = extract_pdf_text(Path(local_path))
+            extracted = extract_pdf_text(local_path)
             document.page_count = extracted.page_count
             document.pages.clear()
             db.flush()
@@ -305,12 +329,16 @@ class DocumentProcessor:
             )
             db.commit()
         ai = get_ai_service()
+        pdf_path = metadata_cache_path(document)
+        pdf_bytes = pdf_path.read_bytes() if pdf_path and pdf_path.exists() else None
         normalization_summary = normalize_document_pages(
             document,
             ai=ai,
             db=db,
             job=job,
             resume_existing=resume_normalization,
+            model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
+            pdf_bytes=pdf_bytes,
         )
         reading_text = rebuild_document_text_chunks(db, document)
         document.metadata_evidence = {
@@ -335,11 +363,11 @@ class DocumentProcessor:
     def _extract_figures(self, db: Session, job: ImportJob, document: Document) -> None:
         if job_step_at_least(job, "figures"):
             return
-        local_path = document.metadata_evidence.get("local_cache_path")
-        if not local_path or not Path(local_path).exists():
+        local_path = ensure_document_cache_file(db, document, source="figure_extraction")
+        if not local_path or not local_path.exists():
             raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
         checkpoint_job_step(db, job, document, "extracting_figures", "Extracting embedded figures.")
-        result = process_document_figures(db, document, Path(local_path))
+        result = process_document_figures(db, document, local_path)
         job.current_step = "figures"
         log_event(
             db,
@@ -356,9 +384,20 @@ class DocumentProcessor:
             return
         checkpoint_job_step(db, job, document, "enriching", "Enriching metadata, citation, summary, and topics.")
         ai = get_ai_service()
-        local_path = document.metadata_evidence.get("local_cache_path")
-        pdf_bytes = Path(local_path).read_bytes() if local_path and Path(local_path).exists() else None
-        metadata = ai.extract_metadata(document.original_filename, document.search_text or "", pdf_bytes=pdf_bytes)
+        local_path = ensure_document_cache_file(db, document, source="metadata_enrichment")
+        pdf_bytes = local_path.read_bytes() if local_path and local_path.exists() else None
+        model_preferences = get_analysis_models(db)
+        metadata = ai.extract_metadata(
+            document.original_filename,
+            document.search_text or "",
+            pdf_bytes=pdf_bytes,
+            models={
+                MODEL_METADATA: model_preferences[MODEL_METADATA],
+                MODEL_SUMMARY: model_preferences[MODEL_SUMMARY],
+                MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
+                MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
+            },
+        )
         document.title = metadata.get("title") or document.title
         document.subtitle = metadata.get("subtitle")
         document.authors = metadata.get("authors") or []
@@ -436,9 +475,17 @@ class DocumentProcessor:
             return
         checkpoint_job_step(db, job, document, "indexing", "Indexing searchable text and embeddings.")
         ai = get_ai_service()
+        encoding_model = get_analysis_model(db, MODEL_TEXT_CHUNK_ENCODING)
+        embedding_errors: list[str] = []
+        encoded_chunks = 0
         for chunk in document.chunks[:20]:
             if chunk.embedding is None:
-                chunk.embedding = ai.embed(chunk.text)
+                try:
+                    chunk.embedding = ai.embed(chunk.text, model=encoding_model)
+                    if chunk.embedding is not None:
+                        encoded_chunks += 1
+                except Exception as exc:
+                    embedding_errors.append(str(exc))
         document.search_text = "\n\n".join(
             part
             for part in [
@@ -452,6 +499,15 @@ class DocumentProcessor:
             ]
             if part
         )
+        evidence = dict(document.metadata_evidence or {})
+        evidence["text_chunk_encoding"] = {
+            "model": encoding_model,
+            "encoded_chunks": encoded_chunks,
+            "skipped_chunks": max(0, min(len(document.chunks), 20) - encoded_chunks),
+        }
+        if embedding_errors:
+            evidence["text_chunk_encoding"]["errors"] = embedding_errors[:3]
+        document.metadata_evidence = evidence
         job.current_step = "indexed"
         log_event(db, job=job, document=document, event_type="indexed", message="Search indexing complete.")
         db.commit()
@@ -459,8 +515,17 @@ class DocumentProcessor:
     def _cleanup_processing_cache(self, db: Session, job: ImportJob, document: Document) -> None:
         checkpoint_job_step(db, job, document, "cleaning_cache", "Cleaning temporary processing cache.")
         evidence = dict(document.metadata_evidence or {})
-        cache_path = evidence.get("local_cache_path")
+        cache_path = evidence.get("local_cache_path") or evidence.get("document_cache_path")
         if not cache_path:
+            summary = enforce_document_cache_budget(db, keep_document_id=document.id)
+            log_event(
+                db,
+                job=job,
+                document=document,
+                event_type="cache_budget_checked",
+                message="Document cache budget checked.",
+                payload=summary,
+            )
             return
         path = Path(str(cache_path)).expanduser()
         cache_root = (get_settings().data_dir / "processing-cache").resolve()
@@ -480,8 +545,13 @@ class DocumentProcessor:
             )
             return
         if path.exists():
-            path.unlink()
-        evidence.pop("local_cache_path", None)
-        evidence["processing_cache"] = {"status": "deleted_after_success"}
-        document.metadata_evidence = evidence
-        log_event(db, job=job, document=document, event_type="cache_cleaned", message="Temporary processing cache deleted.")
+            mark_processing_cache_retained(document, path)
+        summary = enforce_document_cache_budget(db, keep_document_id=document.id)
+        log_event(
+            db,
+            job=job,
+            document=document,
+            event_type="cache_budget_checked",
+            message="Document cache budget checked.",
+            payload=summary,
+        )

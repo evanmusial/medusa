@@ -20,8 +20,17 @@ from app.models import (
     utc_now,
 )
 from app.services.ai import get_ai_service
+from app.services.analysis_models import (
+    MODEL_APA_CITATION,
+    MODEL_KEYWORDS_TOPICS,
+    MODEL_METADATA,
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_SUMMARY,
+)
 from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
+from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.figures import process_document_figures_from_storage
+from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.processing import (
     document_metadata,
     document_reading_text,
@@ -32,7 +41,6 @@ from app.services.processing import (
     rebuild_document_text_chunks,
 )
 from app.services.recommendations import refresh_document_recommendations
-from app.services.storage import get_storage_service
 from app.services.verifier import crossref_lookup, crossref_to_citation_metadata, enough_metadata_for_verified_citation
 
 
@@ -48,7 +56,7 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="page_text_normalization",
         label="Page text normalization",
-        version=1,
+        version=2,
         description="Conform extracted page text into readable paragraph flow while preserving the original document order.",
     ),
     CapabilityDefinition(
@@ -66,7 +74,7 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="summary_topics",
         label="AI metadata and summary",
-        version=3,
+        version=4,
         description="Use the configured AI adapter with PDF context to fill missing metadata, concise markdown summaries, APA candidates, and topic tags.",
     ),
     CapabilityDefinition(
@@ -387,7 +395,13 @@ class ConcordanceProcessor:
         return {"indexed_characters": len(document.search_text or ""), "pages": len(document.pages)}
 
     def _normalize_page_text(self, db: Session, document: Document) -> dict[str, Any]:
-        summary = normalize_document_pages(document)
+        pdf_bytes = self._document_pdf_bytes(db, document)
+        summary = normalize_document_pages(
+            document,
+            db=db,
+            model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
+            pdf_bytes=pdf_bytes,
+        )
         reading_text = rebuild_document_text_chunks(db, document)
         evidence = dict(document.metadata_evidence or {})
         evidence["page_text_normalization"] = summary
@@ -459,8 +473,19 @@ class ConcordanceProcessor:
 
     def _refresh_summary_topics(self, db: Session, document: Document) -> dict[str, Any]:
         ai = get_ai_service()
-        pdf_bytes = self._document_pdf_bytes(document)
-        metadata = ai.extract_metadata(document.original_filename, document.search_text or "", pdf_bytes=pdf_bytes)
+        pdf_bytes = self._document_pdf_bytes(db, document)
+        model_preferences = get_analysis_models(db)
+        metadata = ai.extract_metadata(
+            document.original_filename,
+            document.search_text or "",
+            pdf_bytes=pdf_bytes,
+            models={
+                MODEL_METADATA: model_preferences[MODEL_METADATA],
+                MODEL_SUMMARY: model_preferences[MODEL_SUMMARY],
+                MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
+                MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
+            },
+        )
         evidence = dict(document.metadata_evidence or {})
         evidence["concordance_ai"] = {
             "confidence": metadata.get("confidence"),
@@ -519,10 +544,8 @@ class ConcordanceProcessor:
             "ai_apa_candidate": bool(metadata.get("apa_citation")),
         }
 
-    def _document_pdf_bytes(self, document: Document) -> bytes | None:
-        if not document.gcs_uri:
-            return None
+    def _document_pdf_bytes(self, db: Session, document: Document) -> bytes | None:
         try:
-            return get_storage_service().get_bytes(document.gcs_uri)
+            return ensure_document_pdf_bytes(db, document, source="concordance")
         except Exception:
             return None
