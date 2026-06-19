@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -69,12 +69,44 @@ import type {
 
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "settings";
 type SidebarCounts = Partial<Record<View, number>>;
+type AsyncFeedbackTone = "success" | "error";
+type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
+type BackgroundJobStatus = "starting" | "queued" | "running" | "complete" | "failed";
+type BackgroundJob = {
+  id: string;
+  label: string;
+  detail?: string;
+  status: BackgroundJobStatus;
+  runId?: string;
+  documentId?: string;
+  capabilityKey?: string;
+  completedJobs?: number;
+  failedJobs?: number;
+  totalJobs?: number;
+  error?: string;
+  createdAt: number;
+  completedAt?: number;
+};
+type ConcordanceRunRequest = {
+  backgroundDetail?: string;
+  backgroundLabel?: string;
+  capability_keys?: string[];
+  capabilityKey?: string;
+  documentId?: string;
+  force?: boolean;
+  label?: string;
+  scope_data?: Record<string, unknown>;
+  scope_type?: string;
+};
+type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
 
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "restored_paused"]);
+const ASYNC_ACTION_FEEDBACK_MS = 5000;
+const BACKGROUND_JOB_RETENTION_MS = 18000;
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library }> = [
   { id: "library", label: "Library", icon: Library },
@@ -125,6 +157,224 @@ function formatSidebarCount(value: number | undefined) {
 
 function isQueueImportJob(job: ImportJob) {
   return QUEUE_IMPORT_JOB_STATUSES.has(job.status);
+}
+
+function actionFailureMessage(action: string, error: unknown) {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return detail ? `${action}: ${detail}` : action;
+}
+
+function useAsyncActionFeedback() {
+  const [feedback, setFeedback] = useState<AsyncActionFeedback | null>(null);
+  const startTimerRef = useRef<number | null>(null);
+  const clearTimerRef = useRef<number | null>(null);
+
+  const clearTimers = useCallback(() => {
+    if (startTimerRef.current !== null) window.clearTimeout(startTimerRef.current);
+    if (clearTimerRef.current !== null) window.clearTimeout(clearTimerRef.current);
+    startTimerRef.current = null;
+    clearTimerRef.current = null;
+  }, []);
+
+  const show = useCallback(
+    (tone: AsyncFeedbackTone, message?: string) => {
+      clearTimers();
+      setFeedback(null);
+      startTimerRef.current = window.setTimeout(() => {
+        setFeedback({ tone, message, token: Date.now() });
+        clearTimerRef.current = window.setTimeout(() => {
+          setFeedback(null);
+          clearTimerRef.current = null;
+        }, ASYNC_ACTION_FEEDBACK_MS);
+      }, 0);
+    },
+    [clearTimers],
+  );
+
+  useEffect(() => clearTimers, [clearTimers]);
+
+  return {
+    feedback,
+    showError: useCallback((message: string) => show("error", message), [show]),
+    showSuccess: useCallback(() => show("success"), [show]),
+  };
+}
+
+function useAsyncActionFeedbackMap() {
+  const [feedbackByKey, setFeedbackByKey] = useState<Record<string, AsyncActionFeedback>>({});
+  const startTimersRef = useRef<Record<string, number>>({});
+  const clearTimersRef = useRef<Record<string, number>>({});
+
+  const clearKeyTimers = useCallback((key: string) => {
+    if (startTimersRef.current[key] !== undefined) window.clearTimeout(startTimersRef.current[key]);
+    if (clearTimersRef.current[key] !== undefined) window.clearTimeout(clearTimersRef.current[key]);
+    delete startTimersRef.current[key];
+    delete clearTimersRef.current[key];
+  }, []);
+
+  const show = useCallback(
+    (key: string, tone: AsyncFeedbackTone, message?: string) => {
+      clearKeyTimers(key);
+      setFeedbackByKey((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      startTimersRef.current[key] = window.setTimeout(() => {
+        setFeedbackByKey((current) => ({ ...current, [key]: { tone, message, token: Date.now() } }));
+        clearTimersRef.current[key] = window.setTimeout(() => {
+          setFeedbackByKey((current) => {
+            const next = { ...current };
+            delete next[key];
+            return next;
+          });
+          delete clearTimersRef.current[key];
+        }, ASYNC_ACTION_FEEDBACK_MS);
+      }, 0);
+    },
+    [clearKeyTimers],
+  );
+
+  useEffect(
+    () => () => {
+      Object.values(startTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values(clearTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+    },
+    [],
+  );
+
+  return {
+    feedbackFor: useCallback((key: string) => feedbackByKey[key] || null, [feedbackByKey]),
+    showError: useCallback((key: string, message: string) => show(key, "error", message), [show]),
+    showSuccess: useCallback((key: string) => show(key, "success"), [show]),
+  };
+}
+
+function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | null) {
+  return feedback ? `${className} async-feedback-${feedback.tone}` : className;
+}
+
+function AsyncActionSlot({ children, feedback }: { children: ReactNode; feedback?: AsyncActionFeedback | null }) {
+  return (
+    <span className="async-action-slot">
+      {children}
+      {feedback?.tone === "error" && feedback.message ? (
+        <span key={feedback.token} className="async-action-message" role="alert">
+          {feedback.message}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function scopeLabel(value?: string) {
+  return (value || "library").replaceAll("_", " ");
+}
+
+function backgroundJobId() {
+  return `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isTerminalBackgroundStatus(status: BackgroundJobStatus) {
+  return status === "complete" || status === "failed";
+}
+
+function statusFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[]): BackgroundJobStatus {
+  if (run.status === "complete_with_errors" || run.failed_jobs > 0 || runJobs.some((job) => job.status === "failed")) return "failed";
+  if (run.status === "complete") return "complete";
+  if (runJobs.some((job) => job.status === "running")) return "running";
+  return "queued";
+}
+
+function runFailureMessage(run: ConcordanceRun, runJobs: ConcordanceJob[]) {
+  const failedJob = runJobs.find((job) => job.status === "failed" && job.last_error);
+  if (failedJob?.last_error) return failedJob.last_error;
+  if (run.failed_jobs > 0) return `${run.failed_jobs} Concordance ${run.failed_jobs === 1 ? "job" : "jobs"} failed.`;
+  return undefined;
+}
+
+function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], existing?: BackgroundJob): BackgroundJob {
+  const status = statusFromRun(run, runJobs);
+  const terminal = isTerminalBackgroundStatus(status);
+  const now = Date.now();
+  return {
+    id: existing?.id || run.id,
+    label: existing?.label || run.label || `${scopeLabel(run.scope_type)} Concordance`,
+    detail: existing?.detail || `${run.completed_jobs + run.failed_jobs} of ${run.total_jobs} jobs finished`,
+    status,
+    runId: run.id,
+    documentId: existing?.documentId,
+    capabilityKey: existing?.capabilityKey,
+    completedJobs: run.completed_jobs,
+    failedJobs: run.failed_jobs,
+    totalJobs: run.total_jobs,
+    error: status === "failed" ? runFailureMessage(run, runJobs) : undefined,
+    createdAt: existing?.createdAt || new Date(run.created_at).getTime() || now,
+    completedAt: terminal ? existing?.completedAt || now : undefined,
+  };
+}
+
+function backgroundProgress(job: BackgroundJob) {
+  if (job.status === "complete" || job.status === "failed") return 100;
+  if (job.status === "starting") return 10;
+  const total = job.totalJobs || 0;
+  if (!total) return job.status === "running" ? 35 : 18;
+  return Math.max(8, Math.min(96, Math.round((((job.completedJobs || 0) + (job.failedJobs || 0)) / total) * 100)));
+}
+
+function backgroundStatusLabel(job: BackgroundJob) {
+  if (job.status === "starting") return "Starting";
+  if (job.status === "queued") return "Queued";
+  if (job.status === "running") return "Processing";
+  if (job.status === "failed") return "Needs attention";
+  return "Complete";
+}
+
+function BackgroundJobShelf({ jobs }: { jobs: BackgroundJob[] }) {
+  if (!jobs.length) return null;
+  return (
+    <section className="background-jobs" aria-label="Background work">
+      <div className="background-jobs-head">
+        <span>Background work</span>
+        <strong>{jobs.filter((job) => !isTerminalBackgroundStatus(job.status)).length || "Done"}</strong>
+      </div>
+      <div className="background-job-list">
+        {jobs.slice(0, 4).map((job) => {
+          const progress = backgroundProgress(job);
+          return (
+            <div key={job.id} className={`background-job-row ${job.status}`}>
+              <span className="background-job-icon">
+                {job.status === "complete" ? (
+                  <CheckCircle2 size={15} />
+                ) : job.status === "failed" ? (
+                  <X size={15} />
+                ) : (
+                  <RefreshCw className={job.status === "running" ? "spin" : ""} size={15} />
+                )}
+              </span>
+              <div className="background-job-copy">
+                <div className="background-job-copy-main">
+                  <strong>{job.label}</strong>
+                  <small>{job.error || job.detail || backgroundStatusLabel(job)}</small>
+                </div>
+                <div
+                  aria-label={`${job.label}: ${progress}%`}
+                  aria-valuemax={100}
+                  aria-valuemin={0}
+                  aria-valuenow={progress}
+                  className="background-job-progress"
+                  role="progressbar"
+                >
+                  <span style={{ width: `${progress}%` }} />
+                </div>
+              </div>
+              <span className="background-job-state">{backgroundStatusLabel(job)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function StatusPill({ value, tone = "neutral" }: { value: string; tone?: "neutral" | "good" | "warn" | "blue" }) {
@@ -755,6 +1005,7 @@ function LibraryView({
   filters,
   setFilters,
   savedSearches,
+  startConcordanceRun,
   loading,
 }: {
   documents: DocumentSummary[];
@@ -770,6 +1021,7 @@ function LibraryView({
   filters: DocumentFilters;
   setFilters: (filters: DocumentFilters) => void;
   savedSearches: SavedSearch[];
+  startConcordanceRun: StartConcordanceRun;
   loading: boolean;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
@@ -783,6 +1035,7 @@ function LibraryView({
   const [bulkCustomTag, setBulkCustomTag] = useState("");
   const [bulkDomainId, setBulkDomainId] = useState("");
   const queryClient = useQueryClient();
+  const batchConcordanceFeedback = useAsyncActionFeedback();
   const saveSearch = useMutation({
     mutationFn: () => api.createSavedSearch({ name: saveName, query, filters: cleanFilters(filters) }),
     onSuccess: () => {
@@ -819,18 +1072,24 @@ function LibraryView({
   });
   const batchConcordance = useMutation({
     mutationFn: () =>
-      api.createConcordanceRun({
+      startConcordanceRun({
+        backgroundDetail: `${selectedIds.length} selected ${selectedIds.length === 1 ? "document" : "documents"}`,
+        backgroundLabel: "Selected document Concordance",
         label: `Selected document Concordance (${selectedIds.length})`,
         scope_type: "documents",
         scope_data: { document_ids: selectedIds },
       }),
     onSuccess: () => {
+      batchConcordanceFeedback.showSuccess();
       setSelectedIds([]);
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document"] });
+    },
+    onError: (error) => {
+      batchConcordanceFeedback.showError(actionFailureMessage("Could not start selected-document Concordance", error));
     },
   });
   const paneStyle = {
@@ -872,6 +1131,7 @@ function LibraryView({
           projects={projects}
           query={query}
           readerExpanded
+          startConcordanceRun={startConcordanceRun}
           tags={tags}
         />
       </section>
@@ -1071,10 +1331,16 @@ function LibraryView({
                 <CheckSquare size={15} />
                 Apply
               </button>
-              <button className="secondary-button" disabled={batchConcordance.isPending} onClick={() => batchConcordance.mutate()}>
-                <RefreshCw size={15} />
-                Concord
-              </button>
+              <AsyncActionSlot feedback={batchConcordanceFeedback.feedback}>
+                <button
+                  className={asyncFeedbackClass("secondary-button", batchConcordanceFeedback.feedback)}
+                  disabled={batchConcordance.isPending}
+                  onClick={() => batchConcordance.mutate()}
+                >
+                  <RefreshCw size={15} />
+                  Concord
+                </button>
+              </AsyncActionSlot>
             </div>
           ) : null}
         </div>
@@ -1128,6 +1394,7 @@ function LibraryView({
         onOpenReader={() => setReaderOpen(true)}
         projects={projects}
         query={query}
+        startConcordanceRun={startConcordanceRun}
         tags={tags}
       />
     </section>
@@ -1200,6 +1467,7 @@ function DocumentPanel({
   projects,
   query,
   readerExpanded = false,
+  startConcordanceRun,
   tags,
 }: {
   citationJobs: ConcordanceJob[];
@@ -1210,6 +1478,7 @@ function DocumentPanel({
   projects: Project[];
   query: string;
   readerExpanded?: boolean;
+  startConcordanceRun: StartConcordanceRun;
   tags: Tag[];
 }) {
   if (!document) {
@@ -1231,6 +1500,7 @@ function DocumentPanel({
       projects={projects}
       query={query}
       readerExpanded={readerExpanded}
+      startConcordanceRun={startConcordanceRun}
       tags={tags}
     />
   );
@@ -1242,6 +1512,9 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
   const [notice, setNotice] = useState("");
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
+  const refreshFeedback = useAsyncActionFeedback();
+  const selectedDownloadFeedback = useAsyncActionFeedback();
+  const newDownloadFeedback = useAsyncActionFeedback();
   const recommendations = useQuery({
     queryKey: ["document-recommendations", document.id, hideExisting],
     queryFn: () => api.documentRecommendations(document.id, hideExisting),
@@ -1250,15 +1523,22 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
   const refresh = useMutation({
     mutationFn: () => api.refreshDocumentRecommendations(document.id),
     onSuccess: (result) => {
+      refreshFeedback.showSuccess();
       setNotice(`Found ${result.recommendation_count} related papers`);
       void queryClient.invalidateQueries({ queryKey: ["document-recommendations", document.id] });
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "Could not refresh recommendations"),
+    onError: (error) => {
+      const message = actionFailureMessage("Could not refresh recommendations", error);
+      refreshFeedback.showError(message);
+      setNotice(message);
+    },
   });
   const download = useMutation({
     mutationFn: (body: { recommendation_ids?: string[]; mode?: "selected" | "new"; skip_existing?: boolean }) =>
       api.downloadRecommendations(document.id, body),
-    onSuccess: (result) => {
+    onSuccess: (result, body) => {
+      const feedback = body.mode === "new" ? newDownloadFeedback : selectedDownloadFeedback;
+      feedback.showSuccess();
       setNotice(
         `Queued ${result.queued_count}; skipped ${result.skipped_existing_count}; unavailable ${result.unavailable_count}; failed ${result.failed_count}`,
       );
@@ -1268,7 +1548,12 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["document-recommendations", document.id] });
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "Could not queue recommendation downloads"),
+    onError: (error, body) => {
+      const feedback = body?.mode === "new" ? newDownloadFeedback : selectedDownloadFeedback;
+      const message = actionFailureMessage("Could not queue recommendation downloads", error);
+      feedback.showError(message);
+      setNotice(message);
+    },
   });
 
   useEffect(() => {
@@ -1310,10 +1595,17 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
             <input type="checkbox" checked={hideExisting} onChange={(event) => setHideExisting(event.target.checked)} />
             <span>Hide existing</span>
           </label>
-          <button className="secondary-button compact" disabled={!canRefresh || refresh.isPending} onClick={() => refresh.mutate()} type="button">
-            <RefreshCw className={refresh.isPending ? "spin" : ""} size={14} />
-            Refresh
-          </button>
+          <AsyncActionSlot feedback={refreshFeedback.feedback}>
+            <button
+              className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback)}
+              disabled={!canRefresh || refresh.isPending}
+              onClick={() => refresh.mutate()}
+              type="button"
+            >
+              <RefreshCw className={refresh.isPending ? "spin" : ""} size={14} />
+              Refresh
+            </button>
+          </AsyncActionSlot>
         </div>
       </div>
       <div className="recommendations-download-row">
@@ -1321,24 +1613,28 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
           <input type="checkbox" checked={allSelectableSelected} onChange={toggleAllSelectable} disabled={!selectableRows.length} />
           <strong>{selectedCount ? `${selectedCount} selected` : "Select new papers"}</strong>
         </label>
-        <button
-          className="secondary-button compact"
-          disabled={!selectedCount || !selectedDownloadable || download.isPending}
-          onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
-          type="button"
-        >
-          <Download size={14} />
-          Selected
-        </button>
-        <button
-          className="primary-button compact"
-          disabled={!newRows.length || !newDownloadable || download.isPending}
-          onClick={() => download.mutate({ mode: "new", skip_existing: true })}
-          type="button"
-        >
-          <Download size={14} />
-          All new
-        </button>
+        <AsyncActionSlot feedback={selectedDownloadFeedback.feedback}>
+          <button
+            className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
+            disabled={!selectedCount || !selectedDownloadable || download.isPending}
+            onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
+            type="button"
+          >
+            <Download size={14} />
+            Selected
+          </button>
+        </AsyncActionSlot>
+        <AsyncActionSlot feedback={newDownloadFeedback.feedback}>
+          <button
+            className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
+            disabled={!newRows.length || !newDownloadable || download.isPending}
+            onClick={() => download.mutate({ mode: "new", skip_existing: true })}
+            type="button"
+          >
+            <Download size={14} />
+            All new
+          </button>
+        </AsyncActionSlot>
       </div>
       {notice ? <p className="recommendation-notice">{notice}</p> : null}
       {!canRefresh ? (
@@ -1424,6 +1720,7 @@ function DocumentPanelContent({
   projects,
   query,
   readerExpanded = false,
+  startConcordanceRun,
   tags,
 }: {
   citationJobs: ConcordanceJob[];
@@ -1434,6 +1731,7 @@ function DocumentPanelContent({
   projects: Project[];
   query: string;
   readerExpanded?: boolean;
+  startConcordanceRun: StartConcordanceRun;
   tags: Tag[];
 }) {
 
@@ -1449,8 +1747,11 @@ function DocumentPanelContent({
     color: "#f6c343",
   });
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [citationRunId, setCitationRunId] = useState<string | null>(null);
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
+  const runConcordanceFeedback = useAsyncActionFeedback();
+  const citationFeedback = useAsyncActionFeedback();
   const updateDocument = useMutation({
     mutationFn: (body: DocumentUpdatePayload) => api.updateDocument(document.id, body),
     onSuccess: () => {
@@ -1466,26 +1767,50 @@ function DocumentPanelContent({
   });
   const runConcordance = useMutation({
     mutationFn: () =>
-      api.createConcordanceRun({
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Document Concordance",
         label: `Document Concordance: ${document.title}`,
         scope_type: "documents",
         scope_data: { document_ids: [document.id] },
+        documentId: document.id,
       }),
     onSuccess: () => {
+      runConcordanceFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
     },
+    onError: (error) => {
+      runConcordanceFeedback.showError(actionFailureMessage("Could not start document Concordance", error));
+    },
   });
   const refreshCitation = useMutation({
-    mutationFn: () => api.refreshDocumentCitation(document.id),
-    onSuccess: () => {
+    mutationFn: () =>
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Checking APA citation",
+        capability_keys: ["citation_refresh"],
+        capabilityKey: "citation_refresh",
+        documentId: document.id,
+        force: true,
+        label: `Citation check: ${document.title}`,
+        scope_data: { document_ids: [document.id] },
+        scope_type: "documents",
+      }),
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setCitationRunId(run.id);
+      else citationFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["review"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    },
+    onError: (error) => {
+      setCitationRunId(null);
+      citationFeedback.showError(actionFailureMessage("Could not start citation check", error));
     },
   });
   const createAnnotation = useMutation({
@@ -1511,6 +1836,7 @@ function DocumentPanelContent({
     setEditing(false);
     setRecommendationsOpen(false);
     setSaveError(null);
+    setCitationRunId(null);
   }, [document.id]);
 
   const copyCitation = () => {
@@ -1528,7 +1854,34 @@ function DocumentPanelContent({
   const citationRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && ["queued", "running"].includes(job.status),
   );
-  const citationBusy = refreshCitation.isPending || citationRefreshActive;
+  const trackedCitationJobs = useMemo(
+    () =>
+      citationRunId
+        ? citationJobs.filter(
+            (job) => job.run_id === citationRunId && job.document_id === document.id && job.capability_key === "citation_refresh",
+          )
+        : [],
+    [citationJobs, citationRunId, document.id],
+  );
+  const citationBusy = refreshCitation.isPending || citationRefreshActive || Boolean(citationRunId);
+
+  useEffect(() => {
+    if (!citationRunId || trackedCitationJobs.length === 0) return;
+    if (trackedCitationJobs.some((job) => job.status === "queued" || job.status === "running")) return;
+    const failedJob = trackedCitationJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      citationFeedback.showError(
+        actionFailureMessage("Citation check failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      citationFeedback.showSuccess();
+    }
+    setCitationRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["review"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+  }, [citationFeedback.showError, citationFeedback.showSuccess, citationRunId, document.id, queryClient, trackedCitationJobs]);
   const copyFullText = () => {
     if (fullText) void copyToClipboard("full-text", fullText);
   };
@@ -1625,10 +1978,16 @@ function DocumentPanelContent({
           {editing ? <X size={15} /> : <Edit3 size={15} />}
           {editing ? "Cancel" : "Edit"}
         </button>
-        <button className="secondary-button" onClick={() => runConcordance.mutate()} disabled={runConcordance.isPending}>
-          <RefreshCw size={15} />
-          Concord
-        </button>
+        <AsyncActionSlot feedback={runConcordanceFeedback.feedback}>
+          <button
+            className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback)}
+            onClick={() => runConcordance.mutate()}
+            disabled={runConcordance.isPending}
+          >
+            <RefreshCw size={15} />
+            Concord
+          </button>
+        </AsyncActionSlot>
         {onOpenReader && !readerExpanded ? (
           <button className="secondary-button" onClick={onOpenReader} type="button">
             <BookOpen size={15} />
@@ -1872,10 +2231,16 @@ function DocumentPanelContent({
             {copiedKey === "citation" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
             {copiedKey === "citation" ? "Copied" : "Copy"}
           </button>
-          <button className="secondary-button" onClick={() => refreshCitation.mutate()} disabled={citationBusy}>
-            <RefreshCw className={citationBusy ? "spin" : ""} size={15} />
-            {citationBusy ? "Checking" : "Check"}
-          </button>
+          <AsyncActionSlot feedback={citationFeedback.feedback}>
+            <button
+              className={asyncFeedbackClass("secondary-button", citationFeedback.feedback)}
+              onClick={() => refreshCitation.mutate()}
+              disabled={citationBusy}
+            >
+              <RefreshCw className={citationBusy ? "spin" : ""} size={15} />
+              {citationBusy ? "Checking" : "Check"}
+            </button>
+          </AsyncActionSlot>
         </div>
       </section>
       {recommendationsOpen ? <RecommendationsPanel document={document} /> : null}
@@ -2151,6 +2516,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [duplicateCheck, setDuplicateCheck] = useState<ImportDuplicateCheck | null>(null);
   const queryClient = useQueryClient();
+  const rescueFeedback = useAsyncActionFeedbackMap();
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const domainItems = useMemo(() => domainPickerItems(domains), [domains]);
@@ -2231,14 +2597,17 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   });
   const rescueJob = useMutation({
     mutationFn: (jobId: string) => api.rescueImportJob(jobId),
-    onSuccess: () => {
+    onSuccess: (_job, jobId) => {
+      rescueFeedback.showSuccess(jobId);
       setDropMessage("Import job requeued");
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
-    onError: (error) => {
-      setDropMessage(error instanceof Error ? error.message : "Could not rescue import job");
+    onError: (error, jobId) => {
+      const message = actionFailureMessage("Could not requeue import job", error);
+      rescueFeedback.showError(jobId, message);
+      setDropMessage(message);
     },
   });
   const isDraggingFiles = dragDepth > 0;
@@ -2423,15 +2792,17 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             <span className="job-actions">
               <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
               {canRescueImportJob(job) ? (
-                <button
-                  className="icon-button compact"
-                  disabled={rescueJob.isPending}
-                  onClick={() => rescueJob.mutate(job.id)}
-                  title="Requeue this import job"
-                  type="button"
-                >
-                  <RefreshCw size={15} />
-                </button>
+                <AsyncActionSlot feedback={rescueFeedback.feedbackFor(job.id)}>
+                  <button
+                    className={asyncFeedbackClass("icon-button compact", rescueFeedback.feedbackFor(job.id))}
+                    disabled={rescueJob.isPending}
+                    onClick={() => rescueJob.mutate(job.id)}
+                    title="Requeue this import job"
+                    type="button"
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                </AsyncActionSlot>
               ) : null}
             </span>
           </div>
@@ -2662,6 +3033,7 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
 
 function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJob[] }) {
   const queryClient = useQueryClient();
+  const rescueFeedback = useAsyncActionFeedbackMap();
   const updateCandidate = useMutation({
     mutationFn: ({ id, status, apply }: { id: string; status: string; apply?: boolean }) =>
       api.updateCitationCandidate(id, { status, apply_to_document: Boolean(apply) }),
@@ -2674,10 +3046,14 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
   });
   const rescueJob = useMutation({
     mutationFn: (jobId: string) => api.rescueImportJob(jobId),
-    onSuccess: () => {
+    onSuccess: (_job, jobId) => {
+      rescueFeedback.showSuccess(jobId);
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    },
+    onError: (error, jobId) => {
+      rescueFeedback.showError(jobId, actionFailureMessage("Could not requeue import job", error));
     },
   });
   const queueJobs = jobs.filter(isQueueImportJob);
@@ -2704,15 +3080,17 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
                 <span className="queue-job-status">
                   <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
                   {canRescueImportJob(job) ? (
-                    <button
-                      className="icon-button compact"
-                      disabled={rescueJob.isPending}
-                      onClick={() => rescueJob.mutate(job.id)}
-                      title="Requeue this import job"
-                      type="button"
-                    >
-                      <RefreshCw size={15} />
-                    </button>
+                    <AsyncActionSlot feedback={rescueFeedback.feedbackFor(job.id)}>
+                      <button
+                        className={asyncFeedbackClass("icon-button compact", rescueFeedback.feedbackFor(job.id))}
+                        disabled={rescueJob.isPending}
+                        onClick={() => rescueJob.mutate(job.id)}
+                        title="Requeue this import job"
+                        type="button"
+                      >
+                        <RefreshCw size={15} />
+                      </button>
+                    </AsyncActionSlot>
                   ) : null}
                 </span>
                 <span
@@ -2997,6 +3375,7 @@ function SettingsView({
   projects,
   savedSearches,
   selectedDocument,
+  startConcordanceRun,
   query,
 }: {
   capabilities: ConcordanceCapability[];
@@ -3007,6 +3386,7 @@ function SettingsView({
   projects: Project[];
   savedSearches: SavedSearch[];
   selectedDocument?: DocumentDetail;
+  startConcordanceRun: StartConcordanceRun;
   query: string;
 }) {
   const [force, setForce] = useState(false);
@@ -3021,6 +3401,7 @@ function SettingsView({
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const queryClient = useQueryClient();
+  const createRunFeedback = useAsyncActionFeedback();
 
   useEffect(() => {
     if (preferences) {
@@ -3053,7 +3434,9 @@ function SettingsView({
     (scopeType === "project" && Boolean(projectId));
   const createRun = useMutation({
     mutationFn: () =>
-      api.createConcordanceRun({
+      startConcordanceRun({
+        backgroundDetail: `${selectedCapabilityKeys.length} ${selectedCapabilityKeys.length === 1 ? "capability" : "capabilities"}`,
+        backgroundLabel: `${scopeLabel(scopeType)} Concordance`,
         label: `${scopeType.replace("_", " ")} Concordance`,
         scope_type: scopeType,
         scope_data: scopeData(),
@@ -3061,9 +3444,13 @@ function SettingsView({
         force,
       }),
     onSuccess: () => {
+      createRunFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+    },
+    onError: (error) => {
+      createRunFeedback.showError(actionFailureMessage("Could not start Concordance Run", error));
     },
   });
   const savePreferences = useMutation({
@@ -3239,10 +3626,16 @@ function SettingsView({
             <h2>Concordance Runs</h2>
             <span>{activeJobs} active jobs</span>
           </div>
-          <button className="primary-button" disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length} onClick={() => createRun.mutate()}>
-            <RefreshCw size={16} />
-            Start run
-          </button>
+          <AsyncActionSlot feedback={createRunFeedback.feedback}>
+            <button
+              className={asyncFeedbackClass("primary-button", createRunFeedback.feedback)}
+              disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length}
+              onClick={() => createRun.mutate()}
+            >
+              <RefreshCw size={16} />
+              Start run
+            </button>
+          </AsyncActionSlot>
         </div>
         <div className="scope-grid">
           <label>
@@ -3374,6 +3767,7 @@ export default function App() {
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [sidebarWidth, setSidebarWidth] = useStoredPaneSize("medusa-sidebar-width", 220, 168, 304);
   const [sidebarCollapsed, setSidebarCollapsed] = useStoredBoolean("medusa-sidebar-collapsed", false);
+  const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -3425,9 +3819,106 @@ export default function App() {
     onSuccess: () => queryClient.clear(),
   });
 
+  const startConcordanceRun = useCallback(
+    async (request: ConcordanceRunRequest) => {
+      const id = backgroundJobId();
+      const label = request.backgroundLabel || request.label || `${scopeLabel(request.scope_type)} Concordance`;
+      const detail = request.backgroundDetail || "Request received";
+      setBackgroundJobs((current) => [
+        {
+          id,
+          label,
+          detail,
+          status: "starting",
+          documentId: request.documentId,
+          capabilityKey: request.capabilityKey,
+          createdAt: Date.now(),
+        },
+        ...current,
+      ]);
+      try {
+        const run = await api.createConcordanceRun({
+          label: request.label,
+          scope_type: request.scope_type,
+          scope_data: request.scope_data,
+          capability_keys: request.capability_keys,
+          force: request.force,
+        });
+        setBackgroundJobs((current) =>
+          current.map((job) =>
+            job.id === id
+              ? {
+                  ...job,
+                  status: run.total_jobs > 0 ? "queued" : "complete",
+                  runId: run.id,
+                  completedJobs: run.completed_jobs,
+                  failedJobs: run.failed_jobs,
+                  totalJobs: run.total_jobs,
+                  completedAt: run.total_jobs > 0 ? undefined : Date.now(),
+                  detail:
+                    run.total_jobs > 0
+                      ? `${run.total_jobs} ${run.total_jobs === 1 ? "job" : "jobs"} queued`
+                      : "Already current",
+                }
+              : job,
+          ),
+        );
+        void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+        void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+        return run;
+      } catch (error) {
+        setBackgroundJobs((current) =>
+          current.map((job) =>
+            job.id === id
+              ? {
+                  ...job,
+                  status: "failed",
+                  error: actionFailureMessage("Could not start background job", error),
+                  completedAt: Date.now(),
+                }
+              : job,
+          ),
+        );
+        throw error;
+      }
+    },
+    [queryClient],
+  );
+
   useEffect(() => {
     if (!selectedId && documents.data?.[0]) setSelectedId(documents.data[0].id);
   }, [documents.data, selectedId]);
+
+  useEffect(() => {
+    const runs = concordanceRuns.data || [];
+    const jobs = concordanceJobs.data || [];
+    const now = Date.now();
+    setBackgroundJobs((current) =>
+      current
+        .map((job) => {
+          if (!job.runId) return job;
+          const run = runs.find((item) => item.id === job.runId);
+          if (!run) return job;
+          return backgroundJobFromRun(
+            run,
+            jobs.filter((item) => item.run_id === run.id),
+            job,
+          );
+        })
+        .filter((job) => !job.completedAt || now - job.completedAt < BACKGROUND_JOB_RETENTION_MS),
+    );
+  }, [concordanceJobs.data, concordanceRuns.data]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setBackgroundJobs((current) =>
+        current.filter((job) => !job.completedAt || now - job.completedAt < BACKGROUND_JOB_RETENTION_MS),
+      );
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) return <Login />;
@@ -3449,6 +3940,22 @@ export default function App() {
     queue: (jobs.data || []).filter(isQueueImportJob).length + (review.data || []).length,
     notes: notes.data?.length ?? 0,
   };
+  const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
+  const activeServerBackgroundJobs = (concordanceRuns.data || [])
+    .filter((run) => !trackedRunIds.has(run.id))
+    .map((run) =>
+      backgroundJobFromRun(
+        run,
+        (concordanceJobs.data || []).filter((job) => job.run_id === run.id),
+      ),
+    )
+    .filter((job) => job.status === "queued" || job.status === "running")
+    .slice(0, 3);
+  const visibleBackgroundJobs = [...backgroundJobs, ...activeServerBackgroundJobs].sort(
+    (left, right) =>
+      Number(isTerminalBackgroundStatus(left.status)) - Number(isTerminalBackgroundStatus(right.status)) ||
+      right.createdAt - left.createdAt,
+  );
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={shellStyle}>
@@ -3480,23 +3987,26 @@ export default function App() {
         />
       ) : null}
       <main className="content">
-        <section className="metrics">
-          <div>
-            <strong>{dashboard.data?.documents ?? 0}</strong>
-            <span>Documents</span>
-          </div>
-          <div>
-            <strong>{dashboard.data?.unread ?? 0}</strong>
-            <span>Unread</span>
-          </div>
-          <div>
-            <strong>{dashboard.data?.needs_review ?? 0}</strong>
-            <span>Review</span>
-          </div>
-          <div>
-            <strong>{dashboard.data?.queued_jobs ?? 0}</strong>
-            <span>Jobs</span>
-          </div>
+        <section className={`content-top ${visibleBackgroundJobs.length ? "has-background-jobs" : ""}`}>
+          <section className="metrics">
+            <div>
+              <strong>{dashboard.data?.documents ?? 0}</strong>
+              <span>Documents</span>
+            </div>
+            <div>
+              <strong>{dashboard.data?.unread ?? 0}</strong>
+              <span>Unread</span>
+            </div>
+            <div>
+              <strong>{dashboard.data?.needs_review ?? 0}</strong>
+              <span>Review</span>
+            </div>
+            <div>
+              <strong>{dashboard.data?.queued_jobs ?? 0}</strong>
+              <span>Jobs</span>
+            </div>
+          </section>
+          <BackgroundJobShelf jobs={visibleBackgroundJobs} />
         </section>
         {activeView === "library" || activeView === "domains" ? (
           <LibraryView
@@ -3513,6 +4023,7 @@ export default function App() {
             filters={filters}
             setFilters={setFilters}
             savedSearches={savedSearches.data || []}
+            startConcordanceRun={startConcordanceRun}
             loading={documents.isFetching}
           />
         ) : null}
@@ -3540,6 +4051,7 @@ export default function App() {
             runs={concordanceRuns.data || []}
             savedSearches={savedSearches.data || []}
             selectedDocument={selectedDocument.data}
+            startConcordanceRun={startConcordanceRun}
           />
         ) : null}
       </main>

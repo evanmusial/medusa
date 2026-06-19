@@ -38,7 +38,8 @@ Current UI architecture:
 - Import view centers immediate drag/drop upload plus a batch-defaults intake panel for optional label, priority, read status, domains, tags, and projects. Domains, tags, and projects use searchable chip pickers with restrained inline creation so bulk uploads can be organized before files are dropped.
 - Import view also provides active drop-target feedback, duplicate-decision handling, and live job status with per-file step labels.
 - The sidebar Import badge shows active import jobs only; the bottom of the expanded sidebar shows a clickable import progress bar with running and queued import counts, active step, and elapsed time while uploads are queued or processing. Clicking it opens Queue. The top-level Jobs metric may include imports plus Concordance work.
-- Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation.
+- The main work area includes a compact persistent Background Work shelf when Concordance or other tracked async work is starting, queued, running, complete, or failed recently. Job-starting controls hand work to the app shell so progress and completion/error handling continue even if the originating page unmounts.
+- Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation, with run-sheet controls constrained to their pane so long document titles cannot spill into bibliography controls.
 - Queue shows queued/running import jobs with per-job stage progress and citation candidates that need human attention, and supports accepting or rejecting citation candidates.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
 - Settings exposes preferences, day/night accent color controls, document-analysis model controls, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
@@ -55,6 +56,7 @@ Visual decisions:
 - Night mode uses charcoal surfaces, high-contrast text, blue/teal accents, and soft borders.
 - Avoid loud gradients, marketing-style hero layouts, decorative blobs, or oversized display typography inside the work surface.
 - Use icons for actions and navigation where they improve scanning.
+- Buttons that start background jobs should give transient result feedback: green on successful start/completion, red with a concise error popover on failure, then fade back to their normal button color.
 - Dashboard metrics should read as quiet text on the work-surface background, not as button-like cards.
 - Keep cards for framed tools or repeated items; do not nest cards.
 - Keep cockpit spacing dense and practical; panes should prioritize scanning and repeated work over airy presentation.
