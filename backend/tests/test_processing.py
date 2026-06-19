@@ -332,7 +332,7 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import Document, DocumentPage, ImportBatch, ImportJob, ProcessingEvent, TextChunk
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCompositionRecord, DocumentPage, ImportBatch, ImportJob, OpenAIUsageRecord, ProcessingEvent, TextChunk
     from app.services import processing
     from app.services.processing import DocumentProcessor
 
@@ -346,6 +346,10 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
             ImportBatch.__table__,
             ImportJob.__table__,
             ProcessingEvent.__table__,
+            ConcordanceRun.__table__,
+            ConcordanceJob.__table__,
+            OpenAIUsageRecord.__table__,
+            DocumentCompositionRecord.__table__,
         ],
     )
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
@@ -394,6 +398,9 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
         assert pages[0].text == "Replacement text"
         assert "\x00" not in document.search_text
         assert job.current_step == "extracted"
+        composition = db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).one()
+        assert composition.stage_key == "raw_text_extraction"
+        assert composition.method == "test"
 
 
 def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tmp_path):
@@ -403,7 +410,7 @@ def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tm
 
     from app.database import Base
     from app.config import get_settings
-    from app.models import Document, DocumentPage, ImportBatch, ImportJob, ProcessingEvent, TextChunk
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCompositionRecord, DocumentPage, ImportBatch, ImportJob, OpenAIUsageRecord, ProcessingEvent, TextChunk
     from app.services.processing import DocumentProcessor
     from app.services import processing
 
@@ -432,6 +439,10 @@ def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tm
             ImportBatch.__table__,
             ImportJob.__table__,
             ProcessingEvent.__table__,
+            ConcordanceRun.__table__,
+            ConcordanceJob.__table__,
+            OpenAIUsageRecord.__table__,
+            DocumentCompositionRecord.__table__,
         ],
     )
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

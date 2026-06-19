@@ -18,6 +18,7 @@ from app.models import (
     ConcordanceRun,
     Document,
     DocumentAccessorySummary,
+    DocumentCompositionRecord,
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
@@ -291,6 +292,36 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
             }
             for event in db.query(ProcessingEvent).order_by(ProcessingEvent.created_at, ProcessingEvent.id).all()
         ],
+        "document_composition_records": [
+            {
+                "id": record.id,
+                "document_id": record.document_id,
+                "import_job_id": record.import_job_id,
+                "usage_record_id": record.usage_record_id,
+                "sequence": record.sequence,
+                "record_kind": record.record_kind,
+                "stage_key": record.stage_key,
+                "stage_label": record.stage_label,
+                "provider": record.provider,
+                "method": record.method,
+                "model": record.model,
+                "status": record.status,
+                "amount_usd": _value(record.amount_usd),
+                "duration_ms": record.duration_ms,
+                "input_tokens": record.input_tokens,
+                "output_tokens": record.output_tokens,
+                "total_tokens": record.total_tokens,
+                "started_at": _value(record.started_at),
+                "completed_at": _value(record.completed_at),
+                "message": record.message,
+                "metadata": record.record_metadata,
+                **_timestamps(record),
+            }
+            for record in db.query(DocumentCompositionRecord).order_by(
+                DocumentCompositionRecord.created_at,
+                DocumentCompositionRecord.id,
+            ).all()
+        ],
         "concordance_runs": [
             {
                 "id": run.id,
@@ -368,6 +399,11 @@ def _document_export(document: Document) -> dict[str, Any]:
         "abstract": document.abstract,
         "rich_summary": document.rich_summary,
         "apa_citation": document.apa_citation,
+        "apa_citation_model": document.apa_citation_model,
+        "apa_citation_source": document.apa_citation_source,
+        "apa_in_text_citation": document.apa_in_text_citation,
+        "apa_in_text_citation_model": document.apa_in_text_citation_model,
+        "apa_in_text_citation_source": document.apa_in_text_citation_source,
         "citation_status": document.citation_status,
         "metadata_confidence": _value(document.metadata_confidence),
         "metadata_evidence": document.metadata_evidence,

@@ -49,6 +49,16 @@ EMBEDDING_MODEL_OPTIONS = (
     "text-embedding-3-small",
     "text-embedding-3-large",
 )
+GOOGLE_TEXT_MODEL_OPTIONS = (
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-pro-latest",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+)
 LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS = (
     "docling",
     "marker",
@@ -113,7 +123,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_ACCESSORY_SUMMARIES,
         label="Accessory Summaries",
         model_kind="gpt",
-        description="Reserved for future user-prompted custom summaries; those runs should default to GPT-5.4 and use the original PDF plus the user's prompt when requested.",
+        description="Generates user-prompted focused summaries from a document detail pane request. These default to GPT-5.4, and can use Google Gemini text models when selected.",
     ),
 )
 
@@ -126,6 +136,13 @@ def normalize_model_id(value: object, default: str) -> str:
         if candidate and MODEL_ID_RE.match(candidate):
             return candidate
     return default
+
+
+def is_google_text_model(model: str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    normalized = model.strip()
+    return normalized.startswith("gemini-") and "preview" not in normalized.lower()
 
 
 def default_model_for_task(task_key: str) -> str:
@@ -151,12 +168,16 @@ def default_analysis_models() -> dict[str, str]:
 def model_options(saved_models: dict[str, str] | None = None) -> dict[str, list[str]]:
     saved_values = set(saved_models.values()) if saved_models else set()
     gpt = [*GPT_MODEL_OPTIONS]
+    google = [*GOOGLE_TEXT_MODEL_OPTIONS]
     embedding = [*EMBEDDING_MODEL_OPTIONS]
     raw_text_extraction = [*LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS]
     for model in sorted(saved_values):
         if model.startswith("text-embedding-"):
             if model not in embedding:
                 embedding.append(model)
+        elif is_google_text_model(model):
+            if model not in google:
+                google.append(model)
         elif model in LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS:
             continue
         elif model not in gpt:
@@ -171,21 +192,32 @@ def model_options(saved_models: dict[str, str] | None = None) -> dict[str, list[
     for model in gpt:
         if model not in raw_text_extraction:
             raw_text_extraction.append(model)
+    for model in google:
+        if model not in raw_text_extraction:
+            raw_text_extraction.append(model)
     for model in sorted(saved_values):
-        if model.startswith("text-embedding-") or model in raw_text_extraction:
+        if model.startswith("text-embedding-") or is_google_text_model(model) or model in raw_text_extraction:
             continue
         raw_text_extraction.append(model)
-    return {"gpt": gpt, "embedding": embedding, "raw_text_extraction": raw_text_extraction}
+    return {"gpt": gpt, "google": google, "embedding": embedding, "raw_text_extraction": raw_text_extraction}
 
 
 def option_groups_for_task(task: AnalysisModelTask, models: dict[str, str] | None = None) -> list[dict[str, list[str] | str]]:
-    if task.model_kind != "raw_text_extraction":
-        return []
     options = model_options(models)
-    return [
-        {"label": "Local", "options": [*LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS]},
-        {"label": "OpenAI", "options": options["gpt"]},
-    ]
+    if task.model_kind == "raw_text_extraction":
+        return [
+            {"label": "Local", "options": [*LOCAL_RAW_TEXT_EXTRACTOR_OPTIONS]},
+            {"label": "OpenAI", "options": options["gpt"]},
+            {"label": "Google", "options": options["google"]},
+        ]
+    if task.model_kind == "gpt":
+        return [
+            {"label": "OpenAI", "options": options["gpt"]},
+            {"label": "Google", "options": options["google"]},
+        ]
+    if task.model_kind == "embedding":
+        return [{"label": "OpenAI", "options": options["embedding"]}]
+    return []
 
 
 def task_payloads(models: dict[str, str] | None = None) -> list[dict[str, str | list[dict[str, list[str] | str]]]]:

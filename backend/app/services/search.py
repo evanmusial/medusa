@@ -40,6 +40,7 @@ def rebuild_document_search_text(document: Document) -> str:
                 document.abstract,
                 document.rich_summary,
                 document.apa_citation,
+                document.apa_in_text_citation,
                 page_text,
                 figure_search_text(document.figures),
                 accessory_summary_search_text(document),

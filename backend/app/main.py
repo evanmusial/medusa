@@ -24,6 +24,7 @@ from app.models import (
     ConcordanceRun,
     Document,
     DocumentAccessorySummary,
+    DocumentCompositionRecord,
     DocumentAttributeValue,
     DocumentRecommendation,
     DocumentVersion,
@@ -61,6 +62,7 @@ from app.schemas import (
     ConcordanceRunOut,
     DashboardOut,
     DocumentDetail,
+    DocumentCompositionOut,
     DocumentPatch,
     DocumentRecommendationDownloadCreate,
     DocumentRecommendationDownloadOut,
@@ -86,6 +88,7 @@ from app.schemas import (
     ProjectItemOut,
     ProjectItemPatch,
     ProjectOut,
+    RuntimeLocationOut,
     SavedSearchCreate,
     SavedSearchOut,
     SavedSearchPatch,
@@ -95,27 +98,32 @@ from app.schemas import (
 )
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.accessory_summaries import create_accessory_summary
+from app.services.analysis_models import MODEL_APA_CITATION
 from app.services.concordance import create_concordance_run, current_capabilities
-from app.services.citations import decode_html_entities, format_apa_citation, format_bibtex, format_ris, to_csl_json
+from app.services.composition import active_import_cost_usd, document_composition_summary, record_manual_edit
+from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
 from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.processing import (
+    apply_document_citations,
     document_metadata,
     refresh_import_batch_progress,
 )
-from app.services.preferences import get_app_preferences, update_app_preferences
+from app.services.preferences import get_analysis_model, get_app_preferences, update_app_preferences
 from app.services.openai_usage import openai_usage_summary
 from app.services.recommendations import (
     list_document_recommendations,
     queue_recommendation_imports,
     refresh_document_recommendations,
 )
+from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import rebuild_document_search_text
 from app.services.storage import get_storage_service
 
 
 settings = get_settings()
 app = FastAPI(title="Medusa Research Library", version="0.1.0")
+SERVER_IPV4: str | None = None
 
 DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 app.add_middleware(
@@ -129,9 +137,16 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
+    global SERVER_IPV4
+    SERVER_IPV4 = detect_server_ipv4()
     init_db()
     with session_scope() as db:
         ensure_admin_user(db)
+
+
+@app.get("/api/runtime-location", response_model=RuntimeLocationOut)
+def runtime_location(browser_host: str | None = Query(default=None, max_length=255)) -> dict[str, str | None]:
+    return runtime_location_payload(browser_host, SERVER_IPV4)
 
 
 def parse_json_form(value: str | None, default: Any) -> Any:
@@ -199,7 +214,14 @@ def apply_document_filters(
 ):
     if q:
         like = f"%{q}%"
-        query = query.filter(or_(Document.title.ilike(like), Document.search_text.ilike(like), Document.apa_citation.ilike(like)))
+        query = query.filter(
+            or_(
+                Document.title.ilike(like),
+                Document.search_text.ilike(like),
+                Document.apa_citation.ilike(like),
+                Document.apa_in_text_citation.ilike(like),
+            )
+        )
         if is_postgres():
             query = query.order_by(
                 text("ts_rank(to_tsvector('english', coalesce(search_text, '')), plainto_tsquery('english', :q)) DESC")
@@ -320,6 +342,11 @@ def document_correction_snapshot(document: Document) -> dict[str, Any]:
         "abstract": document.abstract,
         "rich_summary": document.rich_summary,
         "apa_citation": document.apa_citation,
+        "apa_citation_model": document.apa_citation_model,
+        "apa_citation_source": document.apa_citation_source,
+        "apa_in_text_citation": document.apa_in_text_citation,
+        "apa_in_text_citation_model": document.apa_in_text_citation_model,
+        "apa_in_text_citation_source": document.apa_in_text_citation_source,
         "citation_status": document.citation_status,
         "read_status": document.read_status,
         "priority": document.priority,
@@ -395,6 +422,10 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
         row[0]
         for row in db.query(ImportJob.batch_id).filter(ImportJob.status.in_(["queued", "running"])).distinct().all()
     ]
+    active_import_job_ids = [
+        row[0]
+        for row in db.query(ImportJob.id).filter(ImportJob.status.in_(["queued", "running"])).all()
+    ]
     active_batches = db.query(ImportBatch).filter(ImportBatch.id.in_(active_batch_ids)).all() if active_batch_ids else []
     import_progress_total = sum(batch.total_files for batch in active_batches)
     import_progress_completed = sum(batch.completed_files for batch in active_batches)
@@ -422,6 +453,7 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
         import_progress_failed=import_progress_failed,
         import_active_step=active_import_job.current_step if active_import_job else None,
         import_active_elapsed_seconds=active_elapsed_seconds,
+        import_active_cost_usd=active_import_cost_usd(db, active_import_job_ids),
         active_concordance_jobs=active_concordance_jobs,
         active_accessory_summary_jobs=active_accessory_summary_jobs,
         failed_jobs=failed_import_jobs + failed_concordance_jobs + failed_accessory_summary_jobs,
@@ -725,6 +757,18 @@ def get_document(
     return document_detail_out(document, db)
 
 
+@app.get("/api/documents/{document_id}/composition", response_model=DocumentCompositionOut)
+def get_document_composition(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    document = db.get(Document, document_id)
+    if not document or document.deleted_at:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document_composition_summary(db, document)
+
+
 @app.post("/api/documents/{document_id}/citation-refresh", response_model=ConcordanceRunOut)
 def refresh_document_citation(
     document_id: str,
@@ -993,6 +1037,14 @@ def patch_document(
         if getattr(document, key) != value:
             setattr(document, key, value)
             changed_fields.add(key)
+    if "apa_citation" in changed_fields:
+        document.apa_citation_source = "user"
+        document.apa_citation_model = None
+        changed_fields.update({"apa_citation_source", "apa_citation_model"})
+    if "apa_in_text_citation" in changed_fields:
+        document.apa_in_text_citation_source = "user"
+        document.apa_in_text_citation_model = None
+        changed_fields.update({"apa_in_text_citation_source", "apa_in_text_citation_model"})
     if tag_ids is not None:
         document.tags = db.query(Tag).filter(Tag.id.in_(tag_ids)).all() if tag_ids else []
         changed_fields.add("tags")
@@ -1041,9 +1093,31 @@ def patch_document(
                 changed_fields.add("attributes")
 
     citation_fields = {"title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"}
-    if changed_fields & citation_fields and "apa_citation" not in data:
-        document.apa_citation = format_apa_citation(document_metadata(document))
-        changed_fields.add("apa_citation")
+    if changed_fields & citation_fields:
+        citation_metadata = document_metadata(document)
+        citation_model = get_analysis_model(db, MODEL_APA_CITATION)
+        if "apa_citation" not in data and "apa_in_text_citation" not in data:
+            apply_document_citations(document, citation_metadata, model=citation_model, source="metadata")
+            changed_fields.update(
+                {
+                    "apa_citation",
+                    "apa_citation_model",
+                    "apa_citation_source",
+                    "apa_in_text_citation",
+                    "apa_in_text_citation_model",
+                    "apa_in_text_citation_source",
+                }
+            )
+        elif "apa_citation" not in data:
+            document.apa_citation = format_apa_citation(citation_metadata)
+            document.apa_citation_model = citation_model
+            document.apa_citation_source = "metadata"
+            changed_fields.update({"apa_citation", "apa_citation_model", "apa_citation_source"})
+        elif "apa_in_text_citation" not in data:
+            document.apa_in_text_citation = format_apa_in_text_citation(citation_metadata)
+            document.apa_in_text_citation_model = citation_model
+            document.apa_in_text_citation_source = "metadata"
+            changed_fields.update({"apa_in_text_citation", "apa_in_text_citation_model", "apa_in_text_citation_source"})
     if changed_fields:
         document.search_text = rebuild_document_search_text(document)
         db.flush()
@@ -1065,6 +1139,12 @@ def patch_document(
                     "after": after,
                 },
             )
+        )
+        record_manual_edit(
+            db,
+            document=document,
+            message="Manual correction",
+            metadata={"changed_fields": sorted(changed_fields)},
         )
     db.commit()
     db.refresh(document)
@@ -1184,6 +1264,7 @@ def reset_document_for_overwrite(db: Session, document: Document) -> None:
             metadata_snapshot={"before": document_correction_snapshot(document)},
         )
     )
+    db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).delete(synchronize_session=False)
     document.subtitle = None
     document.authors = []
     document.universities = []
@@ -1195,6 +1276,11 @@ def reset_document_for_overwrite(db: Session, document: Document) -> None:
     document.abstract = None
     document.rich_summary = None
     document.apa_citation = None
+    document.apa_citation_model = None
+    document.apa_citation_source = None
+    document.apa_in_text_citation = None
+    document.apa_in_text_citation_model = None
+    document.apa_in_text_citation_source = None
     document.citation_status = "needs_review"
     document.metadata_confidence = None
     document.search_text = None
@@ -1591,8 +1677,25 @@ def patch_citation_candidate(
                 setattr(document, field, value)
                 changed_fields.add(field)
         if candidate.citation_text:
-            document.apa_citation = decode_html_entities(candidate.citation_text)
-            changed_fields.add("apa_citation")
+            candidate_source = "crossref" if candidate.source == "crossref" else "model"
+            apply_document_citations(
+                document,
+                document_metadata(document),
+                reference_list=candidate.citation_text,
+                in_text=metadata.get("apa_in_text_citation"),
+                model=get_analysis_model(db, MODEL_APA_CITATION),
+                source=candidate_source,
+            )
+            changed_fields.update(
+                {
+                    "apa_citation",
+                    "apa_citation_model",
+                    "apa_citation_source",
+                    "apa_in_text_citation",
+                    "apa_in_text_citation_model",
+                    "apa_in_text_citation_source",
+                }
+            )
         document.citation_status = "verified"
         changed_fields.add("citation_status")
         candidate.status = "accepted"
@@ -1617,6 +1720,12 @@ def patch_citation_candidate(
                     "after": after,
                 },
             )
+        )
+        record_manual_edit(
+            db,
+            document=document,
+            message="Accepted citation candidate",
+            metadata={"candidate_id": candidate.id, "changed_fields": sorted(changed_fields)},
         )
     db.commit()
     db.refresh(candidate)

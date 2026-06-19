@@ -26,12 +26,13 @@ from app.services.analysis_models import (
     MODEL_PAGE_TEXT_NORMALIZATION,
     MODEL_SUMMARY,
 )
-from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
+from app.services.citations import decode_html_entities, merge_citation_metadata
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.figures import process_document_figures_from_storage
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.processing import (
+    apply_document_citations,
     document_metadata,
     fill_missing_document_metadata,
     get_or_create_tag,
@@ -73,8 +74,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="citation_refresh",
         label="Citation refresh",
-        version=3,
-        description="Regenerate APA citation text from DOI/Crossref evidence first, using compact GPT-5.5 APA fallback only for uncertain cases.",
+        version=4,
+        description="Regenerate APA reference-list and in-text citation text with model/provenance tracking.",
     ),
     CapabilityDefinition(
         key="summary_topics",
@@ -85,8 +86,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="figure_assets",
         label="Figure assets",
-        version=2,
-        description="Extract image and vector figure/chart/photo crops into durable storage with page geometry, labels, and captions.",
+        version=3,
+        description="Extract rendered image and vector figure/chart/photo crops into durable storage with page geometry, labels, and captions.",
     ),
     CapabilityDefinition(
         key="recommendations",
@@ -196,7 +197,14 @@ def documents_for_scope(db: Session, scope_type: str, scope_data: dict[str, Any]
         if not term:
             return []
         like = f"%{term}%"
-        query = query.filter(or_(Document.title.ilike(like), Document.search_text.ilike(like), Document.apa_citation.ilike(like)))
+        query = query.filter(
+            or_(
+                Document.title.ilike(like),
+                Document.search_text.ilike(like),
+                Document.apa_citation.ilike(like),
+                Document.apa_in_text_citation.ilike(like),
+            )
+        )
     elif scope_type == "saved_search":
         saved_search_id = scope_data.get("saved_search_id")
         if not saved_search_id:
@@ -208,7 +216,14 @@ def documents_for_scope(db: Session, scope_type: str, scope_data: dict[str, Any]
         filters = saved_search.filters or {}
         if term:
             like = f"%{term}%"
-            query = query.filter(or_(Document.title.ilike(like), Document.search_text.ilike(like), Document.apa_citation.ilike(like)))
+            query = query.filter(
+                or_(
+                    Document.title.ilike(like),
+                    Document.search_text.ilike(like),
+                    Document.apa_citation.ilike(like),
+                    Document.apa_in_text_citation.ilike(like),
+                )
+            )
         if filters.get("domain_id"):
             query = query.filter(Document.domains.any(Domain.id == filters["domain_id"]))
         if filters.get("tag_id"):
@@ -429,16 +444,17 @@ class ConcordanceProcessor:
                 evidence["crossref_filled_fields"] = sorted(set([*evidence.get("crossref_filled_fields", []), *filled_fields]))
         document.metadata_evidence = evidence
         metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
+        model_preferences = get_analysis_models(db)
+        citation_model = model_preferences[MODEL_APA_CITATION]
         if crossref:
-            document.apa_citation = format_apa_citation(metadata)
+            apply_document_citations(document, metadata, model=citation_model, source="crossref")
         else:
             ai = get_ai_service()
-            model_preferences = get_analysis_models(db)
             apa_candidate = ai.generate_apa_citation_candidate(
                 document.original_filename,
                 document.search_text or "",
                 metadata,
-                model=model_preferences[MODEL_APA_CITATION],
+                model=citation_model,
                 usage_context=self._usage_context(document, job, "citation_refresh"),
                 prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:apa",
             )
@@ -449,7 +465,14 @@ class ConcordanceProcessor:
                 **(apa_candidate.get("_openai") or {}),
             }
             document.metadata_evidence = evidence
-            document.apa_citation = decode_html_entities(apa_candidate.get("apa_citation")) or format_apa_citation(metadata)
+            apply_document_citations(
+                document,
+                metadata,
+                reference_list=apa_candidate.get("apa_citation"),
+                in_text=apa_candidate.get("apa_in_text_citation"),
+                model=(apa_candidate.get("_openai") or {}).get("model") or citation_model,
+                source="model",
+            )
         verified = enough_metadata_for_verified_citation(metadata) and bool(document.doi or crossref)
         document.citation_status = "verified" if verified else "needs_review"
         if verified:
@@ -479,7 +502,13 @@ class ConcordanceProcessor:
                         status="needs_review",
                     )
                 )
-        return {"verified": verified, "crossref_evidence": bool(crossref), "filled_fields": filled_fields}
+        return {
+            "verified": verified,
+            "crossref_evidence": bool(crossref),
+            "filled_fields": filled_fields,
+            "citation_model": document.apa_citation_model,
+            "citation_source": document.apa_citation_source,
+        }
 
     def _refresh_summary_topics(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
         ai = get_ai_service()

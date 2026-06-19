@@ -72,6 +72,15 @@ def run_migrations() -> None:
     config = Config(str(backend_dir / "alembic.ini"))
     config.set_main_option("script_location", str(backend_dir / "alembic"))
     config.set_main_option("sqlalchemy.url", settings.database_url)
+    if is_postgres():
+        with engine.connect() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(37370001)"))
+            try:
+                command.upgrade(config, "head")
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(37370001)"))
+                conn.commit()
+        return
     command.upgrade(config, "head")
 
 

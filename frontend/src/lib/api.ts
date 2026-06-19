@@ -11,6 +11,7 @@ import type {
   ConcordanceRun,
   Dashboard,
   DocumentDetail,
+  DocumentComposition,
   DocumentFilters,
   DocumentRecommendation,
   DocumentRecommendationDownload,
@@ -28,6 +29,7 @@ import type {
   Project,
   ProjectDetail,
   ProjectItem,
+  RuntimeLocation,
   SavedSearch,
   Tag,
   User,
@@ -51,6 +53,8 @@ export const api = {
     request<User>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   logout: () => request<{ status: string }>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/me"),
+  runtimeLocation: (browserHost: string) =>
+    request<RuntimeLocation>(`/api/runtime-location?browser_host=${encodeURIComponent(browserHost)}`),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
   openaiUsage: (period: OpenAIUsagePeriod = "all_time") => request<OpenAIUsage>(`/api/openai/usage?period=${period}`),
@@ -103,6 +107,7 @@ export const api = {
     return request<DocumentSummary[]>(`/api/documents${suffix ? `?${suffix}` : ""}`);
   },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),
+  documentComposition: (id: string) => request<DocumentComposition>(`/api/documents/${id}/composition`),
   updateDocument: (id: string, body: DocumentUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   refreshDocumentCitation: (id: string) =>

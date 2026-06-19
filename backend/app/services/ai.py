@@ -6,8 +6,11 @@ import signal
 import threading
 import json
 import re
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from app.config import get_settings
@@ -21,6 +24,7 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
     default_analysis_models,
+    is_google_text_model,
 )
 from app.services.extraction import normalize_extracted_text
 from app.services.openai_usage import OpenAIUsageContext, record_openai_usage
@@ -111,11 +115,12 @@ APA_CITATION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "apa_citation": {"type": ["string", "null"]},
+        "apa_in_text_citation": {"type": ["string", "null"]},
         "citation_warnings": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "number"},
         "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["apa_citation", "citation_warnings", "confidence", "needs_review_reasons"],
+    "required": ["apa_citation", "apa_in_text_citation", "citation_warnings", "confidence", "needs_review_reasons"],
 }
 
 KEYWORDS_TOPICS_SCHEMA: dict[str, Any] = {
@@ -152,8 +157,8 @@ CORE_DOCUMENT_INTELLIGENCE_PROMPT = (
     "as concise Markdown with a short opening paragraph plus 3-5 labeled bullets for methods, findings, usefulness, "
     "and caveats when supported by the document. Do not start rich_summary with a standalone heading such as Summary, "
     "Overview, Abstract, Synopsis, or similar; begin with the semantic substance of the summary itself. Third, generate "
-    "an APA 7 citation candidate as Markdown-compatible text with "
-    "italicized publication titles where APA requires italics; return null or warnings when exact fields are uncertain. "
+    "an APA 7 reference-list citation candidate and matching parenthetical in-text citation as Markdown-compatible text "
+    "with italicized publication titles where APA requires italics; return null or warnings when exact fields are uncertain. "
     "Fourth, extract concise topic tags and keywords useful for organizing and searching the scholarly document. "
     "Do not invent claims or bibliographic fields beyond the supplied context; leave uncertain fields null/empty and "
     "explain ambiguity in the relevant review reasons or citation warnings."
@@ -162,9 +167,10 @@ CORE_DOCUMENT_INTELLIGENCE_PROMPT = (
 APA_CITATION_JUDGMENT_PROMPT = (
     "Generate and check an APA 7 citation candidate from the supplied citation metadata, matching evidence, "
     "and short document excerpts. Use only the supplied evidence. Prefer DOI-backed or publisher metadata when "
-    "present. If the evidence is insufficient or internally conflicting, return null for apa_citation and explain "
-    "the uncertainty in citation_warnings. Do not invent authors, year, venue, DOI, volume, issue, pages, or URLs. "
-    "Use Markdown-compatible italics where APA requires italicized publication elements."
+    "present. Return apa_citation as the reference-list entry and apa_in_text_citation as the matching parenthetical "
+    "in-text citation. If the evidence is insufficient or internally conflicting, return null for uncertain citation "
+    "fields and explain the uncertainty in citation_warnings. Do not invent authors, year, venue, DOI, volume, issue, "
+    "pages, or URLs. Use Markdown-compatible italics where APA requires italicized publication elements."
 )
 
 PAGE_TEXT_NORMALIZATION_SCHEMA: dict[str, Any] = {
@@ -201,6 +207,37 @@ ACCESSORY_SUMMARY_PROMPT = (
 
 class OpenAIHardTimeoutError(TimeoutError):
     pass
+
+
+def _read_env_file_value(path: Path, key: str) -> str | None:
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        candidate_key, value = stripped.split("=", 1)
+        if candidate_key.strip() != key:
+            continue
+        normalized = value.strip().strip('"').strip("'")
+        return normalized or None
+    return None
+
+
+def _load_gemini_api_key(settings: Any) -> str | None:
+    if settings.gemini_api_key:
+        return settings.gemini_api_key
+    candidates = [
+        settings.data_dir / "secrets" / "gemini.env",
+        Path("data/secrets/gemini.env"),
+    ]
+    for path in candidates:
+        value = _read_env_file_value(path, "GEMINI_API_KEY")
+        if value:
+            return value
+    return None
 
 
 _EMAIL_RE = re.compile(r"([A-Z0-9._%+\-]+)@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
@@ -288,6 +325,7 @@ class AiService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = None
+        self.gemini_api_key = _load_gemini_api_key(self.settings)
         if self.settings.openai_api_key:
             from openai import OpenAI
 
@@ -295,6 +333,34 @@ class AiService:
                 api_key=self.settings.openai_api_key,
                 timeout=self.settings.openai_request_timeout_seconds,
             )
+
+    def _can_call_text_model(self, model: str | None) -> bool:
+        if is_google_text_model(model):
+            return bool(self.gemini_api_key)
+        return bool(self.client)
+
+    @staticmethod
+    def _metadata_unconfigured_fallback(filename: str) -> dict[str, Any]:
+        title = Path(filename).stem.replace("_", " ").replace("-", " ").strip() or "Untitled document"
+        return {
+            "title": title,
+            "subtitle": None,
+            "authors": [],
+            "universities": [],
+            "publication_year": None,
+            "journal": None,
+            "publisher": None,
+            "doi": None,
+            "abstract": None,
+            "rich_summary": "Metadata extraction is pending. Configure an AI model provider to generate a scientific summary.",
+            "apa_citation": None,
+            "apa_in_text_citation": None,
+            "citation_warnings": ["AI metadata extraction is not configured for the selected models."],
+            "topics": [],
+            "keywords": [],
+            "confidence": 0.2,
+            "needs_review_reasons": ["AI metadata extraction is not configured for the selected models."],
+        }
 
     def extract_metadata(
         self,
@@ -306,28 +372,14 @@ class AiService:
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
-        if not self.client:
-            title = Path(filename).stem.replace("_", " ").replace("-", " ").strip() or "Untitled document"
-            return {
-                "title": title,
-                "subtitle": None,
-                "authors": [],
-                "universities": [],
-                "publication_year": None,
-                "journal": None,
-                "publisher": None,
-                "doi": None,
-                "abstract": None,
-                "rich_summary": "Metadata extraction is pending. Add an OpenAI API key to generate a scientific summary.",
-                "apa_citation": None,
-                "citation_warnings": ["OpenAI metadata extraction is not configured."],
-                "topics": [],
-                "keywords": [],
-                "confidence": 0.2,
-                "needs_review_reasons": ["OpenAI metadata extraction is not configured."],
-            }
-
         models = {**default_analysis_models(), **(models or {})}
+        required_models = (
+            (models[MODEL_METADATA],)
+            if self.settings.openai_combine_document_intelligence
+            else (models[MODEL_METADATA], models[MODEL_SUMMARY], models[MODEL_KEYWORDS_TOPICS])
+        )
+        if not all(self._can_call_text_model(model) for model in required_models):
+            return self._metadata_unconfigured_fallback(filename)
         input_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
             filename,
             text,
@@ -461,6 +513,7 @@ class AiService:
             summary,
             {
                 "apa_citation": None,
+                "apa_in_text_citation": None,
                 "citation_warnings": [],
                 "confidence": identity.get("confidence"),
                 "needs_review_reasons": [],
@@ -606,6 +659,7 @@ class AiService:
             **identity,
             "rich_summary": strip_standalone_summary_heading(summary.get("rich_summary")),
             "apa_citation": citation.get("apa_citation"),
+            "apa_in_text_citation": citation.get("apa_in_text_citation"),
             "citation_warnings": citation.get("citation_warnings") or [],
             "topics": keywords.get("topics") or [],
             "keywords": keywords.get("keywords") or [],
@@ -670,14 +724,15 @@ class AiService:
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
-        if not self.client:
+        selected_model = model or default_analysis_models()[MODEL_APA_CITATION]
+        if not self._can_call_text_model(selected_model):
             return {
                 "apa_citation": None,
-                "citation_warnings": ["OpenAI APA citation matching is not configured."],
+                "apa_in_text_citation": None,
+                "citation_warnings": ["AI APA citation matching is not configured for the selected model."],
                 "confidence": 0.0,
-                "needs_review_reasons": ["OpenAI APA citation matching is not configured."],
+                "needs_review_reasons": ["AI APA citation matching is not configured for the selected model."],
             }
-        selected_model = model or default_analysis_models()[MODEL_APA_CITATION]
         evidence_text = self._citation_evidence_text(text)
         input_text = (
             f"Filename: {filename}\n\n"
@@ -721,9 +776,9 @@ class AiService:
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
-        if not self.client:
-            raise RuntimeError("OpenAI accessory summaries are not configured.")
         selected_model = model or default_analysis_models()[MODEL_ACCESSORY_SUMMARIES]
+        if not self._can_call_text_model(selected_model):
+            raise RuntimeError("AI accessory summaries are not configured for the selected model.")
         document_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
             filename,
             text,
@@ -770,6 +825,22 @@ class AiService:
         used_pdf_file: bool = False,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
+        if is_google_text_model(model):
+            return self._gemini_json(
+                model=model,
+                schema_name=schema_name,
+                schema=schema,
+                prompt=prompt,
+                input_content=input_content,
+                timeout=timeout,
+                usage_context=usage_context,
+                task_key=task_key,
+                input_text_characters=input_text_characters,
+                input_file_bytes=input_file_bytes,
+                used_pdf_file=used_pdf_file,
+            )
+        if not self.client:
+            raise RuntimeError("OpenAI is not configured for the selected model.")
         response = None
         cache_key = self._normalize_prompt_cache_key(prompt_cache_key)
         cache_retention = self._normalize_prompt_cache_retention(self.settings.openai_prompt_cache_retention)
@@ -826,6 +897,151 @@ class AiService:
                 used_pdf_file=used_pdf_file,
             )
             raise
+
+    def _gemini_json(
+        self,
+        *,
+        model: str,
+        schema_name: str,
+        schema: dict[str, Any],
+        prompt: str,
+        input_content: list[dict[str, Any]],
+        timeout: float,
+        usage_context: OpenAIUsageContext | None = None,
+        task_key: str | None = None,
+        input_text_characters: int = 0,
+        input_file_bytes: int = 0,
+        used_pdf_file: bool = False,
+    ) -> dict[str, Any]:
+        if not self.gemini_api_key:
+            raise RuntimeError("Gemini API key is not configured.")
+        response = None
+        try:
+            response = self._gemini_generate_content(
+                model=model,
+                schema=schema,
+                prompt=prompt,
+                input_text=self._gemini_input_text(input_content),
+                timeout=timeout,
+            )
+            output_text = self._gemini_output_text(response)
+            payload = json.loads(self._strip_json_code_fence(output_text))
+            record_openai_usage(
+                usage_context,
+                task_key=task_key or schema_name,
+                operation=schema_name,
+                endpoint="generateContent",
+                model=model,
+                provider="google",
+                status="success",
+                response=self._gemini_usage_response(response, output_text),
+                input_text_characters=input_text_characters,
+                input_file_bytes=0,
+                used_pdf_file=False,
+            )
+            return payload
+        except Exception as exc:
+            record_openai_usage(
+                usage_context,
+                task_key=task_key or schema_name,
+                operation=schema_name,
+                endpoint="generateContent",
+                model=model,
+                provider="google",
+                status="failed",
+                response=self._gemini_usage_response(response, "") if response else None,
+                error=exc,
+                input_text_characters=input_text_characters,
+                input_file_bytes=0,
+                used_pdf_file=False,
+            )
+            raise
+
+    def _gemini_generate_content(
+        self,
+        *,
+        model: str,
+        schema: dict[str, Any],
+        prompt: str,
+        input_text: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body = {
+            "systemInstruction": {"parts": [{"text": prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": input_text}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": schema,
+            },
+        }
+        data = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.gemini_api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Gemini request failed with HTTP {exc.code}: {error_body[:800]}") from exc
+
+    @staticmethod
+    def _gemini_input_text(input_content: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        skipped_files = 0
+        for item in input_content:
+            if item.get("type") == "input_text":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+            elif item.get("type") == "input_file":
+                skipped_files += 1
+        if skipped_files:
+            parts.insert(0, "Original PDF file context was not attached to this Gemini request; use the extracted text below.")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _gemini_output_text(response: dict[str, Any] | None) -> str:
+        if not isinstance(response, dict):
+            return ""
+        candidates = response.get("candidates") or []
+        if not candidates:
+            return ""
+        content = candidates[0].get("content") or {}
+        parts = content.get("parts") or []
+        return "".join(part.get("text") or "" for part in parts if isinstance(part, dict))
+
+    @staticmethod
+    def _strip_json_code_fence(text: str) -> str:
+        normalized = text.strip()
+        if normalized.startswith("```"):
+            normalized = re.sub(r"^```(?:json)?\s*", "", normalized, flags=re.IGNORECASE)
+            normalized = re.sub(r"\s*```$", "", normalized)
+        return normalized
+
+    @staticmethod
+    def _gemini_usage_response(response: dict[str, Any] | None, output_text: str) -> SimpleNamespace:
+        usage = (response or {}).get("usageMetadata") or {}
+        prompt_tokens = int(usage.get("promptTokenCount") or 0)
+        output_tokens = int(usage.get("candidatesTokenCount") or 0)
+        total_tokens = int(usage.get("totalTokenCount") or prompt_tokens + output_tokens)
+        return SimpleNamespace(
+            id=(response or {}).get("responseId"),
+            output_text=output_text,
+            usage={
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "provider_usage": usage,
+            },
+        )
 
     @staticmethod
     def _unique_strings(values: list[Any]) -> list[str]:
@@ -904,12 +1120,13 @@ class AiService:
                 "confidence": 1.0,
                 "notes": [],
             }
-        if not self.client or not self.settings.openai_normalize_page_text:
+        selected_model = model or default_analysis_models()[MODEL_PAGE_TEXT_NORMALIZATION]
+        if not self.settings.openai_normalize_page_text or not self._can_call_text_model(selected_model):
             return {
                 "normalized_text": fallback,
                 "source": "local",
                 "confidence": 0.55,
-                "notes": ["OpenAI page text normalization is not configured."],
+                "notes": ["AI page text normalization is not configured for the selected model."],
             }
 
         sample = fallback[: self.settings.openai_text_normalization_page_max_chars]
@@ -919,55 +1136,30 @@ class AiService:
             pdf_bytes,
             page_number=page_number,
         )
-        selected_model = model or default_analysis_models()[MODEL_PAGE_TEXT_NORMALIZATION]
         page_usage_context = usage_context.for_page(page_number) if usage_context else None
         page_cache_key = None
         if usage_context and usage_context.document_id:
             page_cache_key = f"medusa-page:{usage_context.document_id}:{page_number}"
-        cache_key = self._normalize_prompt_cache_key(page_cache_key)
-        cache_retention = self._normalize_prompt_cache_retention(self.settings.openai_prompt_cache_retention)
-        cache_params: dict[str, Any] = {}
-        if cache_key:
-            cache_params["prompt_cache_key"] = cache_key
-        if cache_key and cache_retention:
-            cache_params["prompt_cache_retention"] = cache_retention
-        response = None
         try:
             with hard_timeout(self.settings.openai_page_normalization_timeout_seconds):
-                response = self.client.responses.create(
+                result = self._responses_json(
                     model=selected_model,
-                    input=[
-                        {"role": "system", "content": PAGE_TEXT_NORMALIZATION_PROMPT},
-                        {"role": "user", "content": input_content},
-                    ],
-                    text={
-                        "format": {
-                            "type": "json_schema",
-                            "name": "medusa_page_text_normalization",
-                            "schema": PAGE_TEXT_NORMALIZATION_SCHEMA,
-                            "strict": True,
-                        }
-                    },
+                    schema_name="medusa_page_text_normalization",
+                    schema=PAGE_TEXT_NORMALIZATION_SCHEMA,
+                    prompt=PAGE_TEXT_NORMALIZATION_PROMPT,
+                    input_content=input_content,
                     timeout=self.settings.openai_page_normalization_timeout_seconds,
-                    **cache_params,
+                    usage_context=page_usage_context,
+                    task_key=MODEL_PAGE_TEXT_NORMALIZATION,
+                    input_text_characters=input_text_characters,
+                    input_file_bytes=input_file_bytes,
+                    used_pdf_file=used_pdf_file,
+                    prompt_cache_key=page_cache_key,
                 )
-            result = json.loads(response.output_text)
-            record_openai_usage(
-                page_usage_context,
-                task_key=MODEL_PAGE_TEXT_NORMALIZATION,
-                operation="medusa_page_text_normalization",
-                endpoint="responses",
-                model=selected_model,
-                status="success",
-                response=response,
-                input_text_characters=input_text_characters,
-                input_file_bytes=input_file_bytes,
-                used_pdf_file=used_pdf_file,
-            )
             normalized = normalize_extracted_text(result.get("normalized_text") or fallback) or fallback
             return {
                 "normalized_text": normalized,
-                "source": "openai",
+                "source": "google" if is_google_text_model(selected_model) else "openai",
                 "confidence": result.get("confidence"),
                 "notes": result.get("notes") or [],
                 "_openai": {
@@ -977,19 +1169,6 @@ class AiService:
                 },
             }
         except Exception as exc:
-            record_openai_usage(
-                page_usage_context,
-                task_key=MODEL_PAGE_TEXT_NORMALIZATION,
-                operation="medusa_page_text_normalization",
-                endpoint="responses",
-                model=selected_model,
-                status="failed",
-                response=response,
-                error=exc,
-                input_text_characters=input_text_characters,
-                input_file_bytes=input_file_bytes,
-                used_pdf_file=used_pdf_file,
-            )
             return {
                 "normalized_text": fallback,
                 "source": "local_fallback",

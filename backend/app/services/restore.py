@@ -16,6 +16,7 @@ from app.models import (
     ConcordanceRun,
     Document,
     DocumentAccessorySummary,
+    DocumentCompositionRecord,
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
@@ -71,6 +72,7 @@ RESTORE_SECTIONS = [
     "import_batches",
     "import_jobs",
     "processing_events",
+    "document_composition_records",
     "concordance_runs",
     "concordance_jobs",
     "citation_candidates",
@@ -189,6 +191,7 @@ def restore_metadata_export(
         "projects": {},
         "import_batches": {},
         "import_jobs": {},
+        "openai_usage_records": {},
         "concordance_runs": {},
         "concordance_jobs": {},
     }
@@ -243,6 +246,12 @@ def restore_metadata_export(
         restored_counts["processing_events"], skipped_rows["processing_events"] = _restore_processing_events(
             db,
             _section(data, "processing_events"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["document_composition_records"], skipped_rows["document_composition_records"] = _restore_document_composition_records(
+            db,
+            _section(data, "document_composition_records"),
             id_maps,
             preserve_ids,
         )
@@ -631,6 +640,63 @@ def _restore_processing_events(
     return count, skipped
 
 
+def _restore_document_composition_records(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        document_id = id_maps["documents"].get(row.get("document_id"))
+        if not document_id:
+            skipped += 1
+            continue
+        import_job_id = id_maps["import_jobs"].get(row.get("import_job_id")) if row.get("import_job_id") else None
+        if row.get("import_job_id") and not import_job_id:
+            skipped += 1
+            continue
+        record = _get_existing(db, DocumentCompositionRecord, row.get("id"))
+        if not record:
+            record = DocumentCompositionRecord(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    document_id=document_id,
+                    sequence=row.get("sequence") or 0,
+                    record_kind=row.get("record_kind") or "local",
+                    stage_key=row.get("stage_key") or "restored",
+                    stage_label=row.get("stage_label") or "Restored",
+                    status=row.get("status") or "complete",
+                )
+            )
+            db.add(record)
+        record.document_id = document_id
+        record.import_job_id = import_job_id
+        record.usage_record_id = None
+        record.sequence = row.get("sequence") or 0
+        record.record_kind = row.get("record_kind") or "local"
+        record.stage_key = row.get("stage_key") or "restored"
+        record.stage_label = row.get("stage_label") or "Restored"
+        record.provider = row.get("provider")
+        record.method = row.get("method")
+        record.model = row.get("model")
+        record.status = row.get("status") or "complete"
+        record.amount_usd = row.get("amount_usd")
+        record.duration_ms = row.get("duration_ms")
+        record.input_tokens = row.get("input_tokens") or 0
+        record.output_tokens = row.get("output_tokens") or 0
+        record.total_tokens = row.get("total_tokens") or 0
+        record.started_at = _dt(row.get("started_at"))
+        record.completed_at = _dt(row.get("completed_at"))
+        record.message = row.get("message")
+        record.record_metadata = row.get("metadata") or {}
+        _apply_timestamps(record, row)
+        count += 1
+    return count, skipped
+
+
 def _restore_concordance_runs(
     db: Session,
     rows: list[dict[str, Any]],
@@ -753,6 +819,11 @@ def _assign_document_fields(document: Document, row: dict[str, Any]) -> None:
     document.abstract = row.get("abstract")
     document.rich_summary = row.get("rich_summary")
     document.apa_citation = row.get("apa_citation")
+    document.apa_citation_model = row.get("apa_citation_model")
+    document.apa_citation_source = row.get("apa_citation_source")
+    document.apa_in_text_citation = row.get("apa_in_text_citation")
+    document.apa_in_text_citation_model = row.get("apa_in_text_citation_model")
+    document.apa_in_text_citation_source = row.get("apa_in_text_citation_source")
     document.citation_status = row.get("citation_status") or "needs_review"
     document.metadata_confidence = row.get("metadata_confidence")
     document.metadata_evidence = row.get("metadata_evidence") or {}

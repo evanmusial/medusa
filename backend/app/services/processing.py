@@ -29,7 +29,14 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
-from app.services.citations import decode_html_entities, format_apa_citation, merge_citation_metadata
+from app.services.citations import decode_html_entities, format_apa_citation, format_apa_in_text_citation, merge_citation_metadata
+from app.services.composition import (
+    elapsed_ms,
+    record_import_erratum,
+    record_import_stage,
+    stage_timer,
+    sync_import_usage_composition,
+)
 from app.services.document_cache import (
     enforce_document_cache_budget,
     ensure_document_cache_file,
@@ -62,6 +69,22 @@ IMPORT_STEP_ORDER = {
     "cleaning_cache": 4,
     "complete": 5,
 }
+
+
+def composition_stage_key_for_job_step(step: str | None) -> str:
+    if not step:
+        return "raw_text_extraction"
+    if step.startswith("normalizing_page_") or step in {"stored", "extracting", "normalizing_pages", "extracted"}:
+        return "raw_text_extraction"
+    if step in {"extracting_figures", "figures"}:
+        return "figure_assets"
+    if step in {"enriching", "enriched"}:
+        return "summary_topics"
+    if step in {"indexing", "indexed"}:
+        return "text_chunk_encoding"
+    if step == "cleaning_cache":
+        return "cache_cleanup"
+    return step
 
 
 def job_step_at_least(job: ImportJob, step: str) -> bool:
@@ -123,6 +146,23 @@ def document_metadata(document: Document) -> dict[str, Any]:
         "doi": document.doi,
         "source_url": document.source_url,
     }
+
+
+def apply_document_citations(
+    document: Document,
+    metadata: dict[str, Any],
+    *,
+    reference_list: str | None = None,
+    in_text: str | None = None,
+    model: str | None,
+    source: str,
+) -> None:
+    document.apa_citation = decode_html_entities(reference_list) or format_apa_citation(metadata)
+    document.apa_in_text_citation = decode_html_entities(in_text) or format_apa_in_text_citation(metadata)
+    document.apa_citation_model = model
+    document.apa_in_text_citation_model = model
+    document.apa_citation_source = source
+    document.apa_in_text_citation_source = source
 
 
 def author_search_text(authors: list[dict[str, Any]] | None) -> str:
@@ -369,6 +409,7 @@ class DocumentProcessor:
             self._enrich(db, job, document)
             self._index(db, job, document)
             self._cleanup_processing_cache(db, job, document)
+            sync_import_usage_composition(db, document=document, job=job)
 
             job.current_step = "complete"
             job.status = "complete"
@@ -393,23 +434,38 @@ class DocumentProcessor:
             batch = db.get(ImportBatch, job.batch_id)
             if batch:
                 refresh_import_batch_progress(db, batch)
+            if document:
+                sync_import_usage_composition(db, document=document, job=job)
+                record_import_erratum(
+                    db,
+                    document=document,
+                    job=job,
+                    stage_key=composition_stage_key_for_job_step(job.current_step),
+                    message=str(exc),
+                    metadata={"current_step": job.current_step, "attempts": job.attempts},
+                )
             log_event(db, job=job, document=document, event_type="failed", message=str(exc), level="error")
             db.commit()
 
     def _extract(self, db: Session, job: ImportJob, document: Document) -> None:
         if job_step_at_least(job, "extracted"):
             return
+        started_at, started_perf = stage_timer()
         resume_normalization = (job.current_step == "normalizing_pages" or is_page_normalization_step(job.current_step)) and bool(
             document.pages
         )
+        raw_text_extractor = get_analysis_model(db, MODEL_RAW_TEXT_EXTRACTION)
+        actual_extractor = "persisted_pages"
+        fallback_reason = None
         if not resume_normalization:
             local_path = ensure_document_cache_file(db, document, source="import_retry")
             if not local_path or not local_path.exists():
                 raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
 
-            raw_text_extractor = get_analysis_model(db, MODEL_RAW_TEXT_EXTRACTION)
             checkpoint_job_step(db, job, document, "extracting", f"Extracting PDF text with {raw_text_extractor}.")
             extracted = extract_pdf_text(local_path, extractor=raw_text_extractor)
+            actual_extractor = extracted.source
+            fallback_reason = extracted.fallback_reason
             if extracted.fallback_reason:
                 log_event(
                     db,
@@ -467,12 +523,30 @@ class DocumentProcessor:
         document.metadata_evidence = {
             **(document.metadata_evidence or {}),
             "raw_text_extraction": {
-                "selected_extractor": get_analysis_model(db, MODEL_RAW_TEXT_EXTRACTION),
-                "actual_extractor": extracted.source if not resume_normalization else "persisted_pages",
-                "fallback_reason": extracted.fallback_reason if not resume_normalization else None,
+                "selected_extractor": raw_text_extractor,
+                "actual_extractor": actual_extractor,
+                "fallback_reason": fallback_reason,
             },
             "page_text_normalization": normalization_summary,
         }
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="raw_text_extraction",
+            label="Text extraction and page normalization",
+            method=actual_extractor,
+            model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
+            started_at=started_at,
+            duration_ms=elapsed_ms(started_perf),
+            metadata={
+                "selected_extractor": raw_text_extractor,
+                "actual_extractor": actual_extractor,
+                "fallback_reason": fallback_reason,
+                "page_text_normalization": normalization_summary,
+            },
+        )
+        sync_import_usage_composition(db, document=document, job=job)
         job.current_step = "extracted"
         log_event(
             db,
@@ -491,11 +565,23 @@ class DocumentProcessor:
     def _extract_figures(self, db: Session, job: ImportJob, document: Document) -> None:
         if job_step_at_least(job, "figures"):
             return
+        started_at, started_perf = stage_timer()
         local_path = ensure_document_cache_file(db, document, source="figure_extraction")
         if not local_path or not local_path.exists():
             raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
         checkpoint_job_step(db, job, document, "extracting_figures", "Extracting embedded figures.")
         result = process_document_figures(db, document, local_path)
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="figure_assets",
+            label="Figure extraction",
+            method="pymupdf",
+            started_at=started_at,
+            duration_ms=elapsed_ms(started_perf),
+            metadata=result,
+        )
         job.current_step = "figures"
         log_event(
             db,
@@ -510,6 +596,7 @@ class DocumentProcessor:
     def _enrich(self, db: Session, job: ImportJob, document: Document) -> None:
         if job_step_at_least(job, "enriched"):
             return
+        started_at, started_perf = stage_timer()
         checkpoint_job_step(db, job, document, "enriching", "Enriching metadata, citation, summary, and topics.")
         ai = get_ai_service()
         local_path = ensure_document_cache_file(db, document, source="metadata_enrichment")
@@ -567,14 +654,15 @@ class DocumentProcessor:
                 document.metadata_evidence["crossref_filled_fields"] = filled_fields
 
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
+        citation_model = model_preferences[MODEL_APA_CITATION]
         if crossref:
-            document.apa_citation = format_apa_citation(citation_metadata)
+            apply_document_citations(document, citation_metadata, model=citation_model, source="crossref")
         else:
             apa_candidate = ai.generate_apa_citation_candidate(
                 document.original_filename,
                 document.search_text or "",
                 citation_metadata,
-                model=model_preferences[MODEL_APA_CITATION],
+                model=citation_model,
                 usage_context=OpenAIUsageContext(
                     document_id=document.id,
                     import_job_id=job.id,
@@ -589,7 +677,14 @@ class DocumentProcessor:
                 "needs_review_reasons": apa_candidate.get("needs_review_reasons") or [],
                 **(apa_candidate.get("_openai") or {}),
             }
-            document.apa_citation = decode_html_entities(apa_candidate.get("apa_citation")) or format_apa_citation(citation_metadata)
+            apply_document_citations(
+                document,
+                citation_metadata,
+                reference_list=apa_candidate.get("apa_citation"),
+                in_text=apa_candidate.get("apa_in_text_citation"),
+                model=(apa_candidate.get("_openai") or {}).get("model") or citation_model,
+                source="model",
+            )
         if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref):
             document.citation_status = "verified"
         else:
@@ -622,6 +717,28 @@ class DocumentProcessor:
                 metadata_snapshot=citation_metadata,
             )
         )
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="summary_topics",
+            label="Metadata, summary, citation, and topics",
+            provider="local",
+            method="routed_document_intelligence",
+            started_at=started_at,
+            duration_ms=elapsed_ms(started_perf),
+            metadata={
+                "models": {
+                    MODEL_METADATA: model_preferences[MODEL_METADATA],
+                    MODEL_SUMMARY: model_preferences[MODEL_SUMMARY],
+                    MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
+                    MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
+                },
+                "citation_status": document.citation_status,
+                "crossref_used": bool(crossref),
+            },
+        )
+        sync_import_usage_composition(db, document=document, job=job)
         job.current_step = "enriched"
         log_event(db, job=job, document=document, event_type="enriched", message="Metadata enrichment complete.")
         db.commit()
@@ -629,6 +746,7 @@ class DocumentProcessor:
     def _index(self, db: Session, job: ImportJob, document: Document) -> None:
         if job_step_at_least(job, "indexed"):
             return
+        started_at, started_perf = stage_timer()
         checkpoint_job_step(db, job, document, "indexing", "Indexing searchable text and embeddings.")
         ai = get_ai_service()
         encoding_model = get_analysis_model(db, MODEL_TEXT_CHUNK_ENCODING)
@@ -675,16 +793,53 @@ class DocumentProcessor:
         if embedding_errors:
             evidence["text_chunk_encoding"]["errors"] = embedding_errors[:3]
         document.metadata_evidence = evidence
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="text_chunk_encoding",
+            label="Search index and embeddings",
+            method="embedding_index",
+            model=encoding_model,
+            started_at=started_at,
+            duration_ms=elapsed_ms(started_perf),
+            metadata=evidence["text_chunk_encoding"],
+            status="warning" if embedding_errors else "complete",
+            message="Embedding errors were recorded." if embedding_errors else None,
+        )
+        if embedding_errors:
+            record_import_erratum(
+                db,
+                document=document,
+                job=job,
+                stage_key="text_chunk_encoding",
+                message="; ".join(embedding_errors[:3]),
+                level="warning",
+                metadata={"model": encoding_model},
+            )
+        sync_import_usage_composition(db, document=document, job=job)
         job.current_step = "indexed"
         log_event(db, job=job, document=document, event_type="indexed", message="Search indexing complete.")
         db.commit()
 
     def _cleanup_processing_cache(self, db: Session, job: ImportJob, document: Document) -> None:
+        started_at, started_perf = stage_timer()
         checkpoint_job_step(db, job, document, "cleaning_cache", "Cleaning temporary processing cache.")
         evidence = dict(document.metadata_evidence or {})
         cache_path = evidence.get("local_cache_path") or evidence.get("document_cache_path")
         if not cache_path:
             summary = enforce_document_cache_budget(db, keep_document_id=document.id)
+            record_import_stage(
+                db,
+                document=document,
+                job=job,
+                stage_key="cache_cleanup",
+                label="Cache cleanup",
+                method="document_cache_budget",
+                started_at=started_at,
+                duration_ms=elapsed_ms(started_perf),
+                metadata=summary,
+            )
             log_event(
                 db,
                 job=job,
@@ -701,6 +856,28 @@ class DocumentProcessor:
         except FileNotFoundError:
             resolved = path.absolute()
         if cache_root not in resolved.parents:
+            record_import_stage(
+                db,
+                document=document,
+                job=job,
+                stage_key="cache_cleanup",
+                label="Cache cleanup",
+                method="document_cache_budget",
+                status="warning",
+                started_at=started_at,
+                duration_ms=elapsed_ms(started_perf),
+                message="Processing cache path was outside the managed cache root.",
+                metadata={"path": str(path)},
+            )
+            record_import_erratum(
+                db,
+                document=document,
+                job=job,
+                stage_key="cache_cleanup",
+                message="Processing cache path was outside the managed cache root.",
+                level="warning",
+                metadata={"path": str(path)},
+            )
             log_event(
                 db,
                 job=job,
@@ -714,6 +891,17 @@ class DocumentProcessor:
         if path.exists():
             mark_processing_cache_retained(document, path)
         summary = enforce_document_cache_budget(db, keep_document_id=document.id)
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="cache_cleanup",
+            label="Cache cleanup",
+            method="document_cache_budget",
+            started_at=started_at,
+            duration_ms=elapsed_ms(started_perf),
+            metadata=summary,
+        )
         log_event(
             db,
             job=job,

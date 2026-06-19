@@ -26,6 +26,14 @@ class UserOut(ApiModel):
     display_name: str
 
 
+class RuntimeLocationOut(BaseModel):
+    app_name: str
+    expansion: str
+    network_context: str
+    ipv4: str | None = None
+    title: str
+
+
 class DomainCreate(BaseModel):
     name: str
     parent_id: str | None = None
@@ -224,6 +232,11 @@ class DocumentSummary(ApiModel):
     doi: str | None = None
     rich_summary: str | None = None
     apa_citation: str | None = None
+    apa_citation_model: str | None = None
+    apa_citation_source: str | None = None
+    apa_in_text_citation: str | None = None
+    apa_in_text_citation_model: str | None = None
+    apa_in_text_citation_source: str | None = None
     citation_status: str
     metadata_confidence: float | None = None
     original_filename: str
@@ -237,7 +250,7 @@ class DocumentSummary(ApiModel):
     tags: list[TagOut] = Field(default_factory=list)
     domains: list[DomainOut] = Field(default_factory=list)
 
-    @field_validator("title", "journal", "rich_summary", "apa_citation", mode="before")
+    @field_validator("title", "journal", "rich_summary", "apa_citation", "apa_in_text_citation", mode="before")
     @classmethod
     def decode_text_fields(cls, value: Any) -> Any:
         return decode_html_entity_text(value)
@@ -369,6 +382,7 @@ class DocumentPatch(BaseModel):
     abstract: str | None = None
     rich_summary: str | None = None
     apa_citation: str | None = None
+    apa_in_text_citation: str | None = None
     citation_status: str | None = None
     read_status: str | None = None
     priority: str | None = None
@@ -415,6 +429,38 @@ class ProcessingEventOut(ApiModel):
     message: str
     payload: dict[str, Any]
     created_at: datetime
+
+
+class DocumentCompositionEntryOut(BaseModel):
+    label: str | None = None
+    stage_key: str | None = None
+    stage_label: str | None = None
+    provider: str | None = None
+    method: str | None = None
+    model: str | None = None
+    record_kind: str | None = None
+    status: str | None = None
+    message: str | None = None
+    amount_usd: float = 0.0
+    duration_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    call_count: int = 0
+    sequence: int | None = None
+    created_at: datetime | None = None
+
+
+class DocumentCompositionOut(BaseModel):
+    document_id: str
+    available: bool
+    total_estimated_cost_usd: float = 0.0
+    total_duration_seconds: int = 0
+    cost_entries: list[DocumentCompositionEntryOut] = Field(default_factory=list)
+    provider_breakdown: list[DocumentCompositionEntryOut] = Field(default_factory=list)
+    local_duration_entries: list[DocumentCompositionEntryOut] = Field(default_factory=list)
+    pipeline: list[DocumentCompositionEntryOut] = Field(default_factory=list)
+    errata: list[DocumentCompositionEntryOut] = Field(default_factory=list)
 
 
 class NoteCreate(BaseModel):
@@ -484,6 +530,7 @@ class DashboardOut(BaseModel):
     import_progress_failed: int
     import_active_step: str | None = None
     import_active_elapsed_seconds: int | None = None
+    import_active_cost_usd: float = 0.0
     active_concordance_jobs: int
     active_accessory_summary_jobs: int = 0
     failed_jobs: int
@@ -550,6 +597,8 @@ class OpenAIUsageTotalsOut(BaseModel):
 
 
 class OpenAIUsageGroupOut(BaseModel):
+    group_key: str | None = None
+    label: str | None = None
     request_count: int
     input_tokens: int
     cached_input_tokens: int
@@ -560,6 +609,9 @@ class OpenAIUsageGroupOut(BaseModel):
     failed_request_count: int
     task_key: str | None = None
     model: str | None = None
+    provider: str | None = None
+    document_id: str | None = None
+    calendar_start: datetime | None = None
     estimated_cost_usd: float
     priced_request_count: int
     unpriced_request_count: int
@@ -572,6 +624,7 @@ class OpenAIUsageRecentOut(BaseModel):
     source: str | None = None
     task_key: str
     operation: str
+    provider: str = "openai"
     model: str
     endpoint: str
     status: str
@@ -590,6 +643,7 @@ class OpenAIUsageRecentOut(BaseModel):
 class OpenAIUsagePricingOut(BaseModel):
     basis: str
     source_url: str
+    source_urls: dict[str, str] = Field(default_factory=dict)
     updated_at: str
 
 
@@ -598,6 +652,9 @@ class OpenAIUsageOut(BaseModel):
     summary: OpenAIUsageTotalsOut
     by_task: list[OpenAIUsageGroupOut]
     by_model: list[OpenAIUsageGroupOut]
+    by_document: list[OpenAIUsageGroupOut] = Field(default_factory=list)
+    by_calendar_day: list[OpenAIUsageGroupOut] = Field(default_factory=list)
+    by_calendar_hour: list[OpenAIUsageGroupOut] = Field(default_factory=list)
     recent: list[OpenAIUsageRecentOut]
     pricing: OpenAIUsagePricingOut
 

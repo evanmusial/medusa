@@ -37,6 +37,16 @@ def write_pdf_with_image(path):
     doc.close()
 
 
+def write_pdf_with_small_displayed_image(path):
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=400)
+    page.insert_text((48, 48), "Small figure fixture")
+    page.insert_image(fitz.Rect(120, 90, 192, 180), stream=png_bytes(width=300, height=375))
+    page.insert_text((86, 206), "Figure 3. Small displayed portrait.")
+    doc.save(path)
+    doc.close()
+
+
 def write_pdf_with_vector_chart(path):
     doc = fitz.open()
     page = doc.new_page(width=420, height=420)
@@ -75,6 +85,23 @@ def test_extract_pdf_figures_reads_embedded_images(tmp_path):
     assert figures[0].bbox
     assert figures[0].label == "Figure 1"
     assert figures[0].caption == "Figure 1. Fixture diagram."
+
+
+def test_extract_pdf_figures_prefers_rendered_small_displayed_images(tmp_path):
+    from app.services.extraction import extract_pdf_figures
+
+    path = tmp_path / "small-displayed-figure.pdf"
+    write_pdf_with_small_displayed_image(path)
+
+    figures = extract_pdf_figures(path, min_bytes=1)
+
+    assert len(figures) == 1
+    assert figures[0].source == "page_image"
+    assert figures[0].width >= 80
+    assert figures[0].height >= 80
+    assert figures[0].bbox
+    assert figures[0].label == "Figure 3"
+    assert figures[0].caption == "Figure 3. Small displayed portrait."
 
 
 def test_extract_pdf_figures_crops_vector_graphics(tmp_path):

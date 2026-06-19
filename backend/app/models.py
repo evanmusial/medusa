@@ -143,6 +143,41 @@ class OpenAIUsageRecord(Base, TimestampMixin):
     usage_metadata: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
 
 
+class DocumentCompositionRecord(Base, TimestampMixin):
+    __tablename__ = "document_composition_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    import_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("import_jobs.id", ondelete="SET NULL"), index=True)
+    usage_record_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("openai_usage_records.id", ondelete="SET NULL"),
+        unique=True,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    record_kind: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    stage_key: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    stage_label: Mapped[str] = mapped_column(String(180), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(80), index=True)
+    method: Mapped[str | None] = mapped_column(String(160))
+    model: Mapped[str | None] = mapped_column(String(160), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="complete", nullable=False, index=True)
+    amount_usd: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message: Mapped[str | None] = mapped_column(Text)
+    record_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    document: Mapped["Document"] = relationship(back_populates="composition_records")
+    import_job: Mapped["ImportJob | None"] = relationship(back_populates="composition_records")
+    usage_record: Mapped["OpenAIUsageRecord | None"] = relationship()
+
+
 class Domain(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "domains"
 
@@ -197,6 +232,11 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     abstract: Mapped[str | None] = mapped_column(Text)
     rich_summary: Mapped[str | None] = mapped_column(Text)
     apa_citation: Mapped[str | None] = mapped_column(Text)
+    apa_citation_model: Mapped[str | None] = mapped_column(String(160))
+    apa_citation_source: Mapped[str | None] = mapped_column(String(40))
+    apa_in_text_citation: Mapped[str | None] = mapped_column(Text)
+    apa_in_text_citation_model: Mapped[str | None] = mapped_column(String(160))
+    apa_in_text_citation_source: Mapped[str | None] = mapped_column(String(40))
     citation_status: Mapped[str] = mapped_column(String(40), default="needs_review", nullable=False, index=True)
     metadata_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     metadata_evidence: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
@@ -231,6 +271,11 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     notes: Mapped[list["Note"]] = relationship(back_populates="document")
     attributes: Mapped[list["DocumentAttributeValue"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     capabilities: Mapped[list["DocumentCapability"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    composition_records: Mapped[list["DocumentCompositionRecord"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentCompositionRecord.sequence, DocumentCompositionRecord.created_at, DocumentCompositionRecord.id",
+    )
     recommendations: Mapped[list["DocumentRecommendation"]] = relationship(
         back_populates="source_document",
         cascade="all, delete-orphan",
@@ -502,6 +547,7 @@ class ImportJob(Base, TimestampMixin):
     batch: Mapped[ImportBatch] = relationship(back_populates="jobs")
     document: Mapped[Document | None] = relationship()
     events: Mapped[list["ProcessingEvent"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    composition_records: Mapped[list["DocumentCompositionRecord"]] = relationship(back_populates="import_job")
 
     @property
     def document_title(self) -> str | None:

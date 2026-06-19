@@ -67,6 +67,51 @@ def test_patch_document_records_manual_correction(monkeypatch, tmp_path):
         assert "title" in versions[0].metadata_snapshot["changed_fields"]
 
 
+def test_patch_document_marks_inline_citation_edits_user_provided(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import patch_document
+    from app.models import Document, DocumentVersion
+    from app.schemas import DocumentPatch
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Citation Paper",
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            publication_year=1843,
+            original_filename="citation.pdf",
+            checksum_sha256="d" * 64,
+            apa_citation="Lovelace, A. (1843). Old.",
+            apa_citation_model="gpt-5.5",
+            apa_citation_source="model",
+            apa_in_text_citation="(Lovelace, 1843)",
+            apa_in_text_citation_model="gpt-5.5",
+            apa_in_text_citation_source="model",
+        )
+        db.add(document)
+        db.commit()
+
+        updated = patch_document(
+            document.id,
+            DocumentPatch(apa_in_text_citation="(A. Lovelace, 1843)"),
+            object(),
+            db,
+        )
+        version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+
+        assert updated.apa_in_text_citation == "(A. Lovelace, 1843)"
+        assert updated.apa_in_text_citation_source == "user"
+        assert updated.apa_in_text_citation_model is None
+        assert updated.apa_citation_model == "gpt-5.5"
+        assert version.metadata_snapshot["changed_fields"] == [
+            "apa_in_text_citation",
+            "apa_in_text_citation_model",
+            "apa_in_text_citation_source",
+        ]
+
+
 def test_create_document_note_updates_search_text(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -23,8 +23,8 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Evaluate alternate core document-intelligence providers and cheaper GPT models.
   - Acceptance: representative already-processed papers are compared side by side across the current routed GPT baseline, cheaper GPT options, Gemini, and Claude for metadata, summary, APA fallback, and keywords/topics; quality gaps, failure modes, latency, and recorded cost are documented before changing defaults.
 
-- [ ] Add provider abstraction and usage accounting for non-OpenAI routes.
-  - Acceptance: Gemini, Anthropic, and local-model calls can be configured without committing credentials; every cloud call records provider, endpoint, model, task, token/file context where available, status, latency, and errors; Budget distinguishes provider costs and marks unknown pricing explicitly.
+- [ ] Extend provider abstraction beyond OpenAI/Gemini.
+  - Acceptance: Anthropic and local-model calls can be configured without committing credentials; every cloud call records provider, endpoint, model, task, token/file context where available, status, latency, and errors; Budget distinguishes provider costs and marks unknown pricing explicitly.
 
 - [ ] Add discounted async processing for non-urgent Concordance refreshes.
   - Acceptance: large library refreshes can opt into discounted batch/flex-style provider modes where available, remain resumable through durable Concordance jobs, and clearly show delayed completion expectations before the run starts.
@@ -141,8 +141,11 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add GCS manifest validation.
   - Acceptance: Medusa can check that every stored URI in Postgres exists in GCS/local storage and report missing objects.
 
-- [x] Add OpenAI usage dashboard.
-  - Acceptance: Budget shows recorded OpenAI Responses/embeddings calls across last-day, last-month, last-3-month, and all-time windows, including success/failure counts, token totals, cached input tokens, conservative known-model cost estimates, unpriced-call counts, PDF/file context bytes, task/model rollups, and recent errors from the durable `OpenAIUsageRecord` ledger.
+- [x] Add AI usage dashboard.
+  - Acceptance: Budget shows recorded OpenAI Responses/embeddings calls and Gemini `generateContent` calls across last-day, last-month, last-3-month, and all-time windows, including success/failure counts, token totals, cached input tokens when available, conservative known-model cost estimates, unpriced-call counts, PDF/file context bytes, model/task/document/calendar-day/calendar-hour rollups, and recent errors from the durable `OpenAIUsageRecord` ledger.
+
+- [x] Add per-document Cost Composition and pipeline provenance.
+  - Acceptance: imports record local stage durations, synced LLM/embedding costs, provider/model/method details, errata, and manual edit markers in durable composition rows; Library exposes a Composition modal with a dollar pie chart, provider breakdown, local processing time, and left-to-right pipeline; active import progress shows known spend so far; older documents without rows report composition as not available.
 
 - [ ] Add OCR cost/status dashboard coverage.
   - Acceptance: Settings shows queued/completed/failed OCR work, page counts, provider status, and recent OCR errors once OCR processing is wired into imports/Concordance.

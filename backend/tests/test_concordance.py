@@ -243,5 +243,8 @@ def test_concordance_citation_refresh_fills_missing_fields_from_stored_crossref(
         assert "Axelrad, E. T." in (document.apa_citation or "")
         assert "(2013)" in (document.apa_citation or "")
         assert "https://doi.org/10.1109/spw.2013.35" in (document.apa_citation or "")
+        assert document.apa_in_text_citation == "(Axelrad et al., 2013)"
+        assert document.apa_citation_model == "gpt-5.5"
+        assert document.apa_in_text_citation_model == "gpt-5.5"
         db.refresh(stale_candidate)
         assert stale_candidate.status == "superseded"

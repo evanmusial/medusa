@@ -111,6 +111,13 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert raw_text_task["default_model"] == "marker"
         assert raw_text_task["option_groups"][0] == {"label": "Local", "options": ["docling", "marker", "pymupdf"]}
         assert raw_text_task["option_groups"][1]["label"] == "OpenAI"
+        assert raw_text_task["option_groups"][2]["label"] == "Google"
+        metadata_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_METADATA)
+        assert metadata_task["option_groups"][0]["label"] == "OpenAI"
+        assert metadata_task["option_groups"][1]["label"] == "Google"
+        assert "gemini-2.5-flash" in payload["model_options"]["google"]
+        assert all("preview" not in model for model in payload["model_options"]["google"])
+        assert all(not model.startswith("gemini-2.0-") for model in payload["model_options"]["google"])
         assert "gpt-4o" in payload["model_options"]["gpt"]
         assert "gpt-5.1" in payload["model_options"]["gpt"]
         assert "gpt-5.2-pro" in payload["model_options"]["gpt"]

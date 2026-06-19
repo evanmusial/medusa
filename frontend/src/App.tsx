@@ -27,6 +27,7 @@ import {
   ListChecks,
   LogOut,
   Moon,
+  PieChart,
   Plus,
   RefreshCw,
   Save,
@@ -50,6 +51,8 @@ import type {
   ConcordanceJob,
   ConcordanceRun,
   Dashboard,
+  DocumentComposition,
+  DocumentCompositionEntry,
   DocumentDetail,
   DocumentFilters,
   DocumentRecommendation,
@@ -74,7 +77,7 @@ import type {
 type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "budget" | "settings";
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
-type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
+type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number; quick?: boolean };
 type BackgroundJobStatus = "starting" | "queued" | "running" | "complete" | "failed";
 type BackgroundJob = {
   id: string;
@@ -109,8 +112,11 @@ const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
+const MEDUSA_APP_NAME = "medusa";
+const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "restored_paused"]);
 const ASYNC_ACTION_FEEDBACK_MS = 5000;
+const QUICK_SUCCESS_FEEDBACK_MS = 1200;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
@@ -119,7 +125,7 @@ const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> =
   { value: "all_time", label: "All time" },
 ];
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
-type BudgetGroupMode = "model" | "task";
+type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; align?: "end" }> = [
   { id: "library", label: "Library", icon: Library },
@@ -167,6 +173,25 @@ function recommendationProviderLabel(value: string) {
     .join(", ");
 }
 
+function citationText(document: DocumentDetail, kind: CitationKind) {
+  return kind === "reference" ? document.apa_citation || "" : document.apa_in_text_citation || "";
+}
+
+function citationModel(document: DocumentDetail, kind: CitationKind) {
+  return kind === "reference" ? document.apa_citation_model : document.apa_in_text_citation_model;
+}
+
+function citationSource(document: DocumentDetail, kind: CitationKind) {
+  return kind === "reference" ? document.apa_citation_source : document.apa_in_text_citation_source;
+}
+
+function citationProvenanceLabel(document: DocumentDetail, kind: CitationKind) {
+  if (citationSource(document, kind) === "user") return "user provided";
+  const model = citationModel(document, kind);
+  if (model) return model;
+  return citationText(document, kind) ? "gpt-5.5" : "not generated";
+}
+
 function formatNavCount(value: number | undefined) {
   if (value === undefined || !Number.isFinite(value)) return "";
   if (Math.abs(value) < 1000) return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
@@ -182,10 +207,12 @@ function actionFailureMessage(action: string, error: unknown) {
   return detail ? `${action}: ${detail}` : action;
 }
 
-function useAsyncActionFeedback() {
+function useAsyncActionFeedback(options: { successMs?: number; errorMs?: number } = {}) {
   const [feedback, setFeedback] = useState<AsyncActionFeedback | null>(null);
   const startTimerRef = useRef<number | null>(null);
   const clearTimerRef = useRef<number | null>(null);
+  const successMs = options.successMs ?? ASYNC_ACTION_FEEDBACK_MS;
+  const errorMs = options.errorMs ?? ASYNC_ACTION_FEEDBACK_MS;
 
   const clearTimers = useCallback(() => {
     if (startTimerRef.current !== null) window.clearTimeout(startTimerRef.current);
@@ -199,14 +226,15 @@ function useAsyncActionFeedback() {
       clearTimers();
       setFeedback(null);
       startTimerRef.current = window.setTimeout(() => {
-        setFeedback({ tone, message, token: Date.now() });
+        const durationMs = tone === "success" ? successMs : errorMs;
+        setFeedback({ tone, message, token: Date.now(), quick: tone === "success" && durationMs < ASYNC_ACTION_FEEDBACK_MS });
         clearTimerRef.current = window.setTimeout(() => {
           setFeedback(null);
           clearTimerRef.current = null;
-        }, ASYNC_ACTION_FEEDBACK_MS);
+        }, durationMs);
       }, 0);
     },
-    [clearTimers],
+    [clearTimers, errorMs, successMs],
   );
 
   useEffect(() => clearTimers, [clearTimers]);
@@ -269,7 +297,7 @@ function useAsyncActionFeedbackMap() {
 }
 
 function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | null, busy = false) {
-  return [className, busy ? "async-feedback-progress" : "", feedback ? `async-feedback-${feedback.tone}` : ""]
+  return [className, busy ? "async-feedback-progress" : "", feedback ? `async-feedback-${feedback.tone}` : "", feedback?.quick ? "async-feedback-quick" : ""]
     .filter(Boolean)
     .join(" ");
 }
@@ -407,8 +435,9 @@ function HeaderWorkProgress({
     activeClass = dashboard.import_running_jobs > 0 ? "running" : "queued";
     const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
     const activeElapsed = formatDuration(dashboard.import_active_elapsed_seconds);
+    const activeCost = dashboard.import_active_cost_usd > 0 ? ` - ${formatUsd(dashboard.import_active_cost_usd)}` : "";
     detail = activeStep
-      ? `${activeStep}${activeElapsed ? ` - ${activeElapsed}` : ""}`
+      ? `${activeStep}${activeElapsed ? ` - ${activeElapsed}` : ""}${activeCost}`
       : `${dashboard.import_running_jobs} importing / ${dashboard.import_queued_jobs} queued`;
   } else {
     const job = activeJobs[0];
@@ -554,6 +583,30 @@ function formatDuration(seconds?: number | null) {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function formatDurationMs(ms?: number | null) {
+  if (!ms) return "";
+  return formatDuration(ms / 1000);
+}
+
+const COMPOSITION_COLORS = ["#2563eb", "#14b8a6", "#f59e0b", "#8b5cf6", "#ef4444", "#64748b", "#22c55e"];
+
+function compositionLabel(entry: DocumentCompositionEntry) {
+  return entry.model || entry.method || entry.label || entry.stage_label || entry.provider || "Unknown";
+}
+
+function compositionPieGradient(entries: DocumentCompositionEntry[]) {
+  const total = entries.reduce((sum, entry) => sum + Math.max(0, entry.amount_usd || 0), 0);
+  if (!total) return "conic-gradient(var(--line) 0 100%)";
+  let cursor = 0;
+  const stops = entries.map((entry, index) => {
+    const start = cursor;
+    cursor += (Math.max(0, entry.amount_usd || 0) / total) * 100;
+    const color = COMPOSITION_COLORS[index % COMPOSITION_COLORS.length];
+    return `${color} ${start}% ${cursor}%`;
+  });
+  return `conic-gradient(${stops.join(", ")})`;
 }
 
 function importJobProgress(job: ImportJob) {
@@ -887,6 +940,23 @@ function ResizeHandle({
   );
 }
 
+function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; stacked?: boolean }) {
+  return (
+    <ViewportTooltip
+      ariaLabel={`${MEDUSA_APP_NAME}: ${MEDUSA_EXPANSION}`}
+      className={`${stacked ? "brand-stack" : "brand"} brand-tooltip`}
+      text={MEDUSA_EXPANSION}
+    >
+      <span className={`brand-mark${compact ? " compact" : ""}`}>
+        <img className="brand-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
+      </span>
+      <span className="brand-wordmark">
+        <strong className="brand-name">{MEDUSA_APP_NAME}</strong>
+      </span>
+    </ViewportTooltip>
+  );
+}
+
 function Login() {
   const [email, setEmail] = useState("admin@medusa.local");
   const [password, setPassword] = useState("medusa");
@@ -899,14 +969,7 @@ function Login() {
   return (
     <main className="login-page">
       <section className="login-panel">
-        <div className="brand-stack">
-          <div className="brand-mark">
-            <img className="brand-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
-          </div>
-          <div className="brand-wordmark">
-            <strong className="brand-name">medusa</strong>
-          </div>
-        </div>
+        <BrandLockup stacked />
         <form
           className="login-form"
           onSubmit={(event) => {
@@ -955,14 +1018,7 @@ function Header({
   return (
     <header className="topbar">
       <div className="topbar-brand-area">
-        <div className="brand">
-          <div className="brand-mark compact">
-            <img className="brand-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
-          </div>
-          <div className="brand-wordmark">
-            <strong className="brand-name">medusa</strong>
-          </div>
-        </div>
+        <BrandLockup compact />
       </div>
       <label className="global-search">
         <Search size={17} />
@@ -1625,6 +1681,7 @@ type DocumentDraft = {
 };
 
 type ReaderMode = "pdf" | "text";
+type CitationKind = "reference" | "in-text";
 
 function draftFromDocument(document: DocumentDetail): DocumentDraft {
   return {
@@ -1906,6 +1963,157 @@ function RecommendationsPanel({ document }: { document: DocumentDetail }) {
   );
 }
 
+function CompositionDialog({
+  composition,
+  document,
+  loading,
+  onClose,
+}: {
+  composition?: DocumentComposition;
+  document: DocumentDetail;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const available = Boolean(composition?.available);
+  const costEntries = composition?.cost_entries || [];
+  const providerEntries = composition?.provider_breakdown || [];
+  const localEntries = composition?.local_duration_entries || [];
+  const pipeline = composition?.pipeline || [];
+  const errata = composition?.errata || [];
+  const duration = formatDuration(composition?.total_duration_seconds);
+  return (
+    <div
+      className="modal-backdrop composition-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="composition-dialog" role="dialog" aria-modal="true" aria-labelledby="composition-title">
+        <div className="composition-head">
+          <div>
+            <span>Composition</span>
+            <h2 id="composition-title">{document.title}</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close composition">
+            <X size={18} />
+          </button>
+        </div>
+        {loading ? (
+          <div className="composition-empty">
+            <RefreshCw className="spin" size={22} />
+            <span>Loading composition</span>
+          </div>
+        ) : !available ? (
+          <div className="composition-empty">
+            <Info size={22} />
+            <strong>Cost composition not available</strong>
+            <span>This document was imported before composition tracking was available.</span>
+          </div>
+        ) : (
+          <>
+            <div className="composition-grid">
+              <section className="composition-chart-panel">
+                <div className="composition-section-title">
+                  <div>
+                    <h3>Cost Composition</h3>
+                    <span>{duration ? `${duration} processing` : "Processing time unavailable"}</span>
+                  </div>
+                  <strong>{formatUsd(composition?.total_estimated_cost_usd)}</strong>
+                </div>
+                <div className="composition-pie-wrap">
+                  <div className="composition-pie" style={{ background: compositionPieGradient(costEntries) }}>
+                    <span>{formatUsd(composition?.total_estimated_cost_usd)}</span>
+                  </div>
+                  <div className="composition-legend">
+                    {costEntries.length ? (
+                      costEntries.map((entry, index) => (
+                        <div key={`${entry.provider}-${entry.model}-${entry.stage_key}`} className="composition-legend-row">
+                          <i style={{ background: COMPOSITION_COLORS[index % COMPOSITION_COLORS.length] }} />
+                          <span>{compositionLabel(entry)}</span>
+                          <strong>{formatUsd(entry.amount_usd)}</strong>
+                        </div>
+                      ))
+                    ) : (
+                      <span>No dollar-cost model calls recorded.</span>
+                    )}
+                  </div>
+                </div>
+              </section>
+              <section className="composition-provider-panel">
+                <div className="composition-section-title">
+                  <h3>Provider Spend</h3>
+                </div>
+                {providerEntries.length ? (
+                  <div className="composition-provider-list">
+                    {providerEntries.map((entry) => (
+                      <div key={entry.provider || "unknown"} className="composition-provider-row">
+                        <span>{entry.provider}</span>
+                        <strong>{formatUsd(entry.amount_usd)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p>No provider spend recorded.</p>
+                )}
+              </section>
+            </div>
+            <section className="composition-section">
+              <div className="composition-section-title">
+                <h3>Local Time</h3>
+              </div>
+              <div className="composition-local-grid">
+                {localEntries.length ? (
+                  localEntries.map((entry) => (
+                    <div key={`${entry.stage_key}-${entry.method}`} className="composition-local-row">
+                      <span>{entry.stage_label}</span>
+                      <strong>{formatDurationMs(entry.duration_ms) || "0s"}</strong>
+                      <small>{entry.method || "local"}</small>
+                    </div>
+                  ))
+                ) : (
+                  <span>No local timing records.</span>
+                )}
+              </div>
+            </section>
+            <section className="composition-section">
+              <div className="composition-section-title">
+                <h3>Pipeline</h3>
+              </div>
+              <div className="composition-flow">
+                {pipeline.map((entry, index) => (
+                  <div className={`composition-flow-step ${entry.record_kind || ""}`} key={`${entry.stage_key}-${entry.provider}-${entry.model}-${index}`}>
+                    <span>{entry.stage_label || entry.label}</span>
+                    <strong>{compositionLabel(entry)}</strong>
+                    <small>
+                      {[entry.provider, entry.amount_usd > 0 ? formatUsd(entry.amount_usd) : "", formatDurationMs(entry.duration_ms)].filter(Boolean).join(" - ")}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            </section>
+            {errata.length ? (
+              <section className="composition-section">
+                <div className="composition-section-title">
+                  <h3>Errata</h3>
+                </div>
+                <div className="composition-errata-list">
+                  {errata.map((entry, index) => (
+                    <div key={`${entry.stage_key}-${index}`} className="composition-errata-row">
+                      <strong>{entry.stage_label || entry.label}</strong>
+                      <span>{entry.message || entry.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function DocumentPanelContent({
   citationJobs,
   document,
@@ -1934,6 +2142,7 @@ function DocumentPanelContent({
 
   const [editing, setEditing] = useState(false);
   const [recommendationsOpen, setRecommendationsOpen] = useState(false);
+  const [compositionOpen, setCompositionOpen] = useState(false);
   const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "text" : "pdf"));
   const [readerPageIndex, setReaderPageIndex] = useState(0);
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
@@ -1948,11 +2157,24 @@ function DocumentPanelContent({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [documentConcordanceRunId, setDocumentConcordanceRunId] = useState<string | null>(null);
   const [citationRunId, setCitationRunId] = useState<string | null>(null);
+  const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationKind | null>(null);
+  const [editingCitation, setEditingCitation] = useState<CitationKind | null>(null);
+  const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
+    reference: document.apa_citation || "",
+    "in-text": document.apa_in_text_citation || "",
+  });
+  const [citationEditError, setCitationEditError] = useState<string | null>(null);
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
-  const citationFeedback = useAsyncActionFeedback();
+  const referenceCitationFeedback = useAsyncActionFeedback({ successMs: QUICK_SUCCESS_FEEDBACK_MS });
+  const inTextCitationFeedback = useAsyncActionFeedback({ successMs: QUICK_SUCCESS_FEEDBACK_MS });
   const accessorySummaryFeedback = useAsyncActionFeedback();
+  const composition = useQuery({
+    queryKey: ["document-composition", document.id],
+    queryFn: () => api.documentComposition(document.id),
+    enabled: compositionOpen,
+  });
   const updateDocument = useMutation({
     mutationFn: (body: DocumentUpdatePayload) => api.updateDocument(document.id, body),
     onSuccess: () => {
@@ -1989,7 +2211,7 @@ function DocumentPanelContent({
     },
   });
   const refreshCitation = useMutation({
-    mutationFn: () =>
+    mutationFn: (target: CitationKind) =>
       startConcordanceRun({
         backgroundDetail: document.title,
         backgroundLabel: "Checking APA citation",
@@ -2001,9 +2223,11 @@ function DocumentPanelContent({
         scope_data: { document_ids: [document.id] },
         scope_type: "documents",
       }),
-    onSuccess: (run) => {
+    onSuccess: (run, target) => {
+      setCitationRefreshTarget(target);
+      const feedback = target === "reference" ? referenceCitationFeedback : inTextCitationFeedback;
       if (run.total_jobs > 0) setCitationRunId(run.id);
-      else citationFeedback.showSuccess();
+      else feedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
@@ -2011,10 +2235,24 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     },
-    onError: (error) => {
+    onError: (error, target) => {
       setCitationRunId(null);
-      citationFeedback.showError(actionFailureMessage("Could not start citation check", error));
+      setCitationRefreshTarget(null);
+      const feedback = target === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
+      feedback.showError(actionFailureMessage("Could not start citation check", error));
     },
+  });
+  const updateCitation = useMutation({
+    mutationFn: ({ kind, value }: { kind: CitationKind; value: string }) =>
+      api.updateDocument(document.id, kind === "reference" ? { apa_citation: value.trim() || null } : { apa_in_text_citation: value.trim() || null }),
+    onSuccess: () => {
+      setEditingCitation(null);
+      setCitationEditError(null);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setCitationEditError(actionFailureMessage("Could not save citation", error)),
   });
   const deleteAnnotation = useMutation({
     mutationFn: (annotationId: string) => api.deleteAnnotation(annotationId),
@@ -2053,6 +2291,7 @@ function DocumentPanelContent({
     setReaderPageIndex(0);
     setEditing(false);
     setRecommendationsOpen(false);
+    setCompositionOpen(false);
     setAccessoryComposerOpen(false);
     setAccessoryPrompt("");
     setAccessoryTitleDrafts({});
@@ -2060,14 +2299,24 @@ function DocumentPanelContent({
     setSaveError(null);
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
+    setCitationRefreshTarget(null);
+    setEditingCitation(null);
+    setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
+    setCitationEditError(null);
   }, [document.id]);
+
+  useEffect(() => {
+    if (editingCitation) return;
+    setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
+  }, [document.apa_citation, document.apa_in_text_citation, editingCitation]);
 
   useEffect(() => {
     setAccessoryModel(accessorySummaryDefaultModel);
   }, [accessorySummaryDefaultModel, document.id]);
 
-  const copyCitation = () => {
-    if (document.apa_citation) void copyToClipboard("citation", decodeHtmlEntities(document.apa_citation));
+  const copyCitation = (kind: CitationKind) => {
+    const text = citationText(document, kind);
+    if (text) void copyToClipboard(`citation-${kind}`, decodeHtmlEntities(text));
   };
   const pages = useMemo(
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
@@ -2140,19 +2389,29 @@ function DocumentPanelContent({
     if (!citationRunId || trackedCitationJobs.length === 0) return;
     if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedCitationJobs.find((job) => job.status === "failed");
+    const feedback = citationRefreshTarget === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
     if (failedJob) {
-      citationFeedback.showError(
+      feedback.showError(
         actionFailureMessage("Citation check failed", failedJob.last_error || "Concordance job failed without a detailed error"),
       );
     } else {
-      citationFeedback.showSuccess();
+      feedback.showSuccess();
     }
     setCitationRunId(null);
+    setCitationRefreshTarget(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     void queryClient.invalidateQueries({ queryKey: ["review"] });
     void queryClient.invalidateQueries({ queryKey: ["documents"] });
     void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
-  }, [citationFeedback.showError, citationFeedback.showSuccess, citationRunId, document.id, queryClient, trackedCitationJobs]);
+  }, [
+    citationRefreshTarget,
+    citationRunId,
+    document.id,
+    inTextCitationFeedback,
+    queryClient,
+    referenceCitationFeedback,
+    trackedCitationJobs,
+  ]);
 
   useEffect(() => {
     if (!trackedAccessorySummaryId || !trackedAccessorySummary) return;
@@ -2179,6 +2438,29 @@ function DocumentPanelContent({
   ]);
   const copyFullText = () => {
     if (fullText) void copyToClipboard("full-text", fullText);
+  };
+
+  const startCitationEdit = (kind: CitationKind) => {
+    setCitationDrafts((current) => ({ ...current, [kind]: citationText(document, kind) }));
+    setCitationEditError(null);
+    setEditingCitation(kind);
+  };
+
+  const cancelCitationEdit = () => {
+    setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
+    setCitationEditError(null);
+    setEditingCitation(null);
+  };
+
+  const saveCitationEdit = (kind: CitationKind) => {
+    updateCitation.mutate({ kind, value: citationDrafts[kind] || "" });
+  };
+
+  const citationFeedbackFor = (kind: CitationKind) => (kind === "reference" ? referenceCitationFeedback.feedback : inTextCitationFeedback.feedback);
+  const citationButtonBusy = (kind: CitationKind) => citationBusy && citationRefreshTarget === kind;
+  const checkCitation = (kind: CitationKind) => {
+    setCitationRefreshTarget(kind);
+    refreshCitation.mutate(kind);
   };
 
   const setDraftValue = <K extends keyof DocumentDraft>(key: K, value: DocumentDraft[K]) => {
@@ -2252,6 +2534,67 @@ function DocumentPanelContent({
   };
   const annotations = document.annotations || [];
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
+  const renderCitationSection = (kind: CitationKind, title: string, empty: string) => {
+    const text = citationText(document, kind);
+    const isEditing = editingCitation === kind;
+    const busy = citationButtonBusy(kind);
+    const feedback = citationFeedbackFor(kind);
+    return (
+      <section className="detail-section citation-section">
+        <h3>{title}</h3>
+        {isEditing ? (
+          <form
+            className="citation-editor"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveCitationEdit(kind);
+            }}
+          >
+            <textarea
+              aria-label={`${title} text`}
+              value={citationDrafts[kind]}
+              onChange={(event) => setCitationDrafts((current) => ({ ...current, [kind]: event.target.value }))}
+            />
+            <div className="citation-editor-actions">
+              <button className="primary-button compact" disabled={updateCitation.isPending} type="submit">
+                <Save size={14} />
+                Save
+              </button>
+              <button className="secondary-button compact" disabled={updateCitation.isPending} onClick={cancelCitationEdit} type="button">
+                <X size={14} />
+                Cancel
+              </button>
+            </div>
+            {citationEditError ? <p className="form-error">{citationEditError}</p> : null}
+          </form>
+        ) : (
+          <MarkdownBlock content={text} empty={empty} />
+        )}
+        <div className="citation-actions">
+          <button className="secondary-button" onClick={() => copyCitation(kind)} disabled={!text} type="button">
+            {copiedKey === `citation-${kind}` ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+            {copiedKey === `citation-${kind}` ? "Copied" : "Copy"}
+          </button>
+          <button className="secondary-button" onClick={() => startCitationEdit(kind)} disabled={updateCitation.isPending || isEditing} type="button">
+            <Edit3 size={15} />
+            Edit
+          </button>
+          <AsyncActionSlot busy={busy} feedback={feedback} label="Citation check in progress">
+            <button
+              className={asyncFeedbackClass("secondary-button", feedback, busy)}
+              onClick={() => checkCitation(kind)}
+              disabled={citationBusy}
+              type="button"
+            >
+              <RefreshCw className={busy ? "spin" : ""} size={15} />
+              {busy ? "Checking" : "Check"}
+            </button>
+          </AsyncActionSlot>
+          <span className="citation-model-label">{citationProvenanceLabel(document, kind)}</span>
+        </div>
+      </section>
+    );
+  };
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
@@ -2280,6 +2623,10 @@ function DocumentPanelContent({
             {documentConcordanceBusy ? "Concording" : "Concord"}
           </button>
         </AsyncActionSlot>
+        <button className="secondary-button" onClick={() => setCompositionOpen(true)} type="button">
+          <PieChart size={15} />
+          Composition
+        </button>
         {onOpenReader && !readerExpanded ? (
           <button className="secondary-button" onClick={onOpenReader} type="button">
             <BookOpen size={15} />
@@ -2307,6 +2654,14 @@ function DocumentPanelContent({
           Open original
         </a>
       </div>
+      {compositionOpen ? (
+        <CompositionDialog
+          composition={composition.data}
+          document={document}
+          loading={composition.isFetching && !composition.data}
+          onClose={() => setCompositionOpen(false)}
+        />
+      ) : null}
       <div className="reader-tabs" role="tablist" aria-label="Document reader">
         <button className={readerMode === "pdf" ? "selected" : ""} type="button" onClick={() => setReaderMode("pdf")}>
           <FileSearch size={15} />
@@ -2509,26 +2864,8 @@ function DocumentPanelContent({
           {saveError ? <p className="form-error">{saveError}</p> : null}
         </form>
       ) : null}
-      <section className="detail-section">
-        <h3>APA</h3>
-        <MarkdownBlock content={document.apa_citation} empty="Needs review." />
-        <div className="citation-actions">
-          <button className="secondary-button" onClick={copyCitation} disabled={!document.apa_citation}>
-            {copiedKey === "citation" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-            {copiedKey === "citation" ? "Copied" : "Copy"}
-          </button>
-          <AsyncActionSlot busy={citationBusy} feedback={citationFeedback.feedback} label="Citation check in progress">
-            <button
-              className={asyncFeedbackClass("secondary-button", citationFeedback.feedback, citationBusy)}
-              onClick={() => refreshCitation.mutate()}
-              disabled={citationBusy}
-            >
-              <RefreshCw className={citationBusy ? "spin" : ""} size={15} />
-              {citationBusy ? "Checking" : "Check"}
-            </button>
-          </AsyncActionSlot>
-        </div>
-      </section>
+      {renderCitationSection("reference", "APA Reference List", "Needs review.")}
+      {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
       {recommendationsOpen ? <RecommendationsPanel document={document} /> : null}
       <section className="detail-section">
         <h3>Summary</h3>
@@ -2566,6 +2903,7 @@ function DocumentPanelContent({
               <ModelSelect
                 defaultModel={accessorySummaryDefaultModel}
                 onChange={setAccessoryModel}
+                optionGroups={accessorySummaryTask?.option_groups}
                 options={accessoryModelOptions}
                 value={accessoryModel || accessorySummaryDefaultModel}
               />
@@ -3644,12 +3982,98 @@ function sameStringMap(left: Record<string, string>, right: Record<string, strin
   return true;
 }
 
+function ViewportTooltip({
+  ariaLabel,
+  children,
+  className = "",
+  text,
+}: {
+  ariaLabel?: string;
+  children: ReactNode;
+  className?: string;
+  text: string;
+}) {
+  const triggerRef = useRef<HTMLSpanElement | null>(null);
+  const tooltipRef = useRef<HTMLSpanElement | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0, placement: "above", ready: false });
+
+  const updatePosition = useCallback(() => {
+    if (!triggerRef.current || !tooltipRef.current) return;
+
+    const viewportMargin = 12;
+    const triggerRect = triggerRef.current.getBoundingClientRect();
+    const tooltipRect = tooltipRef.current.getBoundingClientRect();
+    const tooltipWidth = Math.min(tooltipRect.width, window.innerWidth - viewportMargin * 2);
+    const desiredLeft = triggerRect.left + triggerRect.width / 2 - tooltipWidth / 2;
+    const left = Math.min(
+      Math.max(desiredLeft, viewportMargin),
+      Math.max(viewportMargin, window.innerWidth - tooltipWidth - viewportMargin),
+    );
+    const gap = 8;
+    const aboveTop = triggerRect.top - tooltipRect.height - gap;
+    const belowTop = triggerRect.bottom + gap;
+    const fitsAbove = aboveTop >= viewportMargin;
+    const fitsBelow = belowTop + tooltipRect.height <= window.innerHeight - viewportMargin;
+    const placement = fitsAbove || !fitsBelow ? "above" : "below";
+    const rawTop = placement === "above" ? aboveTop : belowTop;
+    const maxTop = Math.max(viewportMargin, window.innerHeight - tooltipRect.height - viewportMargin);
+    const top = Math.min(Math.max(rawTop, viewportMargin), maxTop);
+
+    setPosition({ left, top, placement, ready: true });
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+
+    setPosition((current) => ({ ...current, ready: false }));
+    const frame = window.requestAnimationFrame(updatePosition);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [text, updatePosition, visible]);
+
+  return (
+    <span
+      aria-label={ariaLabel || text}
+      className={`viewport-tooltip-anchor ${className}`.trim()}
+      onBlur={() => setVisible(false)}
+      onClick={() => setVisible(true)}
+      onFocus={() => setVisible(true)}
+      onMouseEnter={() => setVisible(true)}
+      onMouseLeave={() => setVisible(false)}
+      onPointerEnter={() => setVisible(true)}
+      onPointerLeave={() => setVisible(false)}
+      ref={triggerRef}
+      tabIndex={0}
+    >
+      {children}
+      {visible ? (
+        <span
+          className="info-popover-tooltip"
+          data-placement={position.placement}
+          data-ready={position.ready ? "true" : "false"}
+          ref={tooltipRef}
+          role="tooltip"
+          style={{ left: position.left, top: position.top }}
+        >
+          {text}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function InfoPopup({ text }: { text: string }) {
   return (
-    <span className="info-popover" tabIndex={0}>
+    <ViewportTooltip className="info-popover" text={text}>
       <Info size={14} aria-hidden="true" />
-      <span role="tooltip">{text}</span>
-    </span>
+    </ViewportTooltip>
   );
 }
 
@@ -3759,7 +4183,22 @@ function ModelSelect({
 
 function budgetRowLabel(row: OpenAIUsageGroup, groupMode: BudgetGroupMode) {
   if (groupMode === "model") return row.model || "unknown";
+  if (groupMode === "document") return row.label || row.document_id || "unlinked document";
+  if (groupMode === "day") return row.calendar_start ? new Date(row.calendar_start).toLocaleDateString() : row.group_key || "unknown";
+  if (groupMode === "hour") {
+    return row.calendar_start
+      ? new Date(row.calendar_start).toLocaleString([], { dateStyle: "short", timeStyle: "short" })
+      : row.group_key || "unknown";
+  }
   return (row.task_key || "unknown").replaceAll("_", " ");
+}
+
+function budgetGroupHeader(groupMode: BudgetGroupMode) {
+  if (groupMode === "model") return "Model";
+  if (groupMode === "task") return "Task";
+  if (groupMode === "document") return "Document";
+  if (groupMode === "day") return "Day";
+  return "Hour";
 }
 
 function formatBudgetCost(row: Pick<OpenAIUsageGroup, "estimated_cost_usd" | "priced_request_count" | "request_count">) {
@@ -3777,7 +4216,16 @@ function BudgetView() {
     refetchInterval: 10000,
   });
   const summary = usage.data?.summary;
-  const rows = groupMode === "model" ? usage.data?.by_model || [] : usage.data?.by_task || [];
+  const rows =
+    groupMode === "model"
+      ? usage.data?.by_model || []
+      : groupMode === "task"
+        ? usage.data?.by_task || []
+        : groupMode === "document"
+          ? usage.data?.by_document || []
+          : groupMode === "day"
+            ? usage.data?.by_calendar_day || []
+            : usage.data?.by_calendar_hour || [];
   const showTokens = metricMode !== "cost";
   const showCost = metricMode !== "tokens";
 
@@ -3815,6 +4263,9 @@ function BudgetView() {
             <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
               <option value="model">By model</option>
               <option value="task">By task</option>
+              <option value="document">By document</option>
+              <option value="day">By calendar day</option>
+              <option value="hour">By calendar hour</option>
             </select>
           </label>
         </div>
@@ -3846,7 +4297,7 @@ function BudgetView() {
         </div>
         <div className="budget-table">
           <div className={`budget-row header ${metricMode}`}>
-            <span>{groupMode === "model" ? "Model" : "Task"}</span>
+            <span>{budgetGroupHeader(groupMode)}</span>
             <span>Calls</span>
             {showTokens ? (
               <>
@@ -3866,7 +4317,7 @@ function BudgetView() {
           </div>
           {rows.length ? (
             rows.map((row) => (
-              <div className={`budget-row ${metricMode}`} key={`${groupMode}-${budgetRowLabel(row, groupMode)}`}>
+              <div className={`budget-row ${metricMode}`} key={`${groupMode}-${row.group_key || budgetRowLabel(row, groupMode)}`}>
                 <span>{budgetRowLabel(row, groupMode)}</span>
                 <span>{formatMetric(row.request_count)}</span>
                 {showTokens ? (
@@ -3913,6 +4364,12 @@ function BudgetView() {
           {usage.data?.pricing.source_url ? (
             <a href={usage.data.pricing.source_url} rel="noreferrer" target="_blank">
               OpenAI
+              <ExternalLink size={12} />
+            </a>
+          ) : null}
+          {usage.data?.pricing.source_urls?.Google ? (
+            <a href={usage.data.pricing.source_urls.Google} rel="noreferrer" target="_blank">
+              Google
               <ExternalLink size={12} />
             </a>
           ) : null}
@@ -4175,7 +4632,7 @@ function SettingsView({
       <div className="openai-usage-panel">
         <div className="panel-title-row">
           <div>
-            <h2>OpenAI Usage</h2>
+            <h2>AI Usage</h2>
             <span>{usageSummary ? `${formatMetric(usageSummary.request_count)} recorded calls` : "No recorded calls"}</span>
           </div>
           <Gauge size={20} />
@@ -4435,12 +4892,19 @@ export default function App() {
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const queryClient = useQueryClient();
+  const browserHost = window.location.hostname || "";
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("medusa-theme", theme);
   }, [theme]);
 
+  const runtimeLocation = useQuery({
+    queryKey: ["runtime-location", browserHost],
+    queryFn: () => api.runtimeLocation(browserHost),
+    retry: 1,
+    staleTime: Infinity,
+  });
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
@@ -4485,6 +4949,10 @@ export default function App() {
     mutationFn: api.logout,
     onSuccess: () => queryClient.clear(),
   });
+
+  useEffect(() => {
+    document.title = runtimeLocation.data?.title || MEDUSA_APP_NAME;
+  }, [runtimeLocation.data?.title]);
 
   const startConcordanceRun = useCallback(
     async (request: ConcordanceRunRequest) => {

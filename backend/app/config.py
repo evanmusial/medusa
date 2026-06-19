@@ -42,6 +42,8 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         validation_alias="OPENAI_EMBEDDING_MODEL",
     )
+    gemini_api_key: str | None = Field(default=None, validation_alias="GEMINI_API_KEY")
+    google_genai_use_vertexai: bool = Field(default=False, validation_alias="GOOGLE_GENAI_USE_VERTEXAI")
     openai_send_pdf_file: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_SEND_PDF")
     openai_pdf_file_max_mb: int = Field(default=24, validation_alias="MEDUSA_OPENAI_PDF_FILE_MAX_MB")
     openai_normalize_page_text: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_NORMALIZE_PAGE_TEXT")

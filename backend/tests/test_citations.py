@@ -1,6 +1,7 @@
 from app.services.citations import (
     apa_author_list,
     format_apa_citation,
+    format_apa_in_text_citation,
     format_bibtex,
     format_ris,
     to_csl_json,
@@ -51,6 +52,22 @@ def test_format_apa_includes_journal_volume_issue_and_pages_as_markdown():
         "*2013 IEEE Security and Privacy Workshops, 1*(2), 82-89. "
         "https://doi.org/10.1109/spw.2013.35"
     )
+
+
+def test_format_apa_in_text_citation_uses_parenthetical_author_year():
+    citation = format_apa_in_text_citation(
+        {
+            "title": "A Bayesian network model for predicting insider threats",
+            "authors": [
+                {"given": "Elise T.", "family": "Axelrad"},
+                {"given": "Paul J.", "family": "Sticha"},
+                {"given": "Oliver", "family": "Brdiczka"},
+            ],
+            "publication_year": 2013,
+        }
+    )
+
+    assert citation == "(Axelrad et al., 2013)"
 
 
 def test_format_apa_decodes_html_entities():

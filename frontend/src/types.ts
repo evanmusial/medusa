@@ -4,6 +4,14 @@ export type User = {
   display_name: string;
 };
 
+export type RuntimeLocation = {
+  app_name: string;
+  expansion: string;
+  network_context: "local" | "lan" | "remote" | string;
+  ipv4?: string | null;
+  title: string;
+};
+
 export type Dashboard = {
   documents: number;
   unread: number;
@@ -17,6 +25,7 @@ export type Dashboard = {
   import_progress_failed: number;
   import_active_step?: string | null;
   import_active_elapsed_seconds?: number | null;
+  import_active_cost_usd: number;
   active_concordance_jobs: number;
   active_accessory_summary_jobs: number;
   failed_jobs: number;
@@ -54,6 +63,38 @@ export type ModelOptionGroup = {
   options: string[];
 };
 
+export type DocumentCompositionEntry = {
+  label?: string | null;
+  stage_key?: string | null;
+  stage_label?: string | null;
+  provider?: string | null;
+  method?: string | null;
+  model?: string | null;
+  record_kind?: string | null;
+  status?: string | null;
+  message?: string | null;
+  amount_usd: number;
+  duration_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  call_count: number;
+  sequence?: number | null;
+  created_at?: string | null;
+};
+
+export type DocumentComposition = {
+  document_id: string;
+  available: boolean;
+  total_estimated_cost_usd: number;
+  total_duration_seconds: number;
+  cost_entries: DocumentCompositionEntry[];
+  provider_breakdown: DocumentCompositionEntry[];
+  local_duration_entries: DocumentCompositionEntry[];
+  pipeline: DocumentCompositionEntry[];
+  errata: DocumentCompositionEntry[];
+};
+
 export type OpenAIUsageTotals = {
   request_count: number;
   successful_request_count: number;
@@ -74,6 +115,8 @@ export type OpenAIUsageTotals = {
 };
 
 export type OpenAIUsageGroup = {
+  group_key?: string | null;
+  label?: string | null;
   request_count: number;
   input_tokens: number;
   cached_input_tokens: number;
@@ -84,6 +127,9 @@ export type OpenAIUsageGroup = {
   failed_request_count: number;
   task_key?: string | null;
   model?: string | null;
+  provider?: string | null;
+  document_id?: string | null;
+  calendar_start?: string | null;
   estimated_cost_usd: number;
   priced_request_count: number;
   unpriced_request_count: number;
@@ -96,6 +142,7 @@ export type OpenAIUsageRecent = {
   source?: string | null;
   task_key: string;
   operation: string;
+  provider: string;
   model: string;
   endpoint: string;
   status: string;
@@ -118,10 +165,14 @@ export type OpenAIUsage = {
   summary: OpenAIUsageTotals;
   by_task: OpenAIUsageGroup[];
   by_model: OpenAIUsageGroup[];
+  by_document: OpenAIUsageGroup[];
+  by_calendar_day: OpenAIUsageGroup[];
+  by_calendar_hour: OpenAIUsageGroup[];
   recent: OpenAIUsageRecent[];
   pricing: {
     basis: string;
     source_url: string;
+    source_urls?: Record<string, string>;
     updated_at: string;
   };
 };
@@ -255,6 +306,11 @@ export type DocumentSummary = {
   doi?: string | null;
   rich_summary?: string | null;
   apa_citation?: string | null;
+  apa_citation_model?: string | null;
+  apa_citation_source?: string | null;
+  apa_in_text_citation?: string | null;
+  apa_in_text_citation_model?: string | null;
+  apa_in_text_citation_source?: string | null;
   citation_status: string;
   metadata_confidence?: number | null;
   original_filename: string;

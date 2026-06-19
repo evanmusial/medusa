@@ -129,6 +129,27 @@ def format_apa_citation(metadata: dict[str, Any]) -> str:
     return re.sub(r"\s+", " ", citation).strip()
 
 
+def format_apa_in_text_citation(metadata: dict[str, Any]) -> str:
+    authors = [
+        normalize_author_name(author)["family"]
+        for author in metadata.get("authors") or []
+        if normalize_author_name(author)["family"]
+    ]
+    year = metadata.get("publication_year") or metadata.get("year") or "n.d."
+    if not authors:
+        title = _strip_terminal_period(sentence_case_title(str(metadata.get("title") or "Untitled work")))
+        title_words = title.split()
+        short_title = " ".join(title_words[:4]) if len(title_words) > 4 else title
+        return f'("{short_title}", {year})'
+    if len(authors) == 1:
+        author_text = authors[0]
+    elif len(authors) == 2:
+        author_text = f"{authors[0]} & {authors[1]}"
+    else:
+        author_text = f"{authors[0]} et al."
+    return f"({author_text}, {year})"
+
+
 def citation_key(metadata: dict[str, Any]) -> str:
     authors = metadata.get("authors") or []
     first = normalize_author_name(authors[0])["family"] if authors else "unknown"

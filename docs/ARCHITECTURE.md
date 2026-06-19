@@ -6,7 +6,7 @@ This is the living record of Medusa's product, design, and architecture decision
 
 ## Product Intent
 
-Medusa is a local-first research document clearinghouse. It should help organize, search, read, annotate, summarize, cite, and reuse research documents across domains of knowledge and project-specific run sheets.
+Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis**. It is a local-first research document clearinghouse that should help organize, search, read, annotate, summarize, cite, and reuse research documents across domains of knowledge and project-specific run sheets.
 
 The product is optimized for one primary user on a trusted local network. It still requires password login because it listens on LAN-accessible port `3737`.
 
@@ -32,22 +32,23 @@ Current UI architecture:
 - Main Library view uses a tri-pane layout:
   - Resizable left filter pane for domains, tags, smart filters, and saved searches. The pane has a content-aware minimum so select controls and their affordances remain visible.
   - Center dense document results with selected-document bulk edit and batch Concordance controls. Selected-document Concordance shows an in-app cost-aware confirmation dialog before queuing work. Document rows use visible-but-quiet alternate shading when enabled, true black/white title text by theme, first-paragraph inline summary excerpts, and fixed aligned byline columns for page count, publication year, and author list.
-  - Resizable right document detail/correction pane for authenticated original PDF preview, normalized one-page parsed text reading, citation, summary, Accessory Summaries, existing annotations, extracted figures, tags, domains, attributes, history, and evidence. Accessory Summaries are user-prompted focused summaries queued as durable worker jobs and displayed inline with optional titles. Library annotation creation controls are deferred pending a quieter pane-aware redesign.
+  - Resizable right document detail/correction pane for authenticated original PDF preview, normalized one-page parsed text reading, APA Reference List and APA In-Text Citation sections, summary, Accessory Summaries, existing annotations, extracted figures, tags, domains, attributes, history, evidence, and Composition. Citation sections show Copy, Edit, Check, and model/provenance controls. Accessory Summaries are user-prompted focused summaries queued as durable worker jobs and displayed inline with optional titles. Composition opens as a centered modal with import cost composition, provider spend, local processing time, errata, and a left-to-right pipeline flow. Library annotation creation controls are deferred pending a quieter pane-aware redesign.
 - Library Reader mode can expand the selected document to the whole lower work area while preserving document controls, PDF/Text tabs, citation actions, the annotation list, and metadata sections.
 - Completed DOI-bearing documents expose a Library detail-pane Recommendations panel. The panel refreshes related papers from scholarly metadata services, shows title, DOI, venue, year, source, short abstract/description, existing-library status, and open-PDF availability, supports hiding existing matches, copying just the DOI or title, and queues selected or all-new open PDFs for import.
 - Import view centers immediate drag/drop upload plus a batch-defaults intake panel for optional label, priority, read status, domains, tags, and projects. Domains, tags, and projects use searchable chip pickers with restrained inline creation so bulk uploads can be organized before files are dropped.
 - Import view also provides active drop-target feedback, duplicate-decision handling, and live job status with per-file step labels.
-- The reserved header active-work control shows import progress first when imports are active, otherwise active Concordance/citation background work. It is visually hidden when no work is active, keeps its layout slot reserved, and clicking it opens Queue.
+- The reserved header active-work control shows import progress first when imports are active, including current known dollar spend so far, otherwise active Concordance/citation background work. It is visually hidden when no work is active, keeps its wider layout slot reserved, and clicking it opens Queue.
 - Projects view supports project creation, run-sheet resource management, status/priority/used tracking, project notes, and bibliography generation, with run-sheet controls constrained to their pane so long document titles cannot spill into bibliography controls.
 - Queue shows queued/running import jobs with per-job stage progress and citation candidates that need human attention, and supports accepting or rejecting citation candidates.
 - Notes view supports notes/reminders attached to documents, domains, projects, or the general library.
-- Budget exposes OpenAI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model/task rollups when usage records include model data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
+- Budget exposes AI usage exploration with last-day, last-month, last-3-months, and all-time windows; token and estimated-cost views; and model, task, document, calendar-day, and calendar-hour rollups when usage records include model/document data. Settings exposes preferences, Library alternate-row shading, day/night accent color controls, raw extraction and document-analysis model controls with OpenAI and Google sections where applicable, document cache budget controls, backup/export controls for full metadata JSON and a storage manifest, and Concordance controls.
 - Metadata restore is CLI-first: dry-run by default, explicit `--apply`, and intended for backup drills or fresh-database recovery.
 
 Visual decisions:
 
-- The header brand uses the user-provided transparent Medusa emblem SVG plus a large lowercase `medusa` wordmark in Century Schoolbook Bold, falling back to compatible local serif faces. The emblem is borderless and sized to visually match the wordmark height.
+- The header brand uses the user-provided transparent Medusa emblem SVG plus a large lowercase `medusa` wordmark in Century Schoolbook Bold, falling back to compatible local serif faces. The emblem is borderless and sized to visually match the wordmark height. Hovering or focusing the emblem/wordmark shows the acronym expansion: "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis."
 - The header brand lockup should have restrained, generous top/bottom padding plus modest side padding so the emblem and wordmark breathe without turning the header into a hero element.
+- The browser page title is lowercase `medusa` at rest and becomes `medusa (local)`, `medusa (local: IP)`, or `medusa (remote: IP)` after startup/runtime location detection, depending on how the page is opened.
 - The header build stamp sits in the action cluster before the theme toggle and uses the frontend build date plus optional short Git SHA (`YYYY.MM.DD+hash`) so the running UI can be identified without opening developer tools. `MEDUSA_BUILD_DATE` and `MEDUSA_BUILD_SHA` can override the stamp for release or CI builds.
 - The emblem source remains black with transparency; night mode inverts it with CSS so the glyph reads light while keeping the transparent background intact. The same SVG is used as the browser favicon.
 - The primary navigation should not consume a persistent left rail. Top-level destinations belong in the quiet horizontal work navigation so the research panes can use the full application width.
@@ -89,11 +90,12 @@ Backend modules:
 - `backend/app/models.py`: ORM entities and relationships.
 - `backend/app/worker.py`: long-running durable job loop.
 - `backend/app/services/storage.py`: GCS/local storage adapter.
-- `backend/app/services/analysis_models.py`: canonical raw extraction/document-analysis task registry, default model ids, model option lists, grouped option metadata, and task descriptions used by Settings.
+- `backend/app/services/analysis_models.py`: canonical raw extraction/document-analysis task registry, default model ids, OpenAI/Google model option lists, grouped option metadata, and task descriptions used by Settings.
 - `backend/app/services/document_cache.py`: bounded local PDF cache registration, lookup, storage rehydration, and pruning.
 - `backend/app/services/extraction.py`: layout-aware PDF text extraction, deterministic page text cleanup, table normalization, and chunking.
-- `backend/app/services/ai.py`: OpenAI Responses API document-intelligence extraction, PDF-file context for citation-critical metadata, routed text-only summary/topic calls, compact APA fallback calls for uncertain citations, optional legacy combined metadata/summary/APA/topic-keyword calls, page text normalization calls with bounded fallback, embedding adapter, and call-site usage instrumentation.
-- `backend/app/services/openai_usage.py`: durable OpenAI usage recorder and Budget/Settings rollup builder for token/file-context counts and conservative estimated costs by task, model, document, import job, and Concordance job.
+- `backend/app/services/ai.py`: OpenAI Responses API document-intelligence extraction, Gemini Developer API text-generation routing for selected Gemini models, PDF-file context for citation-critical OpenAI metadata, routed text-only summary/topic calls, compact APA fallback calls for uncertain citations, optional legacy combined metadata/summary/APA/topic-keyword calls, page text normalization calls with bounded fallback, embedding adapter, and call-site usage instrumentation.
+- `backend/app/services/openai_usage.py`: durable AI usage recorder and Budget/Settings rollup builder for OpenAI/Gemini token/file-context counts and conservative estimated costs by task, model, document, calendar day/hour, import job, and Concordance job.
+- `backend/app/services/composition.py`: per-document import composition ledger helpers, cost summarization, provider rollups, local duration rollups, errata tracking, pipeline flow construction, and active-import cost estimation.
 - `backend/app/services/ocr.py`: Google Vision adapter placeholder.
 - `backend/app/services/processing.py`: import processing orchestration.
 - `backend/app/services/preferences.py`: DB-backed local preferences such as import worker concurrency, Library alternate-row shading, accent colors, document cache size, and document-analysis model selections.
@@ -104,6 +106,7 @@ Backend modules:
 - `backend/app/services/citations.py`: APA/BibTeX/RIS/CSL formatting utilities.
 - `backend/app/services/verifier.py`: Crossref lookup and verification helpers.
 - `backend/app/services/recommendations.py`: DOI normalization, OpenAlex/Semantic Scholar/Crossref related-paper adapters, recommendation caching/matching, and open-PDF recommendation import queueing.
+- `backend/app/services/runtime_location.py`: startup/runtime IPv4 detection and page-title context classification for local, LAN, and remote access.
 - `backend/app/tools/restore_export.py`: CLI entry point for validating, planning, and applying metadata restores.
 
 Frontend modules:
@@ -119,7 +122,7 @@ Frontend async-work contract:
 - The shell reconciles local "starting" jobs with `/api/concordance/runs` and `/api/concordance/jobs` polling data, then renders active work in the reserved header progress slot while work is starting, queued, or running.
 - Header progress shows imports first when imports are active, otherwise the first active Concordance/citation background run or an active-count summary. It is hidden but width-preserving when idle and opens Queue when clicked.
 - Page-level controls still own their local disabled state, green in-flight button/progress treatment, and transient result flash. Completion flashes green; a failed start or failed watched job flashes red and shows a concise popover error.
-- The Library citation Check action queues a forced `citation_refresh` Concordance Run for the current document. If the user stays on the document pane, the button-level watcher can flash completion/failure; if the user navigates away, the app shell still follows the durable run and displays terminal state.
+- The Library citation Check actions queue a forced `citation_refresh` Concordance Run for the current document. The APA Reference List and APA In-Text Citation buttons start the same durable refresh because both citation surfaces are generated from the same citation metadata/model preference. If the user stays on the document pane, the button-level watcher can flash completion/failure; citation success flashes fade quickly while error flashes remain visible longer. If the user navigates away, the app shell still follows the durable run and displays terminal state.
 - Settings, selected-document batch Concordance, and document-level Concordance controls use the same shell-owned starter so navigation away from those pages does not abandon UI reconciliation.
 - Import jobs remain represented by Queue rows and the header active-work progress control because their progress is already dashboard-backed; rescue/requeue buttons use the same transient button-feedback convention.
 - Accessory Summary creation writes a durable queued row and then relies on the worker plus selected-document polling to show queued/running/complete/failed state inline in the detail pane. The Summarize button uses the same transient in-flight/success/error treatment as Concordance and citation checks while the new row is being queued and tracked.
@@ -137,7 +140,8 @@ Current core entities:
 - `Document`: canonical research object and processing/search state.
 - `DocumentVersion`: metadata correction/history snapshots.
 - `DocumentCapability`: per-document completion state for versioned import/concordance capabilities.
-- `OpenAIUsageRecord`: per-call OpenAI Responses/embeddings usage ledger with document/job/run context, model, task, token counts, cached input tokens, PDF/file-context bytes, status, and recent error text.
+- `OpenAIUsageRecord`: per-call OpenAI Responses/embeddings/Gemini usage ledger with document/job/run context, model, task, token counts, cached input tokens, PDF/file-context bytes, status, and recent error text.
+- `DocumentCompositionRecord`: per-document provenance and cost ledger for imports and edits. Rows record local stage durations, synced model/embedding usage costs, provider/model/method, status, stage ordering, errata, and pipeline metadata. The optional `usage_record_id` links back to the raw AI usage row when available.
 - `DocumentRecommendation`: cached DOI/title-based related-paper recommendations for a source document, including provider/relation evidence, DOI, title, authors, venue, description, open PDF/source URLs, existing-library/import matches, and import status.
 - `DocumentAccessorySummary`: user-prompted focused summaries owned by a document, with prompt, optional title, selected model, generated Markdown body, status/attempt/lock fields, completion timestamp, and model/evidence metadata.
 - `DocumentPage`: raw extracted per-page text, normalized reader text, source, low-text flags, and optional page image URI; the document detail API exposes these pages for the full-text reader.
@@ -160,12 +164,12 @@ Important modeling decisions:
 - Citation status is explicit, with `needs_review` as the safe uncertain state.
 - Accepted citation candidates apply their metadata/citation to the document, set citation status to `verified`, and create a `DocumentVersion` audit snapshot.
 - Metadata evidence is stored as JSON so extraction, Crossref, OpenAI, and future sources can be audited.
-- OpenAI usage accounting is stored separately from document metadata in `OpenAIUsageRecord` so cost/debug history survives metadata correction and can include failed calls. The ledger records usage reported by OpenAI. Budget estimates dollars from a small local standard-pricing table for known models, marks unknown models as unpriced, and keeps token counts as the durable source of truth because model pricing can change outside the app.
+- AI usage accounting is stored separately from document metadata in `OpenAIUsageRecord` so cost/debug history survives metadata correction and can include failed calls. The ledger records usage reported by OpenAI and Gemini calls. Budget estimates dollars from small local standard-pricing tables for known OpenAI and Gemini Developer API models, marks unknown models as unpriced, and keeps token counts as the durable source of truth because model pricing can change outside the app. `DocumentCompositionRecord` is the document-facing provenance layer over that ledger: it preserves the exact import pipeline and stage/model composition later Concordance logic can inspect before deciding whether a document already satisfies a capability/model requirement.
 - Author records in `Document.authors` use JSON objects with `given`, `family`, `affiliation`, and `email` when visible. Import and Concordance GPT prompts should normalize semi-obfuscated email forms such as `someone{at}university{dot}edu`, `someone [at] university [dot] edu`, and `someone at university dot edu` into `someone@university.edu`; emails must not be inferred when absent.
 - Title-only citation evidence must pass a strong normalized-title match before it is stored as Crossref evidence.
 - Crossref evidence may fill missing citation fields such as authors, year, venue, DOI, publisher, and source URL; it should not silently overwrite existing user-corrected fields.
 - APA citations should favor DOI links whenever a DOI can be located and verified. If no DOI can be verified, the citation should prefer a direct stable source link, ideally a PDF or other static document, over a transient search or generic landing page.
-- Citation and metadata text from Crossref, OpenAI, PDFs, or user review candidates should be normalized for display and exports, including decoding HTML entities such as `&amp;`, `&quot;`, and numeric character references into their actual characters.
+- Citation and metadata text from Crossref, OpenAI, PDFs, or user review candidates should be normalized for display and exports, including decoding HTML entities such as `&amp;`, `&quot;`, and numeric character references into their actual characters. `Document.apa_citation` stores the APA Reference List entry; `Document.apa_in_text_citation` stores the APA parenthetical in-text citation. Each has model and source fields so the UI can show the generating model or `user provided` after manual override.
 - Recommendation matching prefers normalized DOI equality and falls back only to a strict normalized-title match. Recommendations may be cached from multiple providers; source/provider evidence is retained so a candidate can be inspected later.
 - Recommendation imports do not create a parallel processing path. When an open PDF URL is available from a lawful scholarly metadata source, the download endpoint creates normal `ImportBatch` and `ImportJob` records, stores the PDF through the configured storage adapter, and lets the worker process it like any other PDF. Recommendations without open PDF URLs remain metadata-only candidates.
 - Full-text search data is stored on `Document.search_text`; chunk embeddings live on `TextChunk.embedding`.
@@ -198,13 +202,14 @@ Current import path:
 19. Extraction and async document-intelligence work are split into Settings-selectable tasks: Raw Text Extraction, Metadata, Summary, APA Citation Matching, Keywords & Topics, Text on Pages (Normalization), Text Chunk Encoding, and Accessory Summaries. Metadata and APA fallback matching default to `OPENAI_MODEL=gpt-5.5`; Summary defaults to `gpt-5.4`; Keywords & Topics defaults to `gpt-5.4-mini`; Accessory Summaries defaults to `gpt-5.4`; Text Chunk Encoding defaults to `OPENAI_EMBEDDING_MODEL`.
 20. By default, document intelligence is routed by task. Metadata extraction may send the original PDF as a Responses API file input when `MEDUSA_OPENAI_SEND_PDF=true` and the file is below `MEDUSA_OPENAI_PDF_FILE_MAX_MB`; summary and keyword/topic extraction use extracted text only. `MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE=true` is an opt-in legacy mode that runs Metadata, Summary, APA Citation Matching, and Keywords & Topics as one structured `core_document_intelligence` Responses call using the Metadata model selection.
 21. OpenAI Responses calls pass stable prompt-cache keys derived from the document checksum and use `MEDUSA_OPENAI_PROMPT_CACHE_RETENTION` when configured; Concordance reruns hydrate original PDFs from the local document cache or durable storage when a task needs PDF context.
-22. Each OpenAI Responses or embeddings request records a durable `OpenAIUsageRecord` when usage data is available, including task/model, import, Concordance, or Accessory Summary context, token counts, cached input tokens, PDF/file-context bytes, and failure status. Settings reads `/api/openai/usage` to show totals, task/model rollups, and recent calls.
-23. Stored `rich_summary` text must begin with the semantic substance of the summary itself, not a standalone heading such as `Summary`, `Overview`, `Abstract`, `Synopsis`, or similar. The AI prompts request this style, and import/Concordance cleanup strips those standalone first-line headings before persistence.
-24. DOI is discovered from AI metadata and local DOI regex over extracted text. Crossref lookup is attempted by DOI first, otherwise by title with optional first-author and publication-year constraints. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
-25. APA citation is generated deterministically from Crossref/document metadata when DOI/Crossref evidence is available. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
-26. When DOI/Crossref cannot verify the citation, Medusa asks the Settings-selected APA Citation Matching model, defaulting to `gpt-5.5`, to generate/check an APA candidate from compact metadata and extracted-text excerpts without attaching the PDF. The result remains `needs_review` unless later verified or accepted.
-27. Uncertain citations create `CitationCandidate` review records.
-28. Successful jobs retain their local PDF cache copy up to the configured Document Cache Size. Budget pruning deletes oldest non-active cache files and leaves GCS/local original storage untouched.
+22. Each OpenAI Responses, embeddings, or Gemini request records a durable `OpenAIUsageRecord` when usage data is available, including task/model, provider, import, Concordance, or Accessory Summary context, token counts, cached input tokens, PDF/file-context bytes, and failure status. Settings reads `/api/openai/usage` to show totals, task/model rollups, and recent calls.
+23. During imports, `DocumentCompositionRecord` rows are written for each local stage and synced from per-call AI usage rows. Rows record stage order, method/model/provider, known dollar cost, local duration, tokens, status, errata, and pipeline metadata. Older documents without rows intentionally show Composition as not available.
+24. Stored `rich_summary` text must begin with the semantic substance of the summary itself, not a standalone heading such as `Summary`, `Overview`, `Abstract`, `Synopsis`, or similar. The AI prompts request this style, and import/Concordance cleanup strips those standalone first-line headings before persistence.
+25. DOI is discovered from AI metadata and local DOI regex over extracted text. Crossref lookup is attempted by DOI first, otherwise by title with optional first-author and publication-year constraints. If Crossref evidence is available, missing citation fields are filled from that evidence without overwriting existing values.
+26. APA Reference List and APA In-Text Citation text are generated together from the same citation metadata and Settings-selected APA Citation Matching model preference. Reference-list text is generated deterministically from Crossref/document metadata when DOI/Crossref evidence is available. It is marked `verified` only when enough metadata exists and DOI/Crossref evidence is present.
+27. When DOI/Crossref cannot verify the citation, Medusa asks the Settings-selected APA Citation Matching model, defaulting to `gpt-5.5`, to generate/check APA Reference List and parenthetical in-text candidates from compact metadata and extracted-text excerpts without attaching the PDF. The result remains `needs_review` unless later verified or accepted.
+28. Uncertain citations create `CitationCandidate` review records.
+29. Successful jobs retain their local PDF cache copy up to the configured Document Cache Size. Budget pruning deletes oldest non-active cache files and leaves GCS/local original storage untouched.
 
 Durability decisions:
 
@@ -236,10 +241,10 @@ Implemented foundation:
 Current first capabilities:
 
 - `page_text_normalization` v3: conforms raw extracted page text into standard readable paragraph flow using OpenAI when configured and local cleanup as a fallback; it preserves headings, labels, captions, citations, equations, lists, tables, and reading flow across columns/graphics without converting graphics to Markdown. Concordance reruns use the original PDF context when available.
-- `search_index` v3: rebuilds `Document.search_text` from title, authors, visible author contact emails, abstract, summary, APA citation, normalized pages, figure labels/captions/gists, notes, custom attributes, tags, and domains.
-- `citation_refresh` v3: regenerates Markdown APA 7 text from DOI/Crossref evidence first, fills missing fields, and uses compact GPT-5.5 APA fallback only when evidence cannot verify the citation; uncertain output stays in Queue for citation review.
+- `search_index` v3: rebuilds `Document.search_text` from title, authors, visible author contact emails, abstract, summary, APA reference-list and in-text citations, normalized pages, figure labels/captions/gists, notes, custom attributes, tags, and domains.
+- `citation_refresh` v4: regenerates Markdown APA 7 reference-list text and APA parenthetical in-text text from DOI/Crossref evidence first, fills missing fields, records citation model/provenance, and uses compact GPT-5.5 APA fallback only when evidence cannot verify the citation; uncertain output stays in Queue for citation review.
 - `summary_topics` v7: uses the configured AI adapter to fill missing metadata, visible author contacts, concise Markdown summaries, topics, and keywords without overwriting user-corrected identity metadata. The default path routes metadata through the high-quality model, summaries through GPT-5.4 text-only calls, and keywords/topics through GPT-5.4-mini text-only calls; legacy combined `core_document_intelligence` remains opt-in.
-- `figure_assets` v2: extracts embedded images plus page-image and vector graphic crops into durable storage and attaches them to document records with geometry, labels, captions, and source kind.
+- `figure_assets` v3: extracts rendered page-image and vector graphic crops plus embedded-image fallbacks into durable storage and attaches them to document records with geometry, labels, captions, and source kind. Visible page-image crops are rendered from the page before raw embedded bytes are used so PDF color-space, mask, and decode instructions are preserved.
 - `recommendations` v1: refreshes DOI-based related-paper recommendations from OpenAlex, Semantic Scholar, and Crossref, marks already-present library matches, and caches provider evidence without importing full text automatically.
 
 Use Concordance Runs when adding or improving:
@@ -498,11 +503,11 @@ Consequences:
 
 - The Library filter pane minimum is raised and enforced through persisted pane clamping so select arrows and control text cannot be collapsed out of view.
 - Document rows include a short rendered Markdown summary preview instead of leaving summary text as one large undifferentiated paragraph.
-- `rich_summary` and `apa_citation` remain the database fields, but their stored value is treated as Markdown text.
+- `rich_summary`, `apa_citation`, and `apa_in_text_citation` remain Markdown-compatible database fields.
 - OpenAI extraction prompts now request concise Markdown summaries with labeled bullets.
 - APA formatter output uses Markdown italics for APA publication elements and Crossref volume/issue/page fields when available.
-- The document detail and expanded Reader surfaces include APA copy plus Check controls. Check queues a forced `citation_refresh` Concordance Run for that document and disables while a matching queued/running job exists.
-- `citation_refresh` is versioned to v2 and `summary_topics` to v3 so existing imports can be conformed through Concordance Runs.
+- The document detail and expanded Reader surfaces include APA Reference List and APA In-Text Citation copy/edit/check controls. Check queues a forced `citation_refresh` Concordance Run for that document and disables while a matching queued/running job exists.
+- `citation_refresh` is currently versioned to v4 so existing imports can be conformed through Concordance Runs.
 
 ### 2026-06-18: DOI-first citation links
 
@@ -534,7 +539,7 @@ Consequences:
 - `MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE=false` is the default routed mode. Setting it to `true` restores the previous single-call `core_document_intelligence` mode for metadata, summary, APA candidate, and keywords/topics, but that mode cannot use separate cheaper models for summary/tags.
 - `MEDUSA_OPENAI_PROMPT_CACHE_RETENTION=24h` adds OpenAI prompt-cache hints keyed by document checksum for retries and Concordance reruns.
 - DOI regex extraction plus Crossref DOI/title/author/year matching runs before GPT APA fallback. Crossref-backed citations are formatted locally and can be verified; GPT APA fallback uses compact metadata/excerpts without PDF context and remains a reviewable candidate.
-- `citation_refresh` was raised to v3 and `summary_topics` to v7 for DOI-first APA fallback, routed summaries, routed keyword/topic extraction, and updated model evidence.
+- `citation_refresh` was raised to v4 after the DOI-first APA work to include APA in-text citation generation and citation model/provenance tracking; `summary_topics` remains v7 for routed summaries, routed keyword/topic extraction, and updated model evidence.
 
 ### 2026-06-19: Accessory Summaries
 
@@ -629,7 +634,7 @@ Why: Imported scholarly metadata will sometimes be wrong, and the user needs to 
 Consequences:
 
 - Manual corrections write `DocumentVersion` snapshots with changed fields and before/after metadata.
-- Citation-affecting corrections regenerate APA text unless the user explicitly edits the APA field.
+- Citation-affecting corrections regenerate APA Reference List and APA In-Text Citation text unless the user explicitly edits that citation field.
 - The detail pane can run Concordance for the current document.
 - Settings can run Concordance for the library, current document, current search text, a domain, or a project.
 - Future work should add a richer correction-history diff viewer and arbitrary-filter Concordance scopes beyond saved searches.
@@ -660,6 +665,7 @@ Consequences:
 - `Figure` rows store page number, label, basic extraction gist, and durable asset URI.
 - Figure assets use storage keys under `figures/<first-two-sha256-chars>/<sha256>/...`.
 - `figure_assets` is a Concordance capability so older documents can be upgraded from their durable original object without re-upload.
+- Visible PDF image blocks are stored from rendered page crops when available; raw embedded image bytes are only a fallback when no usable page crop can be rendered.
 - The detail pane shows extracted figure thumbnails through `/api/figures/{id}/asset`.
 
 ### 2026-06-18: Metadata backup and storage manifest exports
@@ -697,7 +703,7 @@ Why: A queue that only displays uncertainty still leaves metadata work stranded.
 
 Consequences:
 
-- Accepting a candidate updates the document fields represented by candidate metadata, applies candidate APA text, marks the document citation as `verified`, refreshes search text, and writes a `DocumentVersion` history record.
+- Accepting a candidate updates the document fields represented by candidate metadata, applies candidate APA Reference List text, refreshes the APA In-Text Citation from the accepted metadata, marks the document citation as `verified`, refreshes search text, and writes a `DocumentVersion` history record.
 - Rejecting a candidate changes only the candidate status and removes it from the active citation review queue.
 - Future review work should show richer side-by-side evidence and support partial field-level acceptance.
 
@@ -738,6 +744,7 @@ Consequences:
 
 - `backend/alembic.ini`, `backend/alembic/env.py`, and the initial schema revision are now included in the backend image.
 - `init_db()` runs Alembic for PostgreSQL and keeps SQLAlchemy metadata creation as the SQLite/test fallback.
+- Backend and worker startup serialize PostgreSQL Alembic upgrades with a Postgres advisory lock so simultaneous container starts do not race on the same migration.
 - The initial migration is idempotent for existing local PostgreSQL databases by creating current tables and supporting indexes only when missing.
 - Future model changes must include an Alembic revision and corresponding tests or smoke verification.
 
@@ -764,7 +771,7 @@ Why: A user can start small-looking work, such as an APA citation Check, then sw
 
 Consequences:
 
-- Citation Check queues a forced `citation_refresh` Concordance Run instead of relying on a page-local request lifecycle.
+- Citation Check queues a forced `citation_refresh` Concordance Run for both APA citation surfaces instead of relying on a page-local request lifecycle.
 - The app shell records a local "starting" job immediately, reconciles it with persisted Concordance run/job state, and displays starting/queued/running status in the header active-work control.
 - Page-local controls can unmount without losing the shell's progress/error display. If the originating page remains mounted, its button can still flash completion/failure from the watched job.
 - Buttons that start async work use the same restrained feedback language: green plus a slim progress bar while work is in flight, green success flash on completion, red plus a short error popover for failure, then a fade back to the normal button color.
@@ -782,3 +789,45 @@ Consequences:
 - The project add-resource row uses bounded flexible sizing and wraps/stacks at small widths.
 - Project, detail, and bibliography panels hide overflow at their edges rather than allowing one pane's controls to spill into another.
 - Future Project controls should be checked at desktop and narrow breakpoints before assuming native select/button intrinsic sizes are safe.
+
+### 2026-06-19: APA reference-list and in-text citation surfaces
+
+Decision: Split the Library detail citation display into `APA Reference List` and `APA In-Text Citation` sections, with separate Copy/Edit controls and shared Check refresh behavior.
+
+Why: Research writing needs both the reference-list entry and the parenthetical in-text form. They should be visibly distinct but generated from the same evidence/model preference so they do not drift.
+
+Consequences:
+
+- `Document.apa_citation` remains the Markdown-compatible reference-list entry. `Document.apa_in_text_citation` stores the parenthetical in-text citation.
+- Each citation has stored model/source provenance. The UI displays the model name when model/generated provenance is present and `user provided` after a manual override.
+- Inline citation edits PATCH only the edited field and create normal `DocumentVersion` history. User edits do not silently mark the paired citation as user-provided.
+- `citation_refresh` v4 refreshes both citation fields together and records the selected APA Citation Matching model, even when trusted Crossref metadata lets Medusa format the reference-list citation deterministically.
+- Existing populated APA reference-list citations are backfilled as generated by `gpt-5.5`; their in-text citations are derived from stored authors/year where possible.
+
+### 2026-06-19: Gemini model options and AI cost rollups
+
+Decision: Add Google Gemini text-generation models as a provider section in Settings > Models and record Gemini `generateContent` calls in the existing AI usage ledger.
+
+Why: Medusa needs model/method preferences that can compare OpenAI and Google choices without hiding cost. The user may choose Gemini for summaries, metadata, page normalization, APA fallback checks, and Accessory Summaries, and those calls must remain visible in Budget by task, model, document, and time.
+
+Consequences:
+
+- `data/secrets/gemini.env` is the preferred ignored local secret file for `GEMINI_API_KEY`; backend and worker also honor direct `GEMINI_API_KEY` environment configuration.
+- Settings > Models groups compatible text-generation choices under OpenAI and Google, and excludes Gemini model ids containing `preview` plus deprecated/shutdown Gemini defaults from the Google section.
+- Gemini text-generation calls use the Developer API `generateContent` route and extracted text only. Original PDF file attachment remains an OpenAI Responses path until Gemini PDF-context handling is explicitly wired and verified.
+- Budget records Gemini calls with provider `google` in the existing `OpenAIUsageRecord` table, estimates known Gemini text-model costs from the local pricing table, and leaves unknown/ambiguous models unpriced.
+- Budget rollups now include model, task, document, calendar day, and calendar hour views so expensive documents or time windows can be isolated.
+
+### 2026-06-19: Document Cost Composition and pipeline provenance
+
+Decision: Add a document-facing composition ledger and Library Composition modal for imports.
+
+Why: Budget answers broad spend questions, but a research document also needs provenance: exactly which local stages and cloud models generated it, how long import work took, which provider/model costs contributed dollars, and what errata or edits happened afterward. Concordance can later use this same ledger to avoid reprocessing documents already generated with a specific capability and model.
+
+Consequences:
+
+- Imports write `DocumentCompositionRecord` rows for local stages, synced AI usage, warnings/errors, and manual citation/metadata edits.
+- `/api/documents/{document_id}/composition` summarizes those rows into cost entries, provider spend, local duration entries, pipeline flow steps, and errata. If no rows exist, the endpoint returns `available=false`.
+- The Library detail pane has a Composition button beside Edit/Concord/Reader/Related. It opens a centered modal with a Cost Composition pie chart, total known dollar cost, total import duration, provider breakdown, local time, errata, and a left-to-right pipeline flow.
+- The header active-work progress slot is wider and includes current known import spend while imports are queued/running.
+- Metadata exports include composition rows; restore preserves their costs/tokens/stage metadata and clears raw usage-record pointers when usage rows are not part of the export.

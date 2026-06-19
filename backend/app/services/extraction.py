@@ -691,11 +691,13 @@ def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80
             candidates = _unique_graphic_candidates([*image_candidates, *drawing_candidates])
             page_figures: list[ExtractedFigure] = []
             for figure_index, (bbox, source) in enumerate(candidates, start=1):
-                if not _is_usable_graphic_bbox(bbox, min_width=min_width, min_height=min_height):
+                if source != "page_image" and not _is_usable_graphic_bbox(bbox, min_width=min_width, min_height=min_height):
                     continue
                 try:
                     data, width, height = _render_page_crop(page, bbox)
                 except Exception:
+                    continue
+                if width < min_width or height < min_height:
                     continue
                 if len(data) < min_bytes:
                     continue

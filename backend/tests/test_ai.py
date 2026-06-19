@@ -14,7 +14,7 @@ def test_ai_service_fallback_includes_reviewable_citation_fields(monkeypatch, tm
     metadata = AiService().extract_metadata("sample-paper.pdf", "Example text.")
 
     assert metadata["apa_citation"] is None
-    assert "OpenAI metadata extraction is not configured." in metadata["citation_warnings"]
+    assert "AI metadata extraction is not configured for the selected models." in metadata["citation_warnings"]
     assert metadata["needs_review_reasons"]
 
 
@@ -232,6 +232,7 @@ def test_ai_metadata_extraction_can_use_legacy_combined_call(monkeypatch, tmp_pa
                     },
                     "apa_citation": {
                         "apa_citation": "Paper. (2026).",
+                        "apa_in_text_citation": "(Paper, 2026)",
                         "citation_warnings": [],
                         "confidence": 0.7,
                         "needs_review_reasons": [],
@@ -303,6 +304,7 @@ def test_ai_apa_citation_candidate_uses_compact_text_only_context(monkeypatch, t
                 output_text=json.dumps(
                     {
                         "apa_citation": "Lovelace, A. (1843). Notes.",
+                        "apa_in_text_citation": "(Lovelace, 1843)",
                         "citation_warnings": [],
                         "confidence": 0.82,
                         "needs_review_reasons": [],
@@ -327,6 +329,7 @@ def test_ai_apa_citation_candidate_uses_compact_text_only_context(monkeypatch, t
     )
 
     assert result["apa_citation"] == "Lovelace, A. (1843). Notes."
+    assert result["apa_in_text_citation"] == "(Lovelace, 1843)"
     assert responses.calls == [("medusa_apa_citation_candidate", "gpt-5.5", False)]
     assert "Known citation metadata" in responses.user_text
     assert "Document excerpts" in responses.user_text
@@ -387,3 +390,72 @@ def test_ai_page_normalization_prompt_protects_graphic_assets(monkeypatch, tmp_p
     assert usage_records[0]["task_key"] == "page_text_normalization"
     assert usage_records[0]["page_number"] == 1
     assert usage_records[0]["cached_input_tokens"] == 10
+
+
+def test_ai_service_routes_gemini_json_calls_and_records_google_usage(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+
+    from app.config import get_settings
+    from app.services.ai import SUMMARY_SCHEMA, AiService
+    from app.services.analysis_models import MODEL_SUMMARY
+    from app.services.openai_usage import OpenAIUsageContext
+
+    get_settings.cache_clear()
+    service = AiService()
+
+    def fake_generate_content(*, model, schema, prompt, input_text, timeout):
+        assert model == "gemini-2.5-flash"
+        assert schema == SUMMARY_SCHEMA
+        assert "Summarize" in prompt
+        assert "Extracted text" in input_text
+        assert timeout == 12
+        return {
+            "responseId": "gemini-response-1",
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "rich_summary": "This paper studies model routing.",
+                                        "confidence": 0.84,
+                                        "needs_review_reasons": [],
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 30,
+                "candidatesTokenCount": 9,
+                "totalTokenCount": 39,
+            },
+        }
+
+    service._gemini_generate_content = fake_generate_content  # type: ignore[method-assign]
+    usage_records: list[dict] = []
+
+    result = service._responses_json(
+        model="gemini-2.5-flash",
+        schema_name="medusa_document_summary",
+        schema=SUMMARY_SCHEMA,
+        prompt="Summarize this document.",
+        input_content=[{"type": "input_text", "text": "Extracted text"}],
+        timeout=12,
+        usage_context=OpenAIUsageContext(document_id="doc-google", source="test", recorder=usage_records.append),
+        task_key=MODEL_SUMMARY,
+        input_text_characters=14,
+    )
+
+    assert result["rich_summary"] == "This paper studies model routing."
+    assert usage_records[0]["provider"] == "google"
+    assert usage_records[0]["endpoint"] == "generateContent"
+    assert usage_records[0]["model"] == "gemini-2.5-flash"
+    assert usage_records[0]["input_tokens"] == 30
+    assert usage_records[0]["output_tokens"] == 9
