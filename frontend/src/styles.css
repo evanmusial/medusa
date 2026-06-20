@@ -3778,7 +3778,7 @@ pre {
   flex-direction: column;
 }
 
-.tag-optimization-bulk-progress {
+.tag-optimization-progress {
   display: grid;
   gap: 7px;
   padding: 9px 12px 10px;
@@ -3786,7 +3786,7 @@ pre {
   background: color-mix(in srgb, var(--blue) 7%, var(--panel));
 }
 
-.tag-optimization-bulk-progress-copy {
+.tag-optimization-progress-copy {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3794,7 +3794,7 @@ pre {
   gap: 12px;
 }
 
-.tag-optimization-bulk-progress-copy span {
+.tag-optimization-progress-copy span {
   flex: 0 0 auto;
   color: var(--blue);
   font-size: 11px;
@@ -3803,7 +3803,7 @@ pre {
   text-transform: uppercase;
 }
 
-.tag-optimization-bulk-progress-copy strong {
+.tag-optimization-progress-copy strong {
   min-width: 0;
   color: var(--ink);
   font-size: 12px;
@@ -3812,14 +3812,14 @@ pre {
   text-align: right;
 }
 
-.tag-optimization-bulk-progress-track {
+.tag-optimization-progress-track {
   height: 5px;
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--blue) 15%, var(--panel-2));
 }
 
-.tag-optimization-bulk-progress-track span {
+.tag-optimization-progress-track span {
   display: block;
   width: 44%;
   height: 100%;

@@ -7397,6 +7397,8 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
   const [optimizationResult, setOptimizationResult] = useState<TagOptimizationResult | null>(null);
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
   const [optimizationPaneOpen, setOptimizationPaneOpen] = useState(false);
+  const [optimizationStartedAt, setOptimizationStartedAt] = useState<number | null>(null);
+  const [optimizationNow, setOptimizationNow] = useState(() => Date.now());
   const [mergeIntoSuggestion, setMergeIntoSuggestion] = useState<TagOptimizationSuggestion | null>(null);
   const queryClient = useQueryClient();
   const tagIdSet = useMemo(() => new Set(tags.map((tag) => tag.id)), [tags]);
@@ -7435,6 +7437,9 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
   const tagSuggestionsModel = preferences
     ? selectedAnalysisModel(preferences, TAG_SUGGESTIONS_MODEL_KEY, "gpt-5.4-mini")
     : "Loading model";
+  const optimizationElapsedSeconds = optimizationStartedAt
+    ? Math.max(0, Math.floor((optimizationNow - optimizationStartedAt) / 1000))
+    : 0;
   const allOptimizationSuggestions = useMemo(
     () => [
       ...(optimizationResult?.suggestions ?? []),
@@ -7592,6 +7597,7 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
   const optimizeTags = useMutation({
     mutationFn: () => api.optimizeTags({ tag_ids: optimizationScopeIds }),
     onSuccess: (result) => {
+      setOptimizationStartedAt(null);
       setOptimizationResult(result);
       setOptimizationError(null);
       setOperationError(null);
@@ -7611,10 +7617,16 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
       );
     },
     onError: (error) => {
+      setOptimizationStartedAt(null);
       setOptimizationPaneOpen(true);
       setOptimizationError(actionFailureMessage("Could not optimize tags", error));
     },
   });
+  useEffect(() => {
+    if (!optimizeTags.isPending) return undefined;
+    const interval = window.setInterval(() => setOptimizationNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [optimizeTags.isPending]);
   const approveAllTagOptimizations = useMutation({
     mutationFn: () =>
       api.approveAllTagOptimizations({
@@ -7788,6 +7800,9 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
     setMergeIntoSuggestion(suggestion);
   };
   const startOptimization = () => {
+    const startedAt = Date.now();
+    setOptimizationStartedAt(startedAt);
+    setOptimizationNow(startedAt);
     setOptimizationPaneOpen(true);
     setOptimizationError(null);
     setOperationError(null);
@@ -8178,7 +8193,7 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
         {optimizationPaneOpen ? (
           <aside
             className="tag-optimization-panel"
-            aria-busy={approveAllTagOptimizations.isPending}
+            aria-busy={approveAllTagOptimizations.isPending || optimizeTags.isPending}
             aria-label="Tag optimization plan"
           >
             <div className="tag-optimization-head">
@@ -8213,9 +8228,27 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
                 </button>
               </div>
             </div>
+            {optimizeTags.isPending ? (
+              <div className="tag-optimization-progress" role="status" aria-live="polite">
+                <div className="tag-optimization-progress-copy">
+                  <span>Building plan</span>
+                  <strong>
+                    Reviewing {optimizationScopeLabel} tags with {tagSuggestionsModel} - {formatDuration(optimizationElapsedSeconds) || "0s"}
+                  </strong>
+                </div>
+                <div
+                  className="tag-optimization-progress-track"
+                  role="progressbar"
+                  aria-label="Tag optimization plan generation in progress"
+                  aria-valuetext={`Building plan for ${optimizationScopeLabel} tags`}
+                >
+                  <span />
+                </div>
+              </div>
+            ) : null}
             {approveAllTagOptimizations.isPending ? (
-              <div className="tag-optimization-bulk-progress" role="status" aria-live="polite">
-                <div className="tag-optimization-bulk-progress-copy">
+              <div className="tag-optimization-progress" role="status" aria-live="polite">
+                <div className="tag-optimization-progress-copy">
                   <span>Bulk apply</span>
                   <strong>
                     Applying {governanceSuggestionCount} action{governanceSuggestionCount === 1 ? "" : "s"}
@@ -8223,7 +8256,7 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
                   </strong>
                 </div>
                 <div
-                  className="tag-optimization-bulk-progress-track"
+                  className="tag-optimization-progress-track"
                   role="progressbar"
                   aria-label="Bulk optimization approval in progress"
                   aria-valuetext="Applying optimization actions"

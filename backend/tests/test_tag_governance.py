@@ -288,6 +288,36 @@ def test_optimize_uses_import_tag_creation_model(monkeypatch, tmp_path):
         assert result.model == "gpt-5.4"
 
 
+def test_optimize_caps_broad_model_inventory_but_counts_full_scope(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+
+    from app.main import TAG_OPTIMIZATION_AI_INVENTORY_LIMIT, optimize_tags
+    from app.models import Tag
+    from app.schemas import TagOptimizationCreate
+
+    seen: dict[str, int] = {}
+
+    class FakeAiService:
+        def generate_tag_optimization_suggestions(self, tags, **_):
+            seen["model_inventory_size"] = len(tags)
+            return {"suggestions": [], "singleton_suggestions": []}
+
+    monkeypatch.setattr("app.main.get_ai_service", lambda: FakeAiService())
+
+    with Session() as db:
+        tags = [
+            Tag(name=f"legacy singleton family {index}", kind="tag", status="candidate")
+            for index in range(TAG_OPTIMIZATION_AI_INVENTORY_LIMIT + 25)
+        ]
+        db.add_all(tags)
+        db.commit()
+
+        result = optimize_tags(TagOptimizationCreate(tag_ids=[tag.id for tag in tags]), object(), db)
+
+        assert seen["model_inventory_size"] == TAG_OPTIMIZATION_AI_INVENTORY_LIMIT
+        assert result.considered_tags == TAG_OPTIMIZATION_AI_INVENTORY_LIMIT + 25
+
+
 def test_optimize_flags_legacy_singleton_canonical_tags(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
 

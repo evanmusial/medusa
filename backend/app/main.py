@@ -294,6 +294,21 @@ def tag_document_count(db: Session, tag_id: str) -> int:
     )
 
 
+def tag_document_counts(db: Session, tag_ids: list[str]) -> dict[str, int]:
+    unique_ids = unique_tag_ids(tag_ids)
+    if not unique_ids:
+        return {}
+    rows = (
+        db.query(document_tags.c.tag_id, func.count(Document.id))
+        .select_from(document_tags)
+        .join(Document, Document.id == document_tags.c.document_id)
+        .filter(document_tags.c.tag_id.in_(unique_ids), library_visible_document_filter())
+        .group_by(document_tags.c.tag_id)
+        .all()
+    )
+    return {str(tag_id): int(count or 0) for tag_id, count in rows}
+
+
 def tag_document_link_count(db: Session, tag_id: str) -> int:
     return int(db.execute(select(func.count()).select_from(document_tags).where(document_tags.c.tag_id == tag_id)).scalar() or 0)
 
@@ -599,6 +614,7 @@ TAG_OPTIMIZATION_ORPHAN_PRUNE_LIMIT = 200
 TAG_OPTIMIZATION_RELATIONSHIP_LIMIT = 120
 TAG_OPTIMIZATION_STATUS_LIMIT = 200
 TAG_OPTIMIZATION_ASSIGNMENT_PRUNE_LIMIT = 200
+TAG_OPTIMIZATION_AI_INVENTORY_LIMIT = 650
 
 
 def cleanup_tag_tokens(name: str) -> list[str]:
@@ -629,6 +645,76 @@ def cleanup_prefix_target(source_name: str, candidate_name: str) -> bool:
 
 def useful_cleanup_prefix(tokens: list[str]) -> bool:
     return len(tokens) >= 2 and any(token not in TAG_CLEANUP_PREFIX_STOPWORDS for token in tokens)
+
+
+def tag_optimization_model_inventory(inventory: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(inventory) <= TAG_OPTIMIZATION_AI_INVENTORY_LIMIT:
+        return inventory
+
+    def item_count(item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("document_count") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    by_name = {normalize_tag_name(str(item.get("name") or "")): item for item in inventory}
+    variant_groups: dict[str, list[dict[str, Any]]] = {}
+    prefix_groups: dict[str, list[dict[str, Any]]] = {}
+    target_ids: set[str] = set()
+    for item in inventory:
+        item_id = str(item.get("id") or "")
+        name = str(item.get("name") or "")
+        tokens = cleanup_tag_tokens(name)
+        variant_key = cleanup_tag_variant_key(name)
+        if variant_key:
+            variant_groups.setdefault(variant_key, []).append(item)
+        if len(tokens) >= 2:
+            prefix_groups.setdefault(" ".join(tokens[:2]), []).append(item)
+        if item_count(item) <= 1:
+            for prefix_length in range(2, min(5, len(tokens))):
+                target = by_name.get(" ".join(tokens[:prefix_length]))
+                if target:
+                    target_ids.add(str(target.get("id") or ""))
+            if item_id:
+                target_ids.add(item_id)
+
+    variant_group_sizes = {
+        str(item.get("id") or ""): len(group)
+        for group in variant_groups.values()
+        if len(group) > 1
+        for item in group
+    }
+    prefix_group_sizes = {
+        str(item.get("id") or ""): len(group)
+        for group in prefix_groups.values()
+        if len(group) > 1
+        for item in group
+    }
+    scored: list[tuple[int, int, str, dict[str, Any]]] = []
+    for item in inventory:
+        item_id = str(item.get("id") or "")
+        name = str(item.get("name") or "")
+        tokens = cleanup_tag_tokens(name)
+        count = item_count(item)
+        score = 0
+        if count == 0:
+            score += 115
+        elif count == 1:
+            score += 105
+        elif count <= 3:
+            score += 35
+        if item_id in target_ids:
+            score += 80
+        if item_id in variant_group_sizes:
+            score += min(90, 45 + variant_group_sizes[item_id] * 8)
+        if item_id in prefix_group_sizes:
+            score += min(70, 24 + prefix_group_sizes[item_id] * 4)
+        if len(tokens) >= 3:
+            score += min(35, (len(tokens) - 2) * 8)
+        scored.append((score, count, name, item))
+
+    selected = [item for score, _, _, item in sorted(scored, key=lambda row: (-row[0], row[1], row[2]))[:TAG_OPTIMIZATION_AI_INVENTORY_LIMIT]]
+    return sorted(selected, key=lambda item: str(item.get("name") or "").lower())
 
 
 def orphan_merge_candidate(
@@ -1653,18 +1739,20 @@ def optimize_tags(
     if len(tag_rows) < 2:
         raise HTTPException(status_code=400, detail="At least two tags are required for optimization")
 
+    document_counts_by_id = tag_document_counts(db, [tag.id for tag in tag_rows])
     inventory = [
         {
             "id": tag.id,
             "name": tag.name,
-            "document_count": tag_document_count(db, tag.id),
+            "document_count": document_counts_by_id.get(tag.id, 0),
         }
         for tag in tag_rows
     ]
+    model_inventory = tag_optimization_model_inventory(inventory)
     tag_creation_model = get_analysis_model(db, MODEL_KEYWORDS_TOPICS)
     try:
         result = get_ai_service().generate_tag_optimization_suggestions(
-            inventory,
+            model_inventory,
             model=tag_creation_model,
             primary_limit=TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT,
             singleton_limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
@@ -1677,8 +1765,7 @@ def optimize_tags(
     considered_tag_by_name = {tag.name: tag for tag in tag_rows}
     all_tag_rows = db.query(Tag).order_by(Tag.name).all()
     all_tag_by_name = {tag.name: tag for tag in all_tag_rows}
-    all_document_counts_by_id = {tag.id: tag_document_count(db, tag.id) for tag in all_tag_rows}
-    document_counts_by_id = {item["id"]: int(item["document_count"]) for item in inventory}
+    all_document_counts_by_id = tag_document_counts(db, [tag.id for tag in all_tag_rows])
     suggestions: list[TagOptimizationSuggestionOut] = []
     singleton_suggestions: list[TagOptimizationSuggestionOut] = []
     orphan_merge_suggestions: list[TagOptimizationSuggestionOut] = []
