@@ -243,10 +243,28 @@ export type Domain = {
   document_count: number;
 };
 
+export type DomainUpdatePayload = {
+  name?: string | null;
+  parent_id?: string | null;
+  description?: string | null;
+  color?: string | null;
+  sort_order?: number | null;
+};
+
+export type DomainReorderItem = {
+  id: string;
+  parent_id?: string | null;
+  sort_order: number;
+};
+
+export type DomainDeleteResult = {
+  deleted_id: string;
+  updated_documents: number;
+};
+
 export type Tag = {
   id: string;
   name: string;
-  kind: string;
   color?: string | null;
   document_count: number;
 };

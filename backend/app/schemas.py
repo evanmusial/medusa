@@ -41,6 +41,24 @@ class DomainCreate(BaseModel):
     color: str | None = None
 
 
+class DomainPatch(BaseModel):
+    name: str | None = None
+    parent_id: str | None = None
+    description: str | None = None
+    color: str | None = None
+    sort_order: int | None = None
+
+
+class DomainReorderItem(BaseModel):
+    id: str
+    parent_id: str | None = None
+    sort_order: int
+
+
+class DomainReorder(BaseModel):
+    domains: list[DomainReorderItem] = Field(min_length=1)
+
+
 class DomainOut(ApiModel):
     id: str
     parent_id: str | None = None
@@ -51,9 +69,13 @@ class DomainOut(ApiModel):
     document_count: int = 0
 
 
+class DomainDeleteOut(BaseModel):
+    deleted_id: str
+    updated_documents: int
+
+
 class TagCreate(BaseModel):
     name: str
-    kind: str = "keyword"
     color: str | None = None
 
 

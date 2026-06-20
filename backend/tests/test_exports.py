@@ -17,7 +17,7 @@ def test_metadata_export_includes_manifest_without_auth_secrets(monkeypatch, tmp
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
-    from app.models import Document, Figure, SessionToken, TextChunk, User
+    from app.models import Document, Figure, SessionToken, Tag, TagAlias, TextChunk, User
     from app.services.exports import build_metadata_export
 
     Session = make_session()
@@ -42,6 +42,10 @@ def test_metadata_export_includes_manifest_without_auth_secrets(monkeypatch, tmp
         )
         db.add(document)
         db.flush()
+        tag = Tag(name="canonical tag", kind="tag")
+        db.add(tag)
+        db.flush()
+        db.add(TagAlias(alias_name="merged tag", target_tag_id=tag.id, source="merge", alias_metadata={"source_tag_name": "merged tag"}))
         db.add(TextChunk(document_id=document.id, page_start=1, page_end=1, text="chunk text", token_count=2))
         db.add(
             Figure(
@@ -69,6 +73,8 @@ def test_metadata_export_includes_manifest_without_auth_secrets(monkeypatch, tmp
             "updated_at": user.updated_at.isoformat(),
         }
         assert "password_hash" not in exported["data"]["users"][0]
+        assert exported["data"]["tag_aliases"][0]["alias_name"] == "merged tag"
+        assert exported["data"]["tag_aliases"][0]["target_tag_id"] == tag.id
         assert exported["data"]["documents"][0]["text_chunks"][0]["text"] == "chunk text"
         assert exported["data"]["documents"][0]["figures"][0]["geometry"]["source"] == "page_image"
         assert exported["storage_manifest"]["counts"] == {"figure": 1, "original": 1}

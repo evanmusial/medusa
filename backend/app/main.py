@@ -82,7 +82,10 @@ from app.schemas import (
     DoiStashOut,
     DocumentSummary,
     DomainCreate,
+    DomainDeleteOut,
     DomainOut,
+    DomainPatch,
+    DomainReorder,
     ImportBatchOut,
     ImportDuplicateCheckOut,
     ImportDuplicateDocumentOut,
@@ -170,6 +173,12 @@ from app.services.recommendations import (
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import rebuild_document_search_text
 from app.services.storage import get_storage_service
+from app.services.tags import (
+    get_or_create_tag as get_or_create_canonical_tag,
+    normalize_tag_name as normalize_canonical_tag_name,
+    remember_tag_merge_aliases,
+    resolve_tag_alias,
+)
 
 
 settings = get_settings()
@@ -219,7 +228,7 @@ def current_user(
     return user
 
 
-def domain_out(domain: Domain) -> DomainOut:
+def domain_out(domain: Domain, db: Session | None = None) -> DomainOut:
     return DomainOut(
         id=domain.id,
         parent_id=domain.parent_id,
@@ -227,7 +236,7 @@ def domain_out(domain: Domain) -> DomainOut:
         description=domain.description,
         color=domain.color,
         sort_order=domain.sort_order,
-        document_count=len(domain.documents),
+        document_count=domain_document_count(db, domain.id) if db else len([document for document in domain.documents if not document.deleted_at]),
     )
 
 
@@ -363,20 +372,120 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
 
 
 def normalize_tag_name(name: str) -> str:
-    return " ".join(name.strip().lower().split())
+    return normalize_canonical_tag_name(name)
 
 
-def get_or_create_tag_by_name(db: Session, name: str, kind: str = "keyword") -> Tag | None:
-    normalized = normalize_tag_name(name)
+def normalize_domain_name(name: str) -> str:
+    return " ".join(name.strip().split())
+
+
+def normalize_domain_color(color: str | None) -> str | None:
+    if color is None:
+        return None
+    normalized = color.strip().lower()
     if not normalized:
         return None
-    tag = db.query(Tag).filter(Tag.name == normalized).one_or_none()
-    if tag:
-        return tag
-    tag = Tag(name=normalized, kind=kind)
-    db.add(tag)
-    db.flush()
-    return tag
+    if len(normalized) == 7 and normalized.startswith("#") and all(char in "0123456789abcdef" for char in normalized[1:]):
+        return normalized
+    raise HTTPException(status_code=400, detail="Domain color must be a #RRGGBB hex value")
+
+
+def domain_document_count(db: Session | None, domain_id: str) -> int:
+    if db is None:
+        return 0
+    return (
+        db.query(Document)
+        .filter(Document.deleted_at.is_(None), Document.domains.any(Domain.id == domain_id))
+        .count()
+    )
+
+
+def get_active_domain(db: Session, domain_id: str) -> Domain:
+    domain = db.get(Domain, domain_id)
+    if not domain or domain.deleted_at:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    return domain
+
+
+def active_domain_name_exists(db: Session, *, name: str, parent_id: str | None, exclude_id: str | None = None) -> bool:
+    normalized_name = name.lower()
+    query = db.query(Domain).filter(Domain.deleted_at.is_(None))
+    if parent_id:
+        query = query.filter(Domain.parent_id == parent_id)
+    else:
+        query = query.filter(Domain.parent_id.is_(None))
+    if exclude_id:
+        query = query.filter(Domain.id != exclude_id)
+    return any((domain.name or "").lower() == normalized_name for domain in query.all())
+
+
+def validate_domain_parent(db: Session, *, domain_id: str | None, parent_id: str | None) -> str | None:
+    if not parent_id:
+        return None
+    if domain_id and parent_id == domain_id:
+        raise HTTPException(status_code=400, detail="A domain cannot be its own parent")
+    parent = get_active_domain(db, parent_id)
+    seen: set[str] = set()
+    current: Domain | None = parent
+    while current:
+        if current.id in seen:
+            raise HTTPException(status_code=400, detail="Domain parent chain contains a cycle")
+        if domain_id and current.id == domain_id:
+            raise HTTPException(status_code=400, detail="A domain cannot be moved under one of its children")
+        seen.add(current.id)
+        current = db.get(Domain, current.parent_id) if current.parent_id else None
+        if current and current.deleted_at:
+            current = None
+    return parent_id
+
+
+def active_documents_for_domain_ids(db: Session, domain_ids: list[str]) -> list[Document]:
+    if not domain_ids:
+        return []
+    return (
+        db.query(Document)
+        .filter(Document.deleted_at.is_(None), Document.domains.any(Domain.id.in_(domain_ids)))
+        .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
+        .order_by(Document.title, Document.id)
+        .all()
+    )
+
+
+def record_domain_operation_history(
+    db: Session,
+    *,
+    documents: list[Document],
+    before_by_id: dict[str, dict[str, Any]],
+    change_note: str,
+    operation: str,
+    extra: dict[str, Any],
+    force_domain_change: bool = False,
+) -> int:
+    updated_documents = 0
+    for document in documents:
+        before = before_by_id.get(document.id) or document_correction_snapshot(document)
+        after = document_correction_snapshot(document)
+        changed_fields = set(changed_snapshot_fields(before, after))
+        if not force_domain_change and "domains" not in changed_fields:
+            continue
+        document.search_text = rebuild_document_search_text(document)
+        changed_fields.add("domains")
+        record_document_version(
+            db,
+            document=document,
+            change_note=change_note,
+            changed_fields=changed_fields,
+            before=before,
+            after=after,
+            extra={"operation": operation, **extra},
+        )
+        record_manual_edit(db, document=document, message=change_note, metadata={"operation": operation, **extra})
+        updated_documents += 1
+    return updated_documents
+
+
+def get_or_create_tag_by_name(db: Session, name: str) -> Tag | None:
+    return get_or_create_canonical_tag(db, name)
 
 
 def active_documents_for_tag_ids(db: Session, tag_ids: list[str]) -> list[Document]:
@@ -782,7 +891,7 @@ def read_openai_usage(
 @app.get("/api/domains", response_model=list[DomainOut])
 def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[DomainOut]:
     domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(Domain.sort_order, Domain.name).all()
-    return [domain_out(domain) for domain in domains]
+    return [domain_out(domain, db) for domain in domains]
 
 
 @app.post("/api/domains", response_model=DomainOut)
@@ -791,16 +900,173 @@ def create_domain(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> DomainOut:
-    domain = Domain(**payload.model_dump())
+    name = normalize_domain_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Domain name is required")
+    parent_id = validate_domain_parent(db, domain_id=None, parent_id=payload.parent_id)
+    if active_domain_name_exists(db, name=name, parent_id=parent_id):
+        raise HTTPException(status_code=409, detail="A domain with that name already exists at this level")
+    next_order = (
+        db.query(func.max(Domain.sort_order))
+        .filter(Domain.deleted_at.is_(None), Domain.parent_id == parent_id if parent_id else Domain.parent_id.is_(None))
+        .scalar()
+        or 0
+    ) + 1
+    domain = Domain(
+        name=name,
+        parent_id=parent_id,
+        description=(payload.description or "").strip() or None,
+        color=normalize_domain_color(payload.color),
+        sort_order=next_order,
+    )
     db.add(domain)
     db.commit()
     db.refresh(domain)
-    return domain_out(domain)
+    return domain_out(domain, db)
+
+
+@app.patch("/api/domains/{domain_id}", response_model=DomainOut)
+def update_domain(
+    domain_id: str,
+    payload: DomainPatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DomainOut:
+    domain = get_active_domain(db, domain_id)
+    old_name = domain.name
+    old_parent_id = domain.parent_id
+    documents = active_documents_for_domain_ids(db, [domain.id])
+    before_by_id = {document.id: document_correction_snapshot(document) for document in documents}
+
+    if "name" in payload.model_fields_set:
+        name = normalize_domain_name(payload.name or "")
+        if not name:
+            raise HTTPException(status_code=400, detail="Domain name is required")
+        if name != domain.name and active_domain_name_exists(db, name=name, parent_id=domain.parent_id, exclude_id=domain.id):
+            raise HTTPException(status_code=409, detail="A domain with that name already exists at this level")
+        domain.name = name
+
+    if "parent_id" in payload.model_fields_set:
+        parent_id = validate_domain_parent(db, domain_id=domain.id, parent_id=payload.parent_id)
+        if active_domain_name_exists(db, name=domain.name, parent_id=parent_id, exclude_id=domain.id):
+            raise HTTPException(status_code=409, detail="A domain with that name already exists at the destination level")
+        domain.parent_id = parent_id
+
+    if "description" in payload.model_fields_set:
+        domain.description = (payload.description or "").strip() or None
+
+    if "color" in payload.model_fields_set:
+        domain.color = normalize_domain_color(payload.color)
+
+    if "sort_order" in payload.model_fields_set and payload.sort_order is not None:
+        domain.sort_order = payload.sort_order
+
+    db.flush()
+    if domain.name != old_name:
+        record_domain_operation_history(
+            db,
+            documents=documents,
+            before_by_id=before_by_id,
+            change_note=f'Renamed domain "{old_name}" to "{domain.name}"',
+            operation="domain_rename",
+            extra={"domain_id": domain.id, "old_name": old_name, "new_name": domain.name},
+            force_domain_change=True,
+        )
+    elif domain.parent_id != old_parent_id:
+        for document in documents:
+            document.search_text = rebuild_document_search_text(document)
+
+    db.commit()
+    db.refresh(domain)
+    return domain_out(domain, db)
+
+
+@app.post("/api/domains/reorder", response_model=list[DomainOut])
+def reorder_domains(
+    payload: DomainReorder,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[DomainOut]:
+    requested_ids = [item.id for item in payload.domains]
+    if len(requested_ids) != len(set(requested_ids)):
+        raise HTTPException(status_code=400, detail="Domain reorder payload contains duplicate ids")
+    domains = db.query(Domain).filter(Domain.id.in_(requested_ids), Domain.deleted_at.is_(None)).all()
+    if len(domains) != len(requested_ids):
+        raise HTTPException(status_code=404, detail="One or more domains were not found")
+    domain_by_id = {domain.id: domain for domain in domains}
+    proposed_parents = {item.id: item.parent_id for item in payload.domains}
+
+    for item in payload.domains:
+        domain = domain_by_id[item.id]
+        parent_id = item.parent_id
+        if parent_id and parent_id not in domain_by_id:
+            validate_domain_parent(db, domain_id=domain.id, parent_id=parent_id)
+        elif parent_id == domain.id:
+            raise HTTPException(status_code=400, detail="A domain cannot be its own parent")
+
+        seen: set[str] = set()
+        current_parent_id = parent_id
+        while current_parent_id:
+            if current_parent_id == domain.id or current_parent_id in seen:
+                raise HTTPException(status_code=400, detail="Domain reorder would create a parent cycle")
+            seen.add(current_parent_id)
+            current_parent = domain_by_id.get(current_parent_id) or get_active_domain(db, current_parent_id)
+            current_parent_id = proposed_parents.get(current_parent.id, current_parent.parent_id)
+
+    for item in payload.domains:
+        domain = domain_by_id[item.id]
+        if active_domain_name_exists(db, name=domain.name, parent_id=item.parent_id, exclude_id=domain.id):
+            raise HTTPException(status_code=409, detail=f'A domain named "{domain.name}" already exists at the destination level')
+        domain.parent_id = item.parent_id
+        domain.sort_order = item.sort_order
+
+    db.commit()
+    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(Domain.sort_order, Domain.name).all()
+    return [domain_out(domain, db) for domain in domains]
+
+
+@app.delete("/api/domains/{domain_id}", response_model=DomainDeleteOut)
+def delete_domain(
+    domain_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DomainDeleteOut:
+    domain = get_active_domain(db, domain_id)
+    documents = active_documents_for_domain_ids(db, [domain.id])
+    before_by_id = {document.id: document_correction_snapshot(document) for document in documents}
+
+    for document in documents:
+        document.domains = [item for item in document.domains if item.id != domain.id]
+
+    children = db.query(Domain).filter(Domain.deleted_at.is_(None), Domain.parent_id == domain.id).order_by(Domain.sort_order, Domain.name).all()
+    for child in children:
+        target_parent_id = domain.parent_id
+        if active_domain_name_exists(db, name=child.name, parent_id=target_parent_id, exclude_id=child.id):
+            target_parent_id = None
+        child.parent_id = target_parent_id
+
+    db.query(Note).filter(Note.domain_id == domain.id).update({Note.domain_id: None}, synchronize_session=False)
+    deleted_at = utc_now()
+    domain.deleted_at = deleted_at
+    domain.parent_id = None
+    domain.sort_order = 0
+
+    db.flush()
+    updated_documents = record_domain_operation_history(
+        db,
+        documents=documents,
+        before_by_id=before_by_id,
+        change_note=f'Deleted domain "{domain.name}"',
+        operation="domain_delete",
+        extra={"domain_id": domain.id, "name": domain.name},
+    )
+    db.commit()
+    return DomainDeleteOut(deleted_id=domain.id, updated_documents=updated_documents)
 
 
 @app.get("/api/tags", response_model=list[TagOut])
 def list_tags(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[TagOut]:
-    return [tag_out(tag, db) for tag in db.query(Tag).order_by(Tag.kind, Tag.name).all()]
+    return [tag_out(tag, db) for tag in db.query(Tag).order_by(Tag.name).all()]
 
 
 @app.post("/api/tags", response_model=TagOut)
@@ -809,11 +1075,11 @@ def create_tag(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> TagOut:
-    name = normalize_tag_name(payload.name)
-    if not name:
+    tag = get_or_create_tag_by_name(db, payload.name)
+    if not tag:
         raise HTTPException(status_code=400, detail="Tag name is required")
-    tag = Tag(name=name, kind=payload.kind, color=payload.color)
-    db.add(tag)
+    if payload.color and not tag.color:
+        tag.color = payload.color
     db.commit()
     db.refresh(tag)
     return tag_out(tag, db)
@@ -874,12 +1140,16 @@ def merge_tags(
 
     target_tag: Tag | None = None
     target_name = normalize_tag_name(payload.target_name or "")
+    target_name_matched_alias = False
     if payload.target_tag_id:
         if payload.target_tag_id not in source_by_id:
             raise HTTPException(status_code=400, detail="Kept tag must be one of the selected tags")
         target_tag = source_by_id[payload.target_tag_id]
     elif target_name:
         target_tag = db.query(Tag).filter(Tag.name == target_name).one_or_none()
+        if target_tag is None:
+            target_tag = resolve_tag_alias(db, target_name)
+            target_name_matched_alias = target_tag is not None
         if target_tag is None:
             target_tag = source_tags[0]
     else:
@@ -888,14 +1158,29 @@ def merge_tags(
     documents = active_documents_for_tag_ids(db, source_ids)
     before_by_id = {document.id: document_correction_snapshot(document) for document in documents}
 
-    if target_name and target_tag.name != target_name:
+    if target_name and not target_name_matched_alias and target_tag.name != target_name:
         collision = db.query(Tag).filter(Tag.id != target_tag.id, Tag.name == target_name).one_or_none()
         if collision:
             target_tag = collision
         else:
             target_tag.name = target_name
 
-    removed_tag_ids: list[str] = []
+    removed_tag_ids = [tag.id for tag in source_tags if tag.id != target_tag.id]
+    alias_names = remember_tag_merge_aliases(
+        db,
+        source_tag_ids=source_ids,
+        source_tag_names=source_names,
+        target_tag=target_tag,
+        metadata={
+            "operation": "tag_merge",
+            "source_tag_ids": source_ids,
+            "source_tag_names": source_names,
+            "target_tag_id": target_tag.id,
+            "target_tag_name": target_tag.name,
+            "removed_tag_ids": removed_tag_ids,
+        },
+    )
+
     for document in documents:
         next_tags = [tag for tag in document.tags if tag.id not in source_ids or tag.id == target_tag.id]
         if all(tag.id != target_tag.id for tag in next_tags):
@@ -905,7 +1190,6 @@ def merge_tags(
     for tag in source_tags:
         if tag.id == target_tag.id:
             continue
-        removed_tag_ids.append(tag.id)
         db.delete(tag)
 
     db.flush()
@@ -921,6 +1205,7 @@ def merge_tags(
             "target_tag_id": target_tag.id,
             "target_tag_name": target_tag.name,
             "removed_tag_ids": removed_tag_ids,
+            "alias_names": alias_names,
         },
     )
     db.commit()
@@ -938,7 +1223,7 @@ def optimize_tags(
     query = db.query(Tag)
     if requested_ids:
         query = query.filter(Tag.id.in_(requested_ids))
-    tag_rows = query.order_by(Tag.kind, Tag.name).all()
+    tag_rows = query.order_by(Tag.name).all()
     if requested_ids and len(tag_rows) != len(requested_ids):
         raise HTTPException(status_code=404, detail="One or more tags were not found")
     if len(tag_rows) < 2:
@@ -948,7 +1233,6 @@ def optimize_tags(
         {
             "id": tag.id,
             "name": tag.name,
-            "kind": tag.kind,
             "document_count": tag_document_count(db, tag.id),
         }
         for tag in tag_rows

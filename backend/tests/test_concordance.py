@@ -322,3 +322,85 @@ def test_concordance_summary_refresh_uses_summary_only_model(monkeypatch, tmp_pa
                 "prompt_cache_key": f"medusa-doc:{'9' * 64}:summary",
             }
         ]
+
+
+def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document_tags(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, Tag
+    from app.services.concordance import ConcordanceProcessor
+
+    calls: list[dict[str, object]] = []
+
+    class FakeAiService:
+        def extract_metadata(self, filename, text, *, pdf_bytes=None, models=None, existing_tags=None, usage_context=None, prompt_cache_key=None):
+            calls.append(
+                {
+                    "filename": filename,
+                    "text": text,
+                    "existing_tags": existing_tags,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
+                "title": "Tagged Target",
+                "subtitle": None,
+                "authors": [],
+                "universities": [],
+                "publication_year": None,
+                "journal": None,
+                "publisher": None,
+                "doi": None,
+                "abstract": None,
+                "rich_summary": "Fresh summary.",
+                "apa_citation": None,
+                "topics": ["shared concept"],
+                "keywords": ["new concept"],
+                "confidence": 0.88,
+                "needs_review_reasons": [],
+                "citation_warnings": [],
+                "_openai": {"model": "gpt-5.4-mini", "used_pdf_file": False},
+            }
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        manual_tag = Tag(name="manual keep", kind="tag")
+        shared_tag = Tag(name="shared concept", kind="tag")
+        document = Document(
+            title="Tagged Target",
+            original_filename="tagged-target.pdf",
+            checksum_sha256="8" * 64,
+            search_text="Original searchable document text.",
+            tags=[manual_tag],
+        )
+        db.add_all([manual_tag, shared_tag, document])
+        run = ConcordanceRun(scope_type="library", scope_data={}, capability_keys=["summary_topics"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run_id=run.id,
+            document_id=document.id,
+            capability_key="summary_topics",
+            target_version=7,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+        db.refresh(document)
+
+        assert job.status == "complete"
+        assert sorted(tag.name for tag in document.tags) == ["manual keep", "new concept", "shared concept"]
+        assert calls == [
+            {
+                "filename": "tagged-target.pdf",
+                "text": "Original searchable document text.",
+                "existing_tags": ["manual keep", "shared concept"],
+                "capability_key": "summary_topics",
+                "prompt_cache_key": f"medusa-doc:{'8' * 64}",
+            }
+        ]

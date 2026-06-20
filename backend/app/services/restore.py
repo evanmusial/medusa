@@ -33,6 +33,7 @@ from app.models import (
     ProjectItem,
     SavedSearch,
     Tag,
+    TagAlias,
     TextChunk,
 )
 from app.services.exports import EXPORT_SCHEMA_VERSION
@@ -62,6 +63,7 @@ PARKED_JOB_STATUSES = {"queued", "running", "processing", "in_progress", "locked
 RESTORE_SECTIONS = [
     "domains",
     "tags",
+    "tag_aliases",
     "saved_searches",
     "attribute_definitions",
     "documents",
@@ -201,6 +203,11 @@ def restore_metadata_export(
     try:
         restored_counts["domains"] = _restore_domains(db, _section(data, "domains"), id_maps, preserve_ids)
         restored_counts["tags"] = _restore_tags(db, _section(data, "tags"), id_maps, preserve_ids)
+        restored_counts["tag_aliases"], skipped_rows["tag_aliases"] = _restore_tag_aliases(
+            db,
+            _section(data, "tag_aliases"),
+            id_maps,
+        )
         restored_counts["saved_searches"] = _restore_saved_searches(
             db,
             _section(data, "saved_searches"),
@@ -328,7 +335,7 @@ def _restore_tags(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, di
             tag = Tag(**_restore_kwargs(row, preserve_ids, name=name))
             db.add(tag)
         tag.name = name
-        tag.kind = row.get("kind") or "keyword"
+        tag.kind = "tag"
         tag.color = row.get("color")
         _apply_timestamps(tag, row)
         db.flush()
@@ -336,6 +343,36 @@ def _restore_tags(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, di
             id_maps["tags"][original_id] = tag.id
         count += 1
     return count
+
+
+def _restore_tag_aliases(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        alias_name = row.get("alias_name")
+        if not alias_name:
+            skipped += 1
+            continue
+        original_target_id = row.get("target_tag_id")
+        target_id = id_maps["tags"].get(original_target_id) or original_target_id
+        if not target_id or not db.get(Tag, target_id):
+            skipped += 1
+            continue
+        alias = db.get(TagAlias, alias_name)
+        if not alias:
+            alias = TagAlias(alias_name=alias_name, target_tag_id=target_id)
+            db.add(alias)
+        alias.target_tag_id = target_id
+        alias.source = row.get("source") or "merge"
+        alias.alias_metadata = row.get("metadata") or {}
+        _apply_timestamps(alias, row)
+        count += 1
+    db.flush()
+    return count, skipped
 
 
 def _restore_saved_searches(

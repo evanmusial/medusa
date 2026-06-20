@@ -48,6 +48,7 @@ from app.services.processing import (
 )
 from app.services.recommendations import refresh_document_recommendations
 from app.services.search import rebuild_document_search_text
+from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
     crossref_lookup,
     crossref_to_citation_metadata,
@@ -612,6 +613,7 @@ class ConcordanceProcessor:
                 MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
                 MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
             },
+            existing_tags=existing_tag_manifest(db),
             usage_context=self._usage_context(document, job, "summary_topics"),
             prompt_cache_key=f"medusa-doc:{document.checksum_sha256}",
         )
@@ -657,13 +659,13 @@ class ConcordanceProcessor:
 
         added_tags = 0
         for topic in metadata.get("topics") or []:
-            tag = get_or_create_tag(db, topic, "topic")
-            if tag not in document.tags:
+            tag = get_or_create_tag(db, topic)
+            if tag and tag not in document.tags:
                 document.tags.append(tag)
                 added_tags += 1
         for keyword in metadata.get("keywords") or []:
-            tag = get_or_create_tag(db, keyword, "keyword")
-            if tag not in document.tags:
+            tag = get_or_create_tag(db, keyword)
+            if tag and tag not in document.tags:
                 document.tags.append(tag)
                 added_tags += 1
         after = document_correction_snapshot(document)

@@ -229,10 +229,22 @@ class Tag(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
-    kind: Mapped[str] = mapped_column(String(40), default="keyword", nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), default="tag", nullable=False)
     color: Mapped[str | None] = mapped_column(String(32))
 
     documents: Mapped[list["Document"]] = relationship(secondary=document_tags, back_populates="tags")
+    aliases: Mapped[list["TagAlias"]] = relationship(back_populates="target_tag", cascade="all, delete-orphan")
+
+
+class TagAlias(Base, TimestampMixin):
+    __tablename__ = "tag_aliases"
+
+    alias_name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    target_tag_id: Mapped[str] = mapped_column(String(36), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(40), default="merge", nullable=False)
+    alias_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    target_tag: Mapped[Tag] = relationship(back_populates="aliases")
 
 
 class SavedSearch(Base, TimestampMixin, SoftDeleteMixin):

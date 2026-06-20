@@ -33,6 +33,7 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         ProjectBibliography,
         ProjectItem,
         Tag,
+        TagAlias,
         TextChunk,
         User,
     )
@@ -44,10 +45,11 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         user = User(email="admin@medusa.local", display_name="Admin", password_hash="not-in-export")
         parent = Domain(name="Philosophy")
         child = Domain(name="Cybernetics", parent=parent)
-        tag = Tag(name="systems", kind="topic")
+        tag = Tag(name="systems", kind="tag")
         attribute = AttributeDefinition(name="Aspect summary", value_type="markdown")
         source.add_all([user, parent, child, tag, attribute])
         source.flush()
+        source.add(TagAlias(alias_name="system theory", target_tag_id=tag.id, source="merge", alias_metadata={"source_tag_name": "system theory"}))
 
         document = Document(
             title="Restorable Paper",
@@ -111,13 +113,17 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         restored_job = destination.query(ImportJob).one()
         restored_project = destination.query(Project).one()
         restored_preference = destination.query(AppPreference).one()
+        restored_alias = destination.query(TagAlias).one()
 
         assert result["applied"] is True
+        assert result["restored_counts"]["tag_aliases"] == 1
         assert destination.query(User).count() == 0
         assert restored.title == "Restorable Paper"
         assert restored.domains[0].name == "Cybernetics"
         assert restored.domains[0].parent.name == "Philosophy"
         assert restored.tags[0].name == "systems"
+        assert restored_alias.alias_name == "system theory"
+        assert restored_alias.target_tag_id == restored.tags[0].id
         assert restored.pages[0].text == "Extracted page text."
         assert restored.pages[0].normalized_text == "Readable page text."
         assert restored.figures[0].asset_uri == "gs://bucket/figure.png"

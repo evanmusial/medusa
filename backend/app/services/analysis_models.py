@@ -103,9 +103,9 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
     ),
     AnalysisModelTask(
         key=MODEL_KEYWORDS_TOPICS,
-        label="Keywords & Topics",
+        label="Tag Suggestions",
         model_kind="gpt",
-        description="Suggests topic and keyword tags from extracted text. This defaults to GPT-5.4-mini because organization tags are lower-risk and reviewable.",
+        description="Suggests organization tags from extracted text. This defaults to GPT-5.4-mini because tags are lower-risk, reviewable, and flattened into one user-facing namespace.",
     ),
     AnalysisModelTask(
         key=MODEL_PAGE_TEXT_NORMALIZATION,

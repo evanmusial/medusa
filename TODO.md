@@ -21,7 +21,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Document Processing And Intelligence
 
 - [ ] Evaluate alternate core document-intelligence providers and cheaper GPT models.
-  - Acceptance: representative already-processed papers are compared side by side across the current routed GPT baseline, cheaper GPT options, Gemini, and Claude for metadata, summary, APA fallback, and keywords/topics; quality gaps, failure modes, latency, and recorded cost are documented before changing defaults.
+  - Acceptance: representative already-processed papers are compared side by side across the current routed GPT baseline, cheaper GPT options, Gemini, and Claude for metadata, summary, APA fallback, and tag suggestions; quality gaps, failure modes, latency, and recorded cost are documented before changing defaults.
 
 - [ ] Extend provider abstraction beyond OpenAI/Gemini.
   - Acceptance: Anthropic and local-model calls can be configured without committing credentials; every cloud call records provider, endpoint, model, task, token/file context where available, status, latency, and errors; Budget distinguishes provider costs and marks unknown pricing explicitly.
@@ -82,8 +82,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: Tags view can delete unused or selected tags only after confirmation, safely remove document links when requested, and record any document tag changes in `DocumentVersion` history.
   - Partial: Optimize now uses `gpt-5.4-mini` to produce reviewable merge suggestions with affected-document counts, and approved suggestions run through the audited merge path.
 
-- [ ] Normalize keyword/topic suggestion and display behavior.
-  - Acceptance: keyword/topic dropdowns and lists render alphabetically by default; any non-alphabetical display order is an explicit, view-specific choice; import and Concordance keyword/topic extraction splits overly verbose compound phrases into useful primitives, such as `insider threat assessment` into `insider threat` and `threat assessment`, and `access control and cyber identity` into `access control` and `cyber identity`; deduplication clusters near-duplicates and favors primitive keywords such as `access control` while still allowing meaningfully distinct specific variants such as `access control lists` or `access control monitoring`.
+- [ ] Normalize tag suggestion and display behavior.
+  - Acceptance: tag dropdowns and lists render alphabetically by default; any non-alphabetical display order is an explicit, view-specific choice; import and Concordance tag extraction splits overly verbose compound phrases into useful primitives, such as `insider threat assessment` into `insider threat` and `threat assessment`, and `access control and cyber identity` into `access control` and `cyber identity`; deduplication clusters near-duplicates and favors primitive tags such as `access control` while still allowing meaningfully distinct specific variants such as `access control lists` or `access control monitoring`.
+  - Partial: Tags are now user-facing flat labels; legacy keyword/topic kind values are normalized to `tag`, the Settings task is labeled Tag Suggestions, the Tags view no longer exposes a kind column, merged tag names are remembered as aliases so later import/Concordance/manual/bulk tag creation resolves them to the kept tag, tag prompts prefer an existing-tag manifest before proposing new labels, and Concordance tag refresh is additive.
 
 - [ ] Add richer recommendation source/import management.
   - Acceptance: related-paper recommendations can be refreshed on a schedule or Concordance scope, source/provider failures are visible in Settings, downloads run as durable background fetch jobs instead of request-time fetches, and non-open recommendations can be triaged into a wishlist without pretending a PDF is available.
@@ -98,7 +99,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add saved-search management improvements.
   - Acceptance: saved searches can be renamed, reordered, edited, duplicated, and used as durable library views.
 
-- [ ] Add domain tree management.
+- [x] Add domain tree management.
   - Acceptance: domains can be nested, reordered, renamed, moved, colored, and soft-deleted from the UI.
 
 - [ ] Add document-level BibTeX/RIS/CSL JSON copy/export controls.
@@ -135,7 +136,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Operations, Safety, And Portability
 
 - [x] Add browser-based full database backup and restore controls.
-  - Acceptance: Settings can start a full PostgreSQL backup to GCS, show backup/restore phase progress in the header, list GCS backups for restore, accept an inline dump upload, and require a fresh verified pre-restore backup before applying any restore.
+  - Acceptance: Settings can start a full PostgreSQL backup to GCS, show backup/restore phase progress in the header, list GCS backups and their total size for restore, require confirmation before restore, and require a fresh verified pre-restore backup before applying any restore.
 
 - [ ] Add backup scheduling, retention, and drill automation.
   - Acceptance: full database backups can run on a schedule, old GCS backups can be pruned by a visible retention policy, and a dry restore drill can validate the latest backup without replacing the live database.

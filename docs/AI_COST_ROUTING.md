@@ -1,6 +1,6 @@
 # AI Cost Routing Plan
 
-Last updated: 2026-06-19
+Last updated: 2026-06-20
 
 This page captures the current and proposed model/tool routing strategy for reducing cloud LLM spend while preserving rigorous academic quality in Medusa. Implemented defaults are called out in the pipeline table; candidate routes should be validated against a small gold set of representative papers before becoming defaults.
 
@@ -18,7 +18,7 @@ This page captures the current and proposed model/tool routing strategy for redu
 - Page text normalization is local-first and escalates only flagged pages in `auto` mode.
 - Metadata and APA fallback matching stay on `gpt-5.5`.
 - Summary and Accessory Summary generation default to `gpt-5.4`.
-- Keywords/topics default to `gpt-5.4-mini`.
+- Tag suggestion extraction defaults to `gpt-5.4-mini`. The legacy internal task key remains `keywords_topics`, but extracted concepts are stored, displayed, searched, exported, and optimized as flat tags. Prompts include a compact manifest of existing tags and prefer matching existing labels before proposing new concise labels.
 - DOI regex plus Crossref DOI/title/author/year matching runs before GPT APA fallback; Crossref-backed APA can be formatted locally.
 - The Budget ledger currently records OpenAI calls. Gemini, Anthropic, and local model accounting remain backlog work.
 - OpenAI text chunk encoding remains the current embedding default; local BGE-M3 is a candidate, not yet the app default.
@@ -32,7 +32,7 @@ This page captures the current and proposed model/tool routing strategy for redu
 | Text normalization | Local cleanup by default after Marker/PyMuPDF extraction | Auto-escalate only low-text or artifact-heavy pages, capped per document and text-only by default | Gemini 2.5 Flash-Lite/Flash, Claude, or GPT only for flagged pages; premium models only for exceptional pages | Never send the full PDF once per page by default. `MEDUSA_OPENAI_PAGE_NORMALIZATION_MODE=always` is the explicit override for all-pages cloud normalization. |
 | Metadata and citation identity | GPT-5.5 metadata extraction with PDF context when size-safe | Local DOI regex plus Crossref DOI/title/author/year matching | GPT-5.5 compact APA fallback only when DOI/Crossref cannot verify the citation | Do not ask GPT to create APA when Crossref metadata can format it deterministically. |
 | Summary | GPT-5.4 text-only structured summary | GPT-5.5 only for selected high-value reruns | Gemini/Claude alternatives only after quality evaluation | Avoid attaching the PDF for routine summaries. |
-| Keywords/topics | GPT-5.4-mini text-only extraction | Local keyword extraction or Gemini Flash-Lite after eval | Premium model only if organization quality is poor | Organization tags are reviewable and should use the cheap path first. |
+| Tag suggestions | GPT-5.4-mini text-only extraction | Local tag extraction or Gemini Flash-Lite after eval | Premium model only if organization quality is poor | Organization tags are reviewable, flattened, and should use the cheap path first. |
 | DOI and source verification | Deterministic DOI/title/author/year matching through Crossref, with DOI regex over extracted text | Semantic Scholar, OpenAlex, DOI.org, publisher/static source evidence | GPT-5.5 only to adjudicate ambiguity from a compact evidence packet | Verified status must come from evidence or explicit user acceptance, not model confidence alone. |
 | Accessory summaries | Current-document durable prompt summaries defaulting to GPT-5.4 | Gemini Flash or cheap GPT/Claude tier for drafts after provider support exists | GPT-5.5, Claude Sonnet, or Gemini Pro for important summaries | Not part of import; let task importance drive cost. |
 | Text chunk encoding | Current OpenAI embedding model; proposed target is local BGE-M3 after evaluation | Gemini Embedding, Voyage, or OpenAI embeddings if local runtime is impractical | None needed for quality beyond embedding evals | Strong local candidate. Reindex through Concordance when switching embedding models. |
@@ -45,7 +45,7 @@ This page captures the current and proposed model/tool routing strategy for redu
 
 Best fit:
 
-- Keywords and topics.
+- Tag suggestions.
 - Low-risk metadata fallback.
 - Cheap flagged-page normalization when local cleanup is poor.
 
@@ -96,7 +96,7 @@ Pros:
 
 Cons:
 
-- Too expensive for routine metadata, keywords, or page cleanup.
+- Too expensive for routine metadata, tag suggestions, or page cleanup.
 - Needs side-by-side evaluation before becoming a trusted final-summary model.
 
 ### Claude Haiku
@@ -104,7 +104,7 @@ Cons:
 Best fit:
 
 - Cheap-ish extraction and classification.
-- Metadata or keyword fallback when Anthropic provider support is desirable.
+- Metadata or tag-suggestion fallback when Anthropic provider support is desirable.
 
 Pros:
 

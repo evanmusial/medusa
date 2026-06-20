@@ -198,6 +198,36 @@ CORE_DOCUMENT_INTELLIGENCE_PROMPT = (
     "explain ambiguity in the relevant review reasons or citation warnings."
 )
 
+
+def _tag_generation_prompt(existing_tags: list[str] | None = None) -> str:
+    manifest = [tag for tag in existing_tags or [] if isinstance(tag, str) and tag.strip()]
+    if manifest:
+        manifest_text = json.dumps(manifest, ensure_ascii=False)
+        manifest_instruction = (
+            "Existing Medusa tags manifest, sorted alphabetically. Prefer exact tag names from this manifest when "
+            f"they fit the document's concepts: {manifest_text}. "
+        )
+    else:
+        manifest_instruction = "No existing Medusa tag manifest was supplied. "
+    return (
+        "Extract concise topic tags and keywords that would help organize and search this scholarly document. "
+        "Use only the supplied document context. "
+        f"{manifest_instruction}"
+        "Before inventing a new tag, compare the concept against the existing manifest. Use an existing tag when it "
+        "is equivalent, clearly synonymous, or an appropriate reusable broader concept. Add a new concise tag only "
+        "when the manifest is missing the concept or an existing tag would be misleading. Do not force unrelated "
+        "existing tags, and prefer short reusable concepts over long phrases."
+    )
+
+
+def _core_document_intelligence_prompt(existing_tags: list[str] | None = None) -> str:
+    return (
+        CORE_DOCUMENT_INTELLIGENCE_PROMPT
+        + "\n\nFor the topic tags and keywords portion: "
+        + _tag_generation_prompt(existing_tags)
+    )
+
+
 APA_CITATION_JUDGMENT_PROMPT = (
     "Generate and check an APA 7 citation candidate from the supplied citation metadata, matching evidence, "
     "and short document excerpts. Use only the supplied evidence. Prefer DOI-backed or publisher metadata when "
@@ -413,6 +443,7 @@ class AiService:
         pdf_bytes: bytes | None = None,
         *,
         models: dict[str, str] | None = None,
+        existing_tags: list[str] | None = None,
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
@@ -435,7 +466,7 @@ class AiService:
                     model=models[MODEL_METADATA],
                     schema_name="medusa_core_document_intelligence",
                     schema=CORE_DOCUMENT_INTELLIGENCE_SCHEMA,
-                    prompt=CORE_DOCUMENT_INTELLIGENCE_PROMPT,
+                    prompt=_core_document_intelligence_prompt(existing_tags),
                     input_content=input_content,
                     timeout=self.settings.openai_request_timeout_seconds,
                     usage_context=usage_context,
@@ -473,6 +504,7 @@ class AiService:
             pdf_bytes=pdf_bytes,
             usage_context=usage_context,
             prompt_cache_key=prompt_cache_key,
+            existing_tags=existing_tags,
         )
 
     def _extract_metadata_routed(
@@ -488,6 +520,7 @@ class AiService:
         pdf_bytes: bytes | None,
         usage_context: OpenAIUsageContext | None,
         prompt_cache_key: str | None,
+        existing_tags: list[str] | None,
     ) -> dict[str, Any]:
         identity = self._responses_json(
             model=models[MODEL_METADATA],
@@ -539,10 +572,7 @@ class AiService:
             model=models[MODEL_KEYWORDS_TOPICS],
             schema_name="medusa_keywords_topics",
             schema=KEYWORDS_TOPICS_SCHEMA,
-            prompt=(
-                "Extract concise topic tags and keywords that would help organize and search this scholarly document. "
-                "Use only the supplied extracted document text. Prefer short reusable concepts over long phrases."
-            ),
+            prompt=_tag_generation_prompt(existing_tags),
             input_content=keywords_input,
             timeout=self.settings.openai_request_timeout_seconds,
             usage_context=usage_context,
@@ -583,6 +613,7 @@ class AiService:
         pdf_bytes: bytes | None,
         usage_context: OpenAIUsageContext | None,
         prompt_cache_key: str | None,
+        existing_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         identity = self._responses_json(
             model=models[MODEL_METADATA],
@@ -640,10 +671,7 @@ class AiService:
             model=models[MODEL_KEYWORDS_TOPICS],
             schema_name="medusa_keywords_topics",
             schema=KEYWORDS_TOPICS_SCHEMA,
-            prompt=(
-                "Extract concise topic tags and keywords that would help organize and search this scholarly document. "
-                "Use only the supplied original PDF context and extracted text."
-            ),
+            prompt=_tag_generation_prompt(existing_tags),
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
             usage_context=usage_context,
@@ -867,7 +895,7 @@ class AiService:
         input_text = (
             "Tag inventory JSON:\n"
             f"{json.dumps(tags, ensure_ascii=True, sort_keys=True)}\n\n"
-            "Each tag has id, name, kind, and document_count. Suggest only high-value merge candidates."
+            "Each tag has id, name, and document_count. Suggest only high-value merge candidates."
         )
         return self._responses_json(
             model=model,

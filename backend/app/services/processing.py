@@ -14,7 +14,6 @@ from app.models import (
     ImportBatch,
     ImportJob,
     ProcessingEvent,
-    Tag,
     TextChunk,
     utc_now,
 )
@@ -47,6 +46,7 @@ from app.services.figures import process_document_figures
 from app.services.history import document_correction_snapshot, record_document_version
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
+from app.services.tags import existing_tag_manifest, get_or_create_tag
 from app.services.verifier import (
     crossref_lookup,
     crossref_to_citation_metadata,
@@ -123,17 +123,6 @@ def checkpoint_job_step(db: Session, job: ImportJob, document: Document, step: s
         log_event(db, job=job, document=document, event_type=step, message=message)
     job.locked_at = utc_now()
     db.commit()
-
-
-def get_or_create_tag(db: Session, name: str, kind: str = "keyword") -> Tag:
-    normalized = name.strip().lower()
-    tag = db.query(Tag).filter(Tag.name == normalized).one_or_none()
-    if tag:
-        return tag
-    tag = Tag(name=normalized, kind=kind)
-    db.add(tag)
-    db.flush()
-    return tag
 
 
 def document_metadata(document: Document) -> dict[str, Any]:
@@ -620,6 +609,7 @@ class DocumentProcessor:
                 MODEL_APA_CITATION: model_preferences[MODEL_APA_CITATION],
                 MODEL_KEYWORDS_TOPICS: model_preferences[MODEL_KEYWORDS_TOPICS],
             },
+            existing_tags=existing_tag_manifest(db),
             usage_context=OpenAIUsageContext(
                 document_id=document.id,
                 import_job_id=job.id,
@@ -709,12 +699,12 @@ class DocumentProcessor:
             )
 
         for topic in metadata.get("topics") or []:
-            tag = get_or_create_tag(db, topic, "topic")
-            if tag not in document.tags:
+            tag = get_or_create_tag(db, topic)
+            if tag and tag not in document.tags:
                 document.tags.append(tag)
         for keyword in metadata.get("keywords") or []:
-            tag = get_or_create_tag(db, keyword, "keyword")
-            if tag not in document.tags:
+            tag = get_or_create_tag(db, keyword)
+            if tag and tag not in document.tags:
                 document.tags.append(tag)
 
         record_document_version(

@@ -179,7 +179,7 @@ def test_rename_tag_updates_counts_search_and_document_history(monkeypatch, tmp_
 
     Session = make_session()
     with Session() as db:
-        tag = Tag(name="old topic", kind="keyword")
+        tag = Tag(name="old topic", kind="tag")
         first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[tag])
         second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[tag])
         db.add_all([first, second])
@@ -203,19 +203,19 @@ def test_rename_tag_updates_counts_search_and_document_history(monkeypatch, tmp_
         assert all(version.metadata_snapshot["operation"] == "tag_rename" for version in versions)
 
 
-def test_merge_tags_collapses_links_and_records_affected_documents(monkeypatch, tmp_path):
+def test_merge_tags_collapses_links_records_history_and_remembers_aliases(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
-    from app.main import merge_tags
-    from app.models import Document, DocumentVersion, Tag
+    from app.main import get_or_create_tag_by_name, merge_tags
+    from app.models import Document, DocumentVersion, Tag, TagAlias
     from app.schemas import TagMerge
 
     Session = make_session()
     with Session() as db:
-        keep = Tag(name="keep me", kind="keyword")
-        collapse = Tag(name="collapse me", kind="keyword")
-        untouched = Tag(name="untouched", kind="keyword")
+        keep = Tag(name="keep me", kind="tag")
+        collapse = Tag(name="collapse me", kind="tag")
+        untouched = Tag(name="untouched", kind="tag")
         first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[collapse])
         second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[keep, collapse])
         third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, tags=[keep])
@@ -234,19 +234,94 @@ def test_merge_tags_collapses_links_and_records_affected_documents(monkeypatch, 
         db.refresh(fourth)
 
         remaining_names = {tag.name for tag in db.query(Tag).all()}
+        aliases = {alias.alias_name: alias.target_tag_id for alias in db.query(TagAlias).all()}
         versions = db.query(DocumentVersion).order_by(DocumentVersion.document_id, DocumentVersion.version_number).all()
+        canonical = get_or_create_tag_by_name(db, "Collapse Me")
 
         assert result.tag.name == "merged topic"
         assert result.tag.document_count == 3
         assert result.updated_documents == 3
         assert set(result.removed_tag_ids) == {collapse.id}
         assert remaining_names == {"merged topic", "untouched"}
+        assert aliases == {"collapse me": result.tag.id, "keep me": result.tag.id}
+        assert canonical and canonical.id == result.tag.id
+        assert db.query(Tag).filter(Tag.name == "collapse me").count() == 0
         assert [tag.name for tag in first.tags] == ["merged topic"]
         assert [tag.name for tag in second.tags] == ["merged topic"]
         assert [tag.name for tag in third.tags] == ["merged topic"]
         assert [tag.name for tag in fourth.tags] == ["untouched"]
         assert len(versions) == 3
         assert all(version.metadata_snapshot["operation"] == "tag_merge" for version in versions)
+
+
+def test_merge_tags_carries_forward_existing_aliases(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import get_or_create_tag_by_name, merge_tags
+    from app.models import Document, Tag, TagAlias
+    from app.schemas import TagMerge
+
+    Session = make_session()
+    with Session() as db:
+        alpha = Tag(name="alpha", kind="tag")
+        beta = Tag(name="beta", kind="tag")
+        gamma = Tag(name="gamma", kind="tag")
+        document = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[alpha])
+        db.add_all([alpha, beta, gamma, document])
+        db.commit()
+
+        first_merge = merge_tags(TagMerge(source_tag_ids=[alpha.id, beta.id], target_tag_id=beta.id), object(), db)
+        second_merge = merge_tags(TagMerge(source_tag_ids=[first_merge.tag.id, gamma.id], target_tag_id=gamma.id), object(), db)
+        db.refresh(document)
+
+        aliases = {alias.alias_name: alias.target_tag_id for alias in db.query(TagAlias).all()}
+        canonical = get_or_create_tag_by_name(db, "Alpha")
+
+        assert second_merge.tag.name == "gamma"
+        assert aliases == {"alpha": gamma.id, "beta": gamma.id}
+        assert canonical and canonical.id == gamma.id
+        assert [tag.name for tag in document.tags] == ["gamma"]
+
+
+def test_merge_tags_target_name_uses_existing_alias_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import merge_tags
+    from app.models import Document, Tag, TagAlias
+    from app.schemas import TagMerge
+
+    Session = make_session()
+    with Session() as db:
+        canonical = Tag(name="canonical", kind="tag")
+        first_source = Tag(name="first source", kind="tag")
+        second_source = Tag(name="second source", kind="tag")
+        document = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[first_source])
+        db.add_all([canonical, first_source, second_source, document])
+        db.flush()
+        db.add(TagAlias(alias_name="old canonical", target_tag_id=canonical.id, source="merge", alias_metadata={}))
+        db.commit()
+
+        result = merge_tags(
+            TagMerge(source_tag_ids=[first_source.id, second_source.id], target_name="Old Canonical"),
+            object(),
+            db,
+        )
+        db.refresh(document)
+
+        aliases = {alias.alias_name: alias.target_tag_id for alias in db.query(TagAlias).all()}
+        remaining_names = {tag.name for tag in db.query(Tag).all()}
+
+        assert result.tag.id == canonical.id
+        assert result.tag.name == "canonical"
+        assert remaining_names == {"canonical"}
+        assert aliases == {
+            "first source": canonical.id,
+            "old canonical": canonical.id,
+            "second source": canonical.id,
+        }
+        assert [tag.name for tag in document.tags] == ["canonical"]
 
 
 def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, tmp_path):
@@ -265,6 +340,7 @@ def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, t
             assert model == "gpt-5.4-mini"
             assert usage_context.source == "tags"
             assert usage_context.capability_key == "tag_optimization"
+            assert all(set(tag) == {"id", "name", "document_count"} for tag in tags)
             by_name = {tag["name"]: tag["id"] for tag in tags}
             return {
                 "suggestions": [
@@ -281,10 +357,10 @@ def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, t
 
     Session = make_session()
     with Session() as db:
-        base = Tag(name="insider threat", kind="keyword")
-        detection = Tag(name="insider threat detection", kind="keyword")
-        plural = Tag(name="insider threats", kind="keyword")
-        unrelated = Tag(name="network defense", kind="keyword")
+        base = Tag(name="insider threat", kind="tag")
+        detection = Tag(name="insider threat detection", kind="tag")
+        plural = Tag(name="insider threats", kind="tag")
+        unrelated = Tag(name="network defense", kind="tag")
         first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[base])
         second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[detection])
         third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, tags=[plural])

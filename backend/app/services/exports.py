@@ -35,6 +35,7 @@ from app.models import (
     ProjectItem,
     SavedSearch,
     Tag,
+    TagAlias,
     TextChunk,
     User,
 )
@@ -166,7 +167,17 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
                 "color": tag.color,
                 **_timestamps(tag),
             }
-            for tag in db.query(Tag).order_by(Tag.kind, Tag.name).all()
+            for tag in db.query(Tag).order_by(Tag.name).all()
+        ],
+        "tag_aliases": [
+            {
+                "alias_name": alias.alias_name,
+                "target_tag_id": alias.target_tag_id,
+                "source": alias.source,
+                "metadata": alias.alias_metadata,
+                **_timestamps(alias),
+            }
+            for alias in db.query(TagAlias).order_by(TagAlias.alias_name).all()
         ],
         "saved_searches": [
             {

@@ -26,6 +26,9 @@ import type {
   DoiStash,
   DoiStashPayload,
   Domain,
+  DomainDeleteResult,
+  DomainReorderItem,
+  DomainUpdatePayload,
   DuplicateImportStrategy,
   ImportDuplicateCheck,
   ImportJob,
@@ -101,11 +104,18 @@ export const api = {
     return request<AppPreferences>("/api/preferences/google-service-account", { method: "POST", body: form });
   },
   domains: () => request<Domain[]>("/api/domains"),
-  createDomain: (name: string, parentId?: string | null) =>
-    request<Domain>("/api/domains", { method: "POST", body: JSON.stringify({ name, parent_id: parentId || null }) }),
+  createDomain: (name: string, parentId?: string | null, color?: string | null, description?: string | null) =>
+    request<Domain>("/api/domains", {
+      method: "POST",
+      body: JSON.stringify({ name, parent_id: parentId || null, color: color || null, description: description || null }),
+    }),
+  updateDomain: (id: string, body: DomainUpdatePayload) =>
+    request<Domain>(`/api/domains/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  reorderDomains: (domains: DomainReorderItem[]) =>
+    request<Domain[]>("/api/domains/reorder", { method: "POST", body: JSON.stringify({ domains }) }),
+  deleteDomain: (id: string) => request<DomainDeleteResult>(`/api/domains/${id}`, { method: "DELETE" }),
   tags: () => request<Tag[]>("/api/tags"),
-  createTag: (name: string, kind = "keyword") =>
-    request<Tag>("/api/tags", { method: "POST", body: JSON.stringify({ name, kind }) }),
+  createTag: (name: string) => request<Tag>("/api/tags", { method: "POST", body: JSON.stringify({ name }) }),
   renameTag: (id: string, name: string) =>
     request<TagOperationResult>(`/api/tags/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   mergeTags: (body: { source_tag_ids: string[]; target_tag_id?: string | null; target_name?: string | null }) =>

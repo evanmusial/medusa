@@ -15,6 +15,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   Archive,
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   Bold,
   Bookmark,
@@ -27,6 +29,7 @@ import {
   CircleDollarSign,
   Clipboard,
   Cloud,
+  CornerDownRight,
   Download,
   Edit3,
   Eraser,
@@ -88,6 +91,7 @@ import type {
   DocumentUpdatePayload,
   DoiStash,
   Domain,
+  DomainUpdatePayload,
   DuplicateImportStrategy,
   ImportDuplicateCheck,
   ImportJob,
@@ -211,6 +215,16 @@ const BACKGROUND_JOB_RETENTION_MS = 18000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
 const DROPDOWN_VISIBLE_OPTION_LIMIT = 80;
+const APP_TOOLTIP_DELAY_MS = 2000;
+const APP_TOOLTIP_SELECTOR = [
+  "[data-tooltip]",
+  "button",
+  "a[href]",
+  "input:not([type='hidden'])",
+  "select",
+  "textarea",
+  "[role='button']",
+].join(",");
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
   { value: "last_month", label: "Last month" },
@@ -240,9 +254,11 @@ const DUPLICATE_STATUS_OPTIONS: SelectMenuOption[] = [
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
 type StashSortKey = "created" | "doi" | "title" | "status";
-type TagSortKey = "name" | "kind" | "documents";
+type TagSortKey = "name" | "documents";
 type SortDirection = "asc" | "desc";
 type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
+
+const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; align?: "end" }> = [
   { id: "library", label: "Library", icon: Library },
@@ -343,6 +359,134 @@ function isQueueImportJob(job: ImportJob) {
 function actionFailureMessage(action: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return detail ? `${action}: ${detail}` : action;
+}
+
+function cleanTooltipText(value?: string | null) {
+  return (value || "").replace(/\s+/g, " ").trim();
+}
+
+function capitalizeSentence(value: string) {
+  const text = cleanTooltipText(value);
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function disabledTooltipReason(element: HTMLElement) {
+  return (
+    cleanTooltipText(element.dataset.disabledReason) ||
+    "this control is waiting on a required selection, input, or background task."
+  );
+}
+
+function isTooltipElementDisabled(element: HTMLElement) {
+  if (element.getAttribute("aria-disabled") === "true") return true;
+  if (
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+  ) {
+    return element.disabled;
+  }
+  return false;
+}
+
+function labelTextForTooltipElement(element: HTMLElement) {
+  const ariaLabel = cleanTooltipText(element.getAttribute("aria-label"));
+  if (ariaLabel) return ariaLabel;
+
+  const label = Array.from(document.querySelectorAll("label")).find((item) => item.control === element);
+  const labelText = cleanTooltipText(label?.textContent);
+  if (labelText) return labelText;
+
+  const wrappingLabel = element.closest("label");
+  const wrappingText = cleanTooltipText(wrappingLabel?.textContent);
+  if (wrappingText) return wrappingText;
+
+  return "";
+}
+
+function nativeTitleForTooltipElement(element: HTMLElement) {
+  const title = cleanTooltipText(element.getAttribute("title"));
+  if (title) {
+    element.dataset.tooltipTitle = title;
+    element.removeAttribute("title");
+    return title;
+  }
+  return cleanTooltipText(element.dataset.tooltipTitle);
+}
+
+function visibleTextForTooltipElement(element: HTMLElement) {
+  return cleanTooltipText(element.textContent);
+}
+
+function defaultTooltipForElement(element: HTMLElement) {
+  const tagName = element.tagName.toLowerCase();
+  const explicitLabel =
+    nativeTitleForTooltipElement(element) ||
+    labelTextForTooltipElement(element) ||
+    cleanTooltipText(element.getAttribute("placeholder")) ||
+    visibleTextForTooltipElement(element);
+
+  if (tagName === "a") {
+    const label = explicitLabel || "this link";
+    if (element.hasAttribute("download")) return `Download ${label}.`;
+    if (element.getAttribute("target") === "_blank") return `Open ${label} in a new tab.`;
+    return `Open ${label}.`;
+  }
+
+  if (tagName === "select") {
+    return `Choose ${explicitLabel || "an option"} from this dropdown.`;
+  }
+
+  if (tagName === "textarea") {
+    return `Edit ${explicitLabel || "this text field"}.`;
+  }
+
+  if (tagName === "input") {
+    const input = element as HTMLInputElement;
+    const label = explicitLabel || "this field";
+    if (input.type === "checkbox" || input.type === "radio") return `Toggle ${label}.`;
+    if (input.type === "color") return `Pick the ${label} color.`;
+    if (input.type === "file") return `Choose files for ${label}.`;
+    if (input.type === "range" || input.type === "number") return `Adjust ${label}.`;
+    if (input.type === "password") return `Enter ${label}.`;
+    return `Type in ${label}.`;
+  }
+
+  if (element.getAttribute("role") === "button" || tagName === "button") {
+    return explicitLabel ? `Button action: ${capitalizeSentence(explicitLabel)}.` : "";
+  }
+
+  return explicitLabel;
+}
+
+function tooltipTextForElement(element: HTMLElement) {
+  const disabled = isTooltipElementDisabled(element);
+  const disabledText = disabled ? cleanTooltipText(element.dataset.tooltipDisabled) : "";
+  if (disabledText) return disabledText;
+
+  const actionText = cleanTooltipText(element.dataset.tooltip) || defaultTooltipForElement(element);
+  if (!actionText) return "";
+  if (!disabled) return actionText;
+
+  return `${actionText} Disabled because ${disabledTooltipReason(element)}`;
+}
+
+function tooltipCandidateFromElement(element: Element | null): HTMLElement | null {
+  const candidate = element?.closest(APP_TOOLTIP_SELECTOR);
+  if (!(candidate instanceof HTMLElement)) return null;
+  if (candidate.classList.contains("hidden-file-input")) return null;
+  if (candidate.closest("[hidden], [aria-hidden='true']")) return null;
+  const style = window.getComputedStyle(candidate);
+  if (style.display === "none" || style.visibility === "hidden") return null;
+  const rect = candidate.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  return candidate;
+}
+
+function tooltipCandidateFromPoint(clientX: number, clientY: number) {
+  return tooltipCandidateFromElement(document.elementFromPoint(clientX, clientY));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -755,7 +899,13 @@ function HeaderWorkProgress({
 
   return (
     <div className="header-work-slot">
-      <button className={`header-work-progress ${activeClass}`} type="button" aria-label="Open import queue" onClick={onOpenQueue}>
+      <button
+        className={`header-work-progress ${activeClass}`}
+        data-tooltip="Open Queue to inspect active imports, Concordance runs, backups, restores, and citation review work."
+        type="button"
+        aria-label="Open import queue"
+        onClick={onOpenQueue}
+      >
         <span className="header-work-main">
           <span className="header-work-icon">
             <RefreshCw className={activeClass === "running" ? "spin" : ""} size={15} />
@@ -993,6 +1143,10 @@ const compositionPipelineNodeTypes = {
   compositionPipeline: CompositionPipelineNodeView,
 };
 
+const COMPOSITION_PIPELINE_NODE_WIDTH = 236;
+const COMPOSITION_PIPELINE_NODE_HEIGHT = 126;
+const COMPOSITION_PIPELINE_GAP = 96;
+
 function pipelineTone(entry: DocumentCompositionEntry) {
   if (entry.status === "failed" || entry.status === "error") return "error";
   if (entry.status === "warning") return "warning";
@@ -1015,20 +1169,19 @@ function pipelineMeta(entry: DocumentCompositionEntry) {
 }
 
 function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
-  const nodeWidth = 236;
-  const nodeHeight = 126;
-  const horizontalGap = 70;
-  const verticalGap = 90;
-  const columns = Math.max(1, Math.min(3, pipeline.length));
   const nodes: CompositionPipelineNode[] = pipeline.map((entry, index) => ({
     id: `pipeline-${index}`,
     type: "compositionPipeline",
     position: {
-      x: (index % columns) * (nodeWidth + horizontalGap),
-      y: Math.floor(index / columns) * (nodeHeight + verticalGap),
+      x: index * (COMPOSITION_PIPELINE_NODE_WIDTH + COMPOSITION_PIPELINE_GAP),
+      y: 88,
     },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
+    style: {
+      height: COMPOSITION_PIPELINE_NODE_HEIGHT,
+      width: COMPOSITION_PIPELINE_NODE_WIDTH,
+    },
     data: {
       amountUsd: entry.amount_usd || 0,
       callCount: entry.call_count || 0,
@@ -1046,9 +1199,9 @@ function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
     sourceHandle: "pipeline-output",
     target: `pipeline-${index + 1}`,
     targetHandle: "pipeline-input",
-    type: "smoothstep",
+    type: "straight",
     markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: "var(--primary)" },
-    style: { stroke: "var(--primary)", strokeWidth: 2.25 },
+    style: { stroke: "var(--primary)", strokeWidth: 2.5 },
   }));
   return { nodes, edges };
 }
@@ -1269,9 +1422,10 @@ function ImportJobRow({
             <button
               aria-label={`Retry ${importJobLabel(job)}`}
               className={asyncFeedbackClass("icon-button compact job-retry-button", retryFeedback, retryBusy)}
+              data-disabled-reason={!onRetry ? "there is no retry handler for this row." : retryTitle || importJobRetryTitle(job)}
+              data-tooltip={retryTitle || importJobRetryTitle(job)}
               disabled={!onRetry || retryDisabled}
               onClick={onRetry}
-              title={retryTitle || importJobRetryTitle(job)}
               type="button"
             >
               <RefreshCw className={retryBusy ? "spin" : ""} size={15} />
@@ -1284,9 +1438,10 @@ function ImportJobRow({
               <button
                 aria-label={`Cancel ${importJobLabel(job)}`}
                 className={asyncFeedbackClass("secondary-button compact job-cancel-button", cancelFeedback, cancelBusy)}
+                data-disabled-reason={!onCancel ? "there is no cancel handler for this row." : cancelTitle || importJobCancelTitle(job)}
+                data-tooltip={cancelTitle || importJobCancelTitle(job)}
                 disabled={!onCancel || cancelDisabled}
                 onClick={onCancel}
-                title={cancelTitle || importJobCancelTitle(job)}
                 type="button"
               >
                 <X size={14} />
@@ -1624,6 +1779,7 @@ function ResizeHandle({
       aria-valuemin={min}
       aria-valuenow={Math.round(value)}
       className={`resize-handle ${className}`}
+      data-tooltip={`Drag or use Left and Right arrow keys to ${label.toLocaleLowerCase()}.`}
       onKeyDown={(event) => {
         if (event.key === "ArrowLeft") {
           event.preventDefault();
@@ -1682,13 +1838,28 @@ function Login() {
         >
           <label>
             Email
-            <input value={email} onChange={(event) => setEmail(event.target.value)} />
+            <input
+              data-tooltip="Enter the Medusa account email for this local instance."
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
           </label>
           <label>
             Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+            <input
+              data-tooltip="Enter the Medusa password for this local instance."
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
           </label>
-          <button className="primary-button" type="submit" disabled={login.isPending}>
+          <button
+            className="primary-button"
+            data-disabled-reason="the sign-in request is already running."
+            data-tooltip="Sign in to Medusa with the email and password in this form."
+            type="submit"
+            disabled={login.isPending}
+          >
             <CheckCircle2 size={17} />
             Sign in
           </button>
@@ -1725,17 +1896,26 @@ function Header({
       </div>
       <label className="global-search">
         <Search size={17} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents, notes, figures, citations..." />
+        <input
+          data-tooltip="Type a global search query to filter documents by titles, notes, figures, citations, tags, domains, and searchable text."
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search documents, notes, figures, citations..."
+        />
       </label>
       <div className="topbar-actions">
         <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
         <span className="build-version" title={`Medusa build ${MEDUSA_BUILD_VERSION}`}>
           v{MEDUSA_BUILD_VERSION}
         </span>
-        <button className="icon-button" title="Toggle theme" onClick={() => setTheme(theme === "day" ? "night" : "day")}>
+        <button
+          className="icon-button"
+          data-tooltip={theme === "day" ? "Switch Medusa to night mode." : "Switch Medusa to day mode."}
+          onClick={() => setTheme(theme === "day" ? "night" : "day")}
+        >
           {theme === "day" ? <Moon size={18} /> : <Sun size={18} />}
         </button>
-        <button className="icon-button" title="Sign out" onClick={onLogout}>
+        <button className="icon-button" data-tooltip="Sign out of this Medusa session." onClick={onLogout}>
           <LogOut size={18} />
         </button>
       </div>
@@ -1764,8 +1944,8 @@ function WorkspaceNav({
             aria-current={activeView === item.id ? "page" : undefined}
             aria-keyshortcuts={item.shortcut}
             className={`workspace-nav-item${activeView === item.id ? " active" : ""}${item.align === "end" ? " settings" : ""}`}
+            data-tooltip={`Open the ${item.label} workspace${item.shortcut ? `; keyboard shortcut ${item.shortcut}.` : "."}`}
             onClick={() => setActiveView(item.id)}
-            title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
             type="button"
           >
             <Icon size={17} />
@@ -1778,16 +1958,53 @@ function WorkspaceNav({
   );
 }
 
-function DomainTree({ domains }: { domains: Domain[] }) {
-  const roots = useMemo(() => domains.filter((domain) => !domain.parent_id), [domains]);
-  const children = useMemo(
-    () =>
-      domains.reduce<Record<string, Domain[]>>((acc, domain) => {
-        if (domain.parent_id) acc[domain.parent_id] = [...(acc[domain.parent_id] || []), domain];
-        return acc;
-      }, {}),
-    [domains],
+function orderedDomainList(domains: Domain[]) {
+  return [...domains].sort(
+    (left, right) =>
+      (left.sort_order ?? 0) - (right.sort_order ?? 0) ||
+      left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }),
   );
+}
+
+function domainChildrenByParent(domains: Domain[]) {
+  return orderedDomainList(domains).reduce<Record<string, Domain[]>>((acc, domain) => {
+    const parentKey = domain.parent_id || "root";
+    acc[parentKey] = [...(acc[parentKey] || []), domain];
+    return acc;
+  }, {});
+}
+
+function domainPathLabel(domain: Domain, domains: Domain[]) {
+  const byId = new Map(domains.map((item) => [item.id, item]));
+  const parts: string[] = [];
+  let current: Domain | undefined = domain;
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    parts.unshift(current.name);
+    current = current.parent_id ? byId.get(current.parent_id) : undefined;
+  }
+  return parts.join(" / ");
+}
+
+function descendantDomainIds(domainId: string, domains: Domain[]) {
+  const children = domainChildrenByParent(domains);
+  const ids = new Set<string>();
+  const visit = (id: string) => {
+    (children[id] || []).forEach((child) => {
+      if (ids.has(child.id)) return;
+      ids.add(child.id);
+      visit(child.id);
+    });
+  };
+  visit(domainId);
+  return ids;
+}
+
+function DomainTree({ domains }: { domains: Domain[] }) {
+  const children = useMemo(() => domainChildrenByParent(domains), [domains]);
+  const roots = children.root || [];
+  const domainIds = useMemo(() => new Set(domains.map((domain) => domain.id)), [domains]);
 
   const render = (domain: Domain, depth = 0) => (
     <div key={domain.id} className="domain-row" style={{ paddingLeft: 10 + depth * 16 }}>
@@ -1798,7 +2015,418 @@ function DomainTree({ domains }: { domains: Domain[] }) {
     </div>
   );
 
-  return <div className="domain-tree">{roots.map((domain) => render(domain))}</div>;
+  return (
+    <div className="domain-tree">
+      {roots.map((domain) => render(domain))}
+      {domains
+        .filter((domain) => domain.parent_id && !domainIds.has(domain.parent_id))
+        .map((domain) => render(domain))}
+    </div>
+  );
+}
+
+function DomainsView({ domains, documents }: { domains: Domain[]; documents: DocumentSummary[] }) {
+  const queryClient = useQueryClient();
+  const [selectedId, setSelectedId] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newParentId, setNewParentId] = useState("");
+  const [newColor, setNewColor] = useState(DOMAIN_COLOR_SWATCHES[0]);
+  const [draft, setDraft] = useState<DomainUpdatePayload>({ name: "", parent_id: null, description: "", color: DOMAIN_COLOR_SWATCHES[0] });
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const children = useMemo(() => domainChildrenByParent(domains), [domains]);
+  const selected = domains.find((domain) => domain.id === selectedId) || null;
+  const selectedDescendants = useMemo(() => (selected ? descendantDomainIds(selected.id, domains) : new Set<string>()), [domains, selected]);
+  const parentOptions = useMemo(
+    () => domainPickerItems(domains.filter((domain) => !selected || (domain.id !== selected.id && !selectedDescendants.has(domain.id)))),
+    [domains, selected, selectedDescendants],
+  );
+  const allParentOptions = useMemo(() => domainPickerItems(domains), [domains]);
+  const selectedDocuments = useMemo(
+    () => (selected ? documents.filter((document) => document.domains.some((domain) => domain.id === selected.id)) : []),
+    [documents, selected],
+  );
+  const matchingDomains = useMemo(() => {
+    const normalized = searchText.trim().toLowerCase();
+    if (!normalized) return [];
+    return orderedDomainList(domains).filter((domain) => domainPathLabel(domain, domains).toLowerCase().includes(normalized));
+  }, [domains, searchText]);
+  const selectedSiblings = useMemo(() => {
+    if (!selected) return [];
+    return children[selected.parent_id || "root"] || [];
+  }, [children, selected]);
+  const selectedSiblingIndex = selected ? selectedSiblings.findIndex((domain) => domain.id === selected.id) : -1;
+  const selectedPath = selected ? domainPathLabel(selected, domains) : "";
+  const selectedChildCount = selected ? (children[selected.id] || []).length : 0;
+  const canSave = Boolean(selected && String(draft.name || "").trim());
+  const createDomain = useMutation({
+    mutationFn: () => api.createDomain(newName.trim(), newParentId || null, newColor),
+    onSuccess: (domain) => {
+      setSelectedId(domain.id);
+      setNewName("");
+      setNotice(`Added ${domain.name}`);
+      setError(null);
+      refreshDomainManagementData(queryClient);
+    },
+    onError: (mutationError) => setError(actionFailureMessage("Could not add domain", mutationError)),
+  });
+  const updateDomain = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: DomainUpdatePayload }) => api.updateDomain(id, body),
+    onSuccess: (domain) => {
+      setSelectedId(domain.id);
+      setNotice(`Saved ${domain.name}`);
+      setError(null);
+      refreshDomainManagementData(queryClient);
+    },
+    onError: (mutationError) => setError(actionFailureMessage("Could not save domain", mutationError)),
+  });
+  const reorderDomains = useMutation({
+    mutationFn: api.reorderDomains,
+    onSuccess: () => {
+      setNotice("Domain order updated");
+      setError(null);
+      refreshDomainManagementData(queryClient);
+    },
+    onError: (mutationError) => setError(actionFailureMessage("Could not reorder domains", mutationError)),
+  });
+  const deleteDomain = useMutation({
+    mutationFn: api.deleteDomain,
+    onSuccess: (result) => {
+      setSelectedId((current) => (current === result.deleted_id ? domains.find((domain) => domain.id !== result.deleted_id)?.id || "" : current));
+      setConfirmingDeleteId(null);
+      setNotice(`Deleted domain; updated ${result.updated_documents} document${result.updated_documents === 1 ? "" : "s"}`);
+      setError(null);
+      refreshDomainManagementData(queryClient);
+    },
+    onError: (mutationError) => setError(actionFailureMessage("Could not delete domain", mutationError)),
+  });
+
+  useEffect(() => {
+    if (!domains.length) {
+      setSelectedId("");
+      return;
+    }
+    if (!selectedId || !domains.some((domain) => domain.id === selectedId)) setSelectedId(orderedDomainList(domains)[0]?.id || "");
+  }, [domains, selectedId]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setDraft({
+      name: selected.name,
+      parent_id: selected.parent_id || null,
+      description: selected.description || "",
+      color: normalizeHexColor(selected.color, DOMAIN_COLOR_SWATCHES[0]),
+      sort_order: selected.sort_order,
+    });
+    setConfirmingDeleteId(null);
+  }, [selected]);
+
+  const saveSelected = () => {
+    if (!selected || !canSave) return;
+    updateDomain.mutate({
+      id: selected.id,
+      body: {
+        name: String(draft.name || "").trim(),
+        parent_id: draft.parent_id || null,
+        description: String(draft.description || "").trim() || null,
+        color: normalizeHexColor(draft.color, DOMAIN_COLOR_SWATCHES[0]),
+        sort_order: typeof draft.sort_order === "number" ? draft.sort_order : selected.sort_order,
+      },
+    });
+  };
+  const moveSelected = (direction: -1 | 1) => {
+    if (!selected || selectedSiblingIndex < 0) return;
+    const targetIndex = selectedSiblingIndex + direction;
+    if (targetIndex < 0 || targetIndex >= selectedSiblings.length) return;
+    const nextSiblings = [...selectedSiblings];
+    [nextSiblings[selectedSiblingIndex], nextSiblings[targetIndex]] = [nextSiblings[targetIndex], nextSiblings[selectedSiblingIndex]];
+    reorderDomains.mutate(nextSiblings.map((domain, index) => ({ id: domain.id, parent_id: domain.parent_id || null, sort_order: index })));
+  };
+  const renderDomainButton = (domain: Domain, depth: number, pathOverride?: string) => {
+    const childCount = (children[domain.id] || []).length;
+    const selectedRow = selected?.id === domain.id;
+    return (
+      <button
+        key={`${domain.id}-${pathOverride || "tree"}`}
+        className={`domain-manager-row${selectedRow ? " selected" : ""}`}
+        data-tooltip={`Select ${domain.name} in the domain editor.`}
+        onClick={() => setSelectedId(domain.id)}
+        style={{ paddingLeft: 12 + depth * 18 }}
+        type="button"
+      >
+        <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
+        <span className="domain-manager-row-text">
+          <strong>{domain.name}</strong>
+          <small>{pathOverride || `${childCount} child${childCount === 1 ? "" : "ren"} / ${domain.document_count} documents`}</small>
+        </span>
+        <small>{domain.document_count}</small>
+      </button>
+    );
+  };
+  const renderDomainNode = (domain: Domain, depth = 0): ReactNode => (
+    <div key={domain.id}>
+      {renderDomainButton(domain, depth)}
+      {(children[domain.id] || []).map((child) => renderDomainNode(child, depth + 1))}
+    </div>
+  );
+  const busy = createDomain.isPending || updateDomain.isPending || reorderDomains.isPending || deleteDomain.isPending;
+  const domainBusyReason = createDomain.isPending
+    ? "a domain create request is already running."
+    : updateDomain.isPending
+      ? "a domain save request is already running."
+      : reorderDomains.isPending
+        ? "a domain reorder request is already running."
+        : deleteDomain.isPending
+          ? "a domain delete request is already running."
+          : "";
+
+  return (
+    <section className="workbench domains-workbench">
+      <aside className="domain-directory">
+        <div className="domain-create-panel">
+          <div className="inline-form">
+            <input data-tooltip="Type the name for a new domain." value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="New domain" />
+            <button
+              className="primary-button"
+              data-disabled-reason={createDomain.isPending ? domainBusyReason : "a new domain name is required."}
+              data-tooltip="Create this domain at the selected parent level."
+              disabled={!newName.trim() || createDomain.isPending}
+              onClick={() => createDomain.mutate()}
+              type="button"
+            >
+              <Plus size={16} />
+              Add
+            </button>
+          </div>
+          <div className="domain-create-options">
+            <select data-tooltip="Choose where the new domain will be nested." value={newParentId} onChange={(event) => setNewParentId(event.target.value)}>
+              <option value="">Top-level</option>
+              {allParentOptions.map((domain) => (
+                <option key={domain.id} value={domain.id}>
+                  {domain.name}
+                </option>
+              ))}
+            </select>
+            <input aria-label="New domain color" data-tooltip="Pick the color for the new domain." type="color" value={newColor} onChange={(event) => setNewColor(event.target.value)} />
+          </div>
+        </div>
+        <label className="domain-search">
+          <Search size={16} />
+          <input data-tooltip="Type to search domain names and paths." value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Search domains" />
+        </label>
+        <div className="domain-manager-tree">
+          {searchText.trim()
+            ? matchingDomains.map((domain) => renderDomainButton(domain, 0, domainPathLabel(domain, domains)))
+            : (children.root || []).map((domain) => renderDomainNode(domain))}
+          {!domains.length ? <p className="empty-note">No domains yet.</p> : null}
+          {domains.length && searchText.trim() && !matchingDomains.length ? <p className="empty-note">No matching domains.</p> : null}
+        </div>
+      </aside>
+      <section className="domain-editor">
+        <div className="panel-title-row">
+          <div>
+            <h2>{selected?.name || "Domains"}</h2>
+            <span>{selected ? selectedPath : "Create a domain to start organizing the library."}</span>
+          </div>
+          <FolderTree size={20} />
+        </div>
+        {error ? <p className="form-error">{error}</p> : null}
+        {notice ? <p className="tag-operation-notice">{notice}</p> : null}
+        {selected ? (
+          <>
+            <div className="domain-stat-grid">
+              <span>
+                <strong>{selected.document_count}</strong>
+                Documents
+              </span>
+              <span>
+                <strong>{selectedChildCount}</strong>
+                Children
+              </span>
+              <span>
+                <strong>{selected.parent_id ? "Nested" : "Root"}</strong>
+                Level
+              </span>
+            </div>
+            <div className="domain-edit-grid">
+              <label>
+                Name
+                <input
+                  data-tooltip="Edit the selected domain name."
+                  value={String(draft.name || "")}
+                  onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                Parent
+                <select data-tooltip="Choose the selected domain's parent domain." value={draft.parent_id || ""} onChange={(event) => setDraft((current) => ({ ...current, parent_id: event.target.value || null }))}>
+                  <option value="">Top-level</option>
+                  {parentOptions.map((domain) => (
+                    <option key={domain.id} value={domain.id}>
+                      {domain.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="domain-description-field">
+                Description
+                <textarea
+                  data-tooltip="Edit the optional description for this domain."
+                  value={String(draft.description || "")}
+                  onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+                  placeholder="Optional scope note"
+                />
+              </label>
+              <div className="domain-color-field">
+                <span>Color</span>
+                <div className="domain-color-controls">
+                  {DOMAIN_COLOR_SWATCHES.map((color) => (
+                    <button
+                      key={color}
+                      aria-label={`Use ${color}`}
+                      className={normalizeHexColor(draft.color, DOMAIN_COLOR_SWATCHES[0]) === color ? "selected" : ""}
+                      data-tooltip={`Set the selected domain color to ${color}.`}
+                      onClick={() => setDraft((current) => ({ ...current, color }))}
+                      style={{ background: color }}
+                      type="button"
+                    />
+                  ))}
+                  <input
+                    aria-label="Domain color"
+                    data-tooltip="Pick a custom color for the selected domain."
+                    type="color"
+                    value={normalizeHexColor(draft.color, DOMAIN_COLOR_SWATCHES[0])}
+                    onChange={(event) => setDraft((current) => ({ ...current, color: event.target.value }))}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="domain-editor-actions">
+              <button
+                className="primary-button"
+                data-disabled-reason={busy ? domainBusyReason : "the selected domain needs a name."}
+                data-tooltip="Save the selected domain's name, parent, description, color, and ordering metadata."
+                disabled={!canSave || busy}
+                onClick={saveSelected}
+                type="button"
+              >
+                <Save size={16} />
+                Save
+              </button>
+              <button
+                className="secondary-button"
+                data-disabled-reason={busy ? domainBusyReason : "the selected domain is already first among its siblings."}
+                data-tooltip="Move the selected domain up among siblings."
+                disabled={selectedSiblingIndex <= 0 || busy}
+                onClick={() => moveSelected(-1)}
+                type="button"
+              >
+                <ArrowUp size={16} />
+                Up
+              </button>
+              <button
+                className="secondary-button"
+                data-disabled-reason={busy ? domainBusyReason : "the selected domain is already last among its siblings."}
+                data-tooltip="Move the selected domain down among siblings."
+                disabled={selectedSiblingIndex < 0 || selectedSiblingIndex >= selectedSiblings.length - 1 || busy}
+                onClick={() => moveSelected(1)}
+                type="button"
+              >
+                <ArrowDown size={16} />
+                Down
+              </button>
+              <button
+                className="secondary-button"
+                data-disabled-reason={domainBusyReason}
+                data-tooltip="Prepare the new-domain form to create a child under the selected domain."
+                disabled={busy}
+                onClick={() => {
+                  setNewParentId(selected.id);
+                  setNewName("");
+                }}
+                type="button"
+              >
+                <CornerDownRight size={16} />
+                Add Child
+              </button>
+              <button
+                className="secondary-button danger"
+                data-disabled-reason={domainBusyReason}
+                data-tooltip="Open a confirmation prompt to soft-delete this domain and detach it from affected documents and notes."
+                disabled={busy}
+                onClick={() => setConfirmingDeleteId(selected.id)}
+                type="button"
+              >
+                <Trash2 size={16} />
+                Delete
+              </button>
+            </div>
+            {confirmingDeleteId === selected.id ? (
+              <div className="domain-delete-confirm">
+                <span>Delete {selected.name}?</span>
+                <button
+                  className="secondary-button compact"
+                  data-disabled-reason="the domain delete request is already running."
+                  data-tooltip="Cancel domain deletion and close this confirmation prompt."
+                  disabled={deleteDomain.isPending}
+                  onClick={() => setConfirmingDeleteId(null)}
+                  type="button"
+                >
+                  <X size={15} />
+                  Cancel
+                </button>
+                <button
+                  className="primary-button compact"
+                  data-disabled-reason="the domain delete request is already running."
+                  data-tooltip="Confirm soft deletion of this domain, detach it from documents and notes, and preserve affected history/search updates."
+                  disabled={deleteDomain.isPending}
+                  onClick={() => deleteDomain.mutate(selected.id)}
+                  type="button"
+                >
+                  <Trash2 size={15} />
+                  Confirm
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="empty-note">Create a domain, then select it to edit nesting, color, order, and document assignments.</p>
+        )}
+      </section>
+      <aside className="domain-documents-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Documents</h2>
+            <span>{selected ? `${selectedDocuments.length} direct matches` : "No domain selected"}</span>
+          </div>
+          <FileText size={20} />
+        </div>
+        <div className="domain-document-list">
+          {selectedDocuments.map((document) => (
+            <article key={document.id} className="domain-document-row">
+              <strong>{document.title}</strong>
+              <span>
+                {authorLine(document)}
+                {document.publication_year ? ` / ${document.publication_year}` : ""}
+              </span>
+            </article>
+          ))}
+          {selected && !selectedDocuments.length ? <p className="empty-note">No documents are directly assigned to this domain.</p> : null}
+          {!selected ? <p className="empty-note">Select a domain to inspect assigned documents.</p> : null}
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function refreshDomainManagementData(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ["domains"] });
+  void queryClient.invalidateQueries({ queryKey: ["documents"] });
+  void queryClient.invalidateQueries({ queryKey: ["document"] });
+  void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  void queryClient.invalidateQueries({ queryKey: ["notes"] });
 }
 
 function BulkMultiSelect({
@@ -1885,10 +2513,11 @@ function BulkMultiSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         className="bulk-multi-trigger"
+        data-tooltip={`Open the ${label} picker to search, select, or clear ${label.toLocaleLowerCase()} values.`}
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
-        <span title={triggerLabel}>{triggerLabel}</span>
+        <span>{triggerLabel}</span>
         <ChevronRight size={14} />
       </button>
       {open ? (
@@ -1896,6 +2525,7 @@ function BulkMultiSelect({
           <input
             ref={searchRef}
             className="select-search-input"
+            data-tooltip={`Type to filter ${label.toLocaleLowerCase()} options; press Enter to toggle the highlighted match${onCreateFromSearch ? " or create the typed value" : ""}.`}
             onChange={(event) => setSearchText(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
@@ -1995,6 +2625,7 @@ function LibrarySingleSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         className={`bulk-multi-trigger ${selected ? "has-value" : ""}`}
+        data-tooltip={`Open the ${placeholder} dropdown to search and choose one value.`}
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
@@ -2006,6 +2637,7 @@ function LibrarySingleSelect({
           <input
             ref={searchRef}
             className="select-search-input"
+            data-tooltip={`Type to filter ${placeholder.toLocaleLowerCase()} options; press Enter to choose the highlighted match.`}
             onChange={(event) => setSearchText(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
@@ -2022,7 +2654,14 @@ function LibrarySingleSelect({
             placeholder={searchPlaceholder}
             value={searchText}
           />
-          <button aria-selected={!value} className={!value && !searchText ? "selected" : ""} role="option" type="button" onClick={() => choose("")}>
+          <button
+            aria-selected={!value}
+            className={!value && !searchText ? "selected" : ""}
+            data-tooltip={`Clear this filter back to ${placeholder}.`}
+            role="option"
+            type="button"
+            onClick={() => choose("")}
+          >
             <span>{placeholder}</span>
           </button>
           {visibleOptions.length ? (
@@ -2030,6 +2669,7 @@ function LibrarySingleSelect({
               <button
                 aria-selected={value === option.id}
                 className={[value === option.id ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
+                data-tooltip={`Choose ${option.name} for this ${placeholder.toLocaleLowerCase()} filter.`}
                 key={option.id}
                 role="option"
                 type="button"
@@ -2269,7 +2909,7 @@ function LibraryView({
               value={filters.duplicate_status || ""}
             />
           </div>
-          <button className="secondary-button" onClick={() => setFilters(emptyFilters())}>
+          <button className="secondary-button" data-tooltip="Clear all Library filters and show the unfiltered document list." onClick={() => setFilters(emptyFilters())}>
             <X size={15} />
             Clear
           </button>
@@ -2285,22 +2925,33 @@ function LibraryView({
             if (saveName.trim()) saveSearch.mutate();
           }}
         >
-          <input value={saveName} onChange={(event) => setSaveName(event.target.value)} placeholder="Name current view" />
-          <button className="secondary-button" type="submit" disabled={!saveName.trim() || saveSearch.isPending}>
+          <input data-tooltip="Type a name for the current Library filter view." value={saveName} onChange={(event) => setSaveName(event.target.value)} placeholder="Name current view" />
+          <button
+            className="secondary-button"
+            type="submit"
+            data-disabled-reason={saveSearch.isPending ? "a saved-search create request is already running." : "a saved-search name is required."}
+            data-tooltip="Save the current Library filters as a reusable saved search."
+            disabled={!saveName.trim() || saveSearch.isPending}
+          >
             <Save size={14} />
           </button>
         </form>
         <div className="saved-search-list">
           {savedSearches.map((savedSearch) => (
             <div key={savedSearch.id}>
-              <button className="saved-search-apply" type="button" onClick={() => applySavedSearch(savedSearch)}>
+              <button
+                className="saved-search-apply"
+                data-tooltip={`Apply the ${savedSearch.name} saved search filters to the Library.`}
+                type="button"
+                onClick={() => applySavedSearch(savedSearch)}
+              >
                 <span>
                   <strong>{savedSearch.name}</strong>
                   <small>{savedSearchSummary(savedSearch, savedSearchLookup)}</small>
                 </span>
                 {savedSearch.filters.priority ? <PriorityPill value={savedSearch.filters.priority} /> : null}
               </button>
-              <button type="button" title="Delete saved search" onClick={() => deleteSearch.mutate(savedSearch.id)}>
+              <button type="button" data-tooltip={`Delete the ${savedSearch.name} saved search.`} onClick={() => deleteSearch.mutate(savedSearch.id)}>
                 <Trash2 size={14} />
               </button>
             </div>
@@ -2333,6 +2984,7 @@ function LibraryView({
         <div className="list-toolbar">
           <label className="select-all-row">
             <input
+              data-tooltip={allVisibleSelected ? "Clear the selection for every visible document." : "Select every visible document in the current Library result list."}
               type="checkbox"
               checked={allVisibleSelected}
               onChange={() => {
@@ -2370,6 +3022,7 @@ function LibraryView({
                 footer={
                   <input
                     className="bulk-custom-tag"
+                    data-tooltip="Type a new tag to include in the pending bulk tag update."
                     placeholder="New tag"
                     value={bulkCustomTag}
                     onChange={(event) => setBulkCustomTag(event.target.value)}
@@ -2397,7 +3050,13 @@ function LibraryView({
                 searchPlaceholder="Type project name"
                 selectedIds={bulkProjectIds}
               />
-              <button className="primary-button" disabled={!hasBulkUpdate || bulkUpdate.isPending} onClick={() => bulkUpdate.mutate()}>
+              <button
+                className="primary-button"
+                data-disabled-reason={bulkUpdate.isPending ? "a bulk update is already saving." : "choose at least one bulk edit value first."}
+                data-tooltip="Apply the selected bulk read status, priority, tags, domain, and projects to the selected documents."
+                disabled={!hasBulkUpdate || bulkUpdate.isPending}
+                onClick={() => bulkUpdate.mutate()}
+              >
                 <CheckSquare size={15} />
                 Apply
               </button>
@@ -2414,13 +3073,14 @@ function LibraryView({
             >
               <input
                 aria-label={`Select ${item.title}`}
+                data-tooltip={`Toggle selection for ${item.title} for bulk edits.`}
                 checked={selectedIds.includes(item.id)}
                 onClick={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
                 onChange={() => toggleSelected(item.id)}
                 type="checkbox"
               />
-              <button className="doc-row-main" onClick={() => activateDocument(item.id)} type="button">
+              <button className="doc-row-main" data-tooltip={`Open ${item.title} in the detail pane.`} onClick={() => activateDocument(item.id)} type="button">
                 <span className="doc-row-title">{item.title}</span>
                 <span className="doc-row-byline">
                   <span className="doc-row-pages">{pageCountMarker(item)}</span>
@@ -2709,6 +3369,12 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
           <AsyncActionSlot feedback={refreshFeedback.feedback}>
             <button
               className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback)}
+              data-disabled-reason={
+                refresh.isPending
+                  ? "recommendation refresh is already running."
+                  : "recommendations need a completed document with a DOI."
+              }
+              data-tooltip="Refresh related-paper recommendations for this document from scholarly metadata services."
               disabled={!canRefresh || refresh.isPending}
               onClick={() => refresh.mutate()}
               type="button"
@@ -2718,7 +3384,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             </button>
           </AsyncActionSlot>
           {onClose ? (
-            <button className="icon-button compact" onClick={onClose} title="Close related papers" type="button">
+            <button className="icon-button compact" data-tooltip="Close the related-papers recommendations panel." onClick={onClose} type="button">
               <X size={15} />
             </button>
           ) : null}
@@ -2726,12 +3392,27 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
       </div>
       <div className="recommendations-download-row">
         <label className="select-all-row">
-          <input type="checkbox" checked={allSelectableSelected} onChange={toggleAllSelectable} disabled={!selectableRows.length} />
+          <input
+            data-disabled-reason="there are no new recommendations available for selection."
+            data-tooltip={allSelectableSelected ? "Clear all selectable recommendation rows." : "Select all new recommendation rows that are not already in the library."}
+            type="checkbox"
+            checked={allSelectableSelected}
+            onChange={toggleAllSelectable}
+            disabled={!selectableRows.length}
+          />
           <strong>{selectedCount ? `${selectedCount} selected` : "Select new papers"}</strong>
         </label>
         <AsyncActionSlot feedback={selectedDownloadFeedback.feedback}>
           <button
             className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
+            data-disabled-reason={
+              download.isPending
+                ? "recommendation downloads are already being queued."
+                : !selectedCount
+                  ? "select one or more new recommendation rows first."
+                  : "none of the selected recommendations has an open PDF URL."
+            }
+            data-tooltip="Queue imports for the selected new recommendations that have open PDF URLs."
             disabled={!selectedCount || !selectedDownloadable || download.isPending}
             onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
             type="button"
@@ -2743,6 +3424,14 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
         <AsyncActionSlot feedback={newDownloadFeedback.feedback}>
           <button
             className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
+            data-disabled-reason={
+              download.isPending
+                ? "recommendation downloads are already being queued."
+                : !newRows.length
+                  ? "there are no new recommendation rows."
+                  : "no new recommendation has an open PDF URL."
+            }
+            data-tooltip="Queue imports for every new recommendation that has an open PDF URL."
             disabled={!newRows.length || !newDownloadable || download.isPending}
             onClick={() => download.mutate({ mode: "new", skip_existing: true })}
             type="button"
@@ -2775,6 +3464,8 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
               <article key={item.id} className={`recommendation-row ${inLibrary ? "in-library" : ""}`}>
                 <input
                   aria-label={`Select ${item.title}`}
+                  data-disabled-reason="this recommendation is already in the library or has already been imported."
+                  data-tooltip={`Toggle selection for ${item.title} before queueing recommendation imports.`}
                   type="checkbox"
                   checked={selectedIds.includes(item.id)}
                   disabled={inLibrary}
@@ -2800,9 +3491,10 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                   <div className="recommendation-left-actions">
                     <button
                       className={`secondary-button compact recommendation-copy-action${doiCopied ? " copy-acknowledged" : ""}`}
+                      data-disabled-reason="this recommendation does not include a DOI."
+                      data-tooltip="Copy this recommendation DOI to the clipboard."
                       disabled={!item.doi}
                       onClick={() => item.doi && void copyToClipboard(`doi-${item.id}`, item.doi)}
-                      title="Copy DOI"
                       type="button"
                     >
                       {doiCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
@@ -2810,8 +3502,8 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                     </button>
                     <button
                       className={`secondary-button compact recommendation-copy-action${titleCopied ? " copy-acknowledged" : ""}`}
+                      data-tooltip="Copy this recommendation title to the clipboard."
                       onClick={() => void copyToClipboard(`title-${item.id}`, item.title)}
-                      title="Copy Title"
                       type="button"
                     >
                       {titleCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
@@ -2820,9 +3512,10 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                     <AsyncActionSlot feedback={stashFeedback.feedbackFor(item.id)}>
                       <button
                         className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(item.id))}
+                        data-disabled-reason={stashDoi.isPending ? "a DOI stash request is already running." : "this recommendation does not include a DOI to stash."}
+                        data-tooltip="Save this DOI to Stashes for later PDF follow-up."
                         disabled={!item.doi || stashDoi.isPending}
                         onClick={() => stashDoi.mutate(item)}
-                        title="Stash DOI"
                         type="button"
                       >
                         <Bookmark size={15} />
@@ -2834,7 +3527,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                       href={item.scholar_url}
                       target="_blank"
                       rel="noreferrer"
-                      title="Search Google Scholar"
+                      data-tooltip="Open a manual Google Scholar search for this recommendation in a new tab."
                     >
                       <Search size={15} />
                       Scholar
@@ -2846,7 +3539,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                       href={item.source_url}
                       target="_blank"
                       rel="noreferrer"
-                      title="Open source"
+                      data-tooltip="Open this recommendation's source page in a new tab."
                     >
                       <ExternalLink size={15} />
                     </a>
@@ -2901,7 +3594,7 @@ function CompositionDialog({
             <span>Composition</span>
             <h2 id="composition-title">{document.title}</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} title="Close composition">
+          <button className="icon-button" type="button" data-tooltip="Close the document composition dialog." onClick={onClose}>
             <X size={18} />
           </button>
         </div>
@@ -3484,6 +4177,26 @@ function DocumentPanelContent({
     refreshSummary.isPending ||
     summaryRefreshActive ||
     Boolean(summaryRunId && (!trackedSummaryJobs.length || trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))));
+  const pageTextBusyReason = updatePageText.isPending
+    ? "a parsed-text save is already running."
+    : scrubText.isPending
+      ? "a scrub edit is already running."
+      : "";
+  const citationBusyReason = refreshCitation.isPending
+    ? "a citation refresh request is already starting."
+    : citationRefreshActive || citationRunId
+      ? "a DOI or citation refresh is already queued or running for this document."
+      : "";
+  const summaryRefreshBusyReason = refreshSummary.isPending
+    ? "a summary refresh request is already starting."
+    : summaryRefreshActive || summaryRunId
+      ? "a summary refresh is already queued or running for this document."
+      : "";
+  const documentConcordanceBusyReason = runConcordance.isPending
+    ? "a document Concordance request is already starting."
+    : documentConcordanceBusy
+      ? "a document Concordance Run is already queued or running."
+      : "";
   const accessorySummaries = document.accessory_summaries || [];
   const trackedAccessorySummary = trackedAccessorySummaryId
     ? accessorySummaries.find((summary) => summary.id === trackedAccessorySummaryId)
@@ -3494,10 +4207,16 @@ function DocumentPanelContent({
       trackedAccessorySummaryId &&
         (!trackedAccessorySummary || isActiveAccessorySummaryStatus(trackedAccessorySummary.status)),
     );
+  const accessorySummaryBusyReason = createAccessorySummary.isPending
+    ? "an Accessory Summary request is already starting."
+    : accessorySummaryBusy
+      ? "an Accessory Summary is already queued or running for this document."
+      : "";
   const sortedDocumentTags = useMemo(() => sortByName(document.tags), [document.tags]);
   const sortedAvailableTags = useMemo(() => sortByName(tags), [tags]);
   const currentTagNames = useMemo(() => normalizedNameList(sortedDocumentTags.map((tag) => tag.name)), [sortedDocumentTags]);
   const tagUpdateBusy = updateDocumentTags.isPending;
+  const tagUpdateBusyReason = "a tag update is already saving for this document.";
 
   useEffect(() => {
     if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
@@ -3948,9 +4667,10 @@ function DocumentPanelContent({
                 <span>{tag.name}</span>
                 <button
                   aria-label={`Remove ${tag.name}`}
+                  data-disabled-reason={tagUpdateBusyReason}
+                  data-tooltip={`Remove the ${tag.name} tag from this document.`}
                   disabled={tagUpdateBusy}
                   onClick={() => removeDocumentTag(tag.name)}
-                  title={`Remove ${tag.name}`}
                   type="button"
                 >
                   <X size={12} />
@@ -3969,6 +4689,8 @@ function DocumentPanelContent({
           >
             <input
               aria-label="Add tag"
+              data-disabled-reason={tagUpdateBusyReason}
+              data-tooltip="Type an existing or new tag name to add it to this document."
               disabled={tagUpdateBusy}
               list={`detail-known-tags-${document.id}`}
               onChange={(event) => {
@@ -3986,8 +4708,9 @@ function DocumentPanelContent({
             <button
               aria-label="Add tag"
               className="icon-button compact"
+              data-disabled-reason={tagUpdateBusy ? tagUpdateBusyReason : "a tag name is required."}
+              data-tooltip="Add the typed tag to this document."
               disabled={!tagNameDraft.trim() || tagUpdateBusy}
-              title="Add tag"
               type="submit"
             >
               <Plus size={14} />
@@ -4013,6 +4736,8 @@ function DocumentPanelContent({
         >
           <input
             aria-label="DOI"
+            data-disabled-reason="the DOI change is already saving."
+            data-tooltip="Edit the document DOI; leave it blank to clear the stored DOI."
             disabled={updateDoi.isPending}
             onChange={(event) => {
               setDoiDraft(event.target.value);
@@ -4023,11 +4748,24 @@ function DocumentPanelContent({
             value={doiDraft}
           />
           <div className="doi-editor-actions">
-            <button className="primary-button compact" disabled={updateDoi.isPending} type="submit">
+            <button
+              className="primary-button compact"
+              data-disabled-reason="the DOI change is already saving."
+              data-tooltip="Save this DOI to the document and refresh document search surfaces."
+              disabled={updateDoi.isPending}
+              type="submit"
+            >
               <Save size={14} />
               Save
             </button>
-            <button className="secondary-button compact" disabled={updateDoi.isPending} onClick={cancelDoiEdit} type="button">
+            <button
+              className="secondary-button compact"
+              data-disabled-reason="the DOI change is already saving."
+              data-tooltip="Discard the DOI draft and close DOI editing."
+              disabled={updateDoi.isPending}
+              onClick={cancelDoiEdit}
+              type="button"
+            >
               <X size={14} />
               Cancel
             </button>
@@ -4036,17 +4774,33 @@ function DocumentPanelContent({
         </form>
       ) : null}
       <div className="doi-actions">
-        <button className="secondary-button" disabled={!document.doi} onClick={copyDoi} type="button">
+        <button
+          className="secondary-button"
+          data-disabled-reason="this document does not have a DOI to copy."
+          data-tooltip="Copy the stored DOI for this document to the clipboard."
+          disabled={!document.doi}
+          onClick={copyDoi}
+          type="button"
+        >
           {copiedKey === "document-doi" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
           {copiedKey === "document-doi" ? "Copied" : "Copy"}
         </button>
-        <button className="secondary-button" onClick={startDoiEdit} disabled={updateDoi.isPending || editingDoi} type="button">
+        <button
+          className="secondary-button"
+          data-disabled-reason={updateDoi.isPending ? "the DOI change is already saving." : "the DOI editor is already open."}
+          data-tooltip="Open DOI editing so you can add, correct, or clear the document DOI."
+          onClick={startDoiEdit}
+          disabled={updateDoi.isPending || editingDoi}
+          type="button"
+        >
           <Edit3 size={15} />
           Edit
         </button>
         <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI check in progress">
           <button
             className={asyncFeedbackClass("secondary-button", doiRefreshFeedback.feedback, doiCheckBusy)}
+            data-disabled-reason={citationBusyReason}
+            data-tooltip="Queue a DOI and APA citation refresh for this document using the selected APA Citation Matching model."
             onClick={checkDoi}
             disabled={citationBusy}
             type="button"
@@ -4074,33 +4828,38 @@ function DocumentPanelContent({
           <div className="summary-editor-toolbar" aria-label="Summary formatting tools">
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Wrap the selected summary text in Markdown bold markers."
               disabled={updateSummary.isPending}
               onClick={() => applySummaryInlineFormat("**", "**", "bold text")}
-              title="Bold"
               type="button"
             >
               <Bold size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Wrap the selected summary text in Markdown italic markers."
               disabled={updateSummary.isPending}
               onClick={() => applySummaryInlineFormat("*", "*", "italic text")}
-              title="Italic"
               type="button"
             >
               <Italic size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Wrap the selected summary text in underline HTML tags."
               disabled={updateSummary.isPending}
               onClick={() => applySummaryInlineFormat("<u>", "</u>", "underlined text")}
-              title="Underline"
               type="button"
             >
               <Underline size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Turn the selected summary lines into a Markdown bullet list."
               disabled={updateSummary.isPending}
               onClick={() =>
                 applySummaryLineFormat((line) => {
@@ -4108,13 +4867,14 @@ function DocumentPanelContent({
                   return text ? `- ${text}` : "- ";
                 })
               }
-              title="Bullet list"
               type="button"
             >
               <List size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Turn the selected summary lines into a Markdown numbered list."
               disabled={updateSummary.isPending}
               onClick={() =>
                 applySummaryLineFormat((line, index) => {
@@ -4122,34 +4882,36 @@ function DocumentPanelContent({
                   return text ? `${index + 1}. ${text}` : `${index + 1}. `;
                 })
               }
-              title="Numbered list"
               type="button"
             >
               <ListOrdered size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Prefix selected summary lines with Markdown blockquote indentation."
               disabled={updateSummary.isPending}
               onClick={() => applySummaryLineFormat((line) => (line.startsWith(">") ? line : `> ${line}`))}
-              title="Indent"
               type="button"
             >
               <IndentIncrease size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Remove one Markdown blockquote indentation marker from selected summary lines."
               disabled={updateSummary.isPending}
               onClick={() => applySummaryLineFormat((line) => line.replace(/^>\s?/, ""))}
-              title="Outdent"
               type="button"
             >
               <IndentDecrease size={14} />
             </button>
             <button
               className="icon-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Remove common Markdown and underline formatting markers from the summary draft."
               disabled={updateSummary.isPending}
               onClick={clearSummaryFormatting}
-              title="Remove formatting"
               type="button"
             >
               <RemoveFormatting size={14} />
@@ -4157,6 +4919,8 @@ function DocumentPanelContent({
           </div>
           <textarea
             aria-label="Summary Markdown"
+            data-disabled-reason="the summary edit is already saving."
+            data-tooltip="Edit the Markdown summary that appears in the document detail pane and contributes to search."
             disabled={updateSummary.isPending}
             onChange={(event) => {
               setSummaryDraft(event.target.value);
@@ -4166,11 +4930,24 @@ function DocumentPanelContent({
             value={summaryDraft}
           />
           <div className="summary-editor-actions">
-            <button className="primary-button compact" disabled={updateSummary.isPending} type="submit">
+            <button
+              className="primary-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Save this edited summary to the document and refresh search."
+              disabled={updateSummary.isPending}
+              type="submit"
+            >
               <Save size={14} />
               Save
             </button>
-            <button className="secondary-button compact" disabled={updateSummary.isPending} onClick={cancelSummaryEdit} type="button">
+            <button
+              className="secondary-button compact"
+              data-disabled-reason="the summary edit is already saving."
+              data-tooltip="Discard the summary draft and close summary editing."
+              disabled={updateSummary.isPending}
+              onClick={cancelSummaryEdit}
+              type="button"
+            >
               <X size={14} />
               Cancel
             </button>
@@ -4181,12 +4958,21 @@ function DocumentPanelContent({
         <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
       )}
       <div className="citation-actions">
-        <button className="secondary-button" onClick={copySummary} disabled={!document.rich_summary} type="button">
+        <button
+          className="secondary-button"
+          data-disabled-reason="this document does not have a generated or edited summary to copy."
+          data-tooltip="Copy this document summary to the clipboard."
+          onClick={copySummary}
+          disabled={!document.rich_summary}
+          type="button"
+        >
           {copiedKey === "document-summary" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
           {copiedKey === "document-summary" ? "Copied" : "Copy"}
         </button>
         <button
           className="secondary-button"
+          data-disabled-reason={updateSummary.isPending ? "the summary edit is already saving." : "the summary editor is already open."}
+          data-tooltip="Open the Markdown summary editor for this document."
           onClick={startSummaryEdit}
           disabled={updateSummary.isPending || editingSummary}
           type="button"
@@ -4197,6 +4983,8 @@ function DocumentPanelContent({
         <AsyncActionSlot busy={summaryRefreshBusy} feedback={summaryRefreshFeedback.feedback} label="Summary check in progress">
           <button
             className={asyncFeedbackClass("secondary-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
+            data-disabled-reason={summaryRefreshBusyReason}
+            data-tooltip="Queue a summary-only Concordance refresh using the selected Summary model."
             onClick={checkSummary}
             disabled={summaryRefreshBusy}
             type="button"
@@ -4228,15 +5016,30 @@ function DocumentPanelContent({
           >
             <textarea
               aria-label={`${title} text`}
+              data-disabled-reason="a citation edit is already saving."
+              data-tooltip={`Edit the ${title} Markdown text stored for this document.`}
               value={citationDrafts[kind]}
               onChange={(event) => setCitationDrafts((current) => ({ ...current, [kind]: event.target.value }))}
             />
             <div className="citation-editor-actions">
-              <button className="primary-button compact" disabled={updateCitation.isPending} type="submit">
+              <button
+                className="primary-button compact"
+                data-disabled-reason="a citation edit is already saving."
+                data-tooltip={`Save the edited ${title} text to this document.`}
+                disabled={updateCitation.isPending}
+                type="submit"
+              >
                 <Save size={14} />
                 Save
               </button>
-              <button className="secondary-button compact" disabled={updateCitation.isPending} onClick={cancelCitationEdit} type="button">
+              <button
+                className="secondary-button compact"
+                data-disabled-reason="a citation edit is already saving."
+                data-tooltip={`Discard the ${title} draft and close citation editing.`}
+                disabled={updateCitation.isPending}
+                onClick={cancelCitationEdit}
+                type="button"
+              >
                 <X size={14} />
                 Cancel
               </button>
@@ -4247,17 +5050,33 @@ function DocumentPanelContent({
           <MarkdownBlock content={text} empty={empty} />
         )}
         <div className="citation-actions">
-          <button className="secondary-button" onClick={() => copyCitation(kind)} disabled={!text} type="button">
+          <button
+            className="secondary-button"
+            data-disabled-reason={`this document does not have ${title} text to copy.`}
+            data-tooltip={`Copy the ${title} text to the clipboard.`}
+            onClick={() => copyCitation(kind)}
+            disabled={!text}
+            type="button"
+          >
             {copiedKey === `citation-${kind}` ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
             {copiedKey === `citation-${kind}` ? "Copied" : "Copy"}
           </button>
-          <button className="secondary-button" onClick={() => startCitationEdit(kind)} disabled={updateCitation.isPending || isEditing} type="button">
+          <button
+            className="secondary-button"
+            data-disabled-reason={updateCitation.isPending ? "a citation edit is already saving." : "this citation editor is already open."}
+            data-tooltip={`Open the editor for the ${title} text.`}
+            onClick={() => startCitationEdit(kind)}
+            disabled={updateCitation.isPending || isEditing}
+            type="button"
+          >
             <Edit3 size={15} />
             Edit
           </button>
           <AsyncActionSlot busy={busy} feedback={feedback} label="Citation check in progress">
             <button
               className={asyncFeedbackClass("secondary-button", feedback, busy)}
+              data-disabled-reason={citationBusyReason}
+              data-tooltip={`Queue an APA citation refresh for the ${title} text using DOI/Crossref evidence first and the selected APA model as fallback.`}
               onClick={() => checkCitation(kind)}
               disabled={citationBusy}
               type="button"
@@ -4307,7 +5126,14 @@ function DocumentPanelContent({
           <button
             className="icon-button reader-arrow"
             type="button"
-            title="Previous page"
+            data-disabled-reason={
+              pageTextBusy
+                ? pageTextBusyReason
+                : !pages.length
+                  ? "this document does not have parsed pages yet."
+                  : "the reader is already on the first parsed page."
+            }
+            data-tooltip="Move the parsed-text reader to the previous page."
             disabled={!pages.length || currentPageIndex === 0 || pageTextBusy}
             onClick={() => setReaderPageIndex((index) => Math.max(0, index - 1))}
           >
@@ -4317,18 +5143,39 @@ function DocumentPanelContent({
           <button
             className="icon-button reader-arrow"
             type="button"
-            title="Next page"
+            data-disabled-reason={
+              pageTextBusy
+                ? pageTextBusyReason
+                : !pages.length
+                  ? "this document does not have parsed pages yet."
+                  : "the reader is already on the last parsed page."
+            }
+            data-tooltip="Move the parsed-text reader to the next page."
             disabled={!pages.length || currentPageIndex >= pages.length - 1 || pageTextBusy}
             onClick={() => setReaderPageIndex((index) => Math.min(pages.length - 1, index + 1))}
           >
             <ChevronRight size={18} />
           </button>
-          <button className="secondary-button compact" onClick={copyFullText} disabled={!fullText || pageTextBusy} type="button">
+          <button
+            className="secondary-button compact"
+            data-disabled-reason={pageTextBusy ? pageTextBusyReason : "this document does not have parsed text to copy."}
+            data-tooltip="Copy all parsed document text to the clipboard."
+            onClick={copyFullText}
+            disabled={!fullText || pageTextBusy}
+            type="button"
+          >
             {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
             {copiedKey === "full-text" ? "Copied" : "Copy"}
           </button>
           {!pageTextEditing ? (
-            <button className="secondary-button compact" disabled={!currentPage || pageTextBusy} onClick={startPageTextEdit} type="button">
+            <button
+              className="secondary-button compact"
+              data-disabled-reason={pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
+              data-tooltip="Open the parsed page text editor for the current page."
+              disabled={!currentPage || pageTextBusy}
+              onClick={startPageTextEdit}
+              type="button"
+            >
               <Edit3 size={14} />
               Edit
             </button>
@@ -4367,6 +5214,14 @@ function DocumentPanelContent({
               <div className="reader-editor-tools">
                 <button
                   className="secondary-button compact"
+                  data-disabled-reason={
+                    pageTextBusy
+                      ? pageTextBusyReason
+                      : !scrubNeedle
+                        ? "select exact text in the parsed page editor first."
+                        : "the selected text does not appear in the parsed document text."
+                  }
+                  data-tooltip="Remove the selected exact text everywhere it appears in this document's parsed pages and record the edit in history."
                   disabled={!scrubNeedle || scrubMatchCount <= 0 || pageTextBusy}
                   onClick={scrubSelectedText}
                   type="button"
@@ -4375,11 +5230,25 @@ function DocumentPanelContent({
                   {scrubButtonLabel}
                 </button>
                 <span className="reader-tool-spacer" />
-                <button className="primary-button compact" disabled={pageTextBusy} onClick={savePageTextEdit} type="button">
+                <button
+                  className="primary-button compact"
+                  data-disabled-reason={pageTextBusyReason}
+                  data-tooltip="Save the edited parsed text for this page, rebuild document search, and record the change in history."
+                  disabled={pageTextBusy}
+                  onClick={savePageTextEdit}
+                  type="button"
+                >
                   <Save size={14} />
                   Save
                 </button>
-                <button className="secondary-button compact" disabled={pageTextBusy} onClick={cancelPageTextEdit} type="button">
+                <button
+                  className="secondary-button compact"
+                  data-disabled-reason={pageTextBusyReason}
+                  data-tooltip="Discard parsed page text edits and close the editor."
+                  disabled={pageTextBusy}
+                  onClick={cancelPageTextEdit}
+                  type="button"
+                >
                   <X size={14} />
                   Cancel
                 </button>
@@ -4412,13 +5281,19 @@ function DocumentPanelContent({
         </div>
       </div>
       <div className="detail-actions">
-        <button className="secondary-button" onClick={toggleDocumentEditing}>
+        <button
+          className="secondary-button"
+          data-tooltip={editing ? "Close the document metadata correction form without saving." : "Open the document metadata correction form."}
+          onClick={toggleDocumentEditing}
+        >
           {editing ? <X size={15} /> : <Edit3 size={15} />}
           {editing ? "Cancel" : "Edit"}
         </button>
         <AsyncActionSlot busy={documentConcordanceBusy} feedback={runConcordanceFeedback.feedback} label="Document Concordance in progress">
           <button
             className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback, documentConcordanceBusy)}
+            data-disabled-reason={documentConcordanceBusyReason}
+            data-tooltip="Queue a document-scoped Concordance Run to bring this document up to the current selected capabilities."
             onClick={() => runConcordance.mutate()}
             disabled={documentConcordanceBusy}
           >
@@ -4426,12 +5301,17 @@ function DocumentPanelContent({
             {documentConcordanceBusy ? "Concording" : "Concord"}
           </button>
         </AsyncActionSlot>
-        <button className="secondary-button" onClick={() => setCompositionOpen(true)} type="button">
+        <button
+          className="secondary-button"
+          data-tooltip="Open this document's cost composition, provider spend, local processing time, issues, and pipeline chart."
+          onClick={() => setCompositionOpen(true)}
+          type="button"
+        >
           <PieChart size={15} />
           Composition
         </button>
         {onOpenReader && !readerExpanded ? (
-          <button className="secondary-button" onClick={onOpenReader} type="button">
+          <button className="secondary-button" data-tooltip="Expand this document into full Reader mode." onClick={onOpenReader} type="button">
             <BookOpen size={15} />
             Reader
           </button>
@@ -4439,23 +5319,39 @@ function DocumentPanelContent({
         <button
           className="secondary-button"
           aria-expanded={recommendationsOpen}
+          data-tooltip={document.doi ? "Open related-paper recommendations for this DOI-bearing document." : "Open the recommendations panel to see why related papers are unavailable."}
           onClick={() => setRecommendationsOpen((value) => !value)}
-          title={document.doi ? "View related papers" : "Show why related papers are unavailable"}
           type="button"
         >
           <BookSearchIcon size={15} />
           Related
         </button>
-        <a className="secondary-button" href={`/api/documents/${document.id}/original`} target="_blank" rel="noreferrer">
+        <a
+          className="secondary-button"
+          data-tooltip="Open the authenticated original PDF in a new browser tab."
+          href={`/api/documents/${document.id}/original`}
+          target="_blank"
+          rel="noreferrer"
+        >
           <FileSearch size={15} />
           Open Original
         </a>
-        <a className="secondary-button" href={`/api/documents/${document.id}/original?download=1`} download>
+        <a
+          className="secondary-button"
+          data-tooltip="Download the authenticated original PDF using the Settings Download Naming template."
+          href={`/api/documents/${document.id}/original?download=1`}
+          download
+        >
           <Download size={15} />
           Download Original
         </a>
         {onCloseReader && readerExpanded ? (
-          <button className="secondary-button reader-close-action" onClick={onCloseReader} type="button">
+          <button
+            className="secondary-button reader-close-action"
+            data-tooltip="Close expanded Reader mode and return to the normal Library panes."
+            onClick={onCloseReader}
+            type="button"
+          >
             <X size={15} />
             Close
           </button>
@@ -4473,6 +5369,7 @@ function DocumentPanelContent({
         <div className="reader-tabs" role="tablist" aria-label="Document reader">
           <button
             className={readerMode === "pdf" ? "selected" : ""}
+            data-tooltip="Show the authenticated original PDF preview."
             type="button"
             onClick={() => {
               setRecommendationsOpen(false);
@@ -4484,6 +5381,7 @@ function DocumentPanelContent({
           </button>
           <button
             className={readerMode === "text" ? "selected" : ""}
+            data-tooltip="Show the normalized parsed-text reader for this document."
             type="button"
             onClick={() => {
               setRecommendationsOpen(false);
@@ -4495,6 +5393,7 @@ function DocumentPanelContent({
           </button>
           <button
             className={readerMode === "compare" ? "selected" : ""}
+            data-tooltip="Show the original PDF beside the parsed text editor for page-by-page comparison."
             type="button"
             onClick={() => {
               setRecommendationsOpen(false);
@@ -4626,6 +5525,7 @@ function DocumentPanelContent({
               <strong>Attributes</strong>
               <button
                 className="secondary-button compact"
+                data-tooltip="Add another custom attribute row to the correction form."
                 type="button"
                 onClick={() => setDraftValue("attributes", [...draft.attributes, { key: "", value: "" }])}
               >
@@ -4638,14 +5538,25 @@ function DocumentPanelContent({
                 <div key={`${attribute.key}-${index}`} className="attribute-editor-row">
                   <input placeholder="Name" value={attribute.key} onChange={(event) => updateAttribute(index, "key", event.target.value)} />
                   <input placeholder="Value" value={attribute.value} onChange={(event) => updateAttribute(index, "value", event.target.value)} />
-                  <button className="icon-button" type="button" title="Remove attribute" onClick={() => removeAttribute(index)}>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    data-tooltip="Remove this custom attribute row from the correction draft."
+                    onClick={() => removeAttribute(index)}
+                  >
                     <Trash2 size={15} />
                   </button>
                 </div>
               ))}
             </div>
           </div>
-          <button className="primary-button" type="submit" disabled={updateDocument.isPending}>
+          <button
+            className="primary-button"
+            data-disabled-reason="the document correction is already saving."
+            data-tooltip="Save the document metadata correction, rebuild affected search text, and record the change in history."
+            type="submit"
+            disabled={updateDocument.isPending}
+          >
             <Save size={15} />
             Save correction
           </button>
@@ -4662,6 +5573,8 @@ function DocumentPanelContent({
           <h3>Accessory Summaries</h3>
           <button
             className="secondary-button compact"
+            data-disabled-reason={accessorySummaryBusyReason}
+            data-tooltip={accessoryComposerOpen ? "Close the Accessory Summary prompt composer." : "Open the Accessory Summary prompt composer for this document."}
             disabled={accessorySummaryBusy}
             onClick={() => setAccessoryComposerOpen((value) => !value)}
             type="button"
@@ -4680,6 +5593,8 @@ function DocumentPanelContent({
             }}
           >
             <textarea
+              data-disabled-reason={accessorySummaryBusyReason}
+              data-tooltip="Type the question or focused topic for a new Accessory Summary on this document."
               disabled={accessorySummaryBusy}
               onChange={(event) => setAccessoryPrompt(event.target.value)}
               placeholder="Ask a question or specify a focused topic"
@@ -4697,6 +5612,8 @@ function DocumentPanelContent({
               <AsyncActionSlot busy={accessorySummaryBusy} feedback={accessorySummaryFeedback.feedback} label="Accessory summary in progress">
                 <button
                   className={asyncFeedbackClass("primary-button", accessorySummaryFeedback.feedback, accessorySummaryBusy)}
+                  data-disabled-reason={accessorySummaryBusy ? accessorySummaryBusyReason : "an Accessory Summary prompt is required."}
+                  data-tooltip="Queue a durable Accessory Summary job for this document using the selected model."
                   disabled={accessorySummaryBusy || !accessoryPrompt.trim()}
                   type="submit"
                 >
@@ -4716,6 +5633,8 @@ function DocumentPanelContent({
                   <div className="accessory-summary-head">
                     <input
                       aria-label="Accessory summary title"
+                      data-disabled-reason="an Accessory Summary title update is already saving."
+                      data-tooltip="Edit the optional display title for this Accessory Summary; it saves when the field loses focus."
                       disabled={updateAccessorySummary.isPending}
                       onBlur={() => {
                         if (titleValue !== (summary.title ?? "")) saveAccessorySummaryTitle(summary);
@@ -4766,7 +5685,8 @@ function DocumentPanelContent({
                 </div>
                 <button
                   className="icon-button"
-                  title="Delete annotation"
+                  data-disabled-reason="an annotation delete request is already running."
+                  data-tooltip="Delete this annotation from the document; deleted annotations are removed from active search."
                   onClick={() => deleteAnnotation.mutate(annotation.id)}
                   disabled={deleteAnnotation.isPending}
                 >
@@ -4787,7 +5707,13 @@ function DocumentPanelContent({
         {document.figures.length ? (
           <div className="figure-grid">
             {document.figures.map((figure) => (
-              <a key={figure.id} href={`/api/figures/${figure.id}/asset`} target="_blank" rel="noreferrer">
+              <a
+                key={figure.id}
+                data-tooltip="Open this extracted figure asset in a new browser tab."
+                href={`/api/figures/${figure.id}/asset`}
+                target="_blank"
+                rel="noreferrer"
+              >
                 <img alt={figure.figure_label || "Extracted figure"} src={`/api/figures/${figure.id}/asset`} />
                 <span>{figure.figure_label || `Page ${figure.page_number || "?"}`}</span>
                 <small>{figure.caption || figure.gist || "Extracted figure"}</small>
@@ -4832,6 +5758,12 @@ function DocumentPanelContent({
               <div className="history-toolbar">
                 <button
                   className="secondary-button compact"
+                  data-disabled-reason={
+                    restoreHistoryVersion.isPending
+                      ? "a history restore is already running."
+                      : "this is the newest available history snapshot."
+                  }
+                  data-tooltip="Step to the next newer document history snapshot."
                   disabled={selectedHistoryIndex <= 0 || restoreHistoryVersion.isPending}
                   onClick={() => selectHistoryOffset(-1)}
                   type="button"
@@ -4842,6 +5774,12 @@ function DocumentPanelContent({
                 <span className="history-current">v{selectedHistoryVersion.version_number}</span>
                 <button
                   className="secondary-button compact"
+                  data-disabled-reason={
+                    restoreHistoryVersion.isPending
+                      ? "a history restore is already running."
+                      : "this is the oldest available history snapshot."
+                  }
+                  data-tooltip="Step to the next older document history snapshot."
                   disabled={selectedHistoryIndex >= historyRows.length - 1 || restoreHistoryVersion.isPending}
                   onClick={() => selectHistoryOffset(1)}
                   type="button"
@@ -4851,6 +5789,12 @@ function DocumentPanelContent({
                 </button>
                 <button
                   className="primary-button compact"
+                  data-disabled-reason={
+                    restoreHistoryVersion.isPending
+                      ? "a history restore is already running."
+                      : "the selected history snapshot has no restorable document or page fields."
+                  }
+                  data-tooltip="Restore the selected history snapshot as the current document state and append a new history entry."
                   disabled={!selectedHistoryRestorable || restoreHistoryVersion.isPending}
                   onClick={restoreSelectedHistoryVersion}
                   type="button"
@@ -4882,6 +5826,7 @@ function DocumentPanelContent({
                   <button
                     key={version.id}
                     className={`history-row ${selected ? "selected" : ""}`}
+                    data-tooltip={`Select history snapshot v${version.version_number} for preview and possible restore.`}
                     onClick={() => {
                       setSelectedHistoryVersionId(version.id);
                       setHistoryRestoreError(null);
@@ -4973,7 +5918,12 @@ function ImportDefaultPicker({
           <p>{hint}</p>
         </div>
         {selectedIds.length ? (
-          <button className="text-button" type="button" onClick={() => onChange([])}>
+          <button
+            className="text-button"
+            data-tooltip={`Clear all selected default ${title.toLocaleLowerCase()} values for the next import batch.`}
+            type="button"
+            onClick={() => onChange([])}
+          >
             Clear
           </button>
         ) : null}
@@ -4981,7 +5931,12 @@ function ImportDefaultPicker({
       <div className="selected-chips" aria-label={`${title} selected defaults`}>
         {selected.length ? (
           selected.map((item) => (
-            <button key={item.id} type="button" onClick={() => removeItem(item.id)} title={`Remove ${item.name}`}>
+            <button
+              key={item.id}
+              data-tooltip={`Remove ${item.name} from the default ${title.toLocaleLowerCase()} applied to this import batch.`}
+              type="button"
+              onClick={() => removeItem(item.id)}
+            >
               <span>{item.name}</span>
               <X size={13} />
             </button>
@@ -4990,10 +5945,20 @@ function ImportDefaultPicker({
           <span>No default</span>
         )}
       </div>
-      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Find ${title.toLowerCase()}`} />
+      <input
+        data-tooltip={`Search available ${title.toLocaleLowerCase()} to apply as defaults before importing PDFs.`}
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={`Find ${title.toLowerCase()}`}
+      />
       <div className="picker-options">
         {options.map((item) => (
-          <button key={item.id} type="button" onClick={() => addItem(item.id)}>
+          <button
+            key={item.id}
+            data-tooltip={`Add ${item.name} to the default ${title.toLocaleLowerCase()} for this import batch.`}
+            type="button"
+            onClick={() => addItem(item.id)}
+          >
             <span>{item.name}</span>
             {item.meta ? <small>{item.meta}</small> : null}
           </button>
@@ -5002,8 +5967,20 @@ function ImportDefaultPicker({
       </div>
       {onCreate ? (
         <div className="inline-create">
-          <input value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createLabel} />
-          <button className="secondary-button" disabled={!canCreate || creating} onClick={handleCreate} type="button">
+          <input
+            data-tooltip={`Type the name for ${createLabel.toLocaleLowerCase()} to create and select it for this import batch.`}
+            value={createName}
+            onChange={(event) => setCreateName(event.target.value)}
+            placeholder={createLabel}
+          />
+          <button
+            className="secondary-button"
+            data-disabled-reason={creating ? `a ${title.toLocaleLowerCase()} create request is already running.` : "a name is required."}
+            data-tooltip={`Create ${createName.trim() || createLabel.toLocaleLowerCase()} and add it to this import batch's default ${title.toLocaleLowerCase()}.`}
+            disabled={!canCreate || creating}
+            onClick={handleCreate}
+            type="button"
+          >
             <Plus size={14} />
             Add
           </button>
@@ -5053,7 +6030,6 @@ function stashSortLabel(key: StashSortKey) {
 
 function tagSortLabel(key: TagSortKey) {
   if (key === "name") return "Tag";
-  if (key === "kind") return "Kind";
   return "Documents";
 }
 
@@ -5166,6 +6142,7 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
             <button
               key={key}
               className={`secondary-button compact ${sortKey === key ? "active" : ""}`}
+              data-tooltip={`Sort stashed DOIs by ${stashSortLabel(key).toLocaleLowerCase()}; press again to reverse direction.`}
               onClick={() => chooseSort(key)}
               type="button"
             >
@@ -5198,6 +6175,8 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                     id={inputId}
                     className="hidden-file-input"
                     accept="application/pdf,.pdf"
+                    data-disabled-reason="a PDF upload is already running for this stash."
+                    data-tooltip="Choose a PDF file to import for this stashed DOI."
                     type="file"
                     onChange={(event) => {
                       if (event.currentTarget.files?.length) handleUploadFiles(stash, event.currentTarget.files);
@@ -5208,6 +6187,8 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                     <label
                       aria-disabled={busy}
                       className={`stash-upload-button ${busy ? "disabled" : ""}`}
+                      data-disabled-reason="a PDF upload is already running for this stash."
+                      data-tooltip="Choose a PDF file to import for this stashed DOI through the normal import pipeline."
                       htmlFor={inputId}
                       role="button"
                       tabIndex={busy ? -1 : 0}
@@ -5219,6 +6200,8 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                   <label
                     aria-disabled={busy}
                     className={`stash-upload-drop ${draggingStashId === stash.id ? "dragging" : ""} ${busy ? "disabled" : ""}`}
+                    data-disabled-reason="a PDF upload is already running for this stash."
+                    data-tooltip="Drop a PDF here to import it for this stashed DOI through the normal import pipeline."
                     htmlFor={inputId}
                     onDragEnter={(event) => {
                       event.preventDefault();
@@ -5241,7 +6224,13 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                     Drag PDF Here To Upload
                   </label>
                   {stash.source_url ? (
-                    <a className="secondary-button compact" href={stash.source_url} target="_blank" rel="noreferrer">
+                    <a
+                      className="secondary-button compact"
+                      data-tooltip="Open the saved source evidence for this DOI stash in a new tab."
+                      href={stash.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
                       <ExternalLink size={14} />
                       Source
                     </a>
@@ -5249,6 +6238,8 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                   <AsyncActionSlot feedback={removeFeedback.feedbackFor(stash.id)}>
                     <button
                       className={asyncFeedbackClass("secondary-button compact", removeFeedback.feedbackFor(stash.id))}
+                      data-disabled-reason="a DOI stash remove request is already running."
+                      data-tooltip="Remove this DOI from Stashes without deleting any imported document."
                       disabled={remove.isPending}
                       onClick={() => remove.mutate(stash)}
                       type="button"
@@ -5291,7 +6282,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const domainItems = useMemo(() => domainPickerItems(domains), [domains]);
   const tagItems = useMemo<ImportPickerItem[]>(
-    () => sortedTags.map((tag) => ({ id: tag.id, name: tag.name, meta: tag.kind })),
+    () => sortedTags.map((tag) => ({ id: tag.id, name: tag.name })),
     [sortedTags],
   );
   const projectItems = useMemo<ImportPickerItem[]>(
@@ -5466,6 +6457,8 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
         </div>
         <input
           aria-label="Import PDFs"
+          data-disabled-reason="an import or duplicate preflight check is already running."
+          data-tooltip="Choose one or more PDF files; Medusa will hash them, check for duplicates, and queue imports with the current batch defaults."
           type="file"
           multiple
           accept="application/pdf"
@@ -5497,15 +6490,36 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             ))}
           </div>
           <div className="duplicate-actions">
-            <button className="secondary-button" disabled={upload.isPending} onClick={() => applyDuplicateStrategy("skip")} type="button">
+            <button
+              className="secondary-button"
+              data-disabled-reason="the duplicate decision is already being uploaded."
+              data-tooltip="Skip every exact duplicate in this upload and only import PDFs without checksum matches."
+              disabled={upload.isPending}
+              onClick={() => applyDuplicateStrategy("skip")}
+              type="button"
+            >
               <X size={15} />
               Skip duplicates
             </button>
-            <button className="secondary-button" disabled={upload.isPending} onClick={() => applyDuplicateStrategy("overwrite")} type="button">
+            <button
+              className="secondary-button"
+              data-disabled-reason="the duplicate decision is already being uploaded."
+              data-tooltip="Reprocess matching existing document records with the newly uploaded duplicate PDFs."
+              disabled={upload.isPending}
+              onClick={() => applyDuplicateStrategy("overwrite")}
+              type="button"
+            >
               <RefreshCw size={15} />
               Overwrite
             </button>
-            <button className="primary-button" disabled={upload.isPending} onClick={() => applyDuplicateStrategy("import_anyway")} type="button">
+            <button
+              className="primary-button"
+              data-disabled-reason="the duplicate decision is already being uploaded."
+              data-tooltip="Import the duplicate PDFs anyway as separate document records with the same checksums."
+              disabled={upload.isPending}
+              onClick={() => applyDuplicateStrategy("import_anyway")}
+              type="button"
+            >
               <Plus size={15} />
               Import anyway
             </button>
@@ -5525,11 +6539,16 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
         <div className="import-default-controls">
           <label>
             Batch label
-            <input value={batchLabel} onChange={(event) => setBatchLabel(event.target.value)} placeholder="Optional import label" />
+            <input
+              data-tooltip="Type an optional label that will be stored on this import batch."
+              value={batchLabel}
+              onChange={(event) => setBatchLabel(event.target.value)}
+              placeholder="Optional import label"
+            />
           </label>
           <label>
             Priority
-            <select value={priority} onChange={(event) => setPriority(event.target.value)}>
+            <select data-tooltip="Choose the priority that will be applied to every document in this import batch." value={priority} onChange={(event) => setPriority(event.target.value)}>
               <option value="urgent">Urgent</option>
               <option value="high">High</option>
               <option value="normal">Normal</option>
@@ -5538,7 +6557,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
           </label>
           <label>
             Read status
-            <select value={readStatus} onChange={(event) => setReadStatus(event.target.value)}>
+            <select data-tooltip="Choose the read status that will be applied to every document in this import batch." value={readStatus} onChange={(event) => setReadStatus(event.target.value)}>
               <option value="unread">Unread</option>
               <option value="skimmed">Skimmed</option>
               <option value="read">Read</option>
@@ -5557,7 +6576,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
           />
           <ImportDefaultPicker
             createLabel="New tag"
-            hint="Apply known keywords or create a tag before dropping files."
+            hint="Apply known tags or create a tag before dropping files."
             items={tagItems}
             onChange={setSelectedTagIds}
             onCreate={createAndSelectTag}
@@ -5641,13 +6660,13 @@ function ProjectItemRow({ item, projectId }: { item: ProjectItem; projectId: str
           <span>{item.document?.original_filename || "No citation yet"}</span>
         )}
       </div>
-      <select value={item.status} onChange={(event) => update.mutate({ status: event.target.value })}>
+      <select data-tooltip="Choose this resource's run-sheet status." value={item.status} onChange={(event) => update.mutate({ status: event.target.value })}>
         <option value="candidate">Candidate</option>
         <option value="reading">Reading</option>
         <option value="used">Used</option>
         <option value="rejected">Rejected</option>
       </select>
-      <select value={item.priority} onChange={(event) => update.mutate({ priority: event.target.value })}>
+      <select data-tooltip="Choose this resource's project priority." value={item.priority} onChange={(event) => update.mutate({ priority: event.target.value })}>
         <option value="urgent">Urgent</option>
         <option value="high">High</option>
         <option value="normal">Normal</option>
@@ -5655,6 +6674,7 @@ function ProjectItemRow({ item, projectId }: { item: ProjectItem; projectId: str
       </select>
       <label className="used-toggle">
         <input
+          data-tooltip="Mark whether this resource is used in the project's final output; enabling it also sets the status to Used."
           type="checkbox"
           checked={item.used_in_output}
           onChange={(event) => update.mutate({ used_in_output: event.target.checked, status: event.target.checked ? "used" : item.status })}
@@ -5662,6 +6682,7 @@ function ProjectItemRow({ item, projectId }: { item: ProjectItem; projectId: str
         <span>Used</span>
       </label>
       <input
+        data-tooltip="Edit this resource's run-sheet note; it saves when the field loses focus."
         value={note}
         onChange={(event) => setNote(event.target.value)}
         onBlur={() => {
@@ -5669,7 +6690,13 @@ function ProjectItemRow({ item, projectId }: { item: ProjectItem; projectId: str
         }}
         placeholder="Run-sheet note"
       />
-      <button className="icon-button" title="Remove from project" onClick={() => remove.mutate()} disabled={remove.isPending}>
+      <button
+        className="icon-button"
+        data-disabled-reason="a project resource remove request is already running."
+        data-tooltip="Remove this resource from the project run sheet without deleting the document from the library."
+        onClick={() => remove.mutate()}
+        disabled={remove.isPending}
+      >
         <Trash2 size={15} />
       </button>
     </article>
@@ -5716,21 +6743,34 @@ function TagRenameDialog({
             <span>Rename</span>
             <h2 id="tag-rename-title">{tag.name}</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} title="Close rename dialog">
+          <button className="icon-button" type="button" data-tooltip="Close the tag rename dialog without saving." onClick={onClose}>
             <X size={18} />
           </button>
         </div>
         <label className="tag-dialog-field">
           Name
-          <input value={name} autoFocus onChange={(event) => setName(event.target.value)} />
+          <input data-tooltip="Type the new tag name." value={name} autoFocus onChange={(event) => setName(event.target.value)} />
         </label>
         {error ? <p className="form-error">{error}</p> : null}
         <div className="tag-dialog-actions">
-          <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>
+          <button
+            className="secondary-button"
+            type="button"
+            data-disabled-reason="a tag rename is already running."
+            data-tooltip="Close the tag rename dialog without saving."
+            onClick={onClose}
+            disabled={busy}
+          >
             <X size={16} />
             Cancel
           </button>
-          <button className="primary-button" type="submit" disabled={!trimmedName || busy}>
+          <button
+            className="primary-button"
+            type="submit"
+            data-disabled-reason={busy ? "a tag rename is already running." : "a new tag name is required."}
+            data-tooltip={`Rename ${tag.name} to ${trimmedName || "the typed name"} and update affected document search/history.`}
+            disabled={!trimmedName || busy}
+          >
             <Edit3 size={16} />
             Rename
           </button>
@@ -5788,7 +6828,7 @@ function TagMergeDialog({
             <span>Merge</span>
             <h2 id="tag-merge-title">{tags.length} tags selected</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} title="Close merge dialog">
+          <button className="icon-button" type="button" data-tooltip="Close the tag merge dialog without merging tags." onClick={onClose}>
             <X size={18} />
           </button>
         </div>
@@ -5796,6 +6836,7 @@ function TagMergeDialog({
           {sortedTags.map((tag) => (
             <label key={tag.id} className="tag-choice">
               <input
+                data-tooltip={`Choose ${tag.name} as the tag that will remain after merge.`}
                 type="radio"
                 checked={mode === "keep" && keepId === tag.id}
                 onChange={() => {
@@ -5810,10 +6851,11 @@ function TagMergeDialog({
             </label>
           ))}
           <label className="tag-choice custom">
-            <input type="radio" checked={mode === "new"} onChange={() => setMode("new")} />
+            <input data-tooltip="Choose a different merged tag name instead of keeping one selected tag." type="radio" checked={mode === "new"} onChange={() => setMode("new")} />
             <span>
               <strong>Different name</strong>
               <input
+                data-tooltip="Type the new merged tag name."
                 value={name}
                 onChange={(event) => {
                   setName(event.target.value);
@@ -5826,11 +6868,24 @@ function TagMergeDialog({
         </div>
         {error ? <p className="form-error">{error}</p> : null}
         <div className="tag-dialog-actions">
-          <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>
+          <button
+            className="secondary-button"
+            type="button"
+            data-disabled-reason="a tag merge is already running."
+            data-tooltip="Close the tag merge dialog without merging tags."
+            onClick={onClose}
+            disabled={busy}
+          >
             <X size={16} />
             Cancel
           </button>
-          <button className="primary-button" type="submit" disabled={!canSubmit || busy}>
+          <button
+            className="primary-button"
+            type="submit"
+            data-disabled-reason={busy ? "a tag merge is already running." : "choose a tag to keep or type a merged tag name."}
+            data-tooltip="Merge the selected tags into the chosen tag name, update affected document search, and record document history."
+            disabled={!canSubmit || busy}
+          >
             <Tags size={16} />
             Confirm Merge
           </button>
@@ -5851,6 +6906,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
   const [operationError, setOperationError] = useState<string | null>(null);
   const [optimizationResult, setOptimizationResult] = useState<TagOptimizationResult | null>(null);
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
+  const [optimizationPaneOpen, setOptimizationPaneOpen] = useState(false);
   const queryClient = useQueryClient();
   const tagIdSet = useMemo(() => new Set(tags.map((tag) => tag.id)), [tags]);
   const selectedTags = useMemo(() => tags.filter((tag) => selectedIds.includes(tag.id)), [selectedIds, tags]);
@@ -5861,16 +6917,14 @@ function TagsView({ tags }: { tags: Tag[] }) {
     return tags
       .filter((tag) => {
         if (!normalizedSearch) return true;
-        return `${tag.name} ${tag.kind}`.toLowerCase().includes(normalizedSearch);
+        return tag.name.toLowerCase().includes(normalizedSearch);
       })
       .sort((left, right) => {
         if (sortKey === "documents") {
           const countCompare = (left.document_count - right.document_count) * direction;
           return countCompare || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
         }
-        const leftValue = sortKey === "kind" ? left.kind : left.name;
-        const rightValue = sortKey === "kind" ? right.kind : right.name;
-        return leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" }) * direction;
+        return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }) * direction;
       });
   }, [searchText, sortDirection, sortKey, tags]);
   const allVisibleSelected = visibleTags.length > 0 && visibleTags.every((tag) => selectedSet.has(tag.id));
@@ -5880,6 +6934,10 @@ function TagsView({ tags }: { tags: Tag[] }) {
     [selectedIds, visibleTags],
   );
   const optimizationScopeLabel = selectedIds.length ? `${selectedIds.length} selected` : `${visibleTags.length} visible`;
+  const optimizationAffectedDocuments = useMemo(
+    () => optimizationResult?.suggestions.reduce((total, suggestion) => total + suggestion.affected_documents, 0) ?? 0,
+    [optimizationResult],
+  );
   const renameTag = useMutation({
     mutationFn: ({ tag, name }: { tag: Tag; name: string }) => api.renameTag(tag.id, name),
     onSuccess: (result) => {
@@ -5923,13 +6981,17 @@ function TagsView({ tags }: { tags: Tag[] }) {
       setOptimizationResult(result);
       setOptimizationError(null);
       setOperationError(null);
+      setOptimizationPaneOpen(true);
       setNotice(
         result.suggestions.length
           ? `Found ${result.suggestions.length} optimization suggestion${result.suggestions.length === 1 ? "" : "s"}`
           : `No optimization suggestions found for ${optimizationScopeLabel}`,
       );
     },
-    onError: (error) => setOptimizationError(actionFailureMessage("Could not optimize tags", error)),
+    onError: (error) => {
+      setOptimizationPaneOpen(true);
+      setOptimizationError(actionFailureMessage("Could not optimize tags", error));
+    },
   });
 
   useEffect(() => {
@@ -5982,33 +7044,67 @@ function TagsView({ tags }: { tags: Tag[] }) {
     setOperationError(null);
     mergeTags.mutate({ source_tag_ids: suggestion.source_tag_ids, target_name: suggestion.target_name });
   };
+  const startOptimization = () => {
+    setOptimizationPaneOpen(true);
+    setOptimizationError(null);
+    optimizeTags.mutate();
+  };
   const selectedTag = selectedTags.length === 1 ? selectedTags[0] : undefined;
 
   return (
-    <section className="workbench tags-workbench">
+    <section className={`workbench tags-workbench${optimizationPaneOpen ? " has-optimization-pane" : ""}`}>
       <div className="tags-toolbar">
         <div className="tag-actions">
-          <button className="secondary-button compact" type="button" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>
+          <button
+            className="secondary-button compact"
+            type="button"
+            data-disabled-reason="no tags are selected."
+            data-tooltip="Clear the current tag selection without changing any tags."
+            disabled={!selectedIds.length}
+            onClick={() => setSelectedIds([])}
+          >
             <X size={15} />
             Clear Selection
           </button>
-          <button className="secondary-button compact" type="button" disabled={selectedIds.length !== 1 || renameTag.isPending} onClick={openRename}>
+          <button
+            className="secondary-button compact"
+            type="button"
+            data-disabled-reason={renameTag.isPending ? "a tag rename is already running." : "select exactly one tag to rename."}
+            data-tooltip="Open the rename dialog for the single selected tag."
+            disabled={selectedIds.length !== 1 || renameTag.isPending}
+            onClick={openRename}
+          >
             <Edit3 size={15} />
             Rename
           </button>
-          <button className="primary-button compact" type="button" disabled={selectedIds.length < 2 || mergeTags.isPending} onClick={openMerge}>
+          <button
+            className="primary-button compact"
+            type="button"
+            data-disabled-reason={mergeTags.isPending ? "a tag merge is already running." : "select two or more tags to merge."}
+            data-tooltip="Open the merge dialog for the selected tags."
+            disabled={selectedIds.length < 2 || mergeTags.isPending}
+            onClick={openMerge}
+          >
             <Tags size={15} />
             Merge ({selectedIds.length})
           </button>
-          <button className="secondary-button compact" type="button" disabled>
+          <button
+            className="secondary-button compact"
+            type="button"
+            data-disabled-reason="tag delete is reserved for a future implementation."
+            data-tooltip="Delete selected tags after confirmation when tag deletion is implemented."
+            disabled
+          >
             <Trash2 size={15} />
             Delete
           </button>
           <button
             className="secondary-button compact"
             type="button"
+            data-disabled-reason={optimizeTags.isPending ? "a tag optimization plan is already being generated." : "at least two tags must be in the optimization scope."}
+            data-tooltip="Ask the selected model to propose reviewable tag merge suggestions for the selected or visible tag scope."
             disabled={optimizationScopeIds.length < 2 || optimizeTags.isPending}
-            onClick={() => optimizeTags.mutate()}
+            onClick={startOptimization}
           >
             <BrainCircuit className={optimizeTags.isPending ? "spin" : ""} size={15} />
             {optimizeTags.isPending ? "Optimizing" : "Optimize"}
@@ -6016,31 +7112,78 @@ function TagsView({ tags }: { tags: Tag[] }) {
         </div>
         <label className="tag-search">
           <Search size={16} />
-          <input value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Search tags" />
+          <input
+            data-tooltip="Type to filter the tag table by tag name."
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            placeholder="Search tags"
+          />
         </label>
       </div>
-      <div className="tags-status-row">
-        <span>{visibleTags.length} tags</span>
-        <span>{selectedIds.length ? `${selectedIds.length} selected / ${selectedDocumentCount} document links` : notice || "No tags selected"}</span>
-      </div>
-      {notice ? <p className="tag-operation-notice">{notice}</p> : null}
-      <div className="tag-optimization-slot">
-        {optimizationError ? <p className="form-error tag-optimization-error">{optimizationError}</p> : null}
-        {optimizationResult ? (
-          <section className="tag-optimization-panel" aria-label="Tag optimization suggestions">
+      <div className="tags-layout">
+        <div className="tags-main-column">
+          <div className="tags-status-row">
+            <span>{visibleTags.length} tags</span>
+            <span>{selectedIds.length ? `${selectedIds.length} selected / ${selectedDocumentCount} document links` : notice || "No tags selected"}</span>
+          </div>
+          {notice ? <p className="tag-operation-notice">{notice}</p> : null}
+          <div className="tags-table" role="table" aria-label="Tags">
+            <div className="tags-table-row header" role="row">
+              <span role="columnheader">
+                <input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleTags} aria-label="Select visible tags" />
+              </span>
+              {(["name", "documents"] as TagSortKey[]).map((key) => (
+                <button
+                  key={key}
+                  aria-sort={sortKey === key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+                  data-tooltip={`Sort the tag table by ${tagSortLabel(key).toLocaleLowerCase()}; press again to reverse direction.`}
+                  onClick={() => chooseSort(key)}
+                  role="columnheader"
+                  type="button"
+                >
+                  {tagSortLabel(key)}
+                  <ArrowUpDown size={14} />
+                </button>
+              ))}
+            </div>
+            {visibleTags.map((tag) => {
+              const selected = selectedSet.has(tag.id);
+              return (
+                <label key={tag.id} className={`tags-table-row${selected ? " selected" : ""}`} role="row">
+                  <span role="cell">
+                    <input type="checkbox" checked={selected} onChange={() => toggleTag(tag.id)} />
+                  </span>
+                  <strong role="cell">{tag.name}</strong>
+                  <span role="cell">{tag.document_count}</span>
+                </label>
+              );
+            })}
+            {!visibleTags.length ? <div className="tags-table-empty">No matching tags</div> : null}
+          </div>
+        </div>
+        {optimizationPaneOpen ? (
+          <aside className="tag-optimization-panel" aria-label="Tag optimization plan">
             <div className="tag-optimization-head">
               <div>
-                <span>Optimization Suggestions</span>
-                <strong>
-                  {optimizationResult.model} reviewed {optimizationResult.considered_tags} tag
-                  {optimizationResult.considered_tags === 1 ? "" : "s"}
-                </strong>
+                <span>Optimization Plan</span>
+                <strong>{optimizeTags.isPending ? "Building plan" : optimizationResult ? `${optimizationResult.suggestions.length} proposed merge${optimizationResult.suggestions.length === 1 ? "" : "s"}` : "Ready to optimize"}</strong>
               </div>
-              <button className="icon-button" type="button" onClick={() => setOptimizationResult(null)} title="Close suggestions">
+              <button className="icon-button" type="button" data-tooltip="Close the tag optimization plan pane." onClick={() => setOptimizationPaneOpen(false)}>
                 <X size={16} />
               </button>
             </div>
-            {optimizationResult.suggestions.length ? (
+            <div className="tag-optimization-summary">
+              <span>{optimizationResult ? optimizationResult.model : "gpt-5.4-mini"}</span>
+              <span>{optimizationResult ? `${optimizationResult.considered_tags} reviewed` : `${optimizationScopeLabel} tags`}</span>
+              {optimizationResult?.suggestions.length ? <span>{optimizationAffectedDocuments} affected document references</span> : null}
+            </div>
+            {optimizationError ? <p className="form-error tag-optimization-error">{optimizationError}</p> : null}
+            {optimizeTags.isPending ? (
+              <div className="tag-optimization-loading">
+                <BrainCircuit className="spin" size={18} />
+                <span>Drafting tag combination plan...</span>
+              </div>
+            ) : optimizationResult?.suggestions.length ? (
               <div className="tag-optimization-list">
                 {optimizationResult.suggestions.map((suggestion) => (
                   <article className="tag-optimization-suggestion" key={suggestion.id}>
@@ -6066,6 +7209,8 @@ function TagsView({ tags }: { tags: Tag[] }) {
                       <button
                         className="primary-button compact"
                         type="button"
+                        data-disabled-reason="a tag merge is already running."
+                        data-tooltip={`Apply this suggestion by merging its source tags into ${suggestion.target_name}.`}
                         disabled={mergeTags.isPending}
                         onClick={() => approveSuggestion(suggestion)}
                       >
@@ -6075,6 +7220,8 @@ function TagsView({ tags }: { tags: Tag[] }) {
                       <button
                         className="secondary-button compact"
                         type="button"
+                        data-disabled-reason="a tag merge is already running."
+                        data-tooltip="Dismiss this suggestion from the current optimization plan without changing tags."
                         disabled={mergeTags.isPending}
                         onClick={() => dismissSuggestion(suggestion.id)}
                       >
@@ -6085,44 +7232,13 @@ function TagsView({ tags }: { tags: Tag[] }) {
                   </article>
                 ))}
               </div>
-            ) : (
+            ) : optimizationError ? null : optimizationResult ? (
               <p className="tag-optimization-empty">No merge suggestions found for this scope.</p>
+            ) : (
+              <p className="tag-optimization-empty">Run Optimize to draft a tag combination plan for the current scope.</p>
             )}
-          </section>
+          </aside>
         ) : null}
-      </div>
-      <div className="tags-table" role="table" aria-label="Tags">
-        <div className="tags-table-row header" role="row">
-          <span role="columnheader">
-            <input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleTags} aria-label="Select visible tags" />
-          </span>
-          {(["name", "kind", "documents"] as TagSortKey[]).map((key) => (
-            <button
-              key={key}
-              aria-sort={sortKey === key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
-              onClick={() => chooseSort(key)}
-              role="columnheader"
-              type="button"
-            >
-              {tagSortLabel(key)}
-              <ArrowUpDown size={14} />
-            </button>
-          ))}
-        </div>
-        {visibleTags.map((tag) => {
-          const selected = selectedSet.has(tag.id);
-          return (
-            <label key={tag.id} className={`tags-table-row${selected ? " selected" : ""}`} role="row">
-              <span role="cell">
-                <input type="checkbox" checked={selected} onChange={() => toggleTag(tag.id)} />
-              </span>
-              <strong role="cell">{tag.name}</strong>
-              <span role="cell">{tag.kind}</span>
-              <span role="cell">{tag.document_count}</span>
-            </label>
-          );
-        })}
-        {!visibleTags.length ? <div className="tags-table-empty">No matching tags</div> : null}
       </div>
       {renameOpen && selectedTag ? (
         <TagRenameDialog
@@ -6210,8 +7326,14 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
     <section className="workbench project-workbench">
       <aside className="project-sidebar">
         <div className="inline-form">
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="New project" />
-          <button className="primary-button" disabled={!name} onClick={() => create.mutate()}>
+          <input data-tooltip="Type a new project name." value={name} onChange={(event) => setName(event.target.value)} placeholder="New project" />
+          <button
+            className="primary-button"
+            data-disabled-reason="a project name is required."
+            data-tooltip="Create a new project run sheet with this name."
+            disabled={!name}
+            onClick={() => create.mutate()}
+          >
             <Plus size={16} />
             Add
           </button>
@@ -6221,6 +7343,7 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
             <button
               key={project.id}
               className={project.id === selectedProjectId ? "selected" : ""}
+              data-tooltip={`Open the ${project.name} project run sheet.`}
               onClick={() => {
                 setSelectedProjectId(project.id);
                 setBibliography(null);
@@ -6239,11 +7362,23 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
             <span>{current ? `${current.item_count} resources / ${current.status}` : "Run sheets track resource use for a paper or assignment."}</span>
           </div>
           <div className="project-actions">
-            <button className="secondary-button" disabled={!current} onClick={() => void generateBibliography(false)}>
+            <button
+              className="secondary-button"
+              data-disabled-reason="select or create a project first."
+              data-tooltip="Generate a bibliography from every source in the selected project run sheet."
+              disabled={!current}
+              onClick={() => void generateBibliography(false)}
+            >
               <Clipboard size={16} />
               All sources
             </button>
-            <button className="primary-button" disabled={!current} onClick={() => void generateBibliography(true)}>
+            <button
+              className="primary-button"
+              data-disabled-reason="select or create a project first."
+              data-tooltip="Generate a bibliography from only the sources marked Used in the selected project run sheet."
+              disabled={!current}
+              onClick={() => void generateBibliography(true)}
+            >
               <CheckSquare size={16} />
               Used only
             </button>
@@ -6252,7 +7387,7 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
         {current ? (
           <>
             <div className="project-add-row">
-              <select value={addDocumentId} onChange={(event) => setAddDocumentId(event.target.value)}>
+              <select data-tooltip="Choose a library document to add as a project resource." value={addDocumentId} onChange={(event) => setAddDocumentId(event.target.value)}>
                 <option value="">Add a library document</option>
                 {availableDocuments.map((document) => (
                   <option key={document.id} value={document.id}>
@@ -6260,7 +7395,13 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
                   </option>
                 ))}
               </select>
-              <button className="secondary-button" disabled={!addDocumentId || addItem.isPending} onClick={() => addItem.mutate()}>
+              <button
+                className="secondary-button"
+                data-disabled-reason={addItem.isPending ? "a project resource add request is already running." : "choose a library document first."}
+                data-tooltip="Add the selected library document to this project run sheet."
+                disabled={!addDocumentId || addItem.isPending}
+                onClick={() => addItem.mutate()}
+              >
                 <Plus size={16} />
                 Add resource
               </button>
@@ -6284,6 +7425,8 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
           </div>
           <button
             className="secondary-button"
+            data-disabled-reason="generate a bibliography before copying it."
+            data-tooltip="Copy the currently displayed bibliography text to the clipboard."
             disabled={!bibliographyText}
             onClick={() => {
               void copyToClipboard("bibliography", decodeHtmlEntities(bibliographyText));
@@ -6298,6 +7441,8 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
             <button
               key={style}
               className={style === bibliographyStyle ? "selected" : ""}
+              data-disabled-reason="generate a bibliography before switching export formats."
+              data-tooltip={`Show the generated bibliography as ${style.replace("_", " ").toUpperCase()}.`}
               onClick={() => setBibliographyStyle(style)}
               disabled={!bibliography}
             >
@@ -6413,6 +7558,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
             <AsyncActionSlot busy={retryFailedJobs.isPending} feedback={retryFailedFeedback.feedback} label="Retry failed imports in progress">
               <button
                 className={asyncFeedbackClass("secondary-button compact", retryFailedFeedback.feedback, retryFailedJobs.isPending)}
+                data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no failed import jobs to retry."}
+                data-tooltip="Retry every failed import job that still has a document record."
                 disabled={!failedQueueJobs.length || bulkActionBusy}
                 onClick={() => retryFailedJobs.mutate()}
                 type="button"
@@ -6424,6 +7571,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
             <AsyncActionSlot busy={clearQueue.isPending} feedback={clearQueueFeedback.feedback} label="Clear import queue in progress">
               <button
                 className={asyncFeedbackClass("secondary-button compact", clearQueueFeedback.feedback, clearQueue.isPending)}
+                data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no clearable queued, failed, or restored import jobs."}
+                data-tooltip="Move all clearable queued, failed, or restored import jobs to the cleared terminal state."
                 disabled={!clearableQueueJobs.length || bulkActionBusy}
                 onClick={() => clearQueue.mutate()}
                 type="button"
@@ -6435,6 +7584,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
             <AsyncActionSlot busy={clearFailedJobs.isPending} feedback={clearFailedFeedback.feedback} label="Clear failed imports in progress">
               <button
                 className={asyncFeedbackClass("secondary-button compact", clearFailedFeedback.feedback, clearFailedJobs.isPending)}
+                data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no failed import jobs to clear."}
+                data-tooltip="Move all failed import jobs to the cleared terminal state."
                 disabled={!failedQueueJobs.length || bulkActionBusy}
                 onClick={() => clearFailedJobs.mutate()}
                 type="button"
@@ -6511,6 +7662,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
                   <StatusPill value={item.status} tone="warn" />
                   <button
                     className="primary-button"
+                    data-disabled-reason="a citation review update is already saving."
+                    data-tooltip="Accept this citation candidate, apply it to the document, mark the citation verified, and record document history."
                     disabled={updateCandidate.isPending}
                     onClick={() => updateCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
                   >
@@ -6519,6 +7672,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
                   </button>
                   <button
                     className="secondary-button"
+                    data-disabled-reason="a citation review update is already saving."
+                    data-tooltip="Reject this citation candidate and remove it from active review without changing the document."
                     disabled={updateCandidate.isPending}
                     onClick={() => updateCandidate.mutate({ id: item.id, status: "rejected" })}
                   >
@@ -6595,17 +7750,23 @@ function NotesView({
         }}
       >
         <div className="inline-form">
-          <input value={draft.title} onChange={(event) => setDraftValue("title", event.target.value)} placeholder="Note title" />
-          <button className="primary-button" disabled={!draft.title?.trim() || !draft.body?.trim() || createNote.isPending} type="submit">
+          <input data-tooltip="Type the note title." value={draft.title} onChange={(event) => setDraftValue("title", event.target.value)} placeholder="Note title" />
+          <button
+            className="primary-button"
+            data-disabled-reason={createNote.isPending ? "a note create request is already running." : "both note title and body are required."}
+            data-tooltip="Create this note or reminder with the selected document, domain, project, and reminder attachments."
+            disabled={!draft.title?.trim() || !draft.body?.trim() || createNote.isPending}
+            type="submit"
+          >
             <Plus size={16} />
             Add
           </button>
         </div>
-        <textarea value={draft.body} onChange={(event) => setDraftValue("body", event.target.value)} placeholder="Note body" />
+        <textarea data-tooltip="Type the note body; document-linked note text contributes to document search." value={draft.body} onChange={(event) => setDraftValue("body", event.target.value)} placeholder="Note body" />
         <div className="note-link-grid">
           <label>
             Kind
-            <select value={draft.kind || "note"} onChange={(event) => setDraftValue("kind", event.target.value)}>
+            <select data-tooltip="Choose whether this entry is a note, reminder, question, or idea." value={draft.kind || "note"} onChange={(event) => setDraftValue("kind", event.target.value)}>
               <option value="note">Note</option>
               <option value="reminder">Reminder</option>
               <option value="question">Question</option>
@@ -6614,7 +7775,7 @@ function NotesView({
           </label>
           <label>
             Document
-            <select value={draft.document_id || ""} onChange={(event) => setDraftValue("document_id", event.target.value || null)}>
+            <select data-tooltip="Optionally attach this note to a document." value={draft.document_id || ""} onChange={(event) => setDraftValue("document_id", event.target.value || null)}>
               <option value="">No document</option>
               {documents.map((document) => (
                 <option key={document.id} value={document.id}>
@@ -6625,7 +7786,7 @@ function NotesView({
           </label>
           <label>
             Domain
-            <select value={draft.domain_id || ""} onChange={(event) => setDraftValue("domain_id", event.target.value || null)}>
+            <select data-tooltip="Optionally attach this note to a domain." value={draft.domain_id || ""} onChange={(event) => setDraftValue("domain_id", event.target.value || null)}>
               <option value="">No domain</option>
               {domains.map((domain) => (
                 <option key={domain.id} value={domain.id}>
@@ -6636,7 +7797,7 @@ function NotesView({
           </label>
           <label>
             Project
-            <select value={draft.project_id || ""} onChange={(event) => setDraftValue("project_id", event.target.value || null)}>
+            <select data-tooltip="Optionally attach this note to a project." value={draft.project_id || ""} onChange={(event) => setDraftValue("project_id", event.target.value || null)}>
               <option value="">No project</option>
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
@@ -6648,6 +7809,7 @@ function NotesView({
           <label>
             Reminder
             <input
+              data-tooltip="Optionally set the reminder date and time for this note."
               type="datetime-local"
               value={draft.reminder_at || ""}
               onChange={(event) => setDraftValue("reminder_at", event.target.value || null)}
@@ -6665,7 +7827,7 @@ function NotesView({
                   {note.kind} / {linkedLabel(note)}
                 </span>
               </div>
-              <button className="icon-button" title="Delete note" onClick={() => deleteNote.mutate(note.id)}>
+              <button className="icon-button" data-tooltip={`Delete the note titled ${note.title}.`} onClick={() => deleteNote.mutate(note.id)}>
                 <Trash2 size={15} />
               </button>
             </div>
@@ -6775,6 +7937,160 @@ function ViewportTooltip({
   );
 }
 
+type AppTooltipState = {
+  key: number;
+  left: number;
+  placement: "above" | "below";
+  ready: boolean;
+  text: string;
+  top: number;
+};
+
+function AppTooltipProvider({ children }: { children: ReactNode }) {
+  const tooltipRef = useRef<HTMLSpanElement | null>(null);
+  const anchorRef = useRef<HTMLElement | null>(null);
+  const activeTextRef = useRef("");
+  const delayTimerRef = useRef<number | null>(null);
+  const tooltipKeyRef = useRef(0);
+  const [tooltip, setTooltip] = useState<AppTooltipState | null>(null);
+
+  const clearDelayTimer = useCallback(() => {
+    if (delayTimerRef.current !== null) {
+      window.clearTimeout(delayTimerRef.current);
+      delayTimerRef.current = null;
+    }
+  }, []);
+
+  const hideTooltip = useCallback(() => {
+    clearDelayTimer();
+    anchorRef.current = null;
+    activeTextRef.current = "";
+    setTooltip(null);
+  }, [clearDelayTimer]);
+
+  const updatePosition = useCallback(() => {
+    const anchor = anchorRef.current;
+    const tooltipElement = tooltipRef.current;
+    if (!anchor || !tooltipElement || !anchor.isConnected) {
+      hideTooltip();
+      return;
+    }
+
+    const viewportMargin = 12;
+    const gap = 8;
+    const anchorRect = anchor.getBoundingClientRect();
+    const tooltipRect = tooltipElement.getBoundingClientRect();
+    const tooltipWidth = Math.min(tooltipRect.width, window.innerWidth - viewportMargin * 2);
+    const desiredLeft = anchorRect.left + anchorRect.width / 2 - tooltipWidth / 2;
+    const left = Math.min(
+      Math.max(desiredLeft, viewportMargin),
+      Math.max(viewportMargin, window.innerWidth - tooltipWidth - viewportMargin),
+    );
+    const aboveTop = anchorRect.top - tooltipRect.height - gap;
+    const belowTop = anchorRect.bottom + gap;
+    const fitsAbove = aboveTop >= viewportMargin;
+    const fitsBelow = belowTop + tooltipRect.height <= window.innerHeight - viewportMargin;
+    const placement = fitsAbove || !fitsBelow ? "above" : "below";
+    const rawTop = placement === "above" ? aboveTop : belowTop;
+    const maxTop = Math.max(viewportMargin, window.innerHeight - tooltipRect.height - viewportMargin);
+    const top = Math.min(Math.max(rawTop, viewportMargin), maxTop);
+
+    setTooltip((current) => (current ? { ...current, left, placement, ready: true, top } : current));
+  }, [hideTooltip]);
+
+  const scheduleTooltip = useCallback(
+    (anchor: HTMLElement, text: string) => {
+      if (anchorRef.current === anchor && activeTextRef.current === text) return;
+      clearDelayTimer();
+      anchorRef.current = anchor;
+      activeTextRef.current = text;
+      setTooltip(null);
+      delayTimerRef.current = window.setTimeout(() => {
+        if (anchorRef.current !== anchor || activeTextRef.current !== text || !anchor.isConnected) return;
+        setTooltip({
+          key: ++tooltipKeyRef.current,
+          left: 0,
+          placement: "above",
+          ready: false,
+          text,
+          top: 0,
+        });
+      }, APP_TOOLTIP_DELAY_MS);
+    },
+    [clearDelayTimer],
+  );
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const anchor = tooltipCandidateFromPoint(event.clientX, event.clientY);
+      if (!anchor) {
+        hideTooltip();
+        return;
+      }
+      const text = tooltipTextForElement(anchor);
+      if (!text) {
+        hideTooltip();
+        return;
+      }
+      scheduleTooltip(anchor, text);
+    };
+    const handleFocusIn = (event: FocusEvent) => {
+      const anchor = tooltipCandidateFromElement(event.target as Element | null);
+      if (!anchor) return;
+      const text = tooltipTextForElement(anchor);
+      if (text) scheduleTooltip(anchor, text);
+    };
+    const handleFocusOut = () => hideTooltip();
+
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerdown", hideTooltip, true);
+    window.addEventListener("blur", hideTooltip);
+    window.addEventListener("scroll", hideTooltip, true);
+    document.addEventListener("focusin", handleFocusIn, true);
+    document.addEventListener("focusout", handleFocusOut, true);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerdown", hideTooltip, true);
+      window.removeEventListener("blur", hideTooltip);
+      window.removeEventListener("scroll", hideTooltip, true);
+      document.removeEventListener("focusin", handleFocusIn, true);
+      document.removeEventListener("focusout", handleFocusOut, true);
+      clearDelayTimer();
+    };
+  }, [clearDelayTimer, hideTooltip, scheduleTooltip]);
+
+  useEffect(() => {
+    if (!tooltip) return undefined;
+    const frame = window.requestAnimationFrame(updatePosition);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [tooltip?.key, updatePosition]);
+
+  useEscapeLayer(Boolean(tooltip), hideTooltip, ESCAPE_PRIORITY_TOOLTIP);
+
+  return (
+    <>
+      {children}
+      {tooltip ? (
+        <span
+          className="app-tooltip info-popover-tooltip"
+          data-escape-layer="tooltip"
+          data-placement={tooltip.placement}
+          data-ready={tooltip.ready ? "true" : "false"}
+          ref={tooltipRef}
+          role="tooltip"
+          style={{ left: tooltip.left, top: tooltip.top }}
+        >
+          {tooltip.text}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 function InfoPopup({ text }: { text: string }) {
   return (
     <ViewportTooltip className="info-popover" text={text}>
@@ -6848,7 +8164,14 @@ function ModelSelect({
         }
       }}
     >
-      <button aria-expanded={open} aria-haspopup="listbox" className="model-select-trigger" type="button" onClick={() => setOpen((current) => !current)}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="model-select-trigger"
+        data-tooltip={`Open the model dropdown. Current selection: ${modelDisplayName(value)}.`}
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+      >
         <span>{modelDisplayName(value)}</span>
         <ChevronRight size={14} aria-hidden="true" />
       </button>
@@ -6862,6 +8185,7 @@ function ModelSelect({
                     <button
                       aria-selected={option === value}
                       className={option === value ? "selected" : ""}
+                      data-tooltip={`Use ${modelDisplayName(option)} for this model preference.`}
                       key={option}
                       onClick={() => {
                         onChange(option);
@@ -6880,6 +8204,7 @@ function ModelSelect({
                 <button
                   aria-selected={option === value}
                   className={option === value ? "selected" : ""}
+                  data-tooltip={`Use ${modelDisplayName(option)} for this model preference.`}
                   key={option}
                   onClick={() => {
                     onChange(option);
@@ -6959,7 +8284,7 @@ function BudgetView() {
         <div className="budget-controls">
           <label>
             Period
-            <select value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
+            <select data-tooltip="Choose the time window used for Budget usage totals and rollups." value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
               {USAGE_PERIOD_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
@@ -6969,7 +8294,7 @@ function BudgetView() {
           </label>
           <label>
             Metric
-            <select value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
+            <select data-tooltip="Choose whether Budget tables show tokens, estimated cost, or both." value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
               <option value="tokens_cost">Tokens + cost</option>
               <option value="tokens">Tokens</option>
               <option value="cost">Cost</option>
@@ -6977,7 +8302,7 @@ function BudgetView() {
           </label>
           <label>
             Group
-            <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
+            <select data-tooltip="Choose how Budget usage rows are grouped." value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
               <option value="model">By model</option>
               <option value="task">By task</option>
               <option value="document">By document</option>
@@ -7079,13 +8404,13 @@ function BudgetView() {
         <div className="budget-footnote">
           <span>{usage.data?.pricing.updated_at ? `Pricing ${usage.data.pricing.updated_at}` : "Pricing"}</span>
           {usage.data?.pricing.source_url ? (
-            <a href={usage.data.pricing.source_url} rel="noreferrer" target="_blank">
+            <a data-tooltip="Open the OpenAI pricing source used for these local estimates in a new tab." href={usage.data.pricing.source_url} rel="noreferrer" target="_blank">
               OpenAI
               <ExternalLink size={12} />
             </a>
           ) : null}
           {usage.data?.pricing.source_urls?.Google ? (
-            <a href={usage.data.pricing.source_urls.Google} rel="noreferrer" target="_blank">
+            <a data-tooltip="Open the Google pricing source used for these local estimates in a new tab." href={usage.data.pricing.source_urls.Google} rel="noreferrer" target="_blank">
               Google
               <ExternalLink size={12} />
             </a>
@@ -7139,10 +8464,7 @@ function SettingsView({
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const [selectedBackupUri, setSelectedBackupUri] = useState("");
-  const [restoreUploadFile, setRestoreUploadFile] = useState<File | null>(null);
-  const [restoreDropActive, setRestoreDropActive] = useState(false);
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
-  const restoreUploadInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
@@ -7274,12 +8596,9 @@ function SettingsView({
     },
   });
   const startRestore = useMutation({
-    mutationFn: () =>
-      restoreUploadFile ? api.startDatabaseRestoreUpload(restoreUploadFile) : api.startDatabaseRestore(selectedBackupUri),
+    mutationFn: () => api.startDatabaseRestore(selectedBackupUri),
     onSuccess: () => {
       restoreFeedback.showSuccess();
-      setRestoreUploadFile(null);
-      if (restoreUploadInputRef.current) restoreUploadInputRef.current.value = "";
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
       void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
@@ -7321,38 +8640,65 @@ function SettingsView({
   const verifiedBackupComplete = Boolean(latestVerifiedBackupRun);
   const verifiedBackupFilename = verifiedBackupComplete ? latestVerifiedBackupRun?.filename || "Complete" : "Waiting";
   const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestVerifiedBackupRun?.size_bytes) : "";
+  const backupArtifactTotalBytes = backupArtifacts.reduce((total, artifact) => total + Math.max(0, artifact.size_bytes || 0), 0);
+  const backupArtifactTotalSize = formatFileSize(backupArtifactTotalBytes) || "0 B";
+  const backupArtifactCountLabel = gcsBackupArtifacts.isFetching && !backupArtifacts.length
+    ? "Calculating"
+    : backupArtifacts.length
+      ? `${formatMetric(backupArtifacts.length)} ${backupArtifacts.length === 1 ? "backup" : "backups"}`
+      : preferences?.gcs_bucket
+        ? "No backups"
+        : "No bucket";
   const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
-  const restoreDisabled =
-    Boolean(activeBackupRun) || startRestore.isPending || (!restoreUploadFile && !selectedBackupUri);
+  const restoreDisabled = Boolean(activeBackupRun) || startRestore.isPending || !selectedBackupUri;
+  const savePreferencesDisabledReason = !preferences
+    ? "preferences are still loading."
+    : savePreferences.isPending
+      ? "Save All is already writing preferences."
+      : !preferenceDirty
+        ? "there are no unsaved preference changes."
+        : "";
+  const createRunDisabledReason = createRun.isPending
+    ? "a Concordance Run request is already starting."
+    : !scopeReady
+      ? "the selected Concordance scope needs a document, search, saved search, domain, or project."
+      : !selectedCapabilityKeys.length
+        ? "at least one Concordance capability must be selected."
+        : "";
+  const backupDisabledReason = startBackup.isPending
+    ? "a database backup request is already starting."
+    : activeBackupRun
+      ? "a backup or restore is already running."
+      : !preferences?.gcs_bucket
+        ? "a GCS bucket must be saved before browser backups can start."
+        : "";
+  const restoreDisabledReason = startRestore.isPending
+    ? "a database restore request is already starting."
+    : activeBackupRun
+      ? "a backup or restore is already running."
+      : !selectedBackupUri
+        ? "a GCS backup must be selected."
+        : "";
   const handleServiceAccountUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) uploadServiceAccount.mutate(file);
   };
-  const handleRestoreFile = (file?: File | null) => {
-    if (!file) return;
-    setRestoreUploadFile(file);
-    setSelectedBackupUri("");
-  };
-  const handleRestoreUpload = (event: ChangeEvent<HTMLInputElement>) => {
-    handleRestoreFile(event.target.files?.[0]);
-  };
-  const handleRestoreDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setRestoreDropActive(false);
-    handleRestoreFile(event.dataTransfer.files?.[0]);
-  };
-  const handleRestoreDragOver = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setRestoreDropActive(true);
-  };
-  const handleRestoreDragLeave = (event: DragEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRestoreDropActive(false);
+  const confirmDatabaseRestore = () => {
+    if (!selectedBackupUri) return;
+    const artifact = backupArtifacts.find((item) => item.gcs_uri === selectedBackupUri);
+    const restoreLabel = artifact ? backupArtifactLabel(artifact) : selectedBackupUri;
+    const ok = window.confirm(
+      `Restore the database from ${restoreLabel}?\n\nMedusa will first create and verify a fresh safety backup. The selected restore will only run after that safety backup succeeds.`,
+    );
+    if (ok) startRestore.mutate();
   };
   const renderSaveAllButton = (placement: "top" | "bottom") => (
     <AsyncActionSlot feedback={savePreferencesFeedback.feedback}>
       <button
         aria-label={`Save all preferences from the ${placement} of Settings`}
         className={asyncFeedbackClass("primary-button settings-save-all", savePreferencesFeedback.feedback)}
+        data-disabled-reason={savePreferencesDisabledReason}
+        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, download naming, and model selections.`}
         disabled={savePreferencesDisabled}
         onClick={() => savePreferences.mutate()}
         type="button"
@@ -7379,7 +8725,7 @@ function SettingsView({
       <div className="settings-tile">
         <Sparkles size={22} />
         <h2>AI</h2>
-        <p>Set OPENAI_API_KEY to enable structured metadata, summaries, topics, and embeddings.</p>
+        <p>Set OPENAI_API_KEY to enable structured metadata, summaries, tag suggestions, and embeddings.</p>
       </div>
       <div className="storage-settings-panel">
         <div className="panel-title-row">
@@ -7397,6 +8743,7 @@ function SettingsView({
             </label>
             <input
               autoComplete="off"
+              data-tooltip="Type the GCS bucket name Medusa should use for future originals, assets, backups, and restores after Save All."
               id="gcs-bucket"
               onChange={(event) => setGcsBucket(event.target.value)}
               placeholder="your-gcs-bucket"
@@ -7410,7 +8757,13 @@ function SettingsView({
               <span>Service account name</span>
               <strong>{serviceAccountStatus}</strong>
             </label>
-            <input id="google-service-account-name" readOnly type="text" value={serviceAccountName} />
+            <input
+              data-tooltip="Read the currently uploaded Google service account identity or the missing-credential prompt."
+              id="google-service-account-name"
+              readOnly
+              type="text"
+              value={serviceAccountName}
+            />
             {preferences?.google_service_account_project_id ? (
               <p>Project: {preferences.google_service_account_project_id}</p>
             ) : (
@@ -7419,6 +8772,8 @@ function SettingsView({
             <AsyncActionSlot feedback={serviceAccountUploadFeedback.feedback}>
               <button
                 className={asyncFeedbackClass("secondary-button", serviceAccountUploadFeedback.feedback, uploadServiceAccount.isPending)}
+                data-disabled-reason="a service-account JSON upload is already running."
+                data-tooltip="Open the file picker to upload a Google service-account JSON key for GCS, Google Vision, and Gemini/Vertex calls."
                 disabled={uploadServiceAccount.isPending}
                 onClick={() => serviceAccountInputRef.current?.click()}
                 type="button"
@@ -7452,6 +8807,7 @@ function SettingsView({
             <strong>{importWorkerConcurrency}</strong>
           </label>
           <input
+            data-tooltip="Set how many import jobs the worker should process concurrently."
             id="import-worker-concurrency"
             min={1}
             onChange={(event) => setImportWorkerConcurrency(Math.max(1, Number(event.target.value) || 1))}
@@ -7469,6 +8825,7 @@ function SettingsView({
             <strong>{documentCacheSizeMb.toLocaleString()} MB</strong>
           </label>
           <input
+            data-tooltip="Set the maximum local processing-cache budget in MB for recently completed document PDFs."
             id="document-cache-size"
             min={0}
             onChange={(event) => setDocumentCacheSizeMb(Math.max(0, Number(event.target.value) || 0))}
@@ -7484,6 +8841,7 @@ function SettingsView({
           </label>
           <input
             autoComplete="off"
+            data-tooltip="Edit the filename template used when downloading original PDFs."
             id="download-naming-template"
             onChange={(event) => setDownloadNamingTemplate(event.target.value)}
             placeholder="$title ($year)"
@@ -7500,6 +8858,7 @@ function SettingsView({
         </div>
         <label className="checkbox-row preference-checkbox">
           <input
+            data-tooltip="Toggle alternating row shading in the Library document list."
             type="checkbox"
             checked={libraryAlternatingRows}
             onChange={(event) => setLibraryAlternatingRows(event.target.checked)}
@@ -7510,12 +8869,12 @@ function SettingsView({
           <label>
             <span>Day accent</span>
             <span className="accent-swatch" style={{ background: accentColorDay }} />
-            <input type="color" value={accentColorDay} onChange={(event) => setAccentColorDay(event.target.value)} />
+            <input data-tooltip="Pick the day-mode accent color." type="color" value={accentColorDay} onChange={(event) => setAccentColorDay(event.target.value)} />
           </label>
           <label>
             <span>Night accent</span>
             <span className="accent-swatch" style={{ background: accentColorNight }} />
-            <input type="color" value={accentColorNight} onChange={(event) => setAccentColorNight(event.target.value)} />
+            <input data-tooltip="Pick the night-mode accent color." type="color" value={accentColorNight} onChange={(event) => setAccentColorNight(event.target.value)} />
           </label>
         </div>
       </div>
@@ -7651,6 +9010,8 @@ function SettingsView({
           <AsyncActionSlot busy={createRun.isPending} feedback={createRunFeedback.feedback} label="Concordance Run request in progress">
             <button
               className={asyncFeedbackClass("primary-button", createRunFeedback.feedback, createRun.isPending)}
+              data-disabled-reason={createRunDisabledReason}
+              data-tooltip="Start a durable Concordance Run for the selected scope and selected capabilities."
               disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length}
               onClick={() => createRun.mutate()}
             >
@@ -7662,7 +9023,7 @@ function SettingsView({
         <div className="scope-grid">
           <label>
             Scope
-            <select value={scopeType} onChange={(event) => setScopeType(event.target.value as typeof scopeType)}>
+            <select data-tooltip="Choose which library scope the new Concordance Run will upgrade." value={scopeType} onChange={(event) => setScopeType(event.target.value as typeof scopeType)}>
               <option value="library">Library</option>
               <option value="documents">Current document</option>
               <option value="search">Current search</option>
@@ -7674,7 +9035,7 @@ function SettingsView({
           {scopeType === "domain" ? (
             <label>
               Domain
-              <select value={domainId} onChange={(event) => setDomainId(event.target.value)}>
+              <select data-tooltip="Choose the domain scope for the Concordance Run." value={domainId} onChange={(event) => setDomainId(event.target.value)}>
                 <option value="">Select domain</option>
                 {domains.map((domain) => (
                   <option key={domain.id} value={domain.id}>
@@ -7687,7 +9048,7 @@ function SettingsView({
           {scopeType === "project" ? (
             <label>
               Project
-              <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+              <select data-tooltip="Choose the project scope for the Concordance Run." value={projectId} onChange={(event) => setProjectId(event.target.value)}>
                 <option value="">Select project</option>
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>
@@ -7700,7 +9061,7 @@ function SettingsView({
           {scopeType === "saved_search" ? (
             <label>
               Saved search
-              <select value={savedSearchId} onChange={(event) => setSavedSearchId(event.target.value)}>
+              <select data-tooltip="Choose the saved-search scope for the Concordance Run." value={savedSearchId} onChange={(event) => setSavedSearchId(event.target.value)}>
                 <option value="">Select saved search</option>
                 {savedSearches.map((savedSearch) => (
                   <option key={savedSearch.id} value={savedSearch.id}>
@@ -7722,13 +9083,14 @@ function SettingsView({
           ) : null}
         </div>
         <label className="checkbox-row">
-          <input type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />
+          <input data-tooltip="Force selected Concordance capabilities to rerun even when documents already record current versions." type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />
           <span>Force current versions</span>
         </label>
         <div className="capability-picker">
           {capabilities.map((capability) => (
             <label key={capability.key}>
               <input
+                data-tooltip={`Toggle the ${capability.label} capability for the next Concordance Run.`}
                 type="checkbox"
                 checked={selectedCapabilityKeys.includes(capability.key)}
                 onChange={() =>
@@ -7794,6 +9156,8 @@ function SettingsView({
             <AsyncActionSlot busy={startBackup.isPending} feedback={backupFeedback.feedback} label="Database backup request in progress">
               <button
                 className={asyncFeedbackClass("primary-button", backupFeedback.feedback, startBackup.isPending)}
+                data-disabled-reason={backupDisabledReason}
+                data-tooltip="Start a full PostgreSQL database backup, compress it, upload it to the configured GCS bucket, and verify the checksum."
                 disabled={backupDisabled}
                 onClick={() => startBackup.mutate()}
                 type="button"
@@ -7809,11 +9173,10 @@ function SettingsView({
               <label>
                 GCS backup
                 <select
-                  disabled={Boolean(restoreUploadFile) || !backupArtifacts.length || startRestore.isPending}
-                  onChange={(event) => {
-                    setRestoreUploadFile(null);
-                    setSelectedBackupUri(event.target.value);
-                  }}
+                  data-disabled-reason={startRestore.isPending ? "a database restore request is already starting." : "no GCS backup artifacts are available."}
+                  data-tooltip="Choose the GCS backup artifact to restore from."
+                  disabled={!backupArtifacts.length || startRestore.isPending}
+                  onChange={(event) => setSelectedBackupUri(event.target.value)}
                   value={selectedBackupUri}
                 >
                   {backupArtifacts.length ? (
@@ -7827,38 +9190,20 @@ function SettingsView({
                   )}
                 </select>
               </label>
-              <div
-                className={`restore-drop-zone${restoreDropActive ? " active" : ""}${restoreUploadFile ? " has-file" : ""}`}
-                onClick={() => restoreUploadInputRef.current?.click()}
-                onDragLeave={handleRestoreDragLeave}
-                onDragOver={handleRestoreDragOver}
-                onDrop={handleRestoreDrop}
-                role="button"
-                tabIndex={0}
-              >
-                <UploadCloud size={17} />
-                <span>{restoreUploadFile ? restoreUploadFile.name : "Drop dump or browse"}</span>
-                {restoreUploadFile ? <button type="button" onClick={(event) => { event.stopPropagation(); setRestoreUploadFile(null); }}>Clear</button> : null}
-              </div>
-              <input
-                ref={restoreUploadInputRef}
-                className="hidden-file-input"
-                disabled={startRestore.isPending}
-                onChange={handleRestoreUpload}
-                type="file"
-              />
+              <AsyncActionSlot busy={startRestore.isPending} feedback={restoreFeedback.feedback} label="Database restore request in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, startRestore.isPending)}
+                  data-disabled-reason={restoreDisabledReason}
+                  data-tooltip="Restore the database from the selected GCS backup after Medusa first creates and verifies a fresh safety backup."
+                  disabled={restoreDisabled}
+                  onClick={confirmDatabaseRestore}
+                  type="button"
+                >
+                  <RotateCcw className={startRestore.isPending ? "spin" : ""} size={16} />
+                  {startRestore.isPending ? "Starting" : "Restore Database"}
+                </button>
+              </AsyncActionSlot>
             </div>
-            <AsyncActionSlot busy={startRestore.isPending} feedback={restoreFeedback.feedback} label="Database restore request in progress">
-              <button
-                className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, startRestore.isPending)}
-                disabled={restoreDisabled}
-                onClick={() => startRestore.mutate()}
-                type="button"
-              >
-                <RotateCcw className={startRestore.isPending ? "spin" : ""} size={16} />
-                {startRestore.isPending ? "Starting" : "Restore Database"}
-              </button>
-            </AsyncActionSlot>
           </div>
         </div>
         <div className="backup-status-grid">
@@ -7875,6 +9220,13 @@ function SettingsView({
             <div className="verified-backup-value">
               <strong>{verifiedBackupFilename}</strong>
               {verifiedBackupSize ? <small>{verifiedBackupSize}</small> : null}
+            </div>
+          </div>
+          <div>
+            <span>GCS backups</span>
+            <div className="verified-backup-value">
+              <strong>{backupArtifactCountLabel}</strong>
+              <small>{backupArtifactTotalSize} total</small>
             </div>
           </div>
         </div>
@@ -7914,11 +9266,19 @@ function SettingsView({
         </div>
         {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}
         <div className="legacy-export-actions">
-          <a href="/api/exports/metadata" download>
+          <a
+            data-tooltip="Download an authenticated legacy metadata JSON export that omits secrets, password hashes, and session tokens."
+            href="/api/exports/metadata"
+            download
+          >
             <Download size={15} />
             Metadata JSON
           </a>
-          <a href="/api/exports/storage-manifest" download>
+          <a
+            data-tooltip="Download an authenticated storage manifest JSON listing original files and derived asset URIs."
+            href="/api/exports/storage-manifest"
+            download
+          >
             <Download size={15} />
             Asset manifest
           </a>
@@ -8120,7 +9480,13 @@ export default function App() {
   }, []);
 
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
-  if (me.error || !me.data) return <Login />;
+  if (me.error || !me.data) {
+    return (
+      <AppTooltipProvider>
+        <Login />
+      </AppTooltipProvider>
+    );
+  }
 
   const activeAccent = normalizeHexColor(
     theme === "night" ? preferences.data?.accent_color_night : preferences.data?.accent_color_day,
@@ -8162,7 +9528,8 @@ export default function App() {
   );
 
   return (
-    <div className="app-shell" style={shellStyle}>
+    <AppTooltipProvider>
+      <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
         dashboard={dashboard.data}
@@ -8177,7 +9544,7 @@ export default function App() {
         <section className="content-top">
           <WorkspaceNav activeView={activeView} counts={navCounts} setActiveView={setActiveView} />
         </section>
-        {activeView === "library" || activeView === "domains" ? (
+        {activeView === "library" ? (
           <LibraryView
             documents={documents.data || []}
             document={selectedDocument.data}
@@ -8198,6 +9565,7 @@ export default function App() {
             preferences={preferences.data}
           />
         ) : null}
+        {activeView === "domains" ? <DomainsView documents={documents.data || []} domains={domains.data || []} /> : null}
         {activeView === "import" ? (
           <ImportView domains={domains.data || []} jobs={jobs.data || []} projects={projects.data || []} tags={tags.data || []} />
         ) : null}
@@ -8231,6 +9599,7 @@ export default function App() {
           />
         ) : null}
       </main>
-    </div>
+      </div>
+    </AppTooltipProvider>
   );
 }

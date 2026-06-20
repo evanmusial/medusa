@@ -107,12 +107,14 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
     class FakeResponses:
         def __init__(self):
             self.calls: list[tuple[str, str, str | None, str | None, bool]] = []
+            self.prompts: dict[str, str] = {}
 
         def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
             del timeout
             schema_name = text["format"]["name"]
             has_file = any(item.get("type") == "input_file" for item in input[1]["content"])
             self.calls.append((schema_name, model, prompt_cache_key, prompt_cache_retention, has_file))
+            self.prompts[schema_name] = input[0]["content"]
             payloads = {
                 "medusa_document_metadata": {
                     "title": "Paper",
@@ -174,6 +176,7 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
             MODEL_APA_CITATION: "gpt-5.5",
             MODEL_KEYWORDS_TOPICS: "gpt-5.4-mini",
         },
+        existing_tags=["access control", "insider threat"],
         usage_context=OpenAIUsageContext(document_id="doc-1", source="test", recorder=usage_records.append),
         prompt_cache_key="medusa-doc:abc123",
     )
@@ -193,6 +196,9 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
         ("medusa_document_summary", "gpt-5.4", "medusa-doc:abc123", "24h", False),
         ("medusa_keywords_topics", "gpt-5.4-mini", "medusa-doc:abc123", "24h", False),
     ]
+    assert "Existing Medusa tags manifest" in responses.prompts["medusa_keywords_topics"]
+    assert '"access control"' in responses.prompts["medusa_keywords_topics"]
+    assert "Add a new concise tag only" in responses.prompts["medusa_keywords_topics"]
     assert {record["task_key"] for record in usage_records} == {
         MODEL_METADATA,
         MODEL_SUMMARY,

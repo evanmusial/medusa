@@ -200,7 +200,7 @@ def current_database_size_bytes(db: Session) -> int | None:
     return int(value) if isinstance(value, int) and value > 0 else None
 
 
-def list_gcs_backup_artifacts(db: Session, limit: int = 100) -> list[dict[str, Any]]:
+def list_gcs_backup_artifacts(db: Session, limit: int | None = None) -> list[dict[str, Any]]:
     bucket, bucket_name, prefix = _gcs_bucket_from_db(db)
     artifacts: list[dict[str, Any]] = []
     manifest_by_dump_key: dict[str, dict[str, Any]] = {}
@@ -235,7 +235,8 @@ def list_gcs_backup_artifacts(db: Session, limit: int = 100) -> list[dict[str, A
                 "manifest": manifest,
             }
         )
-    return sorted(artifacts, key=lambda item: item.get("created_at") or "", reverse=True)[:limit]
+    sorted_artifacts = sorted(artifacts, key=lambda item: item.get("created_at") or "", reverse=True)
+    return sorted_artifacts if limit is None else sorted_artifacts[:limit]
 
 
 def _execute_backup_run(run_id: str) -> None:
