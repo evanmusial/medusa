@@ -443,6 +443,34 @@ def test_list_documents_sorts_by_title(monkeypatch, tmp_path):
     assert [document.title for document in documents] == ["A framework", "Advanced methods", "alpha", "Beta", "Zeta"]
 
 
+def test_list_documents_default_does_not_truncate_at_80(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_documents
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(
+                    title=f"Document {index:03d}",
+                    original_filename=f"document-{index:03d}.pdf",
+                    checksum_sha256=f"{index:064x}"[-64:],
+                )
+                for index in range(85)
+            ]
+        )
+        db.commit()
+
+        documents = list_documents(object(), db)
+        limited_documents = list_documents(object(), db, limit=80)
+
+    assert len(documents) == 85
+    assert len(limited_documents) == 80
+
+
 def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

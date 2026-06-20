@@ -1,6 +1,6 @@
 # Medusa
 
-Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis**. It is a local-first research library, document aggregator, and intelligent taxonomizer, built as a polished web app for organizing academic PDFs, extracting searchable text and metadata, generating citations and summaries, and managing project run sheets.
+Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis**. It is a local-first research library, document aggregator, and intelligent taxonomizer, built as a polished web app for organizing academic PDFs, HTML documents, and plain-text sources, extracting searchable text and metadata, generating citations and summaries, and managing project run sheets.
 
 ## What Is Implemented
 
@@ -10,7 +10,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs
-- Batch PDF upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, checksum duplicate detection, explicit skip/overwrite/import-anyway choices, and active-first progress-shaded import processing rows with model/cost detail
+- Batch PDF, HTML, and plain-text/Markdown upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, checksum duplicate detection, explicit skip/overwrite/import-anyway choices, local PDF mezzanine conversion for non-PDF sources, and active-first progress-shaded import processing rows with model/cost detail
 - GCS storage adapter with local fallback when credentials are not configured
 - Raw text extraction preference with Local choices for Docling, Marker, and PyMuPDF; Marker is the default preference and PyMuPDF remains the bundled local fallback
 - Authenticated original PDF preview/open/download route in the document detail pane and expanded Reader mode
@@ -222,7 +222,7 @@ The restore command validates schema/safety flags, rejects secret-bearing keys, 
 
 ## Safety Model
 
-Imports are durable jobs stored in PostgreSQL. Each processing step records events and checkpoints, so stopping the app mid-import leaves work queued or resumable. Original files are checksum-addressed and duplicate uploads are detected before processing.
+Imports are durable jobs stored in PostgreSQL. Each processing step records events and checkpoints, so stopping the app mid-import leaves work queued or resumable. PDF uploads are stored as-is; HTML and plain-text/Markdown uploads are parsed for source structure, converted locally into PDF mezzanine originals, and then stored through the same GCS/local paths. Upload source bytes are checksum-addressed for duplicate detection before processing.
 
 Duplicate uploads are checked before queueing. When an exact checksum match is found, the Import view asks whether to skip the duplicate, overwrite the matching document record, or import anyway as a separate document. Library filters can also show exact checksum duplicates already in the collection.
 

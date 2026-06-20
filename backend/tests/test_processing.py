@@ -734,3 +734,87 @@ def test_import_anyway_allows_same_checksum_document(monkeypatch, tmp_path):
         assert len(documents) == 2
         job = db.query(ImportJob).filter(ImportJob.batch_id == batch.id).one()
         assert job.status == "queued"
+
+
+def test_html_import_converts_to_pdf_mezzanine_and_uses_source_pages(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.config import get_settings
+    from app.database import Base
+    from app.models import Document, ImportJob
+    from app.services.processing import DocumentProcessor
+
+    class FakeStorage:
+        def __init__(self):
+            self.objects = []
+
+        def put_bytes(self, key, data, content_type):
+            self.objects.append({"key": key, "data": data, "content_type": content_type})
+            return SimpleNamespace(uri=f"memory://{key}", backend="fake")
+
+    fake_storage = FakeStorage()
+    monkeypatch.setattr(main, "get_storage_service", lambda: fake_storage)
+    settings = get_settings()
+    monkeypatch.setattr(main.settings, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(settings, "openai_normalize_page_text", False)
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    html = b"""
+    <html>
+      <head><title>Browser Wrapper</title></head>
+      <body>
+        <h1>Actual Research Title</h1>
+        <h2>Methods</h2>
+        <p>Signal-bearing HTML body text should become searchable reader text.</p>
+      </body>
+    </html>
+    """
+    checksum = hashlib.sha256(html).hexdigest()
+
+    with Session() as db:
+        check = asyncio.run(
+            main.check_import_duplicates(
+                object(),
+                db,
+                [UploadFile(filename="article.html", file=BytesIO(html))],
+            )
+        )
+        assert check.files[0].source_kind == "html"
+        assert check.files[0].stored_filename == "article.pdf"
+
+        batch = asyncio.run(
+            main.create_import_batch(
+                object(),
+                db,
+                files=[UploadFile(filename="article.html", file=BytesIO(html))],
+                duplicate_strategy="skip",
+            )
+        )
+
+        document = db.query(Document).one()
+        assert document.title == "Actual Research Title"
+        assert document.original_filename == "article.pdf"
+        assert document.content_type == "application/pdf"
+        assert document.checksum_sha256 == checksum
+        assert fake_storage.objects[0]["content_type"] == "application/pdf"
+        assert fake_storage.objects[0]["data"].startswith(b"%PDF")
+        assert fake_storage.objects[0]["key"].endswith("/article.pdf")
+        assert document.metadata_evidence["source_import"]["kind"] == "html"
+        assert document.metadata_evidence["source_import"]["mezzanine"]["checksum_sha256"]
+
+        job = db.query(ImportJob).filter(ImportJob.batch_id == batch.id).one()
+        DocumentProcessor()._extract(db, job, document)
+        db.refresh(document)
+
+        reading_text = "\n".join(page.text for page in document.pages)
+        assert "Actual Research Title" in reading_text
+        assert "Methods" in reading_text
+        assert "Signal-bearing HTML body text" in reading_text
+        source_evidence = document.metadata_evidence["source_import"]
+        assert "extracted_pages" not in source_evidence
+        assert source_evidence["extracted_page_count"] == document.page_count

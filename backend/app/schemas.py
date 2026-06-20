@@ -439,6 +439,8 @@ class ImportDuplicateFileOut(BaseModel):
     filename: str
     checksum_sha256: str
     file_size_bytes: int
+    source_kind: str = "pdf"
+    stored_filename: str | None = None
     existing_documents: list[ImportDuplicateDocumentOut] = Field(default_factory=list)
     duplicate_in_upload: bool = False
 

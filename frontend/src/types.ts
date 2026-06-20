@@ -623,6 +623,8 @@ export type ImportDuplicateFile = {
   filename: string;
   checksum_sha256: string;
   file_size_bytes: number;
+  source_kind: string;
+  stored_filename?: string | null;
   existing_documents: ImportDuplicateDocument[];
   duplicate_in_upload: boolean;
 };

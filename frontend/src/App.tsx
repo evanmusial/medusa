@@ -225,6 +225,9 @@ const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
+const IMPORT_ACCEPT = "application/pdf,text/html,text/plain,text/markdown,.pdf,.html,.htm,.txt,.text,.md,.markdown";
+const IMPORT_FILE_EXTENSIONS = [".pdf", ".html", ".htm", ".txt", ".text", ".md", ".markdown"];
+const IMPORT_FILE_TYPES = new Set(["application/pdf", "text/html", "text/plain", "text/markdown", "text/x-markdown"]);
 const DROPDOWN_VISIBLE_OPTION_LIMIT = 80;
 const APP_TOOLTIP_DELAY_MS = 2000;
 const APP_TOOLTIP_SELECTOR = [
@@ -1177,6 +1180,16 @@ function formatFileSize(bytes?: number | null) {
   }
   const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function isSupportedImportFile(file: File) {
+  const type = (file.type || "").split(";")[0].toLowerCase();
+  const name = file.name.toLowerCase();
+  return IMPORT_FILE_TYPES.has(type) || IMPORT_FILE_EXTENSIONS.some((extension) => name.endsWith(extension));
+}
+
+function importFileCountLabel(count: number) {
+  return `${count} file${count === 1 ? "" : "s"}`;
 }
 
 function formatMetric(value?: number | null) {
@@ -6486,10 +6499,10 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     onMutate: ({ incomingFiles }) => {
       setDuplicateCheck(null);
       setPendingFiles([]);
-      setDropMessage(`Importing ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
+      setDropMessage(`Importing ${importFileCountLabel(incomingFiles.length)}`);
     },
     onSuccess: (_batch, { incomingFiles }) => {
-      setDropMessage(`Queued ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
+      setDropMessage(`Queued ${importFileCountLabel(incomingFiles.length)}`);
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -6503,7 +6516,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     onMutate: (incomingFiles) => {
       setDuplicateCheck(null);
       setPendingFiles(incomingFiles);
-      setDropMessage(`Checking ${incomingFiles.length} PDF${incomingFiles.length === 1 ? "" : "s"}`);
+      setDropMessage(`Checking ${importFileCountLabel(incomingFiles.length)}`);
     },
     onSuccess: (result, incomingFiles) => {
       if (result.duplicate_file_count > 0) {
@@ -6566,20 +6579,20 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const hasDraggedFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
   const importFiles = (incomingFiles: FileList | File[]) => {
     const allFiles = Array.from(incomingFiles);
-    const pdfs = allFiles.filter((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
+    const supportedFiles = allFiles.filter(isSupportedImportFile);
     if (importBusy) {
       setDropMessage("Import already running");
       return;
     }
-    if (!pdfs.length) {
-      setDropMessage(allFiles.length ? "PDFs only" : "No files selected");
+    if (!supportedFiles.length) {
+      setDropMessage(allFiles.length ? "PDF, HTML, or text only" : "No files selected");
       return;
     }
-    const rejectedCount = allFiles.length - pdfs.length;
+    const rejectedCount = allFiles.length - supportedFiles.length;
     if (rejectedCount > 0) {
-      setDropMessage(`Importing ${pdfs.length}; ignored ${rejectedCount}`);
+      setDropMessage(`Importing ${supportedFiles.length}; ignored ${rejectedCount}`);
     }
-    duplicatePreflight.mutate(pdfs);
+    duplicatePreflight.mutate(supportedFiles);
   };
   const applyDuplicateStrategy = (strategy: DuplicateImportStrategy) => {
     if (!pendingFiles.length) return;
@@ -6615,17 +6628,17 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
           <span className="dropzone-icon-shell">
             <UploadCloud size={42} />
           </span>
-          <strong>{isDraggingFiles ? "Release to check" : importBusy ? "Working" : "Drop PDFs"}</strong>
-          <span className="dropzone-hint">{isDraggingFiles ? "PDFs will be checked for duplicates" : "or click anywhere"}</span>
+          <strong>{isDraggingFiles ? "Release to check" : importBusy ? "Working" : "Drop documents"}</strong>
+          <span className="dropzone-hint">{isDraggingFiles ? "Files will be checked for duplicates" : "PDF, HTML, TXT, or MD"}</span>
           <span className="dropzone-status">{dropMessage}</span>
         </div>
         <input
-          aria-label="Import PDFs"
+          aria-label="Import PDF, HTML, or text files"
           data-disabled-reason="an import or duplicate preflight check is already running."
-          data-tooltip="Choose one or more PDF files; Medusa will hash them, check for duplicates, and queue imports with the current batch defaults."
+          data-tooltip="Choose one or more PDF, HTML, or plain-text files; Medusa will hash them, check for duplicates, convert non-PDF files to PDF, and queue imports with the current batch defaults."
           type="file"
           multiple
-          accept="application/pdf"
+          accept={IMPORT_ACCEPT}
           onChange={(event) => {
             importFiles(event.target.files || []);
             event.currentTarget.value = "";
@@ -6645,6 +6658,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
                   <strong>{file.filename}</strong>
                   <small>
                     {formatFileSize(file.file_size_bytes)}
+                    {file.source_kind && file.source_kind !== "pdf" && file.stored_filename ? ` / ${file.source_kind.toUpperCase()} -> ${file.stored_filename}` : ""}
                     {file.duplicate_in_upload ? " / duplicate in this drop" : ""}
                     {file.existing_documents.length ? ` / matches ${file.existing_documents[0].title}` : ""}
                   </small>
@@ -6657,7 +6671,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             <button
               className="secondary-button"
               data-disabled-reason="the duplicate decision is already being uploaded."
-              data-tooltip="Skip every exact duplicate in this upload and only import PDFs without checksum matches."
+              data-tooltip="Skip every exact duplicate in this upload and only import files without checksum matches."
               disabled={upload.isPending}
               onClick={() => applyDuplicateStrategy("skip")}
               type="button"
@@ -6668,7 +6682,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             <button
               className="secondary-button"
               data-disabled-reason="the duplicate decision is already being uploaded."
-              data-tooltip="Reprocess matching existing document records with the newly uploaded duplicate PDFs."
+              data-tooltip="Reprocess matching existing document records with the newly uploaded duplicate files."
               disabled={upload.isPending}
               onClick={() => applyDuplicateStrategy("overwrite")}
               type="button"
@@ -6679,7 +6693,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             <button
               className="primary-button"
               data-disabled-reason="the duplicate decision is already being uploaded."
-              data-tooltip="Import the duplicate PDFs anyway as separate document records with the same checksums."
+              data-tooltip="Import the duplicate files anyway as separate document records with the same checksums."
               disabled={upload.isPending}
               onClick={() => applyDuplicateStrategy("import_anyway")}
               type="button"
@@ -6695,7 +6709,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
           <div>
             <h2>Apply to this batch</h2>
             <p>
-              Defaults are optional. Selected domains, tags, projects, priority, and read state will be applied to every queued PDF.
+              Defaults are optional. Selected domains, tags, projects, priority, and read state will be applied to every queued document.
             </p>
           </div>
           <StatusPill value={selectedDefaultCount ? `${selectedDefaultCount} defaults` : "No organization defaults"} tone={selectedDefaultCount ? "blue" : "neutral"} />

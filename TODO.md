@@ -50,6 +50,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add richer extraction fixtures.
   - Acceptance: tests cover two-column PDFs, multi-page tables, table-heavy papers, front matter before articles, scanned pages, vector charts/photos, bad metadata, obfuscated author emails, duplicates, and multi-author papers.
 
+- [ ] Add richer HTML import rendering and asset capture.
+  - Acceptance: HTML imports can optionally preserve local/remote images, useful CSS layout cues, tables, and source URLs in the generated PDF mezzanine and extraction evidence without weakening the current text-first, no-credential fallback.
+
 - [ ] Add semantic search and embedding refresh as a fuller Concordance capability.
   - Acceptance: embeddings are generated or refreshed for chunks/assets when configured, and search can combine lexical and semantic matches.
 

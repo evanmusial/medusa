@@ -148,6 +148,7 @@ from app.services.citations import format_apa_citation, format_apa_in_text_citat
 from app.services.document_cache import current_document_cache_usage, document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
+from app.services.import_sources import ImportSourceError, prepare_import_source, probe_import_source
 from app.services.ai import get_ai_service
 from app.services.processing import (
     apply_document_citations,
@@ -1653,7 +1654,7 @@ def list_documents(
     priority: str | None = None,
     citation_status: str | None = None,
     duplicate_status: str | None = None,
-    limit: int = 80,
+    limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
 ) -> list[DocumentSummary]:
     query = db.query(Document).filter(Document.deleted_at.is_(None))
     query = apply_document_filters(
@@ -1671,7 +1672,10 @@ def list_documents(
             query = query.filter(Document.checksum_sha256.in_(duplicate_checksums))
         elif duplicate_status == "unique":
             query = query.filter(Document.checksum_sha256.notin_(duplicate_checksums))
-    documents = query.order_by(None).order_by(*document_title_order_columns(db)).limit(limit).all()
+    query = query.order_by(None).order_by(*document_title_order_columns(db))
+    if limit is not None:
+        query = query.limit(limit)
+    documents = query.all()
     duplicate_counts = duplicate_count_by_checksum(db, [document.checksum_sha256 for document in documents])
     return [document_summary_out(document, duplicate_counts.get(document.checksum_sha256, 0)) for document in documents]
 
@@ -2724,7 +2728,11 @@ async def inspect_import_duplicates(files: list[UploadFile], db: Session) -> Imp
     duplicate_count = 0
     for upload in files:
         data = await upload.read()
-        checksum = hashlib.sha256(data).hexdigest()
+        try:
+            source = probe_import_source(data, upload.filename, upload.content_type)
+        except ImportSourceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        checksum = source.checksum_sha256
         existing = active_documents_for_checksum(db, checksum)
         duplicate_in_upload = checksum in seen_checksums
         seen_checksums.add(checksum)
@@ -2732,9 +2740,11 @@ async def inspect_import_duplicates(files: list[UploadFile], db: Session) -> Imp
             duplicate_count += 1
         rows.append(
             ImportDuplicateFileOut(
-                filename=upload.filename or f"{checksum}.pdf",
+                filename=source.filename,
                 checksum_sha256=checksum,
-                file_size_bytes=len(data),
+                file_size_bytes=source.file_size_bytes,
+                source_kind=source.source_kind,
+                stored_filename=source.stored_filename,
                 existing_documents=[duplicate_document_out(document) for document in existing],
                 duplicate_in_upload=duplicate_in_upload,
             )
@@ -2770,9 +2780,17 @@ async def create_import_batch(
     parsed_tag_ids = parse_json_form(tag_ids, [])
     parsed_project_ids = parse_json_form(project_ids, [])
     parsed_attributes = parse_json_form(attributes, {})
+    prepared_files = []
+    for upload in files:
+        data = await upload.read()
+        try:
+            prepared_files.append(prepare_import_source(data, upload.filename, upload.content_type))
+        except ImportSourceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     batch = ImportBatch(
         label=label,
-        total_files=len(files),
+        total_files=len(prepared_files),
         shared_defaults={
             "domain_ids": parsed_domain_ids,
             "tag_ids": parsed_tag_ids,
@@ -2792,10 +2810,10 @@ async def create_import_batch(
     cache_dir = document_cache_root()
 
     batch_documents_by_checksum: dict[str, Document] = {}
-    for upload in files:
-        data = await upload.read()
-        checksum = hashlib.sha256(data).hexdigest()
-        filename = upload.filename or f"{checksum}.pdf"
+    for prepared in prepared_files:
+        checksum = prepared.source_checksum_sha256
+        filename = prepared.source_filename
+        stored_filename = prepared.stored_filename
         existing_documents = active_documents_for_checksum(db, checksum)
         already_handled_document = batch_documents_by_checksum.get(checksum)
         if already_handled_document and duplicate_strategy != "import_anyway":
@@ -2826,9 +2844,9 @@ async def create_import_batch(
             reset_document_for_overwrite(db, document)
         else:
             document = Document(
-                title=Path(filename).stem.replace("_", " ").replace("-", " "),
-                original_filename=filename,
-                content_type=upload.content_type or "application/pdf",
+                title=prepared.title,
+                original_filename=stored_filename,
+                content_type=prepared.stored_content_type,
                 checksum_sha256=checksum,
                 priority=priority,
                 read_status=read_status,
@@ -2836,13 +2854,13 @@ async def create_import_batch(
             db.add(document)
             db.flush()
 
-        key = import_storage_key(checksum, document.id, filename)
-        stored = storage.put_bytes(key, data, upload.content_type or "application/pdf")
+        key = import_storage_key(checksum, document.id, stored_filename)
+        stored = storage.put_bytes(key, prepared.stored_data, prepared.stored_content_type)
         cache_path = import_cache_path(cache_dir, document.id)
-        cache_path.write_bytes(data)
-        document.title = Path(filename).stem.replace("_", " ").replace("-", " ")
-        document.original_filename = filename
-        document.content_type = upload.content_type or "application/pdf"
+        cache_path.write_bytes(prepared.stored_data)
+        document.title = prepared.title
+        document.original_filename = stored_filename
+        document.content_type = prepared.stored_content_type
         document.checksum_sha256 = checksum
         document.gcs_uri = stored.uri
         document.storage_status = stored.backend
@@ -2850,9 +2868,10 @@ async def create_import_batch(
         document.priority = priority
         document.read_status = read_status
         document.metadata_evidence = {
-            "file_size_bytes": len(data),
+            "file_size_bytes": len(prepared.stored_data),
             "local_cache_path": str(cache_path),
             "document_cache_path": str(cache_path),
+            "source_import": prepared.metadata,
             "import_defaults": batch.shared_defaults,
             "duplicate_import": {
                 "strategy": duplicate_strategy,

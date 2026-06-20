@@ -356,6 +356,29 @@ def rebuild_document_text_chunks(db: Session, document: Document) -> str:
     return reading_text
 
 
+def _prepared_source_pages(document: Document) -> tuple[str | None, list[dict[str, Any]]]:
+    source_import = (document.metadata_evidence or {}).get("source_import")
+    if not isinstance(source_import, dict):
+        return None, []
+    source_kind = str(source_import.get("kind") or "").strip().lower()
+    if source_kind not in {"html", "text"}:
+        return source_kind or None, []
+    pages = source_import.get("extracted_pages")
+    if not isinstance(pages, list):
+        return source_kind, []
+    return source_kind, [page for page in pages if isinstance(page, dict)]
+
+
+def _compact_source_import_evidence(evidence: dict[str, Any], page_count: int) -> dict[str, Any]:
+    source_import = evidence.get("source_import")
+    if not isinstance(source_import, dict) or "extracted_pages" not in source_import:
+        return evidence
+    compacted = dict(source_import)
+    compacted.pop("extracted_pages", None)
+    compacted["extracted_page_count"] = page_count
+    return {**evidence, "source_import": compacted}
+
+
 def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
     db.flush()
     batch.completed_files = db.query(ImportJob).filter(
@@ -454,39 +477,67 @@ class DocumentProcessor:
         actual_extractor = "persisted_pages"
         fallback_reason = None
         if not resume_normalization:
-            local_path = ensure_document_cache_file(db, document, source="import_retry")
-            if not local_path or not local_path.exists():
-                raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
-
-            checkpoint_job_step(db, job, document, "extracting", f"Extracting PDF text with {raw_text_extractor}.")
-            extracted = extract_pdf_text(local_path, extractor=raw_text_extractor)
-            actual_extractor = extracted.source
-            fallback_reason = extracted.fallback_reason
-            if extracted.fallback_reason:
-                log_event(
+            source_kind, source_pages = _prepared_source_pages(document)
+            if source_kind in {"html", "text"} and source_pages:
+                checkpoint_job_step(
                     db,
-                    job=job,
-                    document=document,
-                    event_type="raw_extraction_fallback",
-                    message=extracted.fallback_reason,
-                    level="warning",
-                    payload={"selected_extractor": raw_text_extractor, "actual_extractor": extracted.source},
+                    job,
+                    document,
+                    "extracting",
+                    f"Preparing {source_kind.upper()} source text from imported document semantics.",
                 )
-            document.page_count = extracted.page_count
-            document.pages.clear()
-            db.flush()
-            for page in extracted.pages:
-                document.pages.append(
-                    DocumentPage(
-                        document_id=document.id,
-                        page_number=page.page_number,
-                        text=sanitize_extracted_text(page.text),
-                        low_text=page.low_text,
-                        text_source=page.source if not page.low_text else f"{page.source}_low_text",
+                actual_extractor = f"{source_kind}_source_semantics"
+                document.page_count = len(source_pages)
+                document.pages.clear()
+                db.flush()
+                for raw_page in source_pages:
+                    text = sanitize_extracted_text(str(raw_page.get("text") or ""))
+                    page_number = int(raw_page.get("page_number") or len(document.pages) + 1)
+                    document.pages.append(
+                        DocumentPage(
+                            document_id=document.id,
+                            page_number=page_number,
+                            text=text,
+                            low_text=bool(raw_page.get("low_text")) or len(text) < get_settings().low_text_page_threshold,
+                            text_source=str(raw_page.get("source") or actual_extractor),
+                        )
                     )
-                )
-            db.flush()
-            checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing extracted page text.")
+                db.flush()
+                checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing parsed source page text.")
+            else:
+                local_path = ensure_document_cache_file(db, document, source="import_retry")
+                if not local_path or not local_path.exists():
+                    raise RuntimeError("Local processing cache is missing. Re-upload or restore from GCS.")
+
+                checkpoint_job_step(db, job, document, "extracting", f"Extracting PDF text with {raw_text_extractor}.")
+                extracted = extract_pdf_text(local_path, extractor=raw_text_extractor)
+                actual_extractor = extracted.source
+                fallback_reason = extracted.fallback_reason
+                if extracted.fallback_reason:
+                    log_event(
+                        db,
+                        job=job,
+                        document=document,
+                        event_type="raw_extraction_fallback",
+                        message=extracted.fallback_reason,
+                        level="warning",
+                        payload={"selected_extractor": raw_text_extractor, "actual_extractor": extracted.source},
+                    )
+                document.page_count = extracted.page_count
+                document.pages.clear()
+                db.flush()
+                for page in extracted.pages:
+                    document.pages.append(
+                        DocumentPage(
+                            document_id=document.id,
+                            page_number=page.page_number,
+                            text=sanitize_extracted_text(page.text),
+                            low_text=page.low_text,
+                            text_source=page.source if not page.low_text else f"{page.source}_low_text",
+                        )
+                    )
+                db.flush()
+                checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing extracted page text.")
         else:
             job.locked_at = utc_now()
             log_event(
@@ -516,8 +567,9 @@ class DocumentProcessor:
             ),
         )
         reading_text = rebuild_document_text_chunks(db, document)
+        evidence = _compact_source_import_evidence(dict(document.metadata_evidence or {}), document.page_count)
         document.metadata_evidence = {
-            **(document.metadata_evidence or {}),
+            **evidence,
             "raw_text_extraction": {
                 "selected_extractor": raw_text_extractor,
                 "actual_extractor": actual_extractor,
