@@ -44,6 +44,7 @@ export type AppPreferences = {
   document_cache_size_mb: number;
   library_alternating_rows: boolean;
   download_naming_template: string;
+  citation_convention: string;
   gcs_bucket: string;
   gcs_bucket_saved: boolean;
   google_service_account_name: string;

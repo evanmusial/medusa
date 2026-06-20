@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type {
+  ChangeEvent,
+  CSSProperties,
+  DragEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Background,
@@ -205,6 +212,7 @@ type SelectMenuOption = { id: string; name: string };
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const SUMMARY_MODEL_KEY = "summary";
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
+const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
@@ -268,6 +276,8 @@ type StashSortKey = "created" | "doi" | "title" | "status";
 type TagSortKey = "name" | "documents";
 type SortDirection = "asc" | "desc";
 type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
+type BrowserHistoryMode = "none" | "push" | "replace";
+type AppRoute = { view: View; documentId?: string };
 
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
 
@@ -283,6 +293,86 @@ const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?
   { id: "budget", label: "Budget & Costs", icon: CircleDollarSign, shortcut: "B" },
   { id: "settings", label: "Settings", icon: Settings, align: "end" },
 ];
+const DEFAULT_VIEW: View = "library";
+const VIEW_PATHS: Record<View, string> = {
+  library: "/library",
+  domains: "/domains",
+  projects: "/projects",
+  tags: "/tags",
+  queue: "/queue",
+  notes: "/notes",
+  import: "/import",
+  stashes: "/stashes",
+  budget: "/budget",
+  settings: "/settings",
+};
+const VIEW_BY_PATH = new Map<string, View>(
+  Object.entries(VIEW_PATHS).map(([view, path]) => [path, view as View]),
+);
+
+function normalizedAppPath(pathname: string) {
+  const normalized = pathname.replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function viewFromPathname(pathname: string): View | undefined {
+  const path = normalizedAppPath(pathname);
+  if (path === "/") return DEFAULT_VIEW;
+  return VIEW_BY_PATH.get(path.toLowerCase());
+}
+
+function decodePathSegment(segment: string) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function documentIdFromPathname(pathname: string) {
+  const path = normalizedAppPath(pathname);
+  const match = path.match(/^\/documents?\/([^/]+)$/i);
+  return match ? decodePathSegment(match[1]) : undefined;
+}
+
+function routeFromPathname(pathname: string): AppRoute {
+  const documentId = documentIdFromPathname(pathname);
+  if (documentId) return { view: "library", documentId };
+  return { view: viewFromPathname(pathname) || DEFAULT_VIEW };
+}
+
+function routeFromCurrentLocation(): AppRoute {
+  return routeFromPathname(window.location.pathname);
+}
+
+function pathForView(view: View) {
+  return VIEW_PATHS[view];
+}
+
+function pathForDocument(documentId: string) {
+  return `/documents/${encodeURIComponent(documentId)}`;
+}
+
+function documentLinkUrl(documentId: string) {
+  return `${window.location.origin}${pathForDocument(documentId)}`;
+}
+
+function syncBrowserUrl(path: string, state: Record<string, string | undefined>, mode: Exclude<BrowserHistoryMode, "none">) {
+  if (mode === "replace") {
+    window.history.replaceState(state, "", path);
+    return;
+  }
+  if (normalizedAppPath(window.location.pathname) === path && !window.location.search && !window.location.hash) return;
+  window.history.pushState(state, "", path);
+}
+
+function syncBrowserUrlForView(view: View, mode: Exclude<BrowserHistoryMode, "none">) {
+  syncBrowserUrl(pathForView(view), { medusaView: view }, mode);
+}
+
+function syncBrowserUrlForDocument(documentId: string, mode: Exclude<BrowserHistoryMode, "none">) {
+  syncBrowserUrl(pathForDocument(documentId), { medusaView: "library", medusaDocumentId: documentId }, mode);
+}
 
 function authorLine(document: DocumentSummary | DocumentDetail) {
   const authors = document.authors || [];
@@ -353,8 +443,7 @@ function selectedAnalysisModel(preferences: AppPreferences | undefined, key: str
 }
 
 function analysisModelActionLabel(preferences: AppPreferences | undefined, key: string, fallback: string) {
-  const task = preferences?.analysis_model_tasks.find((item) => item.key === key);
-  return `${task?.label || key.replaceAll("_", " ")}: ${selectedAnalysisModel(preferences, key, fallback)}`;
+  return selectedAnalysisModel(preferences, key, fallback);
 }
 
 function formatNavCount(value: number | undefined) {
@@ -1947,6 +2036,12 @@ function WorkspaceNav({
   counts: NavCounts;
   setActiveView: (view: View) => void;
 }) {
+  const handleNavClick = (event: ReactMouseEvent<HTMLAnchorElement>, view: View) => {
+    if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    setActiveView(view);
+  };
+
   return (
     <nav className="workspace-nav" aria-label="Main sections">
       {navItems.map((item) => {
@@ -1954,19 +2049,19 @@ function WorkspaceNav({
         const rawCount = counts[item.id];
         const count = rawCount !== undefined && (item.id === "library" || rawCount > 0) ? formatNavCount(rawCount) : "";
         return (
-          <button
+          <a
             key={item.id}
             aria-current={activeView === item.id ? "page" : undefined}
             aria-keyshortcuts={item.shortcut}
             className={`workspace-nav-item${activeView === item.id ? " active" : ""}${item.align === "end" ? " settings" : ""}`}
             data-tooltip={`Open the ${item.label} workspace${item.shortcut ? `; keyboard shortcut ${item.shortcut}.` : "."}`}
-            onClick={() => setActiveView(item.id)}
-            type="button"
+            href={pathForView(item.id)}
+            onClick={(event) => handleNavClick(event, item.id)}
           >
             <Icon size={17} />
             <span>{item.label}</span>
             {count ? <small className="workspace-nav-count">{count}</small> : null}
-          </button>
+          </a>
         );
       })}
     </nav>
@@ -2725,7 +2820,7 @@ function LibraryView({
   documents: DocumentSummary[];
   document?: DocumentDetail;
   selectedId?: string;
-  setSelectedId: (id: string) => void;
+  setSelectedId: (id: string, options?: { updateUrl?: boolean }) => void;
   domains: Domain[];
   tags: Tag[];
   projects: Project[];
@@ -2841,12 +2936,19 @@ function LibraryView({
     setFilters({ ...emptyFilters(), ...savedSearch.filters });
   };
 
-  const activateDocument = (id: string) => {
-    setSelectedId(id);
+  const activateDocument = (id: string, options?: { updateUrl?: boolean }) => {
+    setSelectedId(id, options);
+  };
+
+  const handleDocumentLinkClick = (event: ReactMouseEvent<HTMLAnchorElement>, id: string) => {
+    event.stopPropagation();
+    if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    activateDocument(id);
   };
 
   const toggleSelected = (id: string) => {
-    activateDocument(id);
+    activateDocument(id, { updateUrl: false });
     setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   };
 
@@ -3042,7 +3144,7 @@ function LibraryView({
                   return;
                 }
                 setSelectedIds(sortedDocuments.map((item) => item.id));
-                if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id);
+                if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id, { updateUrl: false });
               }}
             />
             <strong>{loading ? "Searching..." : `${sortedDocuments.length} documents`}</strong>
@@ -3118,7 +3220,6 @@ function LibraryView({
               key={item.id}
               className={`doc-row ${selectedId === item.id ? "selected" : ""}`}
               onClick={() => activateDocument(item.id)}
-              onPointerDown={() => activateDocument(item.id)}
             >
               <input
                 aria-label={`Select ${item.title}`}
@@ -3129,14 +3230,19 @@ function LibraryView({
                 onChange={() => toggleSelected(item.id)}
                 type="checkbox"
               />
-              <button className="doc-row-main" data-tooltip={`Open ${item.title} in the detail pane.`} onClick={() => activateDocument(item.id)} type="button">
+              <a
+                className="doc-row-main"
+                data-tooltip={`Open ${item.title} in the detail pane.`}
+                href={pathForDocument(item.id)}
+                onClick={(event) => handleDocumentLinkClick(event, item.id)}
+              >
                 <span className="doc-row-title">{item.title}</span>
                 <span className="doc-row-byline">
                   <span className="doc-row-pages">{pageCountMarker(item)}</span>
                   <span className="doc-row-year">{item.publication_year || "n.d."}</span>
                   <span className="doc-row-authors">{authorLine(item)}</span>
                 </span>
-              </button>
+              </a>
               <div className="row-meta">
                 <PriorityPill value={item.priority} />
                 {item.duplicate_count > 0 ? <StatusPill value={`Duplicate ${item.duplicate_count + 1}`} tone="warn" /> : null}
@@ -3993,12 +4099,12 @@ function DocumentPanelContent({
     mutationFn: (target: CitationRefreshTarget) =>
       startConcordanceRun({
         backgroundDetail: document.title,
-        backgroundLabel: target === "doi" ? "Checking DOI" : "Checking APA citation",
+        backgroundLabel: target === "doi" ? "Refreshing DOI" : "Refreshing APA citation",
         capability_keys: ["citation_refresh"],
         capabilityKey: "citation_refresh",
         documentId: document.id,
         force: true,
-        label: `${target === "doi" ? "DOI" : "Citation"} check: ${document.title}`,
+        label: `${target === "doi" ? "DOI" : "Citation"} refresh: ${document.title}`,
         scope_data: { document_ids: [document.id] },
         scope_type: "documents",
       }),
@@ -4019,19 +4125,19 @@ function DocumentPanelContent({
       setCitationRunId(null);
       setCitationRefreshTarget(null);
       const feedback = target === "doi" ? doiRefreshFeedback : target === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
-      feedback.showError(actionFailureMessage(target === "doi" ? "Could not start DOI check" : "Could not start citation check", error));
+      feedback.showError(actionFailureMessage(target === "doi" ? "Could not start DOI refresh" : "Could not start citation refresh", error));
     },
   });
   const refreshSummary = useMutation({
     mutationFn: () =>
       startConcordanceRun({
         backgroundDetail: document.title,
-        backgroundLabel: "Checking summary",
+        backgroundLabel: "Refreshing summary",
         capability_keys: ["summary_refresh"],
         capabilityKey: "summary_refresh",
         documentId: document.id,
         force: true,
-        label: `Summary check: ${document.title}`,
+        label: `Summary refresh: ${document.title}`,
         scope_data: { document_ids: [document.id] },
         scope_type: "documents",
       }),
@@ -4046,7 +4152,7 @@ function DocumentPanelContent({
     },
     onError: (error) => {
       setSummaryRunId(null);
-      summaryRefreshFeedback.showError(actionFailureMessage("Could not start summary check", error));
+      summaryRefreshFeedback.showError(actionFailureMessage("Could not start summary refresh", error));
     },
   });
   const updateCitation = useMutation({
@@ -4304,7 +4410,7 @@ function DocumentPanelContent({
     if (failedJob) {
       feedback.showError(
         actionFailureMessage(
-          citationRefreshTarget === "doi" ? "DOI check failed" : "Citation check failed",
+          citationRefreshTarget === "doi" ? "DOI refresh failed" : "Citation refresh failed",
           failedJob.last_error || "Concordance job failed without a detailed error",
         ),
       );
@@ -4334,7 +4440,7 @@ function DocumentPanelContent({
     const failedJob = trackedSummaryJobs.find((job) => job.status === "failed");
     if (failedJob) {
       summaryRefreshFeedback.showError(
-        actionFailureMessage("Summary check failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+        actionFailureMessage("Summary refresh failed", failedJob.last_error || "Concordance job failed without a detailed error"),
       );
     } else {
       summaryRefreshFeedback.showSuccess();
@@ -4845,17 +4951,17 @@ function DocumentPanelContent({
           <Edit3 size={15} />
           Edit
         </button>
-        <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI check in progress">
+        <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI refresh in progress">
           <button
             className={asyncFeedbackClass("secondary-button", doiRefreshFeedback.feedback, doiCheckBusy)}
             data-disabled-reason={citationBusyReason}
-            data-tooltip="Queue a DOI and APA citation refresh for this document using the selected APA Citation Matching model."
+            data-tooltip="Queue a DOI and APA citation refresh for this document using the selected APA model fallback."
             onClick={checkDoi}
             disabled={citationBusy}
             type="button"
           >
             <RefreshCw className={doiCheckBusy ? "spin" : ""} size={15} />
-            {doiCheckBusy ? "Checking" : "Check"}
+            {doiCheckBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, APA_CITATION_MODEL_KEY, "gpt-5.5")}</span>
@@ -5029,7 +5135,7 @@ function DocumentPanelContent({
           <Edit3 size={15} />
           Edit
         </button>
-        <AsyncActionSlot busy={summaryRefreshBusy} feedback={summaryRefreshFeedback.feedback} label="Summary check in progress">
+        <AsyncActionSlot busy={summaryRefreshBusy} feedback={summaryRefreshFeedback.feedback} label="Summary refresh in progress">
           <button
             className={asyncFeedbackClass("secondary-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
             data-disabled-reason={summaryRefreshBusyReason}
@@ -5039,7 +5145,7 @@ function DocumentPanelContent({
             type="button"
           >
             <RefreshCw className={summaryRefreshBusy ? "spin" : ""} size={15} />
-            {summaryRefreshBusy ? "Checking" : "Check"}
+            {summaryRefreshBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, SUMMARY_MODEL_KEY, "gpt-5.4")}</span>
@@ -5121,7 +5227,7 @@ function DocumentPanelContent({
             <Edit3 size={15} />
             Edit
           </button>
-          <AsyncActionSlot busy={busy} feedback={feedback} label="Citation check in progress">
+          <AsyncActionSlot busy={busy} feedback={feedback} label="Citation refresh in progress">
             <button
               className={asyncFeedbackClass("secondary-button", feedback, busy)}
               data-disabled-reason={citationBusyReason}
@@ -5131,7 +5237,7 @@ function DocumentPanelContent({
               type="button"
             >
               <RefreshCw className={busy ? "spin" : ""} size={15} />
-              {busy ? "Checking" : "Check"}
+              {busy ? "Refreshing" : "Refresh"}
             </button>
           </AsyncActionSlot>
           <span className="citation-model-label">{citationProvenanceLabel(document, kind)}</span>
@@ -5337,6 +5443,15 @@ function DocumentPanelContent({
         >
           {editing ? <X size={15} /> : <Edit3 size={15} />}
           {editing ? "Cancel" : "Edit"}
+        </button>
+        <button
+          className="secondary-button"
+          data-tooltip="Copy a bookmarkable link that opens Library with this document focused."
+          onClick={() => copyToClipboard("document-link", documentLinkUrl(document.id))}
+          type="button"
+        >
+          {copiedKey === "document-link" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+          {copiedKey === "document-link" ? "Copied" : "Link"}
         </button>
         <AsyncActionSlot busy={documentConcordanceBusy} feedback={runConcordanceFeedback.feedback} label="Document Concordance in progress">
           <button
@@ -8985,6 +9100,7 @@ function SettingsView({
   const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1024);
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
   const [downloadNamingTemplate, setDownloadNamingTemplate] = useState(preferences?.download_naming_template || "$title ($year)");
+  const [citationConvention, setCitationConvention] = useState(preferences?.citation_convention || CITATION_CONVENTION_APA_7);
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
@@ -9028,6 +9144,7 @@ function SettingsView({
       setDocumentCacheSizeMb(preferences.document_cache_size_mb);
       setLibraryAlternatingRows(preferences.library_alternating_rows);
       setDownloadNamingTemplate(preferences.download_naming_template);
+      setCitationConvention(preferences.citation_convention || CITATION_CONVENTION_APA_7);
       setGcsBucket(preferences.gcs_bucket);
       setAnalysisModels(preferences.analysis_models);
     }
@@ -9108,6 +9225,7 @@ function SettingsView({
         document_cache_size_mb: documentCacheSizeMb,
         library_alternating_rows: libraryAlternatingRows,
         download_naming_template: downloadNamingTemplate,
+        citation_convention: citationConvention,
         gcs_bucket: gcsBucket,
         analysis_models: analysisModels,
       }),
@@ -9181,6 +9299,7 @@ function SettingsView({
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
         preferences.library_alternating_rows !== libraryAlternatingRows ||
         preferences.download_naming_template !== downloadNamingTemplate ||
+        preferences.citation_convention !== citationConvention ||
         preferences.gcs_bucket !== gcsBucket ||
         (Boolean(gcsBucket.trim()) && !preferences.gcs_bucket_saved) ||
         !sameStringMap(preferences.analysis_models, analysisModels)),
@@ -9270,7 +9389,7 @@ function SettingsView({
         aria-label={`Save all preferences from the ${placement} of Settings`}
         className={asyncFeedbackClass("primary-button settings-save-all", savePreferencesFeedback.feedback)}
         data-disabled-reason={savePreferencesDisabledReason}
-        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, download naming, and model selections.`}
+        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, citation convention, download naming, and model selections.`}
         disabled={savePreferencesDisabled}
         onClick={() => void saveAllPreferences()}
         type="button"
@@ -9284,21 +9403,6 @@ function SettingsView({
   return (
     <section className="workbench settings-grid">
       <header className="settings-save-row">{renderSaveAllButton("top")}</header>
-      <div className="settings-tile">
-        <Gauge size={22} />
-        <h2>Runtime</h2>
-        <p>Port 3737, FastAPI, PostgreSQL, pgvector, durable worker.</p>
-      </div>
-      <div className="settings-tile">
-        <Cloud size={22} />
-        <h2>Storage</h2>
-        <p>GCS bucket defaults and Google credentials are managed below.</p>
-      </div>
-      <div className="settings-tile">
-        <Sparkles size={22} />
-        <h2>AI</h2>
-        <p>Set OPENAI_API_KEY to enable structured metadata, summaries, tag suggestions, and embeddings.</p>
-      </div>
       <div className="storage-settings-panel">
         <div className="panel-title-row">
           <div>
@@ -9425,6 +9529,20 @@ function SettingsView({
             <code>$pages</code>
           </div>
         </div>
+        <fieldset className="citation-convention-control">
+          <legend>Citation convention</legend>
+          <label className="radio-row">
+            <input
+              checked={citationConvention === CITATION_CONVENTION_APA_7}
+              data-tooltip="Use APA seventh edition formatting for generated reference-list and in-text citation output."
+              name="citation-convention"
+              onChange={(event) => setCitationConvention(event.target.value)}
+              type="radio"
+              value={CITATION_CONVENTION_APA_7}
+            />
+            <span>APA (7th Ed.)</span>
+          </label>
+        </fieldset>
         <label className="checkbox-row preference-checkbox">
           <input
             data-tooltip="Toggle alternating row shading in the Library document list."
@@ -9867,11 +9985,12 @@ function SettingsView({
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState<View>("library");
+  const initialRoute = routeFromCurrentLocation();
+  const [activeView, setActiveView] = useState<View>(() => initialRoute.view);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
-  const [selectedId, setSelectedId] = useState<string | undefined>();
+  const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
@@ -9945,6 +10064,15 @@ export default function App() {
     document.title = runtimeLocation.data?.title || MEDUSA_APP_NAME;
   }, [runtimeLocation.data?.title]);
 
+  useEffect(() => {
+    const route = routeFromCurrentLocation();
+    if (route.documentId) {
+      syncBrowserUrlForDocument(route.documentId, "replace");
+      return;
+    }
+    syncBrowserUrlForView(activeView, "replace");
+  }, []);
+
   const startConcordanceRun = useCallback(
     async (request: ConcordanceRunRequest) => {
       const id = backgroundJobId();
@@ -10013,20 +10141,37 @@ export default function App() {
   );
 
   const requestActiveViewChange = useCallback(
-    async (view: View) => {
-      if (view === activeView) return;
+    async (view: View, historyMode: BrowserHistoryMode = "push") => {
+      if (view === activeView) {
+        if (historyMode !== "none") syncBrowserUrlForView(view, historyMode);
+        return true;
+      }
       if (activeView === "settings" && settingsDirty) {
         const shouldSave = window.confirm(
           "You have unsaved Settings changes. Save before leaving this page?\n\nOK saves first. Cancel leaves without saving.",
         );
         if (shouldSave) {
           const saved = settingsSaveHandlerRef.current ? await settingsSaveHandlerRef.current() : false;
-          if (!saved) return;
+          if (!saved) return false;
         }
       }
       setActiveView(view);
+      if (historyMode !== "none") syncBrowserUrlForView(view, historyMode);
+      return true;
     },
     [activeView, settingsDirty],
+  );
+  const requestDocumentFocus = useCallback(
+    async (documentId: string, historyMode: BrowserHistoryMode = "push") => {
+      if (activeView !== "library") {
+        const changed = await requestActiveViewChange("library", "none");
+        if (!changed) return false;
+      }
+      setSelectedId(documentId);
+      if (historyMode !== "none") syncBrowserUrlForDocument(documentId, historyMode);
+      return true;
+    },
+    [activeView, requestActiveViewChange],
   );
   const registerSettingsSave = useCallback((handler: SettingsSaveHandler | null) => {
     settingsSaveHandlerRef.current = handler;
@@ -10077,6 +10222,20 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [requestActiveViewChange]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const route = routeFromCurrentLocation();
+      const routeChange = route.documentId
+        ? requestDocumentFocus(route.documentId, "none")
+        : requestActiveViewChange(route.view, "none");
+      void routeChange.then((changed) => {
+        if (!changed) syncBrowserUrlForView(activeView, "replace");
+      });
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [activeView, requestActiveViewChange, requestDocumentFocus]);
 
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) {
@@ -10147,7 +10306,13 @@ export default function App() {
             documents={documents.data || []}
             document={selectedDocument.data}
             selectedId={selectedId}
-            setSelectedId={setSelectedId}
+            setSelectedId={(id, options) => {
+              if (options?.updateUrl === false) {
+                setSelectedId(id);
+                return;
+              }
+              void requestDocumentFocus(id);
+            }}
             domains={domains.data || []}
             tags={tags.data || []}
             projects={projects.data || []}

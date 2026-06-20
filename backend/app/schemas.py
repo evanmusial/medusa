@@ -730,6 +730,7 @@ class AppPreferencesOut(BaseModel):
     document_cache_size_mb: int
     library_alternating_rows: bool
     download_naming_template: str
+    citation_convention: str
     gcs_bucket: str
     gcs_bucket_saved: bool
     google_service_account_name: str
@@ -749,6 +750,7 @@ class AppPreferencesPatch(BaseModel):
     document_cache_size_mb: int | None = Field(default=None, ge=0)
     library_alternating_rows: bool | None = None
     download_naming_template: str | None = Field(default=None, max_length=240)
+    citation_convention: str | None = Field(default=None, pattern=r"^apa_7$")
     gcs_bucket: str | None = None
     analysis_models: dict[str, str] | None = None
 

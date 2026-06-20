@@ -24,6 +24,8 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     from app.models import AppPreference
     from app.services.preferences import (
         ACCENT_COLOR_DAY_KEY,
+        CITATION_CONVENTION_APA_7,
+        CITATION_CONVENTION_KEY,
         DOWNLOAD_NAMING_TEMPLATE_KEY,
         IMPORT_WORKER_CONCURRENCY_KEY,
         LIBRARY_ALTERNATING_ROWS_KEY,
@@ -45,6 +47,7 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     with Session() as db:
         assert get_app_preferences(db)["library_alternating_rows"] is True
         assert get_app_preferences(db)["download_naming_template"] == "$title ($year)"
+        assert get_app_preferences(db)["citation_convention"] == CITATION_CONVENTION_APA_7
 
         preferences = update_app_preferences(
             db,
@@ -52,24 +55,29 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
             accent_color_day="#14b8a6",
             library_alternating_rows=False,
             download_naming_template="$author - $title [$pages]",
+            citation_convention=CITATION_CONVENTION_APA_7,
         )
 
         stored = db.get(AppPreference, IMPORT_WORKER_CONCURRENCY_KEY)
         accent = db.get(AppPreference, ACCENT_COLOR_DAY_KEY)
         alternating_rows = db.get(AppPreference, LIBRARY_ALTERNATING_ROWS_KEY)
         download_naming = db.get(AppPreference, DOWNLOAD_NAMING_TEMPLATE_KEY)
+        citation_convention = db.get(AppPreference, CITATION_CONVENTION_KEY)
         assert stored is not None
         assert accent is not None
         assert alternating_rows is not None
         assert download_naming is not None
+        assert citation_convention is not None
         assert stored.value == {"value": 3}
         assert accent.value == {"value": "#14b8a6"}
         assert alternating_rows.value == {"value": False}
         assert download_naming.value == {"value": "$author - $title [$pages]"}
+        assert citation_convention.value == {"value": CITATION_CONVENTION_APA_7}
         assert preferences["import_worker_concurrency"] == 3
         assert preferences["accent_color_day"] == "#14b8a6"
         assert preferences["library_alternating_rows"] is False
         assert preferences["download_naming_template"] == "$author - $title [$pages]"
+        assert preferences["citation_convention"] == CITATION_CONVENTION_APA_7
         assert get_import_worker_concurrency(db) == 3
 
         update_app_preferences(db, import_worker_concurrency=99)

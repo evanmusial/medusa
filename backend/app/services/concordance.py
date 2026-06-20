@@ -108,7 +108,7 @@ SUMMARY_REFRESH_CAPABILITY = CapabilityDefinition(
     key="summary_refresh",
     label="Summary refresh",
     version=1,
-    description="Regenerate the main Markdown document summary using only the selected Summary model.",
+    description="Regenerate the main document summary using only the selected Summary model.",
 )
 
 CAPABILITY_BY_KEY = {capability.key: capability for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY)}

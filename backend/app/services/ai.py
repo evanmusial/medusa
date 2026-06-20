@@ -59,11 +59,19 @@ PAGE_TEXT_NORMALIZATION_PROMPT = (
     "text anchors near the surrounding discussion."
 )
 
+SUMMARY_STYLE_HINT = (
+    "Unless the user explicitly requests another format, write the summary as a few technical, on-topic plain-text "
+    "paragraphs separated by blank lines. Use complete sentences throughout. Do not begin with Summary, Overview, "
+    "a single-word opening, or any standalone heading. The first paragraph should state the paper's broad facts "
+    "and purpose. Subsequent paragraphs should summarize the main points, ideas, methods, findings, and concepts "
+    "introduced in the paper. Do not use bold, italics, bullet points, em dashes, curly or fancy quotes, or "
+    "decorative Markdown by default. Use plain ASCII punctuation."
+)
+
 DOCUMENT_SUMMARY_PROMPT = (
-    "Generate rich_summary as concise Markdown from only the supplied extracted document text. Use a short opening "
-    "paragraph plus 3-5 labeled bullets for methods, findings, usefulness, and caveats when the evidence supports "
-    "them. Do not start with a standalone heading such as Summary, Overview, Abstract, Synopsis, or similar; begin "
-    "with the semantic substance of the summary itself. Do not invent claims beyond the text."
+    "Generate rich_summary from only the supplied document context. "
+    f"{SUMMARY_STYLE_HINT} "
+    "Begin with the semantic substance of the summary itself. Do not invent claims beyond the text."
 )
 
 
@@ -201,10 +209,9 @@ CORE_DOCUMENT_INTELLIGENCE_PROMPT = (
     "title, subtitle, authors, visible affiliations, visible author contact emails, universities, publication year, "
     "journal/venue, publisher, DOI, and abstract. Normalize deliberately obfuscated visible emails such as "
     "someone{at}university{dot}edu, someone [at] university [dot] edu, and someone at university dot edu into "
-    "standard someone@university.edu form. Never infer an email when it is absent. Second, generate rich_summary "
-    "as concise Markdown with a short opening paragraph plus 3-5 labeled bullets for methods, findings, usefulness, "
-    "and caveats when supported by the document. Do not start rich_summary with a standalone heading such as Summary, "
-    "Overview, Abstract, Synopsis, or similar; begin with the semantic substance of the summary itself. Third, generate "
+    "standard someone@university.edu form. Never infer an email when it is absent. Second, generate rich_summary. "
+    f"{SUMMARY_STYLE_HINT} "
+    "Begin with the semantic substance of the summary itself. Third, generate "
     "an APA 7 reference-list citation candidate and matching parenthetical in-text citation as Markdown-compatible text "
     "with italicized publication titles where APA requires italics; return null or warnings when exact fields are uncertain. "
     "Fourth, extract concise topic tags and keywords useful for organizing and searching the scholarly document. "
@@ -277,9 +284,11 @@ ACCESSORY_SUMMARY_SCHEMA: dict[str, Any] = {
 ACCESSORY_SUMMARY_PROMPT = (
     "Generate a focused accessory summary for a research-library document. Use only the supplied original PDF "
     "context and extracted text. The user will provide a question or precise topic. Answer that request directly "
-    "with concise Markdown suitable for display under the document's main summary. Prefer specific evidence, "
-    "methods, findings, caveats, and terminology from the document. If the document does not support part of the "
-    "request, say so plainly instead of inventing details. Return a short optional title when one is natural."
+    "for display under the document's main summary. "
+    f"{SUMMARY_STYLE_HINT} "
+    "Prefer specific evidence, methods, findings, caveats, and terminology from the document. If the document does "
+    "not support part of the request, say so plainly instead of inventing details. Return a short optional title "
+    "when one is natural."
 )
 
 
@@ -560,13 +569,7 @@ class AiService:
             model=models[MODEL_SUMMARY],
             schema_name="medusa_document_summary",
             schema=SUMMARY_SCHEMA,
-            prompt=(
-                "Generate rich_summary as concise Markdown from only the supplied extracted document text. Use a short "
-                "opening paragraph plus 3-5 labeled bullets for methods, findings, usefulness, and caveats when the "
-                "evidence supports them. Do not start with a standalone heading such as Summary, Overview, Abstract, "
-                "Synopsis, or similar; begin with the semantic substance of the summary itself. Do not invent claims "
-                "beyond the text."
-            ),
+            prompt=DOCUMENT_SUMMARY_PROMPT,
             input_content=summary_input,
             timeout=self.settings.openai_request_timeout_seconds,
             usage_context=usage_context,
@@ -647,13 +650,7 @@ class AiService:
             model=models[MODEL_SUMMARY],
             schema_name="medusa_document_summary",
             schema=SUMMARY_SCHEMA,
-            prompt=(
-                "Generate rich_summary as concise Markdown from only the supplied document context. Use a short opening "
-                "paragraph plus 3-5 labeled bullets for methods, findings, usefulness, and caveats when the evidence "
-                "supports them. Do not start with a standalone heading such as Summary, Overview, Abstract, Synopsis, "
-                "or similar; begin with the semantic substance of the summary itself. Do not invent claims beyond the "
-                "original PDF context."
-            ),
+            prompt=DOCUMENT_SUMMARY_PROMPT,
             input_content=input_content,
             timeout=self.settings.openai_request_timeout_seconds,
             usage_context=usage_context,

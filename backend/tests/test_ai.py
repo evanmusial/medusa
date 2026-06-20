@@ -68,6 +68,24 @@ def test_strip_standalone_summary_heading():
     )
 
 
+def test_summary_prompts_default_to_plain_technical_paragraphs():
+    from app.services.ai import ACCESSORY_SUMMARY_PROMPT, CORE_DOCUMENT_INTELLIGENCE_PROMPT, DOCUMENT_SUMMARY_PROMPT
+
+    for prompt in [DOCUMENT_SUMMARY_PROMPT, CORE_DOCUMENT_INTELLIGENCE_PROMPT, ACCESSORY_SUMMARY_PROMPT]:
+        normalized_prompt = prompt.lower()
+        assert "few technical, on-topic plain-text paragraphs" in prompt
+        assert "Use complete sentences throughout" in prompt
+        assert "Do not begin with Summary, Overview" in prompt
+        assert "a single-word opening" in prompt
+        assert "first paragraph should state the paper's broad facts and purpose" in prompt
+        assert "Subsequent paragraphs should summarize the main points" in prompt
+        assert "Do not use bold, italics, bullet points" in prompt
+        assert "em dashes" in prompt
+        assert "curly or fancy quotes" in prompt
+        assert "unless the user explicitly requests another format" in normalized_prompt
+        assert "labeled bullets" not in prompt
+
+
 def test_ai_prompt_cache_key_uses_api_safe_length_for_document_checksums(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

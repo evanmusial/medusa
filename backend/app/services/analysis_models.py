@@ -93,7 +93,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_SUMMARY,
         label="Summary",
         model_kind="gpt",
-        description="Generates the concise Markdown research summary from extracted text. This defaults to GPT-5.4 so synthesis is cheaper than the citation-critical metadata/APA path.",
+        description="Generates a technical paragraph-style research summary from extracted text. This defaults to GPT-5.4 so synthesis is cheaper than the citation-critical metadata/APA path.",
     ),
     AnalysisModelTask(
         key=MODEL_APA_CITATION,
@@ -123,7 +123,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_ACCESSORY_SUMMARIES,
         label="Accessory Summaries",
         model_kind="gpt",
-        description="Generates user-prompted focused summaries from a document detail pane request. These default to GPT-5.4, and can use Google Gemini text models when selected.",
+        description="Generates user-prompted focused paragraph summaries from a document detail pane request. These default to GPT-5.4, and can use Google Gemini text models when selected.",
     ),
 )
 

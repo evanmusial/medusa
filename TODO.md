@@ -105,6 +105,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add document-level BibTeX/RIS/CSL JSON copy/export controls.
   - Acceptance: individual document detail exposes citation formats beyond APA, matching project bibliography formatting.
 
+- [ ] Add citation conventions beyond APA 7.
+  - Acceptance: Settings > Preferences expands the persisted citation convention radio group beyond the current APA (7th Ed.) option; document citation refreshes, project bibliographies, exports, and copy controls all honor the selected convention; Concordance can refresh older generated citation text when the convention changes.
+
 - [ ] Add optional Zotero import/export.
   - Acceptance: Zotero libraries can be imported/exported through the citation model without weakening Medusa metadata evidence.
 

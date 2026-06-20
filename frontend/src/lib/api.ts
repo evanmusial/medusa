@@ -94,6 +94,7 @@ export const api = {
         | "document_cache_size_mb"
         | "library_alternating_rows"
         | "download_naming_template"
+        | "citation_convention"
         | "gcs_bucket"
         | "analysis_models"
       >

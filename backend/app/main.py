@@ -895,6 +895,7 @@ def patch_preferences(
         document_cache_size_mb=payload.document_cache_size_mb,
         library_alternating_rows=payload.library_alternating_rows,
         download_naming_template=payload.download_naming_template,
+        citation_convention=payload.citation_convention,
         gcs_bucket=payload.gcs_bucket,
         analysis_models=payload.analysis_models,
     )

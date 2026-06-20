@@ -30,6 +30,7 @@ ACCENT_COLOR_NIGHT_KEY = "accent_color_night"
 DOCUMENT_CACHE_SIZE_MB_KEY = "document_cache_size_mb"
 LIBRARY_ALTERNATING_ROWS_KEY = "library_alternating_rows"
 DOWNLOAD_NAMING_TEMPLATE_KEY = "download_naming_template"
+CITATION_CONVENTION_KEY = "citation_convention"
 ANALYSIS_MODEL_KEY_PREFIX = "analysis_model_"
 GCS_BUCKET_KEY = "gcs_bucket"
 GOOGLE_SERVICE_ACCOUNT_KEY = "google_service_account"
@@ -41,6 +42,8 @@ DEFAULT_DOCUMENT_CACHE_SIZE_MB = 1024
 DEFAULT_DAY_ACCENT = "#2563eb"
 DEFAULT_NIGHT_ACCENT = "#6ea8ff"
 DEFAULT_DOWNLOAD_NAMING_TEMPLATE = "$title ($year)"
+CITATION_CONVENTION_APA_7 = "apa_7"
+CITATION_CONVENTIONS = {CITATION_CONVENTION_APA_7}
 DOWNLOAD_TEMPLATE_TOKENS = {"title", "year", "authors", "author", "pages"}
 
 SAFE_PREFERENCE_KEYS = {
@@ -50,6 +53,7 @@ SAFE_PREFERENCE_KEYS = {
     DOCUMENT_CACHE_SIZE_MB_KEY,
     LIBRARY_ALTERNATING_ROWS_KEY,
     DOWNLOAD_NAMING_TEMPLATE_KEY,
+    CITATION_CONVENTION_KEY,
     GCS_BUCKET_KEY,
     *(f"{ANALYSIS_MODEL_KEY_PREFIX}{task.key}" for task in ANALYSIS_MODEL_TASKS),
 }
@@ -110,6 +114,12 @@ def normalize_download_naming_template(value: Any) -> str:
         return DEFAULT_DOWNLOAD_NAMING_TEMPLATE
     candidate = " ".join(value.replace("\x00", "").split()).strip()
     return candidate[:240] or DEFAULT_DOWNLOAD_NAMING_TEMPLATE
+
+
+def normalize_citation_convention(value: Any) -> str:
+    if isinstance(value, str) and value.strip() in CITATION_CONVENTIONS:
+        return value.strip()
+    return CITATION_CONVENTION_APA_7
 
 
 def normalize_gcs_bucket(value: Any) -> str:
@@ -191,6 +201,10 @@ def get_document_cache_size_mb(db: Session) -> int:
 
 def get_download_naming_template(db: Session) -> str:
     return normalize_download_naming_template(_get_preference_value(db, DOWNLOAD_NAMING_TEMPLATE_KEY))
+
+
+def get_citation_convention(db: Session) -> str:
+    return normalize_citation_convention(_get_preference_value(db, CITATION_CONVENTION_KEY))
 
 
 def author_display_name(author: Any) -> str:
@@ -375,6 +389,7 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "document_cache_size_mb": get_document_cache_size_mb(db),
         "library_alternating_rows": normalize_bool(_get_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY), True),
         "download_naming_template": get_download_naming_template(db),
+        "citation_convention": get_citation_convention(db),
         "gcs_bucket": gcs_bucket,
         "gcs_bucket_saved": _has_preference(db, GCS_BUCKET_KEY),
         "analysis_models": analysis_models,
@@ -393,6 +408,7 @@ def update_app_preferences(
     document_cache_size_mb: int | None = None,
     library_alternating_rows: bool | None = None,
     download_naming_template: str | None = None,
+    citation_convention: str | None = None,
     gcs_bucket: str | None = None,
     analysis_models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -412,6 +428,8 @@ def update_app_preferences(
         _set_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY, bool(library_alternating_rows))
     if download_naming_template is not None:
         _set_preference_value(db, DOWNLOAD_NAMING_TEMPLATE_KEY, normalize_download_naming_template(download_naming_template))
+    if citation_convention is not None:
+        _set_preference_value(db, CITATION_CONVENTION_KEY, normalize_citation_convention(citation_convention))
     if gcs_bucket is not None:
         _set_preference_value(db, GCS_BUCKET_KEY, normalize_gcs_bucket(gcs_bucket))
     if analysis_models is not None:
