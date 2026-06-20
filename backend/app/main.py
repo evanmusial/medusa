@@ -1265,7 +1265,9 @@ def optimize_tags(
             source_ids.append(target_in_scope.id)
         if len(source_ids) < 2:
             continue
-        key = (target_name, tuple(sorted(source_ids)))
+        source_tags = sorted((tag_by_id[tag_id] for tag_id in source_ids), key=lambda tag: tag.name.lower())
+        source_ids = [tag.id for tag in source_tags]
+        key = (target_name, tuple(source_ids))
         if key in seen:
             continue
         seen.add(key)
@@ -1275,7 +1277,6 @@ def optimize_tags(
             confidence = 0
         confidence = min(1.0, max(0.0, confidence))
         affected_documents = len(active_documents_for_tag_ids(db, source_ids))
-        source_tags = [tag_by_id[tag_id] for tag_id in source_ids]
         target_tag = all_tag_by_name.get(target_name)
         suggestions.append(
             TagOptimizationSuggestionOut(

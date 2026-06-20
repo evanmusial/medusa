@@ -116,6 +116,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add project resource sorting and filtering.
   - Acceptance: run-sheet rows can be filtered by used/status/priority and sorted by title, priority, status, or added date.
 
+- [ ] Let project resources be categorized into Domains.
+  - Acceptance: items in a project run sheet can be assigned to existing Domains from the project workspace, those domain assignments are persisted on the underlying library documents, and project resource rows can be grouped or filtered by Domain.
+
 - [ ] Add bibliography file exports.
   - Acceptance: APA/BibTeX/RIS/CSL JSON outputs can be downloaded as files, not only copied from the UI.
 

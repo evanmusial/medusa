@@ -378,8 +378,8 @@ def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, t
         assert inventory_counts == {"insider threat": 1, "insider threat detection": 1, "insider threats": 1}
         assert suggestion.target_name == "insider threat"
         assert suggestion.target_tag_id == base.id
-        assert set(suggestion.source_tag_ids) == {base.id, detection.id, plural.id}
-        assert sorted(tag.name for tag in suggestion.source_tags) == ["insider threat", "insider threat detection", "insider threats"]
+        assert suggestion.source_tag_ids == [base.id, detection.id, plural.id]
+        assert [tag.name for tag in suggestion.source_tags] == ["insider threat", "insider threat detection", "insider threats"]
         assert suggestion.affected_documents == 3
         assert suggestion.confidence == 0.84
 

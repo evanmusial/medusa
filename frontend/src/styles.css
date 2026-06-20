@@ -3953,6 +3953,25 @@ pre {
   gap: 7px;
 }
 
+.tag-merge-preview {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+
+.tag-merge-duplicate {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning), transparent 52%);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warning), transparent 88%);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 750;
+}
+
 .tag-choice {
   min-height: 42px;
   border: 1px solid var(--line);
@@ -4165,7 +4184,6 @@ pre {
   background: var(--blue-soft);
 }
 
-.project-actions,
 .project-add-row,
 .bibliography-tabs {
   display: flex;
@@ -4252,7 +4270,31 @@ pre {
 }
 
 .bibliography-panel {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 0;
+}
+
+.bibliography-panel > .panel-title-row {
+  padding: 12px 12px 0;
+}
+
+.bibliography-generate-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.bibliography-generate-actions .primary-button,
+.bibliography-generate-actions .secondary-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.bibliography-tabs {
+  padding: 0 12px;
 }
 
 .bibliography-tabs button {
@@ -4272,8 +4314,42 @@ pre {
 }
 
 .bibliography {
+  width: 100%;
+  height: 100%;
   min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
   margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-width: 1px 0 0;
+  border-radius: 0 0 8px 8px;
+  background: #fff;
+  color: #172033;
+  padding: 12px;
+}
+
+.bibliography-rich {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.bibliography-rich p,
+.bibliography .markdown-empty {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.bibliography .markdown-empty {
+  color: #64748b;
+}
+
+.bibliography-plain {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
 }
 
 .queue-workbench {

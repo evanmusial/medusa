@@ -50,6 +50,7 @@ import {
   List,
   ListOrdered,
   LogOut,
+  Merge,
   Moon,
   Orbit,
   PieChart,
@@ -988,6 +989,10 @@ function normalizedNameList(values: string[]) {
 
 function sortByName<T extends { name: string }>(values: T[]) {
   return [...values].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function normalizeTagInputName(name: string) {
+  return name.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).join(" ");
 }
 
 function emptyFilters(): DocumentFilters {
@@ -6895,6 +6900,114 @@ function TagMergeDialog({
   );
 }
 
+function TagSuggestionMergeIntoDialog({
+  busy,
+  error,
+  onClose,
+  onSubmit,
+  suggestion,
+  tags,
+}: {
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (name: string) => void;
+  suggestion: TagOptimizationSuggestion;
+  tags: Tag[];
+}) {
+  const [name, setName] = useState("");
+  useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
+  const sortedSourceTags = useMemo(() => sortByName(suggestion.source_tags), [suggestion.source_tags]);
+  const normalizedName = normalizeTagInputName(name);
+  const existingTag = useMemo(
+    () => (normalizedName ? tags.find((tag) => normalizeTagInputName(tag.name) === normalizedName) : undefined),
+    [normalizedName, tags],
+  );
+  return (
+    <div
+      className="modal-backdrop"
+      data-escape-layer="dialog"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <form
+        className="tag-dialog merge"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tag-merge-into-title"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!normalizedName || busy) return;
+          onSubmit(normalizedName);
+        }}
+      >
+        <div className="tag-dialog-head">
+          <div>
+            <span>Merge Into</span>
+            <h2 id="tag-merge-into-title">{suggestion.target_name}</h2>
+          </div>
+          <button className="icon-button" type="button" data-tooltip="Close the merge-into dialog without changing tags." onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <label className="tag-dialog-field">
+          Tag name
+          <input
+            data-tooltip="Type the tag name that should receive these source tags."
+            value={name}
+            autoFocus
+            onChange={(event) => setName(event.target.value)}
+            placeholder={suggestion.target_name}
+          />
+        </label>
+        <div className="tag-merge-preview tag-suggestion-tags" aria-label="Source tags">
+          {sortedSourceTags.map((tag) => (
+            <span key={tag.id}>
+              {tag.name}
+              <small>{tag.document_count}</small>
+            </span>
+          ))}
+        </div>
+        {existingTag ? (
+          <p className="tag-merge-duplicate">
+            A tag named <strong>{existingTag.name}</strong> already exists. Confirming will merge into that tag.
+          </p>
+        ) : null}
+        {error ? <p className="form-error">{error}</p> : null}
+        <div className="tag-dialog-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            data-disabled-reason="a tag merge is already running."
+            data-tooltip="Close the merge-into dialog without changing tags."
+            onClick={onClose}
+            disabled={busy}
+          >
+            <X size={16} />
+            Cancel
+          </button>
+          <button
+            className="primary-button"
+            type="submit"
+            data-disabled-reason={busy ? "a tag merge is already running." : "a tag name is required."}
+            data-tooltip={
+              existingTag
+                ? `Merge these source tags into the existing ${existingTag.name} tag.`
+                : `Merge these source tags into ${normalizedName || "the typed tag name"}.`
+            }
+            disabled={!normalizedName || busy}
+          >
+            <Merge size={16} />
+            {existingTag ? "Use Existing Tag" : "Merge Into Tag"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function TagsView({ tags }: { tags: Tag[] }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [searchText, setSearchText] = useState("");
@@ -6907,6 +7020,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
   const [optimizationResult, setOptimizationResult] = useState<TagOptimizationResult | null>(null);
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
   const [optimizationPaneOpen, setOptimizationPaneOpen] = useState(false);
+  const [mergeIntoSuggestion, setMergeIntoSuggestion] = useState<TagOptimizationSuggestion | null>(null);
   const queryClient = useQueryClient();
   const tagIdSet = useMemo(() => new Set(tags.map((tag) => tag.id)), [tags]);
   const selectedTags = useMemo(() => tags.filter((tag) => selectedIds.includes(tag.id)), [selectedIds, tags]);
@@ -6958,6 +7072,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
       }),
     onSuccess: (result, choice) => {
       setMergeOpen(false);
+      setMergeIntoSuggestion(null);
       setOperationError(null);
       setOptimizationError(null);
       setSelectedIds([result.tag.id]);
@@ -7043,6 +7158,10 @@ function TagsView({ tags }: { tags: Tag[] }) {
   const approveSuggestion = (suggestion: TagOptimizationSuggestion) => {
     setOperationError(null);
     mergeTags.mutate({ source_tag_ids: suggestion.source_tag_ids, target_name: suggestion.target_name });
+  };
+  const openSuggestionMergeInto = (suggestion: TagOptimizationSuggestion) => {
+    setOperationError(null);
+    setMergeIntoSuggestion(suggestion);
   };
   const startOptimization = () => {
     setOptimizationPaneOpen(true);
@@ -7185,52 +7304,66 @@ function TagsView({ tags }: { tags: Tag[] }) {
               </div>
             ) : optimizationResult?.suggestions.length ? (
               <div className="tag-optimization-list">
-                {optimizationResult.suggestions.map((suggestion) => (
-                  <article className="tag-optimization-suggestion" key={suggestion.id}>
-                    <div className="tag-suggestion-main">
-                      <div className="tag-suggestion-title">
-                        <strong>{suggestion.target_name}</strong>
-                        <span>
-                          {suggestion.affected_documents} document{suggestion.affected_documents === 1 ? "" : "s"} affected /{" "}
-                          {formatTagOptimizationConfidence(suggestion.confidence)} confidence
-                        </span>
-                      </div>
-                      <p>{suggestion.rationale}</p>
-                      <div className="tag-suggestion-tags" aria-label="Source tags">
-                        {suggestion.source_tags.map((tag) => (
-                          <span key={tag.id}>
-                            {tag.name}
-                            <small>{tag.document_count}</small>
+                {optimizationResult.suggestions.map((suggestion) => {
+                  const sortedSourceTags = sortByName(suggestion.source_tags);
+                  return (
+                    <article className="tag-optimization-suggestion" key={suggestion.id}>
+                      <div className="tag-suggestion-main">
+                        <div className="tag-suggestion-title">
+                          <strong>{suggestion.target_name}</strong>
+                          <span>
+                            {suggestion.affected_documents} document{suggestion.affected_documents === 1 ? "" : "s"} affected /{" "}
+                            {formatTagOptimizationConfidence(suggestion.confidence)} confidence
                           </span>
-                        ))}
+                        </div>
+                        <p>{suggestion.rationale}</p>
+                        <div className="tag-suggestion-tags" aria-label="Source tags">
+                          {sortedSourceTags.map((tag) => (
+                            <span key={tag.id}>
+                              {tag.name}
+                              <small>{tag.document_count}</small>
+                            </span>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                    <div className="tag-suggestion-actions">
-                      <button
-                        className="primary-button compact"
-                        type="button"
-                        data-disabled-reason="a tag merge is already running."
-                        data-tooltip={`Apply this suggestion by merging its source tags into ${suggestion.target_name}.`}
-                        disabled={mergeTags.isPending}
-                        onClick={() => approveSuggestion(suggestion)}
-                      >
-                        <Tags size={15} />
-                        Approve Merge
-                      </button>
-                      <button
-                        className="secondary-button compact"
-                        type="button"
-                        data-disabled-reason="a tag merge is already running."
-                        data-tooltip="Dismiss this suggestion from the current optimization plan without changing tags."
-                        disabled={mergeTags.isPending}
-                        onClick={() => dismissSuggestion(suggestion.id)}
-                      >
-                        <X size={15} />
-                        Dismiss
-                      </button>
-                    </div>
-                  </article>
-                ))}
+                      <div className="tag-suggestion-actions">
+                        <button
+                          className="primary-button compact"
+                          type="button"
+                          data-disabled-reason="a tag merge is already running."
+                          data-tooltip={`Apply this suggestion by merging its source tags into ${suggestion.target_name}.`}
+                          disabled={mergeTags.isPending}
+                          onClick={() => approveSuggestion(suggestion)}
+                        >
+                          <Tags size={15} />
+                          Approve Merge
+                        </button>
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          data-disabled-reason="a tag merge is already running."
+                          data-tooltip="Choose a different tag name for this merge suggestion."
+                          disabled={mergeTags.isPending}
+                          onClick={() => openSuggestionMergeInto(suggestion)}
+                        >
+                          <Merge size={15} />
+                          Merge Into...
+                        </button>
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          data-disabled-reason="a tag merge is already running."
+                          data-tooltip="Dismiss this suggestion from the current optimization plan without changing tags."
+                          disabled={mergeTags.isPending}
+                          onClick={() => dismissSuggestion(suggestion.id)}
+                        >
+                          <X size={15} />
+                          Dismiss
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             ) : optimizationError ? null : optimizationResult ? (
               <p className="tag-optimization-empty">No merge suggestions found for this scope.</p>
@@ -7262,6 +7395,19 @@ function TagsView({ tags }: { tags: Tag[] }) {
           }}
           onSubmit={(choice) => mergeTags.mutate(choice)}
           tags={selectedTags}
+        />
+      ) : null}
+      {mergeIntoSuggestion ? (
+        <TagSuggestionMergeIntoDialog
+          busy={mergeTags.isPending}
+          error={operationError}
+          onClose={() => {
+            setMergeIntoSuggestion(null);
+            setOperationError(null);
+          }}
+          onSubmit={(name) => mergeTags.mutate({ source_tag_ids: mergeIntoSuggestion.source_tag_ids, target_name: name })}
+          suggestion={mergeIntoSuggestion}
+          tags={tags}
         />
       ) : null}
     </section>
@@ -7321,6 +7467,13 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
       : bibliography
         ? bibliography[bibliographyStyle]
         : "";
+  const bibliographyEntries =
+    bibliographyStyle === "apa"
+      ? bibliographyText
+          .split("\n")
+          .map((entry) => decodeHtmlEntities(entry).trim())
+          .filter(Boolean)
+      : [];
 
   return (
     <section className="workbench project-workbench">
@@ -7360,28 +7513,6 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
           <div>
             <h2>{current?.name || "Select a project"}</h2>
             <span>{current ? `${current.item_count} resources / ${current.status}` : "Run sheets track resource use for a paper or assignment."}</span>
-          </div>
-          <div className="project-actions">
-            <button
-              className="secondary-button"
-              data-disabled-reason="select or create a project first."
-              data-tooltip="Generate a bibliography from every source in the selected project run sheet."
-              disabled={!current}
-              onClick={() => void generateBibliography(false)}
-            >
-              <Clipboard size={16} />
-              All sources
-            </button>
-            <button
-              className="primary-button"
-              data-disabled-reason="select or create a project first."
-              data-tooltip="Generate a bibliography from only the sources marked Used in the selected project run sheet."
-              disabled={!current}
-              onClick={() => void generateBibliography(true)}
-            >
-              <CheckSquare size={16} />
-              Used only
-            </button>
           </div>
         </div>
         {current ? (
@@ -7436,6 +7567,28 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
             {copiedKey === "bibliography" ? "Copied" : "Copy"}
           </button>
         </div>
+        <div className="bibliography-generate-actions">
+          <button
+            className="secondary-button"
+            data-disabled-reason="select or create a project first."
+            data-tooltip="Generate a bibliography from every source in the selected project run sheet."
+            disabled={!current}
+            onClick={() => void generateBibliography(false)}
+          >
+            <Clipboard size={16} />
+            All sources
+          </button>
+          <button
+            className="primary-button"
+            data-disabled-reason="select or create a project first."
+            data-tooltip="Generate a bibliography from only the sources marked Used in the selected project run sheet."
+            disabled={!current}
+            onClick={() => void generateBibliography(true)}
+          >
+            <CheckSquare size={16} />
+            Used only
+          </button>
+        </div>
         <div className="bibliography-tabs">
           {(["apa", "bibtex", "ris", "csl_json"] as const).map((style) => (
             <button
@@ -7450,7 +7603,19 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
             </button>
           ))}
         </div>
-        <pre className="bibliography">{bibliographyText || "No bibliography generated yet."}</pre>
+        {bibliographyStyle === "apa" ? (
+          <div className="bibliography bibliography-rich">
+            {bibliographyEntries.length ? (
+              bibliographyEntries.map((entry, index) => (
+                <p key={`bibliography-entry-${index}`}>{renderInlineMarkdown(entry, `bibliography-entry-${index}`)}</p>
+              ))
+            ) : (
+              <p className="markdown-empty">No bibliography generated yet.</p>
+            )}
+          </div>
+        ) : (
+          <pre className="bibliography bibliography-plain">{bibliographyText || "No bibliography generated yet."}</pre>
+        )}
       </section>
     </section>
   );
