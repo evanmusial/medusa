@@ -16,8 +16,10 @@ import "@xyflow/react/dist/style.css";
 import {
   Archive,
   ArrowUpDown,
+  Bold,
   Bookmark,
   BookOpen,
+  BrainCircuit,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -34,17 +36,23 @@ import {
   Filter,
   FolderTree,
   Gauge,
+  IndentDecrease,
+  IndentIncrease,
   Info,
   Image,
   Inbox,
+  Italic,
   Library,
   ListChecks,
+  List,
+  ListOrdered,
   LogOut,
   Moon,
   Orbit,
   PieChart,
   Plus,
   RefreshCw,
+  RemoveFormatting,
   RotateCcw,
   Save,
   Search,
@@ -53,6 +61,7 @@ import {
   Sun,
   Tags,
   Trash2,
+  Underline,
   Upload,
   UploadCloud,
   X,
@@ -92,9 +101,11 @@ import type {
   ProjectItem,
   SavedSearch,
   Tag,
+  TagOptimizationResult,
+  TagOptimizationSuggestion,
 } from "./types";
 
-type View = "library" | "domains" | "projects" | "queue" | "notes" | "import" | "stashes" | "budget" | "settings";
+type View = "library" | "domains" | "projects" | "tags" | "queue" | "notes" | "import" | "stashes" | "budget" | "settings";
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
@@ -184,6 +195,8 @@ type ConcordanceRunRequest = {
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
 type SelectMenuOption = { id: string; name: string };
 
+const APA_CITATION_MODEL_KEY = "apa_citation";
+const SUMMARY_MODEL_KEY = "summary";
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
@@ -197,6 +210,7 @@ const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
+const DROPDOWN_VISIBLE_OPTION_LIMIT = 80;
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
   { value: "last_month", label: "Last month" },
@@ -226,12 +240,15 @@ const DUPLICATE_STATUS_OPTIONS: SelectMenuOption[] = [
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
 type StashSortKey = "created" | "doi" | "title" | "status";
+type TagSortKey = "name" | "kind" | "documents";
 type SortDirection = "asc" | "desc";
+type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
 
 const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; align?: "end" }> = [
   { id: "library", label: "Library", icon: Library },
   { id: "domains", label: "Domains", icon: FolderTree },
   { id: "projects", label: "Projects", icon: ListChecks },
+  { id: "tags", label: "Tags", icon: Tags },
   { id: "queue", label: "Queue", icon: Inbox },
   { id: "notes", label: "Notes", icon: BookOpen },
   { id: "import", label: "Import", icon: Upload },
@@ -301,6 +318,16 @@ function citationProvenanceLabel(document: DocumentDetail, kind: CitationKind) {
   const model = citationModel(document, kind);
   if (model) return model;
   return citationText(document, kind) ? "gpt-5.5" : "not generated";
+}
+
+function selectedAnalysisModel(preferences: AppPreferences | undefined, key: string, fallback: string) {
+  const task = preferences?.analysis_model_tasks.find((item) => item.key === key);
+  return preferences?.analysis_models[key] || task?.selected_model || task?.default_model || fallback;
+}
+
+function analysisModelActionLabel(preferences: AppPreferences | undefined, key: string, fallback: string) {
+  const task = preferences?.analysis_model_tasks.find((item) => item.key === key);
+  return `${task?.label || key.replaceAll("_", " ")}: ${selectedAnalysisModel(preferences, key, fallback)}`;
 }
 
 function formatNavCount(value: number | undefined) {
@@ -795,12 +822,73 @@ function splitCommaList(value: string) {
     .filter(Boolean);
 }
 
+function normalizedNameList(values: string[]) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => {
+      const key = value.toLocaleLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function sortByName<T extends { name: string }>(values: T[]) {
+  return [...values].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
+}
+
 function emptyFilters(): DocumentFilters {
   return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "", duplicate_status: "" };
 }
 
 function cleanFilters(filters: DocumentFilters): DocumentFilters {
   return Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value))) as DocumentFilters;
+}
+
+function selectOptionSearchText(option: SelectMenuOption | { id: string; name: string }) {
+  return `${option.name} ${option.id}`.toLowerCase();
+}
+
+function matchingSelectOptions<T extends SelectMenuOption | { id: string; name: string }>(options: T[], query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return options;
+  return options.filter((option) => selectOptionSearchText(option).includes(normalizedQuery));
+}
+
+function visibleSelectOptions<T extends SelectMenuOption | { id: string; name: string }>(options: T[]) {
+  return options.slice(0, DROPDOWN_VISIBLE_OPTION_LIMIT);
+}
+
+function priorityLabel(value?: string | null) {
+  return PRIORITY_OPTIONS.find((option) => option.id === value)?.name || (value ? value.replaceAll("_", " ") : "Normal");
+}
+
+function priorityClass(value?: string | null) {
+  if (value === "urgent") return "urgent";
+  if (value === "high") return "high";
+  if (value === "low") return "low";
+  return "normal";
+}
+
+function PriorityPill({ value }: { value?: string | null }) {
+  return <span className={`priority-pill ${priorityClass(value)}`}>{priorityLabel(value)}</span>;
+}
+
+function savedSearchSummary(savedSearch: SavedSearch, lookup: { domains: Map<string, string>; tags: Map<string, string> }) {
+  const filters = savedSearch.filters || {};
+  const pieces = [
+    savedSearch.query ? `"${savedSearch.query}"` : "",
+    filters.domain_id ? `Domain: ${lookup.domains.get(String(filters.domain_id)) || "selected"}` : "",
+    filters.tag_id ? `Tag: ${lookup.tags.get(String(filters.tag_id)) || "selected"}` : "",
+    filters.read_status ? `Read: ${String(filters.read_status).replaceAll("_", " ")}` : "",
+    filters.priority ? `Priority: ${priorityLabel(String(filters.priority))}` : "",
+    filters.citation_status ? `Citation: ${String(filters.citation_status).replaceAll("_", " ")}` : "",
+    filters.duplicate_status ? `Duplicates: ${String(filters.duplicate_status).replaceAll("_", " ")}` : "",
+  ].filter(Boolean);
+  return pieces.length ? pieces.join(" / ") : "All library documents";
 }
 
 function attributeDisplayValue(value: Record<string, unknown>) {
@@ -1324,20 +1412,41 @@ function useClipboardNotice(resetMs = 1600) {
 
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  const pattern = /(<u>.*?<\/u>|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text))) {
     if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
     const token = match[0];
     const key = `${keyPrefix}-${match.index}`;
-    if (token.startsWith("**")) nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    if (token.startsWith("<u>")) nodes.push(<u key={key}>{token.slice(3, -4)}</u>);
+    else if (token.startsWith("**")) nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
     else if (token.startsWith("*")) nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
     else nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
     lastIndex = pattern.lastIndex;
   }
   if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
   return nodes;
+}
+
+function stripMarkdownFormatting(value: string) {
+  return value
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}#{1,6}\s+/, "")
+        .replace(/^\s{0,3}>\s?/, "")
+        .replace(/^\s*[-*]\s+/, "")
+        .replace(/^\s*\d+[.)]\s+/, "")
+        .replace(/<\/?(?:u|strong|em|b|i)>/gi, "")
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/__([^_]+)__/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/_([^_]+)_/g, "$1")
+        .replace(/`([^`]+)`/g, "$1"),
+    )
+    .join("\n");
 }
 
 function markdownExcerpt(markdown: string, maxChars = 360): string {
@@ -1445,6 +1554,13 @@ function MarkdownBlock({
       flushParagraph();
       listItems = [];
       orderedItems.push(ordered[1]);
+      return;
+    }
+    const quote = line.match(/^>\s?(.+)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      blocks.push(<blockquote key={`q-${blocks.length}`}>{renderInlineMarkdown(quote[1], `q-${blocks.length}`)}</blockquote>);
       return;
     }
     flushList();
@@ -1686,25 +1802,44 @@ function DomainTree({ domains }: { domains: Domain[] }) {
 }
 
 function BulkMultiSelect({
+  createFromSearchLabel,
   emptyLabel,
   extraCount = 0,
   footer,
   label,
+  onCreateFromSearch,
   onChange,
   options,
   selectedIds,
+  searchPlaceholder = "Type to filter",
 }: {
+  createFromSearchLabel?: string;
   emptyLabel: string;
   extraCount?: number;
   footer?: ReactNode;
   label: string;
+  onCreateFromSearch?: (value: string) => void;
   onChange: (ids: string[]) => void;
   options: Array<{ id: string; name: string }>;
   selectedIds: string[];
+  searchPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const selectedCount = selectedIds.length + extraCount;
+  const selectedOptions = options.filter((option) => selectedIds.includes(option.id));
+  const triggerLabel =
+    selectedCount === 1 && selectedOptions[0]
+      ? selectedOptions[0].name
+      : selectedCount
+        ? `${label} ${selectedCount}`
+        : label;
+  const matchingOptions = useMemo(() => matchingSelectOptions(options, searchText), [options, searchText]);
+  const visibleOptions = useMemo(() => visibleSelectOptions(matchingOptions), [matchingOptions]);
+  const hiddenOptionCount = Math.max(0, matchingOptions.length - visibleOptions.length);
 
   useEffect(() => {
     if (!open) return;
@@ -1715,29 +1850,81 @@ function BulkMultiSelect({
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
   }, [open]);
   useEscapeLayer(open, () => setOpen(false), ESCAPE_PRIORITY_MENU);
+  useEffect(() => {
+    if (!open) {
+      setSearchText("");
+      setActiveIndex(0);
+      return;
+    }
+    const handle = window.setTimeout(() => searchRef.current?.focus(), 0);
+    return () => window.clearTimeout(handle);
+  }, [open]);
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [searchText, open]);
 
   const toggleId = (id: string) => {
     onChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : uniqueValues([...selectedIds, id]));
   };
+  const chooseActive = () => {
+    const option = visibleOptions[activeIndex];
+    if (option) {
+      toggleId(option.id);
+      return;
+    }
+    const customValue = searchText.trim();
+    if (customValue && onCreateFromSearch) {
+      onCreateFromSearch(customValue);
+      setSearchText("");
+    }
+  };
 
   return (
     <div className="bulk-multi-select" ref={wrapperRef}>
-      <button className="bulk-multi-trigger" type="button" onClick={() => setOpen((value) => !value)}>
-        <span>{selectedCount ? `${label} ${selectedCount}` : label}</span>
+      <button
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="bulk-multi-trigger"
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span title={triggerLabel}>{triggerLabel}</span>
         <ChevronRight size={14} />
       </button>
       {open ? (
         <div className="bulk-multi-menu">
-          {options.length ? (
-            options.map((option) => (
-              <label key={option.id}>
+          <input
+            ref={searchRef}
+            className="select-search-input"
+            onChange={(event) => setSearchText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.min(Math.max(0, visibleOptions.length - 1), index + 1));
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.max(0, index - 1));
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                chooseActive();
+              }
+            }}
+            placeholder={searchPlaceholder}
+            value={searchText}
+          />
+          {visibleOptions.length ? (
+            visibleOptions.map((option, index) => (
+              <label className={index === activeIndex ? "active" : ""} key={option.id}>
                 <input type="checkbox" checked={selectedIds.includes(option.id)} onChange={() => toggleId(option.id)} />
                 <span>{option.name}</span>
               </label>
             ))
           ) : (
-            <div className="bulk-multi-empty">{emptyLabel}</div>
+            <div className="bulk-multi-empty">
+              {searchText.trim() && onCreateFromSearch ? `${createFromSearchLabel || "Add"} "${searchText.trim()}" with Enter` : emptyLabel}
+            </div>
           )}
+          {hiddenOptionCount > 0 ? <div className="bulk-multi-note">Type to narrow {hiddenOptionCount} more</div> : null}
           {footer ? <div className="bulk-multi-footer">{footer}</div> : null}
         </div>
       ) : null}
@@ -1750,17 +1937,25 @@ function LibrarySingleSelect({
   onChange,
   options,
   placeholder,
+  searchPlaceholder = "Type to filter",
   value,
 }: {
   emptyLabel: string;
   onChange: (value: string) => void;
   options: SelectMenuOption[];
   placeholder: string;
+  searchPlaceholder?: string;
   value: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const selected = options.find((option) => option.id === value);
+  const matchingOptions = useMemo(() => matchingSelectOptions(options, searchText), [options, searchText]);
+  const visibleOptions = useMemo(() => visibleSelectOptions(matchingOptions), [matchingOptions]);
+  const hiddenOptionCount = Math.max(0, matchingOptions.length - visibleOptions.length);
 
   useEffect(() => {
     if (!open) return;
@@ -1771,10 +1966,27 @@ function LibrarySingleSelect({
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
   }, [open]);
   useEscapeLayer(open, () => setOpen(false), ESCAPE_PRIORITY_MENU);
+  useEffect(() => {
+    if (!open) {
+      setSearchText("");
+      setActiveIndex(0);
+      return;
+    }
+    const handle = window.setTimeout(() => searchRef.current?.focus(), 0);
+    return () => window.clearTimeout(handle);
+  }, [open]);
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [searchText, open]);
 
   const choose = (nextValue: string) => {
     onChange(nextValue);
     setOpen(false);
+  };
+  const chooseActive = () => {
+    const option = visibleOptions[activeIndex];
+    if (option) choose(option.id);
+    else if (!searchText.trim()) choose("");
   };
 
   return (
@@ -1791,14 +2003,33 @@ function LibrarySingleSelect({
       </button>
       {open ? (
         <div className="bulk-multi-menu single-select-menu" role="listbox">
-          <button aria-selected={!value} className={!value ? "selected" : ""} role="option" type="button" onClick={() => choose("")}>
+          <input
+            ref={searchRef}
+            className="select-search-input"
+            onChange={(event) => setSearchText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.min(Math.max(0, visibleOptions.length - 1), index + 1));
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.max(0, index - 1));
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                chooseActive();
+              }
+            }}
+            placeholder={searchPlaceholder}
+            value={searchText}
+          />
+          <button aria-selected={!value} className={!value && !searchText ? "selected" : ""} role="option" type="button" onClick={() => choose("")}>
             <span>{placeholder}</span>
           </button>
-          {options.length ? (
-            options.map((option) => (
+          {visibleOptions.length ? (
+            visibleOptions.map((option, index) => (
               <button
                 aria-selected={value === option.id}
-                className={value === option.id ? "selected" : ""}
+                className={[value === option.id ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
                 key={option.id}
                 role="option"
                 type="button"
@@ -1810,6 +2041,7 @@ function LibrarySingleSelect({
           ) : (
             <div className="bulk-multi-empty">{emptyLabel}</div>
           )}
+          {hiddenOptionCount > 0 ? <div className="bulk-multi-note">Type to narrow {hiddenOptionCount} more</div> : null}
         </div>
       ) : null}
     </div>
@@ -1864,10 +2096,7 @@ function LibraryView({
   const [bulkCustomTag, setBulkCustomTag] = useState("");
   const [bulkDomainId, setBulkDomainId] = useState("");
   const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
-  const [batchConcordanceRunId, setBatchConcordanceRunId] = useState<string | null>(null);
-  const [confirmBatchConcordance, setConfirmBatchConcordance] = useState(false);
   const queryClient = useQueryClient();
-  const batchConcordanceFeedback = useAsyncActionFeedback();
   const saveSearch = useMutation({
     mutationFn: () => api.createSavedSearch({ name: saveName, query, filters: cleanFilters(filters) }),
     onSuccess: () => {
@@ -1905,54 +2134,7 @@ function LibraryView({
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
-  const batchConcordance = useMutation({
-    mutationFn: () =>
-      startConcordanceRun({
-        backgroundDetail: `${selectedIds.length} selected ${selectedIds.length === 1 ? "document" : "documents"}`,
-        backgroundLabel: "Selected document Concordance",
-        label: `Selected document Concordance (${selectedIds.length})`,
-        scope_type: "documents",
-        scope_data: { document_ids: selectedIds },
-      }),
-    onSuccess: (run) => {
-      if (run.total_jobs > 0) setBatchConcordanceRunId(run.id);
-      else batchConcordanceFeedback.showSuccess();
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
-      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document"] });
-    },
-    onError: (error) => {
-      setBatchConcordanceRunId(null);
-      batchConcordanceFeedback.showError(actionFailureMessage("Could not start selected-document Concordance", error));
-    },
-  });
-  const trackedBatchConcordanceJobs = useMemo(
-    () => (batchConcordanceRunId ? citationJobs.filter((job) => job.run_id === batchConcordanceRunId) : []),
-    [batchConcordanceRunId, citationJobs],
-  );
-  const batchConcordanceBusy =
-    batchConcordance.isPending ||
-    Boolean(batchConcordanceRunId && (!trackedBatchConcordanceJobs.length || trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))));
-  useEscapeLayer(confirmBatchConcordance, () => setConfirmBatchConcordance(false), ESCAPE_PRIORITY_DIALOG);
   useEscapeLayer(readerOpen, () => setReaderOpen(false), ESCAPE_PRIORITY_READER);
-  useEffect(() => {
-    if (!batchConcordanceRunId || trackedBatchConcordanceJobs.length === 0) return;
-    if (trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
-    const failedJob = trackedBatchConcordanceJobs.find((job) => job.status === "failed");
-    if (failedJob) {
-      batchConcordanceFeedback.showError(
-        actionFailureMessage("Selected-document Concordance failed", failedJob.last_error || "Concordance job failed without a detailed error"),
-      );
-    } else {
-      batchConcordanceFeedback.showSuccess();
-    }
-    setBatchConcordanceRunId(null);
-    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document"] });
-  }, [batchConcordanceFeedback.showError, batchConcordanceFeedback.showSuccess, batchConcordanceRunId, queryClient, trackedBatchConcordanceJobs]);
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
@@ -1971,6 +2153,13 @@ function LibraryView({
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const projectOptions = useMemo(() => sortedProjects.map(({ id, name }) => ({ id, name })), [sortedProjects]);
+  const savedSearchLookup = useMemo(
+    () => ({
+      domains: new Map(domainOptions.map((option) => [option.id, option.name])),
+      tags: new Map(tagOptions.map((option) => [option.id, option.name])),
+    }),
+    [domainOptions, tagOptions],
+  );
   const hasBulkUpdate = Boolean(
     bulkReadStatus || bulkPriority || bulkTagIds.length || bulkCustomTag.trim() || bulkDomainId || bulkProjectIds.length,
   );
@@ -2104,8 +2293,12 @@ function LibraryView({
         <div className="saved-search-list">
           {savedSearches.map((savedSearch) => (
             <div key={savedSearch.id}>
-              <button type="button" onClick={() => applySavedSearch(savedSearch)}>
-                {savedSearch.name}
+              <button className="saved-search-apply" type="button" onClick={() => applySavedSearch(savedSearch)}>
+                <span>
+                  <strong>{savedSearch.name}</strong>
+                  <small>{savedSearchSummary(savedSearch, savedSearchLookup)}</small>
+                </span>
+                {savedSearch.filters.priority ? <PriorityPill value={savedSearch.filters.priority} /> : null}
               </button>
               <button type="button" title="Delete saved search" onClick={() => deleteSearch.mutate(savedSearch.id)}>
                 <Trash2 size={14} />
@@ -2171,6 +2364,7 @@ function LibraryView({
                 value={bulkPriority}
               />
               <BulkMultiSelect
+                createFromSearchLabel="Add tag"
                 emptyLabel="No tags"
                 extraCount={bulkCustomTag.trim() ? 1 : 0}
                 footer={
@@ -2182,8 +2376,10 @@ function LibraryView({
                   />
                 }
                 label="Tags"
+                onCreateFromSearch={setBulkCustomTag}
                 onChange={setBulkTagIds}
                 options={tagOptions}
+                searchPlaceholder="Type tag text"
                 selectedIds={bulkTagIds}
               />
               <LibrarySingleSelect
@@ -2198,66 +2394,16 @@ function LibraryView({
                 label="Project"
                 onChange={setBulkProjectIds}
                 options={projectOptions}
+                searchPlaceholder="Type project name"
                 selectedIds={bulkProjectIds}
               />
               <button className="primary-button" disabled={!hasBulkUpdate || bulkUpdate.isPending} onClick={() => bulkUpdate.mutate()}>
                 <CheckSquare size={15} />
                 Apply
               </button>
-              <AsyncActionSlot busy={batchConcordanceBusy} feedback={batchConcordanceFeedback.feedback} label="Selected-document Concordance in progress">
-                <button
-                  className={asyncFeedbackClass("secondary-button", batchConcordanceFeedback.feedback, batchConcordanceBusy)}
-                  disabled={batchConcordanceBusy}
-                  onClick={() => setConfirmBatchConcordance(true)}
-                >
-                  <RefreshCw className={batchConcordanceBusy ? "spin" : ""} size={15} />
-                  {batchConcordanceBusy ? "Concording" : "Concord"}
-                </button>
-              </AsyncActionSlot>
             </div>
           ) : null}
         </div>
-        {confirmBatchConcordance ? (
-          <div
-            className="confirm-backdrop"
-            data-escape-layer="dialog"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setConfirmBatchConcordance(false);
-            }}
-          >
-            <section aria-labelledby="confirm-concordance-title" aria-modal="true" className="confirm-dialog" role="dialog">
-              <div className="confirm-dialog-heading">
-                <div>
-                  <h2 id="confirm-concordance-title">Confirm Concordance</h2>
-                  <span>
-                    {selectedIds.length} selected {selectedIds.length === 1 ? "document" : "documents"}
-                  </span>
-                </div>
-                <RefreshCw size={20} />
-              </div>
-              <p>
-                You're about to start a Concordance Run for the selected documents. Depending on your current model settings, this can queue AI
-                processing and incur cost.
-              </p>
-              <div className="confirm-dialog-actions">
-                <button className="secondary-button" onClick={() => setConfirmBatchConcordance(false)} type="button">
-                  Cancel
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={batchConcordanceBusy}
-                  onClick={() => {
-                    setConfirmBatchConcordance(false);
-                    batchConcordance.mutate();
-                  }}
-                  type="button"
-                >
-                  Confirm
-                </button>
-              </div>
-            </section>
-          </div>
-        ) : null}
         <div className={`rows ${alternatingRows ? "alternating-rows" : ""}`}>
           {sortedDocuments.map((item) => (
             <div
@@ -2283,6 +2429,7 @@ function LibraryView({
                 </span>
               </button>
               <div className="row-meta">
+                <PriorityPill value={item.priority} />
                 {item.duplicate_count > 0 ? <StatusPill value={`Duplicate ${item.duplicate_count + 1}`} tone="warn" /> : null}
                 <StatusPill value={item.processing_status} tone={item.processing_status === "ready" ? "good" : "blue"} />
                 <StatusPill value={item.citation_status} tone={item.citation_status === "verified" ? "good" : "warn"} />
@@ -2344,6 +2491,7 @@ type DocumentDraft = {
 
 type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
+type CitationRefreshTarget = CitationKind | "doi";
 
 function draftFromDocument(document: DocumentDetail): DocumentDraft {
   return {
@@ -2360,7 +2508,7 @@ function draftFromDocument(document: DocumentDetail): DocumentDraft {
     priority: document.priority || "normal",
     read_status: document.read_status || "unread",
     citation_status: document.citation_status || "needs_review",
-    tag_names: document.tags.map((tag) => tag.name).join(", "),
+    tag_names: normalizedNameList(document.tags.map((tag) => tag.name)).join(", "),
     domain_ids: document.domains.map((domain) => domain.id),
     attributes: document.attributes.map((attribute) => ({
       key: attribute.definition.name,
@@ -2925,6 +3073,8 @@ function DocumentPanelContent({
   const [readerMode, setReaderMode] = useState<ReaderMode>(() => (readerExpanded ? "compare" : "pdf"));
   const [readerPageIndex, setReaderPageIndex] = useState(0);
   const titleEditInputRef = useRef<HTMLInputElement | null>(null);
+  const doiEditInputRef = useRef<HTMLInputElement | null>(null);
+  const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const comparePdfRef = useRef<HTMLIFrameElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
@@ -2943,9 +3093,18 @@ function DocumentPanelContent({
   const [trackedAccessorySummaryId, setTrackedAccessorySummaryId] = useState<string | null>(null);
   const [accessoryTitleDrafts, setAccessoryTitleDrafts] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [editingDoi, setEditingDoi] = useState(false);
+  const [doiDraft, setDoiDraft] = useState(document.doi || "");
+  const [doiEditError, setDoiEditError] = useState<string | null>(null);
+  const [editingSummary, setEditingSummary] = useState(false);
+  const [summaryDraft, setSummaryDraft] = useState(document.rich_summary || "");
+  const [summaryEditError, setSummaryEditError] = useState<string | null>(null);
+  const [tagNameDraft, setTagNameDraft] = useState("");
+  const [tagEditError, setTagEditError] = useState<string | null>(null);
   const [documentConcordanceRunId, setDocumentConcordanceRunId] = useState<string | null>(null);
   const [citationRunId, setCitationRunId] = useState<string | null>(null);
-  const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationKind | null>(null);
+  const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationRefreshTarget | null>(null);
+  const [summaryRunId, setSummaryRunId] = useState<string | null>(null);
   const [editingCitation, setEditingCitation] = useState<CitationKind | null>(null);
   const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
     reference: document.apa_citation || "",
@@ -2957,8 +3116,10 @@ function DocumentPanelContent({
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
+  const doiRefreshFeedback = useAsyncActionFeedback();
   const referenceCitationFeedback = useAsyncActionFeedback();
   const inTextCitationFeedback = useAsyncActionFeedback();
+  const summaryRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const composition = useQuery({
     queryKey: ["document-composition", document.id],
@@ -2977,6 +3138,51 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setSaveError(error instanceof Error ? error.message : "Could not save correction"),
+  });
+  const updateDocumentTags = useMutation({
+    mutationFn: (tagNames: string[]) => api.updateDocument(document.id, { tag_names: tagNames }),
+    onSuccess: (updatedDocument) => {
+      setTagNameDraft("");
+      setTagEditError(null);
+      setDraft((current) => ({
+        ...current,
+        tag_names: normalizedNameList(updatedDocument.tags.map((tag) => tag.name)).join(", "),
+      }));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setTagEditError(actionFailureMessage("Could not update tags", error)),
+  });
+  const updateDoi = useMutation({
+    mutationFn: (value: string) => api.updateDocument(document.id, { doi: value.trim() || null }),
+    onSuccess: (updatedDocument) => {
+      setEditingDoi(false);
+      setDoiDraft(updatedDocument.doi || "");
+      setDoiEditError(null);
+      setDraft(draftFromDocument(updatedDocument));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setDoiEditError(actionFailureMessage("Could not save DOI", error)),
+  });
+  const updateSummary = useMutation({
+    mutationFn: (value: string) => api.updateDocument(document.id, { rich_summary: value.trim() || null }),
+    onSuccess: (updatedDocument) => {
+      setEditingSummary(false);
+      setSummaryDraft(updatedDocument.rich_summary || "");
+      setSummaryEditError(null);
+      setDraft(draftFromDocument(updatedDocument));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setSummaryEditError(actionFailureMessage("Could not save summary", error)),
   });
   const updatePageText = useMutation({
     mutationFn: ({ pageId, normalizedText }: { pageId: string; normalizedText: string }) =>
@@ -3042,21 +3248,22 @@ function DocumentPanelContent({
     },
   });
   const refreshCitation = useMutation({
-    mutationFn: (target: CitationKind) =>
+    mutationFn: (target: CitationRefreshTarget) =>
       startConcordanceRun({
         backgroundDetail: document.title,
-        backgroundLabel: "Checking APA citation",
+        backgroundLabel: target === "doi" ? "Checking DOI" : "Checking APA citation",
         capability_keys: ["citation_refresh"],
         capabilityKey: "citation_refresh",
         documentId: document.id,
         force: true,
-        label: `Citation check: ${document.title}`,
+        label: `${target === "doi" ? "DOI" : "Citation"} check: ${document.title}`,
         scope_data: { document_ids: [document.id] },
         scope_type: "documents",
       }),
     onSuccess: (run, target) => {
       setCitationRefreshTarget(target);
-      const feedback = target === "reference" ? referenceCitationFeedback : inTextCitationFeedback;
+      const feedback =
+        target === "doi" ? doiRefreshFeedback : target === "reference" ? referenceCitationFeedback : inTextCitationFeedback;
       if (run.total_jobs > 0) setCitationRunId(run.id);
       else feedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -3069,8 +3276,35 @@ function DocumentPanelContent({
     onError: (error, target) => {
       setCitationRunId(null);
       setCitationRefreshTarget(null);
-      const feedback = target === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
-      feedback.showError(actionFailureMessage("Could not start citation check", error));
+      const feedback = target === "doi" ? doiRefreshFeedback : target === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
+      feedback.showError(actionFailureMessage(target === "doi" ? "Could not start DOI check" : "Could not start citation check", error));
+    },
+  });
+  const refreshSummary = useMutation({
+    mutationFn: () =>
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Checking summary",
+        capability_keys: ["summary_refresh"],
+        capabilityKey: "summary_refresh",
+        documentId: document.id,
+        force: true,
+        label: `Summary check: ${document.title}`,
+        scope_data: { document_ids: [document.id] },
+        scope_type: "documents",
+      }),
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setSummaryRunId(run.id);
+      else summaryRefreshFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    },
+    onError: (error) => {
+      setSummaryRunId(null);
+      summaryRefreshFeedback.showError(actionFailureMessage("Could not start summary check", error));
     },
   });
   const updateCitation = useMutation({
@@ -3128,6 +3362,14 @@ function DocumentPanelContent({
     setAccessoryTitleDrafts({});
     setTrackedAccessorySummaryId(null);
     setSaveError(null);
+    setEditingDoi(false);
+    setDoiDraft(document.doi || "");
+    setDoiEditError(null);
+    setEditingSummary(false);
+    setSummaryDraft(document.rich_summary || "");
+    setSummaryEditError(null);
+    setTagNameDraft("");
+    setTagEditError(null);
     setEditingPageId(null);
     setPageTextDraft("");
     setPageTextError(null);
@@ -3135,12 +3377,21 @@ function DocumentPanelContent({
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
     setCitationRefreshTarget(null);
+    setSummaryRunId(null);
     setEditingCitation(null);
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
     setCitationEditError(null);
     setSelectedHistoryVersionId(null);
     setHistoryRestoreError(null);
   }, [document.id]);
+
+  useEffect(() => {
+    if (!editingDoi) setDoiDraft(document.doi || "");
+  }, [document.doi, editingDoi]);
+
+  useEffect(() => {
+    if (!editingSummary) setSummaryDraft(document.rich_summary || "");
+  }, [document.rich_summary, editingSummary]);
 
   useEffect(() => {
     if (editingCitation) return;
@@ -3199,6 +3450,9 @@ function DocumentPanelContent({
   const citationRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && isActiveConcordanceStatus(job.status),
   );
+  const summaryRefreshActive = citationJobs.some(
+    (job) => job.document_id === document.id && job.capability_key === "summary_refresh" && isActiveConcordanceStatus(job.status),
+  );
   const trackedDocumentConcordanceJobs = useMemo(
     () => (documentConcordanceRunId ? citationJobs.filter((job) => job.run_id === documentConcordanceRunId && job.document_id === document.id) : []),
     [citationJobs, document.id, documentConcordanceRunId],
@@ -3212,6 +3466,13 @@ function DocumentPanelContent({
         : [],
     [citationJobs, citationRunId, document.id],
   );
+  const trackedSummaryJobs = useMemo(
+    () =>
+      summaryRunId
+        ? citationJobs.filter((job) => job.run_id === summaryRunId && job.document_id === document.id && job.capability_key === "summary_refresh")
+        : [],
+    [citationJobs, document.id, summaryRunId],
+  );
   const documentConcordanceBusy =
     runConcordance.isPending ||
     Boolean(
@@ -3219,6 +3480,10 @@ function DocumentPanelContent({
         (!trackedDocumentConcordanceJobs.length || trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))),
     );
   const citationBusy = refreshCitation.isPending || citationRefreshActive || Boolean(citationRunId);
+  const summaryRefreshBusy =
+    refreshSummary.isPending ||
+    summaryRefreshActive ||
+    Boolean(summaryRunId && (!trackedSummaryJobs.length || trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))));
   const accessorySummaries = document.accessory_summaries || [];
   const trackedAccessorySummary = trackedAccessorySummaryId
     ? accessorySummaries.find((summary) => summary.id === trackedAccessorySummaryId)
@@ -3229,6 +3494,10 @@ function DocumentPanelContent({
       trackedAccessorySummaryId &&
         (!trackedAccessorySummary || isActiveAccessorySummaryStatus(trackedAccessorySummary.status)),
     );
+  const sortedDocumentTags = useMemo(() => sortByName(document.tags), [document.tags]);
+  const sortedAvailableTags = useMemo(() => sortByName(tags), [tags]);
+  const currentTagNames = useMemo(() => normalizedNameList(sortedDocumentTags.map((tag) => tag.name)), [sortedDocumentTags]);
+  const tagUpdateBusy = updateDocumentTags.isPending;
 
   useEffect(() => {
     if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
@@ -3258,10 +3527,18 @@ function DocumentPanelContent({
     if (!citationRunId || trackedCitationJobs.length === 0) return;
     if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedCitationJobs.find((job) => job.status === "failed");
-    const feedback = citationRefreshTarget === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
+    const feedback =
+      citationRefreshTarget === "doi"
+        ? doiRefreshFeedback
+        : citationRefreshTarget === "in-text"
+          ? inTextCitationFeedback
+          : referenceCitationFeedback;
     if (failedJob) {
       feedback.showError(
-        actionFailureMessage("Citation check failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+        actionFailureMessage(
+          citationRefreshTarget === "doi" ? "DOI check failed" : "Citation check failed",
+          failedJob.last_error || "Concordance job failed without a detailed error",
+        ),
       );
     } else {
       feedback.showSuccess();
@@ -3276,11 +3553,30 @@ function DocumentPanelContent({
     citationRefreshTarget,
     citationRunId,
     document.id,
+    doiRefreshFeedback,
     inTextCitationFeedback,
     queryClient,
     referenceCitationFeedback,
     trackedCitationJobs,
   ]);
+
+  useEffect(() => {
+    if (!summaryRunId || trackedSummaryJobs.length === 0) return;
+    if (trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    const failedJob = trackedSummaryJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      summaryRefreshFeedback.showError(
+        actionFailureMessage("Summary check failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      summaryRefreshFeedback.showSuccess();
+    }
+    setSummaryRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+  }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs]);
 
   useEffect(() => {
     if (!trackedAccessorySummaryId || !trackedAccessorySummary) return;
@@ -3440,6 +3736,97 @@ function DocumentPanelContent({
     setCitationRefreshTarget(kind);
     refreshCitation.mutate(kind);
   };
+  const doiCheckBusy = citationBusy && citationRefreshTarget === "doi";
+  const checkDoi = () => {
+    setCitationRefreshTarget("doi");
+    refreshCitation.mutate("doi");
+  };
+  const startDoiEdit = () => {
+    setDoiDraft(document.doi || "");
+    setDoiEditError(null);
+    setEditingDoi(true);
+    window.requestAnimationFrame(() => doiEditInputRef.current?.focus());
+  };
+  const cancelDoiEdit = () => {
+    setDoiDraft(document.doi || "");
+    setDoiEditError(null);
+    setEditingDoi(false);
+  };
+  const saveDoiEdit = () => {
+    updateDoi.mutate(doiDraft);
+  };
+  const copySummary = () => {
+    if (document.rich_summary) void copyToClipboard("document-summary", decodeHtmlEntities(document.rich_summary));
+  };
+  const startSummaryEdit = () => {
+    setSummaryDraft(document.rich_summary || "");
+    setSummaryEditError(null);
+    setEditingSummary(true);
+    window.requestAnimationFrame(() => summaryTextareaRef.current?.focus());
+  };
+  const cancelSummaryEdit = () => {
+    setSummaryDraft(document.rich_summary || "");
+    setSummaryEditError(null);
+    setEditingSummary(false);
+  };
+  const saveSummaryEdit = () => {
+    updateSummary.mutate(summaryDraft);
+  };
+  const checkSummary = () => {
+    refreshSummary.mutate();
+  };
+  const replaceSummarySelection = (replacement: string, nextSelectionStart: number, nextSelectionEnd: number) => {
+    const textarea = summaryTextareaRef.current;
+    const start = textarea?.selectionStart ?? summaryDraft.length;
+    const end = textarea?.selectionEnd ?? summaryDraft.length;
+    const nextValue = `${summaryDraft.slice(0, start)}${replacement}${summaryDraft.slice(end)}`;
+    setSummaryDraft(nextValue);
+    window.requestAnimationFrame(() => {
+      summaryTextareaRef.current?.focus();
+      summaryTextareaRef.current?.setSelectionRange(start + nextSelectionStart, start + nextSelectionEnd);
+    });
+  };
+  const applySummaryInlineFormat = (prefix: string, suffix: string, placeholder: string) => {
+    if (updateSummary.isPending) return;
+    const textarea = summaryTextareaRef.current;
+    const start = textarea?.selectionStart ?? summaryDraft.length;
+    const end = textarea?.selectionEnd ?? summaryDraft.length;
+    const selected = summaryDraft.slice(start, end) || placeholder;
+    replaceSummarySelection(`${prefix}${selected}${suffix}`, prefix.length, prefix.length + selected.length);
+  };
+  const applySummaryLineFormat = (formatter: (line: string, index: number) => string) => {
+    if (updateSummary.isPending) return;
+    const textarea = summaryTextareaRef.current;
+    const start = textarea?.selectionStart ?? summaryDraft.length;
+    const end = textarea?.selectionEnd ?? summaryDraft.length;
+    const lineStart = summaryDraft.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+    const nextLineBreak = summaryDraft.indexOf("\n", end);
+    const lineEnd = nextLineBreak === -1 ? summaryDraft.length : nextLineBreak;
+    const original = summaryDraft.slice(lineStart, lineEnd);
+    const replacement = original
+      .split("\n")
+      .map((line, index) => formatter(line, index))
+      .join("\n");
+    const nextValue = `${summaryDraft.slice(0, lineStart)}${replacement}${summaryDraft.slice(lineEnd)}`;
+    setSummaryDraft(nextValue);
+    window.requestAnimationFrame(() => {
+      summaryTextareaRef.current?.focus();
+      summaryTextareaRef.current?.setSelectionRange(lineStart, lineStart + replacement.length);
+    });
+  };
+  const clearSummaryFormatting = () => {
+    if (updateSummary.isPending) return;
+    const textarea = summaryTextareaRef.current;
+    const start = textarea?.selectionStart ?? 0;
+    const end = textarea?.selectionEnd ?? 0;
+    if (start !== end) {
+      const cleaned = stripMarkdownFormatting(summaryDraft.slice(start, end));
+      replaceSummarySelection(cleaned, 0, cleaned.length);
+      return;
+    }
+    setSummaryDraft(stripMarkdownFormatting(summaryDraft));
+    window.requestAnimationFrame(() => summaryTextareaRef.current?.focus());
+  };
 
   const toggleDocumentEditing = () => {
     if (editing) {
@@ -3486,6 +3873,8 @@ function DocumentPanelContent({
 
   useEscapeLayer(recommendationsOpen, () => setRecommendationsOpen(false), ESCAPE_PRIORITY_POPOVER);
   useEscapeLayer(accessoryComposerOpen && !accessorySummaryBusy, () => setAccessoryComposerOpen(false), ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(editingDoi && !updateDoi.isPending, () => setEditingDoi(false), ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(editingSummary && !updateSummary.isPending, () => setEditingSummary(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editing && !updateDocument.isPending, () => setEditing(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(pageTextEditing && !pageTextBusy, cancelPageTextEdit, ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(Boolean(editingCitation) && !updateCitation.isPending, cancelCitationEdit, ESCAPE_PRIORITY_EXPANDED);
@@ -3520,22 +3909,303 @@ function DocumentPanelContent({
       priority: draft.priority,
       read_status: draft.read_status,
       citation_status: draft.citation_status,
-      tag_names: splitCommaList(draft.tag_names),
+      tag_names: normalizedNameList(splitCommaList(draft.tag_names)),
       domain_ids: draft.domain_ids,
       attribute_values: nextAttributes,
     });
   };
+  const setDocumentTags = (tagNames: string[]) => {
+    if (tagUpdateBusy) return;
+    updateDocumentTags.mutate(normalizedNameList(tagNames));
+  };
+  const addDocumentTag = () => {
+    const name = tagNameDraft.trim();
+    if (!name || tagUpdateBusy) return;
+    const normalizedKey = name.toLocaleLowerCase();
+    if (currentTagNames.some((tagName) => tagName.toLocaleLowerCase() === normalizedKey)) {
+      setTagNameDraft("");
+      setTagEditError(null);
+      return;
+    }
+    setDocumentTags([...currentTagNames, name]);
+  };
+  const removeDocumentTag = (name: string) => {
+    const normalizedKey = name.trim().toLocaleLowerCase();
+    setDocumentTags(currentTagNames.filter((tagName) => tagName.toLocaleLowerCase() !== normalizedKey));
+  };
   const annotations = document.annotations || [];
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
+  const renderTagsSection = () => {
+    const existingTagNames = new Set(currentTagNames.map((name) => name.toLocaleLowerCase()));
+    const availableTags = sortedAvailableTags.filter((tag) => !existingTagNames.has(tag.name.toLocaleLowerCase()));
+    return (
+      <section className="detail-section detail-tags-section">
+        <h3>TAGS</h3>
+        <div className="detail-tag-list">
+          {sortedDocumentTags.length ? (
+            sortedDocumentTags.map((tag) => (
+              <span className="detail-tag-chip" key={tag.id}>
+                <span>{tag.name}</span>
+                <button
+                  aria-label={`Remove ${tag.name}`}
+                  disabled={tagUpdateBusy}
+                  onClick={() => removeDocumentTag(tag.name)}
+                  title={`Remove ${tag.name}`}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))
+          ) : (
+            <span className="detail-tags-empty">No tags yet.</span>
+          )}
+          <form
+            className="detail-tag-add"
+            onSubmit={(event) => {
+              event.preventDefault();
+              addDocumentTag();
+            }}
+          >
+            <input
+              aria-label="Add tag"
+              disabled={tagUpdateBusy}
+              list={`detail-known-tags-${document.id}`}
+              onChange={(event) => {
+                setTagNameDraft(event.target.value);
+                if (tagEditError) setTagEditError(null);
+              }}
+              placeholder="Add tag"
+              value={tagNameDraft}
+            />
+            <datalist id={`detail-known-tags-${document.id}`}>
+              {availableTags.map((tag) => (
+                <option key={tag.id} value={tag.name} />
+              ))}
+            </datalist>
+            <button
+              aria-label="Add tag"
+              className="icon-button compact"
+              disabled={!tagNameDraft.trim() || tagUpdateBusy}
+              title="Add tag"
+              type="submit"
+            >
+              <Plus size={14} />
+            </button>
+          </form>
+        </div>
+        {tagEditError ? <p className="form-error">{tagEditError}</p> : null}
+      </section>
+    );
+  };
   const renderDoiSection = () => (
     <section className="detail-section doi-section">
       <h3>DOI</h3>
       <div className="doi-value">{document.doi ? <code>{document.doi}</code> : <span>No DOI recorded.</span>}</div>
+      {editingDoi ? (
+        <form
+          className="doi-editor"
+          data-escape-layer="expanded"
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveDoiEdit();
+          }}
+        >
+          <input
+            aria-label="DOI"
+            disabled={updateDoi.isPending}
+            onChange={(event) => {
+              setDoiDraft(event.target.value);
+              if (doiEditError) setDoiEditError(null);
+            }}
+            placeholder="10.0000/example"
+            ref={doiEditInputRef}
+            value={doiDraft}
+          />
+          <div className="doi-editor-actions">
+            <button className="primary-button compact" disabled={updateDoi.isPending} type="submit">
+              <Save size={14} />
+              Save
+            </button>
+            <button className="secondary-button compact" disabled={updateDoi.isPending} onClick={cancelDoiEdit} type="button">
+              <X size={14} />
+              Cancel
+            </button>
+          </div>
+          {doiEditError ? <p className="form-error">{doiEditError}</p> : null}
+        </form>
+      ) : null}
       <div className="doi-actions">
         <button className="secondary-button" disabled={!document.doi} onClick={copyDoi} type="button">
           {copiedKey === "document-doi" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
           {copiedKey === "document-doi" ? "Copied" : "Copy"}
         </button>
+        <button className="secondary-button" onClick={startDoiEdit} disabled={updateDoi.isPending || editingDoi} type="button">
+          <Edit3 size={15} />
+          Edit
+        </button>
+        <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI check in progress">
+          <button
+            className={asyncFeedbackClass("secondary-button", doiRefreshFeedback.feedback, doiCheckBusy)}
+            onClick={checkDoi}
+            disabled={citationBusy}
+            type="button"
+          >
+            <RefreshCw className={doiCheckBusy ? "spin" : ""} size={15} />
+            {doiCheckBusy ? "Checking" : "Check"}
+          </button>
+        </AsyncActionSlot>
+        <span className="citation-model-label">{analysisModelActionLabel(preferences, APA_CITATION_MODEL_KEY, "gpt-5.5")}</span>
+      </div>
+    </section>
+  );
+  const renderSummarySection = () => (
+    <section className="detail-section summary-section">
+      <h3>Summary</h3>
+      {editingSummary ? (
+        <form
+          className="summary-editor"
+          data-escape-layer="expanded"
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveSummaryEdit();
+          }}
+        >
+          <div className="summary-editor-toolbar" aria-label="Summary formatting tools">
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() => applySummaryInlineFormat("**", "**", "bold text")}
+              title="Bold"
+              type="button"
+            >
+              <Bold size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() => applySummaryInlineFormat("*", "*", "italic text")}
+              title="Italic"
+              type="button"
+            >
+              <Italic size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() => applySummaryInlineFormat("<u>", "</u>", "underlined text")}
+              title="Underline"
+              type="button"
+            >
+              <Underline size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() =>
+                applySummaryLineFormat((line) => {
+                  const text = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
+                  return text ? `- ${text}` : "- ";
+                })
+              }
+              title="Bullet list"
+              type="button"
+            >
+              <List size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() =>
+                applySummaryLineFormat((line, index) => {
+                  const text = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
+                  return text ? `${index + 1}. ${text}` : `${index + 1}. `;
+                })
+              }
+              title="Numbered list"
+              type="button"
+            >
+              <ListOrdered size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() => applySummaryLineFormat((line) => (line.startsWith(">") ? line : `> ${line}`))}
+              title="Indent"
+              type="button"
+            >
+              <IndentIncrease size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={() => applySummaryLineFormat((line) => line.replace(/^>\s?/, ""))}
+              title="Outdent"
+              type="button"
+            >
+              <IndentDecrease size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              disabled={updateSummary.isPending}
+              onClick={clearSummaryFormatting}
+              title="Remove formatting"
+              type="button"
+            >
+              <RemoveFormatting size={14} />
+            </button>
+          </div>
+          <textarea
+            aria-label="Summary Markdown"
+            disabled={updateSummary.isPending}
+            onChange={(event) => {
+              setSummaryDraft(event.target.value);
+              if (summaryEditError) setSummaryEditError(null);
+            }}
+            ref={summaryTextareaRef}
+            value={summaryDraft}
+          />
+          <div className="summary-editor-actions">
+            <button className="primary-button compact" disabled={updateSummary.isPending} type="submit">
+              <Save size={14} />
+              Save
+            </button>
+            <button className="secondary-button compact" disabled={updateSummary.isPending} onClick={cancelSummaryEdit} type="button">
+              <X size={14} />
+              Cancel
+            </button>
+          </div>
+          {summaryEditError ? <p className="form-error">{summaryEditError}</p> : null}
+        </form>
+      ) : (
+        <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
+      )}
+      <div className="citation-actions">
+        <button className="secondary-button" onClick={copySummary} disabled={!document.rich_summary} type="button">
+          {copiedKey === "document-summary" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+          {copiedKey === "document-summary" ? "Copied" : "Copy"}
+        </button>
+        <button
+          className="secondary-button"
+          onClick={startSummaryEdit}
+          disabled={updateSummary.isPending || editingSummary}
+          type="button"
+        >
+          <Edit3 size={15} />
+          Edit
+        </button>
+        <AsyncActionSlot busy={summaryRefreshBusy} feedback={summaryRefreshFeedback.feedback} label="Summary check in progress">
+          <button
+            className={asyncFeedbackClass("secondary-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
+            onClick={checkSummary}
+            disabled={summaryRefreshBusy}
+            type="button"
+          >
+            <RefreshCw className={summaryRefreshBusy ? "spin" : ""} size={15} />
+            {summaryRefreshBusy ? "Checking" : "Check"}
+          </button>
+        </AsyncActionSlot>
+        <span className="citation-model-label">{analysisModelActionLabel(preferences, SUMMARY_MODEL_KEY, "gpt-5.4")}</span>
       </div>
     </section>
   );
@@ -3738,7 +4408,7 @@ function DocumentPanelContent({
         </div>
         <div className="detail-status">
           {document.duplicate_count > 0 ? <StatusPill value={`Duplicate ${document.duplicate_count + 1}`} tone="warn" /> : null}
-          <StatusPill value={document.priority} tone="blue" />
+          <PriorityPill value={document.priority} />
         </div>
       </div>
       <div className="detail-actions">
@@ -3927,7 +4597,7 @@ function DocumentPanelContent({
             Tags
             <input list={`known-tags-${document.id}`} value={draft.tag_names} onChange={(event) => setDraftValue("tag_names", event.target.value)} />
             <datalist id={`known-tags-${document.id}`}>
-              {tags.map((tag) => (
+              {sortedAvailableTags.map((tag) => (
                 <option key={tag.id} value={tag.name} />
               ))}
             </datalist>
@@ -3982,13 +4652,11 @@ function DocumentPanelContent({
           {saveError ? <p className="form-error">{saveError}</p> : null}
         </form>
       ) : null}
+      {renderTagsSection()}
       {renderDoiSection()}
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
       {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
-      <section className="detail-section">
-        <h3>Summary</h3>
-        <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
-      </section>
+      {renderSummarySection()}
       <section className="detail-section accessory-summary-section">
         <div className="detail-section-title-row">
           <h3>Accessory Summaries</h3>
@@ -4132,14 +4800,6 @@ function DocumentPanelContent({
             <span>No extracted figures yet.</span>
           </div>
         )}
-      </section>
-      <section className="detail-section">
-        <h3>Tags</h3>
-        <div className="tag-cloud">
-          {document.tags.map((tag) => (
-            <span key={tag.id}>{tag.name}</span>
-          ))}
-        </div>
       </section>
       <section className="detail-section">
         <h3>Domains</h3>
@@ -4389,6 +5049,16 @@ function stashSortLabel(key: StashSortKey) {
   if (key === "doi") return "DOI";
   if (key === "title") return "Title";
   return "Status";
+}
+
+function tagSortLabel(key: TagSortKey) {
+  if (key === "name") return "Tag";
+  if (key === "kind") return "Kind";
+  return "Documents";
+}
+
+function formatTagOptimizationConfidence(value: number) {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function StashesView({ stashes }: { stashes: DoiStash[] }) {
@@ -5004,6 +5674,489 @@ function ProjectItemRow({ item, projectId }: { item: ProjectItem; projectId: str
       </button>
     </article>
   );
+}
+
+function TagRenameDialog({
+  busy,
+  error,
+  onClose,
+  onSubmit,
+  tag,
+}: {
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (name: string) => void;
+  tag: Tag;
+}) {
+  const [name, setName] = useState(tag.name);
+  useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
+  const trimmedName = name.trim();
+  return (
+    <div
+      className="modal-backdrop"
+      data-escape-layer="dialog"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <form
+        className="tag-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tag-rename-title"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (trimmedName) onSubmit(trimmedName);
+        }}
+      >
+        <div className="tag-dialog-head">
+          <div>
+            <span>Rename</span>
+            <h2 id="tag-rename-title">{tag.name}</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close rename dialog">
+            <X size={18} />
+          </button>
+        </div>
+        <label className="tag-dialog-field">
+          Name
+          <input value={name} autoFocus onChange={(event) => setName(event.target.value)} />
+        </label>
+        {error ? <p className="form-error">{error}</p> : null}
+        <div className="tag-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>
+            <X size={16} />
+            Cancel
+          </button>
+          <button className="primary-button" type="submit" disabled={!trimmedName || busy}>
+            <Edit3 size={16} />
+            Rename
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function TagMergeDialog({
+  busy,
+  error,
+  onClose,
+  onSubmit,
+  tags,
+}: {
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (choice: TagMergeChoice) => void;
+  tags: Tag[];
+}) {
+  const sortedTags = useMemo(() => sortByName(tags), [tags]);
+  const [mode, setMode] = useState<"keep" | "new">("keep");
+  const [keepId, setKeepId] = useState(sortedTags[0]?.id || "");
+  const [name, setName] = useState("");
+  useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
+  useEffect(() => {
+    if (!sortedTags.some((tag) => tag.id === keepId)) setKeepId(sortedTags[0]?.id || "");
+  }, [keepId, sortedTags]);
+  const trimmedName = name.trim();
+  const canSubmit = mode === "new" ? Boolean(trimmedName) : Boolean(keepId);
+  return (
+    <div
+      className="modal-backdrop"
+      data-escape-layer="dialog"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <form
+        className="tag-dialog merge"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tag-merge-title"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!canSubmit) return;
+          onSubmit(mode === "new" ? { target_name: trimmedName } : { target_tag_id: keepId });
+        }}
+      >
+        <div className="tag-dialog-head">
+          <div>
+            <span>Merge</span>
+            <h2 id="tag-merge-title">{tags.length} tags selected</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close merge dialog">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="tag-merge-options">
+          {sortedTags.map((tag) => (
+            <label key={tag.id} className="tag-choice">
+              <input
+                type="radio"
+                checked={mode === "keep" && keepId === tag.id}
+                onChange={() => {
+                  setMode("keep");
+                  setKeepId(tag.id);
+                }}
+              />
+              <span>
+                <strong>{tag.name}</strong>
+                <small>{tag.document_count} documents</small>
+              </span>
+            </label>
+          ))}
+          <label className="tag-choice custom">
+            <input type="radio" checked={mode === "new"} onChange={() => setMode("new")} />
+            <span>
+              <strong>Different name</strong>
+              <input
+                value={name}
+                onChange={(event) => {
+                  setName(event.target.value);
+                  setMode("new");
+                }}
+                placeholder="Merged tag name"
+              />
+            </span>
+          </label>
+        </div>
+        {error ? <p className="form-error">{error}</p> : null}
+        <div className="tag-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>
+            <X size={16} />
+            Cancel
+          </button>
+          <button className="primary-button" type="submit" disabled={!canSubmit || busy}>
+            <Tags size={16} />
+            Confirm Merge
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function TagsView({ tags }: { tags: Tag[] }) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [searchText, setSearchText] = useState("");
+  const [sortKey, setSortKey] = useState<TagSortKey>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [optimizationResult, setOptimizationResult] = useState<TagOptimizationResult | null>(null);
+  const [optimizationError, setOptimizationError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const tagIdSet = useMemo(() => new Set(tags.map((tag) => tag.id)), [tags]);
+  const selectedTags = useMemo(() => tags.filter((tag) => selectedIds.includes(tag.id)), [selectedIds, tags]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const visibleTags = useMemo(() => {
+    const normalizedSearch = searchText.trim().toLowerCase();
+    const direction = sortDirection === "asc" ? 1 : -1;
+    return tags
+      .filter((tag) => {
+        if (!normalizedSearch) return true;
+        return `${tag.name} ${tag.kind}`.toLowerCase().includes(normalizedSearch);
+      })
+      .sort((left, right) => {
+        if (sortKey === "documents") {
+          const countCompare = (left.document_count - right.document_count) * direction;
+          return countCompare || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+        }
+        const leftValue = sortKey === "kind" ? left.kind : left.name;
+        const rightValue = sortKey === "kind" ? right.kind : right.name;
+        return leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" }) * direction;
+      });
+  }, [searchText, sortDirection, sortKey, tags]);
+  const allVisibleSelected = visibleTags.length > 0 && visibleTags.every((tag) => selectedSet.has(tag.id));
+  const selectedDocumentCount = selectedTags.reduce((total, tag) => total + tag.document_count, 0);
+  const optimizationScopeIds = useMemo(
+    () => (selectedIds.length ? selectedIds : visibleTags.map((tag) => tag.id)),
+    [selectedIds, visibleTags],
+  );
+  const optimizationScopeLabel = selectedIds.length ? `${selectedIds.length} selected` : `${visibleTags.length} visible`;
+  const renameTag = useMutation({
+    mutationFn: ({ tag, name }: { tag: Tag; name: string }) => api.renameTag(tag.id, name),
+    onSuccess: (result) => {
+      setRenameOpen(false);
+      setOperationError(null);
+      setSelectedIds([result.tag.id]);
+      setNotice(`Renamed ${result.updated_documents} document${result.updated_documents === 1 ? "" : "s"}`);
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => setOperationError(actionFailureMessage("Could not rename tag", error)),
+  });
+  const mergeTags = useMutation({
+    mutationFn: (choice: TagMergeChoice) =>
+      api.mergeTags({
+        source_tag_ids: choice.source_tag_ids || selectedIds,
+        target_tag_id: choice.target_tag_id || null,
+        target_name: choice.target_name || null,
+      }),
+    onSuccess: (result, choice) => {
+      setMergeOpen(false);
+      setOperationError(null);
+      setOptimizationError(null);
+      setSelectedIds([result.tag.id]);
+      setNotice(`Merged into ${result.tag.name}; updated ${result.updated_documents} document${result.updated_documents === 1 ? "" : "s"}`);
+      const approvedSourceIds = new Set(choice.source_tag_ids || selectedIds);
+      setOptimizationResult((current) =>
+        current
+          ? {
+              ...current,
+              suggestions: current.suggestions.filter((suggestion) => !suggestion.source_tag_ids.some((tagId) => approvedSourceIds.has(tagId))),
+            }
+          : current,
+      );
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => setOperationError(actionFailureMessage("Could not merge tags", error)),
+  });
+  const optimizeTags = useMutation({
+    mutationFn: () => api.optimizeTags({ tag_ids: optimizationScopeIds }),
+    onSuccess: (result) => {
+      setOptimizationResult(result);
+      setOptimizationError(null);
+      setOperationError(null);
+      setNotice(
+        result.suggestions.length
+          ? `Found ${result.suggestions.length} optimization suggestion${result.suggestions.length === 1 ? "" : "s"}`
+          : `No optimization suggestions found for ${optimizationScopeLabel}`,
+      );
+    },
+    onError: (error) => setOptimizationError(actionFailureMessage("Could not optimize tags", error)),
+  });
+
+  useEffect(() => {
+    setSelectedIds((current) => current.filter((id) => tagIdSet.has(id)));
+    setOptimizationResult((current) =>
+      current
+        ? {
+            ...current,
+            suggestions: current.suggestions.filter((suggestion) => suggestion.source_tag_ids.every((tagId) => tagIdSet.has(tagId))),
+          }
+        : current,
+    );
+  }, [tagIdSet]);
+
+  const chooseSort = (key: TagSortKey) => {
+    if (key === sortKey) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDirection(key === "documents" ? "desc" : "asc");
+  };
+  const toggleTag = (id: string) => {
+    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  };
+  const toggleVisibleTags = () => {
+    if (allVisibleSelected) {
+      const visibleIds = new Set(visibleTags.map((tag) => tag.id));
+      setSelectedIds((current) => current.filter((id) => !visibleIds.has(id)));
+      return;
+    }
+    setSelectedIds((current) => uniqueValues([...current, ...visibleTags.map((tag) => tag.id)]));
+  };
+  const openRename = () => {
+    if (selectedTags.length !== 1) return;
+    setOperationError(null);
+    setRenameOpen(true);
+  };
+  const openMerge = () => {
+    if (selectedTags.length < 2) return;
+    setOperationError(null);
+    setMergeOpen(true);
+  };
+  const dismissSuggestion = (suggestionId: string) => {
+    setOptimizationResult((current) =>
+      current ? { ...current, suggestions: current.suggestions.filter((suggestion) => suggestion.id !== suggestionId) } : current,
+    );
+  };
+  const approveSuggestion = (suggestion: TagOptimizationSuggestion) => {
+    setOperationError(null);
+    mergeTags.mutate({ source_tag_ids: suggestion.source_tag_ids, target_name: suggestion.target_name });
+  };
+  const selectedTag = selectedTags.length === 1 ? selectedTags[0] : undefined;
+
+  return (
+    <section className="workbench tags-workbench">
+      <div className="tags-toolbar">
+        <div className="tag-actions">
+          <button className="secondary-button compact" type="button" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>
+            <X size={15} />
+            Clear Selection
+          </button>
+          <button className="secondary-button compact" type="button" disabled={selectedIds.length !== 1 || renameTag.isPending} onClick={openRename}>
+            <Edit3 size={15} />
+            Rename
+          </button>
+          <button className="primary-button compact" type="button" disabled={selectedIds.length < 2 || mergeTags.isPending} onClick={openMerge}>
+            <Tags size={15} />
+            Merge ({selectedIds.length})
+          </button>
+          <button className="secondary-button compact" type="button" disabled>
+            <Trash2 size={15} />
+            Delete
+          </button>
+          <button
+            className="secondary-button compact"
+            type="button"
+            disabled={optimizationScopeIds.length < 2 || optimizeTags.isPending}
+            onClick={() => optimizeTags.mutate()}
+          >
+            <BrainCircuit className={optimizeTags.isPending ? "spin" : ""} size={15} />
+            {optimizeTags.isPending ? "Optimizing" : "Optimize"}
+          </button>
+        </div>
+        <label className="tag-search">
+          <Search size={16} />
+          <input value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Search tags" />
+        </label>
+      </div>
+      <div className="tags-status-row">
+        <span>{visibleTags.length} tags</span>
+        <span>{selectedIds.length ? `${selectedIds.length} selected / ${selectedDocumentCount} document links` : notice || "No tags selected"}</span>
+      </div>
+      {notice ? <p className="tag-operation-notice">{notice}</p> : null}
+      <div className="tag-optimization-slot">
+        {optimizationError ? <p className="form-error tag-optimization-error">{optimizationError}</p> : null}
+        {optimizationResult ? (
+          <section className="tag-optimization-panel" aria-label="Tag optimization suggestions">
+            <div className="tag-optimization-head">
+              <div>
+                <span>Optimization Suggestions</span>
+                <strong>
+                  {optimizationResult.model} reviewed {optimizationResult.considered_tags} tag
+                  {optimizationResult.considered_tags === 1 ? "" : "s"}
+                </strong>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setOptimizationResult(null)} title="Close suggestions">
+                <X size={16} />
+              </button>
+            </div>
+            {optimizationResult.suggestions.length ? (
+              <div className="tag-optimization-list">
+                {optimizationResult.suggestions.map((suggestion) => (
+                  <article className="tag-optimization-suggestion" key={suggestion.id}>
+                    <div className="tag-suggestion-main">
+                      <div className="tag-suggestion-title">
+                        <strong>{suggestion.target_name}</strong>
+                        <span>
+                          {suggestion.affected_documents} document{suggestion.affected_documents === 1 ? "" : "s"} affected /{" "}
+                          {formatTagOptimizationConfidence(suggestion.confidence)} confidence
+                        </span>
+                      </div>
+                      <p>{suggestion.rationale}</p>
+                      <div className="tag-suggestion-tags" aria-label="Source tags">
+                        {suggestion.source_tags.map((tag) => (
+                          <span key={tag.id}>
+                            {tag.name}
+                            <small>{tag.document_count}</small>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="tag-suggestion-actions">
+                      <button
+                        className="primary-button compact"
+                        type="button"
+                        disabled={mergeTags.isPending}
+                        onClick={() => approveSuggestion(suggestion)}
+                      >
+                        <Tags size={15} />
+                        Approve Merge
+                      </button>
+                      <button
+                        className="secondary-button compact"
+                        type="button"
+                        disabled={mergeTags.isPending}
+                        onClick={() => dismissSuggestion(suggestion.id)}
+                      >
+                        <X size={15} />
+                        Dismiss
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="tag-optimization-empty">No merge suggestions found for this scope.</p>
+            )}
+          </section>
+        ) : null}
+      </div>
+      <div className="tags-table" role="table" aria-label="Tags">
+        <div className="tags-table-row header" role="row">
+          <span role="columnheader">
+            <input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleTags} aria-label="Select visible tags" />
+          </span>
+          {(["name", "kind", "documents"] as TagSortKey[]).map((key) => (
+            <button
+              key={key}
+              aria-sort={sortKey === key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+              onClick={() => chooseSort(key)}
+              role="columnheader"
+              type="button"
+            >
+              {tagSortLabel(key)}
+              <ArrowUpDown size={14} />
+            </button>
+          ))}
+        </div>
+        {visibleTags.map((tag) => {
+          const selected = selectedSet.has(tag.id);
+          return (
+            <label key={tag.id} className={`tags-table-row${selected ? " selected" : ""}`} role="row">
+              <span role="cell">
+                <input type="checkbox" checked={selected} onChange={() => toggleTag(tag.id)} />
+              </span>
+              <strong role="cell">{tag.name}</strong>
+              <span role="cell">{tag.kind}</span>
+              <span role="cell">{tag.document_count}</span>
+            </label>
+          );
+        })}
+        {!visibleTags.length ? <div className="tags-table-empty">No matching tags</div> : null}
+      </div>
+      {renameOpen && selectedTag ? (
+        <TagRenameDialog
+          busy={renameTag.isPending}
+          error={operationError}
+          onClose={() => {
+            setRenameOpen(false);
+            setOperationError(null);
+          }}
+          onSubmit={(name) => renameTag.mutate({ tag: selectedTag, name })}
+          tag={selectedTag}
+        />
+      ) : null}
+      {mergeOpen ? (
+        <TagMergeDialog
+          busy={mergeTags.isPending}
+          error={operationError}
+          onClose={() => {
+            setMergeOpen(false);
+            setOperationError(null);
+          }}
+          onSubmit={(choice) => mergeTags.mutate(choice)}
+          tags={selectedTags}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function refreshTagManagementData(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ["tags"] });
+  void queryClient.invalidateQueries({ queryKey: ["documents"] });
+  void queryClient.invalidateQueries({ queryKey: ["document"] });
+  void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 }
 
 function ProjectsView({ projects, documents }: { projects: Project[]; documents: DocumentSummary[] }) {
@@ -6981,6 +8134,7 @@ export default function App() {
     library: dashboard.data?.documents ?? 0,
     domains: domains.data?.length ?? 0,
     projects: projects.data?.length ?? dashboard.data?.projects ?? 0,
+    tags: tags.data?.length ?? 0,
     queue: (jobs.data || []).filter(isQueueImportJob).length + (review.data || []).length,
     notes: notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
@@ -7048,6 +8202,7 @@ export default function App() {
           <ImportView domains={domains.data || []} jobs={jobs.data || []} projects={projects.data || []} tags={tags.data || []} />
         ) : null}
         {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
+        {activeView === "tags" ? <TagsView tags={tags.data || []} /> : null}
         {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
         {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
         {activeView === "notes" ? (

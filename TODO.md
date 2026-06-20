@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-06-19
+Last updated: 2026-06-20
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -77,6 +77,10 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: reminder annotations surface in Notes/Review or a reminder view with due dates.
 
 ## Library Organization And Search
+
+- [ ] Add tag Delete workflow.
+  - Acceptance: Tags view can delete unused or selected tags only after confirmation, safely remove document links when requested, and record any document tag changes in `DocumentVersion` history.
+  - Partial: Optimize now uses `gpt-5.4-mini` to produce reviewable merge suggestions with affected-document counts, and approved suggestions run through the audited merge path.
 
 - [ ] Normalize keyword/topic suggestion and display behavior.
   - Acceptance: keyword/topic dropdowns and lists render alphabetically by default; any non-alphabetical display order is an explicit, view-specific choice; import and Concordance keyword/topic extraction splits overly verbose compound phrases into useful primitives, such as `insider threat assessment` into `insider threat` and `threat assessment`, and `access control and cyber identity` into `access control` and `cyber identity`; deduplication clusters near-duplicates and favors primitive keywords such as `access control` while still allowing meaningfully distinct specific variants such as `access control lists` or `access control monitoring`.

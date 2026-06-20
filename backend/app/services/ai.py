@@ -17,6 +17,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.services.analysis_models import (
+    DEFAULT_KEYWORDS_TOPICS_MODEL,
     MODEL_APA_CITATION,
     MODEL_ACCESSORY_SUMMARIES,
     MODEL_CORE_DOCUMENT_INTELLIGENCE,
@@ -56,6 +57,13 @@ PAGE_TEXT_NORMALIZATION_PROMPT = (
     "a table is evident. Do not convert charts, photos, diagrams, or figure graphics into Markdown or prose; those "
     "assets are stored separately as cropped page graphics. Keep visible labels/captions such as 'Figure 1.' as "
     "text anchors near the surrounding discussion."
+)
+
+DOCUMENT_SUMMARY_PROMPT = (
+    "Generate rich_summary as concise Markdown from only the supplied extracted document text. Use a short opening "
+    "paragraph plus 3-5 labeled bullets for methods, findings, usefulness, and caveats when the evidence supports "
+    "them. Do not start with a standalone heading such as Summary, Overview, Abstract, Synopsis, or similar; begin "
+    "with the semantic substance of the summary itself. Do not invent claims beyond the text."
 )
 
 
@@ -112,6 +120,28 @@ SUMMARY_SCHEMA: dict[str, Any] = {
         "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["rich_summary", "confidence", "needs_review_reasons"],
+}
+
+TAG_OPTIMIZATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "target_name": {"type": "string"},
+                    "source_tag_ids": {"type": "array", "items": {"type": "string"}},
+                    "rationale": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["target_name", "source_tag_ids", "rationale", "confidence"],
+            },
+        }
+    },
+    "required": ["suggestions"],
 }
 
 APA_CITATION_SCHEMA: dict[str, Any] = {
@@ -778,6 +808,90 @@ class AiService:
             "used_pdf_file": False,
         }
         return result
+
+    def generate_document_summary(
+        self,
+        filename: str,
+        text: str,
+        *,
+        model: str | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, Any]:
+        selected_model = model or default_analysis_models()[MODEL_SUMMARY]
+        if not self._can_call_text_model(selected_model):
+            return {
+                "rich_summary": "Summary refresh is pending. Configure an AI model provider to generate a scientific summary.",
+                "confidence": 0.0,
+                "needs_review_reasons": ["AI summary generation is not configured for the selected model."],
+                "_openai": {"model": selected_model, "configured": False},
+            }
+        summary_input, _, summary_input_text_characters, _ = self._document_input_content(
+            filename,
+            text,
+            None,
+            max_text_chars=60_000,
+        )
+        result = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_document_summary",
+            schema=SUMMARY_SCHEMA,
+            prompt=DOCUMENT_SUMMARY_PROMPT,
+            input_content=summary_input,
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_SUMMARY,
+            input_text_characters=summary_input_text_characters,
+            input_file_bytes=0,
+            used_pdf_file=False,
+            prompt_cache_key=prompt_cache_key,
+        )
+        result["rich_summary"] = strip_standalone_summary_heading(result.get("rich_summary"))
+        result["_openai"] = {
+            "model": selected_model,
+            "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+            "used_pdf_file": False,
+            "pdf_file_bytes": 0,
+        }
+        return result
+
+    def generate_tag_optimization_suggestions(
+        self,
+        tags: list[dict[str, Any]],
+        *,
+        model: str = DEFAULT_KEYWORDS_TOPICS_MODEL,
+        usage_context: OpenAIUsageContext | None = None,
+    ) -> dict[str, Any]:
+        if not self._can_call_text_model(model):
+            raise RuntimeError("OpenAI is not configured for tag optimization.")
+        input_text = (
+            "Tag inventory JSON:\n"
+            f"{json.dumps(tags, ensure_ascii=True, sort_keys=True)}\n\n"
+            "Each tag has id, name, kind, and document_count. Suggest only high-value merge candidates."
+        )
+        return self._responses_json(
+            model=model,
+            schema_name="medusa_tag_optimization",
+            schema=TAG_OPTIMIZATION_SCHEMA,
+            prompt=(
+                "You are optimizing a research-library tag taxonomy. Return at most 12 merge suggestions. "
+                "Use exact tag ids from the inventory. A suggestion should merge overly specific, duplicated, "
+                "plural/singular, punctuation, casing, or parent/child variants when a concise primitive target "
+                "tag would improve retrieval. For example, many tags beginning with 'insider threat' can often "
+                "merge into 'insider threat' when the suffixes do not preserve important distinctions. Do not "
+                "merge conceptually distinct tags merely because they share a word. Prefer short reusable target "
+                "names. If the target already exists in the inventory, use that exact target name and include "
+                "that target tag id in source_tag_ids when it is part of the merge group. The user must approve "
+                "suggestions later, so only propose; do not claim any action has been taken."
+            ),
+            input_content=[{"type": "input_text", "text": input_text}],
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_KEYWORDS_TOPICS,
+            input_text_characters=len(input_text),
+            input_file_bytes=0,
+            used_pdf_file=False,
+        )
 
     def generate_accessory_summary(
         self,

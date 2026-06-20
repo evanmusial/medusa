@@ -248,6 +248,30 @@ export type Tag = {
   name: string;
   kind: string;
   color?: string | null;
+  document_count: number;
+};
+
+export type TagOperationResult = {
+  tag: Tag;
+  updated_documents: number;
+  removed_tag_ids: string[];
+};
+
+export type TagOptimizationSuggestion = {
+  id: string;
+  target_name: string;
+  target_tag_id?: string | null;
+  source_tag_ids: string[];
+  source_tags: Tag[];
+  affected_documents: number;
+  rationale: string;
+  confidence: number;
+};
+
+export type TagOptimizationResult = {
+  model: string;
+  considered_tags: number;
+  suggestions: TagOptimizationSuggestion[];
 };
 
 export type DocumentFilters = {

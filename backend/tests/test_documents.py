@@ -169,6 +169,145 @@ def test_bulk_update_documents_can_create_custom_tag(monkeypatch, tmp_path):
         assert [tag.name for tag in second.tags] == ["new research thread"]
 
 
+def test_rename_tag_updates_counts_search_and_document_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_tags, rename_tag
+    from app.models import Document, DocumentVersion, Tag
+    from app.schemas import TagRename
+
+    Session = make_session()
+    with Session() as db:
+        tag = Tag(name="old topic", kind="keyword")
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[tag])
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[tag])
+        db.add_all([first, second])
+        db.commit()
+
+        result = rename_tag(tag.id, TagRename(name="New Topic"), object(), db)
+        db.refresh(first)
+        db.refresh(second)
+
+        versions = db.query(DocumentVersion).order_by(DocumentVersion.document_id, DocumentVersion.version_number).all()
+        tags = list_tags(object(), db)
+
+        assert result.tag.name == "new topic"
+        assert result.tag.document_count == 2
+        assert result.updated_documents == 2
+        assert tags[0].document_count == 2
+        assert [tag.name for tag in first.tags] == ["new topic"]
+        assert "new topic" in (first.search_text or "")
+        assert len(versions) == 2
+        assert {version.change_note for version in versions} == {'Renamed tag "old topic" to "new topic"'}
+        assert all(version.metadata_snapshot["operation"] == "tag_rename" for version in versions)
+
+
+def test_merge_tags_collapses_links_and_records_affected_documents(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import merge_tags
+    from app.models import Document, DocumentVersion, Tag
+    from app.schemas import TagMerge
+
+    Session = make_session()
+    with Session() as db:
+        keep = Tag(name="keep me", kind="keyword")
+        collapse = Tag(name="collapse me", kind="keyword")
+        untouched = Tag(name="untouched", kind="keyword")
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[collapse])
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[keep, collapse])
+        third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, tags=[keep])
+        fourth = Document(title="Fourth", original_filename="fourth.pdf", checksum_sha256="4" * 64, tags=[untouched])
+        db.add_all([first, second, third, fourth])
+        db.commit()
+
+        result = merge_tags(
+            TagMerge(source_tag_ids=[keep.id, collapse.id], target_name="Merged Topic"),
+            object(),
+            db,
+        )
+        db.refresh(first)
+        db.refresh(second)
+        db.refresh(third)
+        db.refresh(fourth)
+
+        remaining_names = {tag.name for tag in db.query(Tag).all()}
+        versions = db.query(DocumentVersion).order_by(DocumentVersion.document_id, DocumentVersion.version_number).all()
+
+        assert result.tag.name == "merged topic"
+        assert result.tag.document_count == 3
+        assert result.updated_documents == 3
+        assert set(result.removed_tag_ids) == {collapse.id}
+        assert remaining_names == {"merged topic", "untouched"}
+        assert [tag.name for tag in first.tags] == ["merged topic"]
+        assert [tag.name for tag in second.tags] == ["merged topic"]
+        assert [tag.name for tag in third.tags] == ["merged topic"]
+        assert [tag.name for tag in fourth.tags] == ["untouched"]
+        assert len(versions) == 3
+        assert all(version.metadata_snapshot["operation"] == "tag_merge" for version in versions)
+
+
+def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import optimize_tags
+    from app.models import Document, Tag
+    from app.schemas import TagOptimizationCreate
+
+    seen_inventory = []
+
+    class FakeAiService:
+        def generate_tag_optimization_suggestions(self, tags, *, model, usage_context):
+            seen_inventory.extend(tags)
+            assert model == "gpt-5.4-mini"
+            assert usage_context.source == "tags"
+            assert usage_context.capability_key == "tag_optimization"
+            by_name = {tag["name"]: tag["id"] for tag in tags}
+            return {
+                "suggestions": [
+                    {
+                        "target_name": "Insider Threat",
+                        "source_tag_ids": [by_name["insider threat detection"], by_name["insider threats"]],
+                        "rationale": "These are close variants of the same primitive research tag.",
+                        "confidence": 0.84,
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("app.main.get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        base = Tag(name="insider threat", kind="keyword")
+        detection = Tag(name="insider threat detection", kind="keyword")
+        plural = Tag(name="insider threats", kind="keyword")
+        unrelated = Tag(name="network defense", kind="keyword")
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[base])
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[detection])
+        third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, tags=[plural])
+        fourth = Document(title="Fourth", original_filename="fourth.pdf", checksum_sha256="4" * 64, tags=[unrelated])
+        db.add_all([first, second, third, fourth])
+        db.commit()
+
+        result = optimize_tags(TagOptimizationCreate(tag_ids=[base.id, detection.id, plural.id]), object(), db)
+
+        suggestion = result.suggestions[0]
+        inventory_counts = {tag["name"]: tag["document_count"] for tag in seen_inventory}
+
+        assert result.model == "gpt-5.4-mini"
+        assert result.considered_tags == 3
+        assert inventory_counts == {"insider threat": 1, "insider threat detection": 1, "insider threats": 1}
+        assert suggestion.target_name == "insider threat"
+        assert suggestion.target_tag_id == base.id
+        assert set(suggestion.source_tag_ids) == {base.id, detection.id, plural.id}
+        assert sorted(tag.name for tag in suggestion.source_tags) == ["insider threat", "insider threat detection", "insider threats"]
+        assert suggestion.affected_documents == 3
+        assert suggestion.confidence == 0.84
+
+
 def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

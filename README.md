@@ -19,15 +19,16 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - OpenAI usage ledger with Budget rollups for last day/month/3 months/all time, calls, tokens, estimated known-model costs, cached input tokens, PDF/file context bytes, recent errors, and task/model breakdowns
 - Per-document Cost Composition tracking for imports, including stage timings, provider/model spend, local processing duration, processing issues, and the exact pipeline/method/model path used to generate the document
 - Citation generation in Markdown APA 7 reference-list and in-text forms, with model/provenance tracking, plus BibTeX, RIS, and CSL JSON
-- Live document-level citation check/refresh controls backed by durable Concordance jobs
+- Live document-level DOI, citation, and summary check/refresh controls backed by durable Concordance jobs
 - Related-paper recommendations with default hidden-existing filtering, Unpaywall/arXiv PDF availability enrichment, Google Scholar search links, DOI/title copy actions, DOI stashing, a sortable Stashes view, and stash PDF uploads that enter the normal import queue
 - Reserved header progress control for imports, Concordance, and citation-check work, so job feedback continues after navigating away from the page that started the work without shifting the header actions
 - Async action feedback: job-starting buttons turn soft blue with the button icon spinning and a slim progress bar while work is in flight, blend through green on success, flash red on failure, and show a concise error popover when startup or completion fails
 - Queue view with Import-style progress-shaded import rows, animated processing glyphs, model/cost/stage detail, row retry/cancel, Retry Failed, Clear, and Clear Failed controls, plus bounded citation-review cards with accept/reject actions and correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
-- Saved searches, smart filters, bulk-edit controls with custom tag nomination, and selected-document Concordance Runs
+- Tags management with sortable counts, scoped tag search, audited rename, confirmed merge into an existing or newly named tag, and `gpt-5.4-mini` Optimize suggestions that show affected-document counts before user-approved merges
+- Saved searches, smart filters, searchable filter/bulk dropdowns with Enter-to-select behavior, visible priority flags in Library rows and saved-search summaries, and bulk-edit controls with custom tag nomination
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
-- Document correction pane for metadata, tags, domains, custom attributes, rendered Markdown summaries/citations, inline citation edits, extracted-text cleanup, duplicate visibility, and complete correction history with Restore as Current
+- Document correction pane for metadata, inline alphabetical tag add/remove chips, DOI Copy/Edit/Check, domains, custom attributes, rendered Markdown summaries/citations, rich Markdown summary editing, inline citation edits, extracted-text cleanup, duplicate visibility, and complete correction history with Restore as Current
 - Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
 - Stored document annotations/highlights with page, color, note body, soft delete, and search indexing; Library creation controls are deferred for a quieter redesign
 - Notes and reminders attached to documents, domains, projects, or the general library
@@ -144,7 +145,7 @@ Budget records and displays AI usage from completed and failed OpenAI Responses/
 
 Document Composition is available from the Library detail actions when a document is selected. Imports now write granular `DocumentCompositionRecord` rows for local stages, synced model usage, processing warnings/errors, and manual edits. The Composition dialog shows a Cost Composition pie chart with dollar values, provider spend, local processing time, a React Flow pipeline chart with connected steps in import execution order, and a Processing Issues section when warnings or errors occurred. Older documents without composition rows show "not available." While imports are active, the reserved header progress control includes current known dollar spend so far.
 
-Async document work is started from the app shell, not only from the page-level component that owns the button. Citation checks and Concordance controls immediately turn soft blue with their own icon spinning and a slim in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green success blend or red result flash; failures also surface a concise error message.
+Async document work is started from the app shell, not only from the page-level component that owns the button. DOI, citation, summary, and Concordance checks immediately turn soft blue with their own icon spinning and a slim in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green success blend or red result flash; failures also surface a concise error message.
 
 Worker recovery:
 

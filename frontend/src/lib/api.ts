@@ -40,6 +40,8 @@ import type {
   RuntimeLocation,
   SavedSearch,
   Tag,
+  TagOptimizationResult,
+  TagOperationResult,
   User,
 } from "../types";
 
@@ -104,6 +106,12 @@ export const api = {
   tags: () => request<Tag[]>("/api/tags"),
   createTag: (name: string, kind = "keyword") =>
     request<Tag>("/api/tags", { method: "POST", body: JSON.stringify({ name, kind }) }),
+  renameTag: (id: string, name: string) =>
+    request<TagOperationResult>(`/api/tags/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  mergeTags: (body: { source_tag_ids: string[]; target_tag_id?: string | null; target_name?: string | null }) =>
+    request<TagOperationResult>("/api/tags/merge", { method: "POST", body: JSON.stringify(body) }),
+  optimizeTags: (body: { tag_ids?: string[] | null }) =>
+    request<TagOptimizationResult>("/api/tags/optimize", { method: "POST", body: JSON.stringify(body) }),
   savedSearches: () => request<SavedSearch[]>("/api/saved-searches"),
   createSavedSearch: (body: { name: string; query?: string | null; filters?: DocumentFilters }) =>
     request<SavedSearch>("/api/saved-searches", { method: "POST", body: JSON.stringify(body) }),

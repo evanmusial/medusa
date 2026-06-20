@@ -57,11 +57,49 @@ class TagCreate(BaseModel):
     color: str | None = None
 
 
+class TagRename(BaseModel):
+    name: str
+
+
+class TagMerge(BaseModel):
+    source_tag_ids: list[str] = Field(min_length=2)
+    target_tag_id: str | None = None
+    target_name: str | None = None
+
+
 class TagOut(ApiModel):
     id: str
     name: str
     kind: str
     color: str | None = None
+    document_count: int = 0
+
+
+class TagOperationOut(BaseModel):
+    tag: TagOut
+    updated_documents: int
+    removed_tag_ids: list[str] = Field(default_factory=list)
+
+
+class TagOptimizationCreate(BaseModel):
+    tag_ids: list[str] | None = None
+
+
+class TagOptimizationSuggestionOut(BaseModel):
+    id: str
+    target_name: str
+    target_tag_id: str | None = None
+    source_tag_ids: list[str]
+    source_tags: list[TagOut]
+    affected_documents: int
+    rationale: str
+    confidence: float
+
+
+class TagOptimizationOut(BaseModel):
+    model: str
+    considered_tags: int
+    suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
 
 
 class SavedSearchCreate(BaseModel):

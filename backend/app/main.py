@@ -107,12 +107,19 @@ from app.schemas import (
     SavedSearchOut,
     SavedSearchPatch,
     TagCreate,
+    TagMerge,
+    TagOperationOut,
+    TagOptimizationCreate,
+    TagOptimizationOut,
+    TagOptimizationSuggestionOut,
     TagOut,
+    TagRename,
     UserOut,
 )
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.accessory_summaries import create_accessory_summary
 from app.services.analysis_models import (
+    DEFAULT_KEYWORDS_TOPICS_MODEL,
     MODEL_APA_CITATION,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
@@ -137,6 +144,7 @@ from app.services.citations import format_apa_citation, format_apa_in_text_citat
 from app.services.document_cache import document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
+from app.services.ai import get_ai_service
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
@@ -151,7 +159,7 @@ from app.services.preferences import (
     store_google_service_account,
     update_app_preferences,
 )
-from app.services.openai_usage import estimated_cost_usd_for_record, openai_usage_summary
+from app.services.openai_usage import OpenAIUsageContext, estimated_cost_usd_for_record, openai_usage_summary
 from app.services.recommendations import (
     doi_url,
     list_document_recommendations,
@@ -220,6 +228,27 @@ def domain_out(domain: Domain) -> DomainOut:
         color=domain.color,
         sort_order=domain.sort_order,
         document_count=len(domain.documents),
+    )
+
+
+def tag_document_count(db: Session, tag_id: str) -> int:
+    return (
+        db.query(func.count(Document.id))
+        .select_from(Document)
+        .join(Document.tags)
+        .filter(Tag.id == tag_id, Document.deleted_at.is_(None))
+        .scalar()
+        or 0
+    )
+
+
+def tag_out(tag: Tag, db: Session) -> TagOut:
+    return TagOut(
+        id=tag.id,
+        name=tag.name,
+        kind=tag.kind,
+        color=tag.color,
+        document_count=tag_document_count(db, tag.id),
     )
 
 
@@ -348,6 +377,61 @@ def get_or_create_tag_by_name(db: Session, name: str, kind: str = "keyword") -> 
     db.add(tag)
     db.flush()
     return tag
+
+
+def active_documents_for_tag_ids(db: Session, tag_ids: list[str]) -> list[Document]:
+    if not tag_ids:
+        return []
+    return (
+        db.query(Document)
+        .filter(Document.deleted_at.is_(None), Document.tags.any(Tag.id.in_(tag_ids)))
+        .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
+        .order_by(Document.title, Document.id)
+        .all()
+    )
+
+
+def unique_tag_ids(tag_ids: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique_ids: list[str] = []
+    for tag_id in tag_ids:
+        if tag_id in seen:
+            continue
+        seen.add(tag_id)
+        unique_ids.append(tag_id)
+    return unique_ids
+
+
+def record_tag_operation_history(
+    db: Session,
+    *,
+    documents: list[Document],
+    before_by_id: dict[str, dict[str, Any]],
+    change_note: str,
+    operation: str,
+    extra: dict[str, Any],
+) -> int:
+    updated_documents = 0
+    for document in documents:
+        before = before_by_id.get(document.id) or document_correction_snapshot(document)
+        after = document_correction_snapshot(document)
+        changed_fields = set(changed_snapshot_fields(before, after))
+        if "tags" not in changed_fields:
+            continue
+        document.search_text = rebuild_document_search_text(document)
+        changed_fields.add("tags")
+        record_document_version(
+            db,
+            document=document,
+            change_note=change_note,
+            changed_fields=changed_fields,
+            before=before,
+            after=after,
+            extra={"operation": operation, **extra},
+        )
+        record_manual_edit(db, document=document, message=change_note, metadata={"operation": operation, **extra})
+        updated_documents += 1
+    return updated_documents
 
 
 def get_or_create_attribute_definition(db: Session, key: str) -> AttributeDefinition | None:
@@ -715,8 +799,8 @@ def create_domain(
 
 
 @app.get("/api/tags", response_model=list[TagOut])
-def list_tags(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[Tag]:
-    return db.query(Tag).order_by(Tag.kind, Tag.name).all()
+def list_tags(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[TagOut]:
+    return [tag_out(tag, db) for tag in db.query(Tag).order_by(Tag.kind, Tag.name).all()]
 
 
 @app.post("/api/tags", response_model=TagOut)
@@ -724,12 +808,211 @@ def create_tag(
     payload: TagCreate,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> Tag:
-    tag = Tag(name=payload.name.strip().lower(), kind=payload.kind, color=payload.color)
+) -> TagOut:
+    name = normalize_tag_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Tag name is required")
+    tag = Tag(name=name, kind=payload.kind, color=payload.color)
     db.add(tag)
     db.commit()
     db.refresh(tag)
-    return tag
+    return tag_out(tag, db)
+
+
+@app.patch("/api/tags/{tag_id}", response_model=TagOperationOut)
+def rename_tag(
+    tag_id: str,
+    payload: TagRename,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagOperationOut:
+    tag = db.get(Tag, tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    normalized = normalize_tag_name(payload.name)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Tag name is required")
+    if normalized == tag.name:
+        return TagOperationOut(tag=tag_out(tag, db), updated_documents=0, removed_tag_ids=[])
+    existing = db.query(Tag).filter(Tag.id != tag.id, Tag.name == normalized).one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="A tag with that name already exists. Use Merge to combine tags.")
+
+    old_name = tag.name
+    documents = active_documents_for_tag_ids(db, [tag.id])
+    before_by_id = {document.id: document_correction_snapshot(document) for document in documents}
+    tag.name = normalized
+    db.flush()
+    updated_documents = record_tag_operation_history(
+        db,
+        documents=documents,
+        before_by_id=before_by_id,
+        change_note=f'Renamed tag "{old_name}" to "{normalized}"',
+        operation="tag_rename",
+        extra={"tag_id": tag.id, "old_name": old_name, "new_name": normalized},
+    )
+    db.commit()
+    db.refresh(tag)
+    return TagOperationOut(tag=tag_out(tag, db), updated_documents=updated_documents, removed_tag_ids=[])
+
+
+@app.post("/api/tags/merge", response_model=TagOperationOut)
+def merge_tags(
+    payload: TagMerge,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagOperationOut:
+    source_ids = unique_tag_ids(payload.source_tag_ids)
+    if len(source_ids) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two tags to merge")
+    source_rows = db.query(Tag).filter(Tag.id.in_(source_ids)).all()
+    if len(source_rows) != len(source_ids):
+        raise HTTPException(status_code=404, detail="One or more tags were not found")
+    source_by_id = {tag.id: tag for tag in source_rows}
+    source_tags = [source_by_id[tag_id] for tag_id in source_ids]
+    source_names = {tag.id: tag.name for tag in source_tags}
+
+    target_tag: Tag | None = None
+    target_name = normalize_tag_name(payload.target_name or "")
+    if payload.target_tag_id:
+        if payload.target_tag_id not in source_by_id:
+            raise HTTPException(status_code=400, detail="Kept tag must be one of the selected tags")
+        target_tag = source_by_id[payload.target_tag_id]
+    elif target_name:
+        target_tag = db.query(Tag).filter(Tag.name == target_name).one_or_none()
+        if target_tag is None:
+            target_tag = source_tags[0]
+    else:
+        raise HTTPException(status_code=400, detail="Choose a tag to keep or enter a new tag name")
+
+    documents = active_documents_for_tag_ids(db, source_ids)
+    before_by_id = {document.id: document_correction_snapshot(document) for document in documents}
+
+    if target_name and target_tag.name != target_name:
+        collision = db.query(Tag).filter(Tag.id != target_tag.id, Tag.name == target_name).one_or_none()
+        if collision:
+            target_tag = collision
+        else:
+            target_tag.name = target_name
+
+    removed_tag_ids: list[str] = []
+    for document in documents:
+        next_tags = [tag for tag in document.tags if tag.id not in source_ids or tag.id == target_tag.id]
+        if all(tag.id != target_tag.id for tag in next_tags):
+            next_tags.append(target_tag)
+        document.tags = list({tag.id: tag for tag in next_tags}.values())
+
+    for tag in source_tags:
+        if tag.id == target_tag.id:
+            continue
+        removed_tag_ids.append(tag.id)
+        db.delete(tag)
+
+    db.flush()
+    updated_documents = record_tag_operation_history(
+        db,
+        documents=documents,
+        before_by_id=before_by_id,
+        change_note=f'Merged {len(source_tags)} tags into "{target_tag.name}"',
+        operation="tag_merge",
+        extra={
+            "source_tag_ids": source_ids,
+            "source_tag_names": source_names,
+            "target_tag_id": target_tag.id,
+            "target_tag_name": target_tag.name,
+            "removed_tag_ids": removed_tag_ids,
+        },
+    )
+    db.commit()
+    db.refresh(target_tag)
+    return TagOperationOut(tag=tag_out(target_tag, db), updated_documents=updated_documents, removed_tag_ids=removed_tag_ids)
+
+
+@app.post("/api/tags/optimize", response_model=TagOptimizationOut)
+def optimize_tags(
+    payload: TagOptimizationCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagOptimizationOut:
+    requested_ids = unique_tag_ids(payload.tag_ids or [])
+    query = db.query(Tag)
+    if requested_ids:
+        query = query.filter(Tag.id.in_(requested_ids))
+    tag_rows = query.order_by(Tag.kind, Tag.name).all()
+    if requested_ids and len(tag_rows) != len(requested_ids):
+        raise HTTPException(status_code=404, detail="One or more tags were not found")
+    if len(tag_rows) < 2:
+        raise HTTPException(status_code=400, detail="At least two tags are required for optimization")
+
+    inventory = [
+        {
+            "id": tag.id,
+            "name": tag.name,
+            "kind": tag.kind,
+            "document_count": tag_document_count(db, tag.id),
+        }
+        for tag in tag_rows
+    ]
+    try:
+        result = get_ai_service().generate_tag_optimization_suggestions(
+            inventory,
+            model=DEFAULT_KEYWORDS_TOPICS_MODEL,
+            usage_context=OpenAIUsageContext(source="tags", capability_key="tag_optimization"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Tag optimization failed: {exc}") from exc
+
+    tag_by_id = {tag.id: tag for tag in tag_rows}
+    considered_tag_by_name = {tag.name: tag for tag in tag_rows}
+    all_tag_by_name = {tag.name: tag for tag in db.query(Tag).all()}
+    suggestions: list[TagOptimizationSuggestionOut] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    raw_suggestions = result.get("suggestions") if isinstance(result, dict) else None
+    suggestion_items = raw_suggestions if isinstance(raw_suggestions, list) else []
+    for item in suggestion_items:
+        if not isinstance(item, dict):
+            continue
+        target_name = normalize_tag_name(str(item.get("target_name") or ""))
+        if not target_name:
+            continue
+        source_ids = unique_tag_ids([str(tag_id) for tag_id in item.get("source_tag_ids") or [] if str(tag_id) in tag_by_id])
+        target_in_scope = considered_tag_by_name.get(target_name)
+        if target_in_scope and target_in_scope.id not in source_ids:
+            source_ids.append(target_in_scope.id)
+        if len(source_ids) < 2:
+            continue
+        key = (target_name, tuple(sorted(source_ids)))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            confidence = float(item.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0
+        confidence = min(1.0, max(0.0, confidence))
+        affected_documents = len(active_documents_for_tag_ids(db, source_ids))
+        source_tags = [tag_by_id[tag_id] for tag_id in source_ids]
+        target_tag = all_tag_by_name.get(target_name)
+        suggestions.append(
+            TagOptimizationSuggestionOut(
+                id=f"{target_name}:{','.join(sorted(source_ids))}",
+                target_name=target_name,
+                target_tag_id=target_tag.id if target_tag else None,
+                source_tag_ids=source_ids,
+                source_tags=[tag_out(tag, db) for tag in source_tags],
+                affected_documents=affected_documents,
+                rationale=str(item.get("rationale") or "These tags appear to overlap and may be clearer as one tag."),
+                confidence=confidence,
+            )
+        )
+        if len(suggestions) >= 12:
+            break
+
+    return TagOptimizationOut(
+        model=DEFAULT_KEYWORDS_TOPICS_MODEL,
+        considered_tags=len(tag_rows),
+        suggestions=suggestions,
+    )
 
 
 @app.get("/api/saved-searches", response_model=list[SavedSearchOut])

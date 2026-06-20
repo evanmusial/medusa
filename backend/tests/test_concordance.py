@@ -248,3 +248,77 @@ def test_concordance_citation_refresh_fills_missing_fields_from_stored_crossref(
         assert document.apa_in_text_citation_model == "gpt-5.5"
         db.refresh(stale_candidate)
         assert stale_candidate.status == "superseded"
+
+
+def test_concordance_summary_refresh_uses_summary_only_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+    from app.services.concordance import ConcordanceProcessor
+    from app.services.preferences import update_app_preferences
+
+    calls: list[dict[str, object]] = []
+
+    class FakeAiService:
+        def generate_document_summary(self, filename, text, *, model=None, usage_context=None, prompt_cache_key=None):
+            calls.append(
+                {
+                    "filename": filename,
+                    "text": text,
+                    "model": model,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
+                "rich_summary": "**Fresh** summary\n\n- Method: close read",
+                "confidence": 0.91,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "used_pdf_file": False},
+            }
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        update_app_preferences(db, analysis_models={"summary": "gpt-5.4-mini"})
+        document = Document(
+            title="Summary Target",
+            original_filename="summary-target.pdf",
+            checksum_sha256="9" * 64,
+            rich_summary="Old summary",
+            search_text="Original searchable document text.",
+        )
+        db.add(document)
+        run = ConcordanceRun(scope_type="library", scope_data={}, capability_keys=["summary_refresh"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run_id=run.id,
+            document_id=document.id,
+            capability_key="summary_refresh",
+            target_version=1,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+        db.refresh(document)
+
+        assert job.status == "complete"
+        assert run.status == "complete"
+        assert document.rich_summary == "**Fresh** summary\n\n- Method: close read"
+        assert "Fresh" in (document.search_text or "")
+        assert "Method: close read" in (document.search_text or "")
+        assert document.metadata_evidence["summary_refresh"]["model"] == "gpt-5.4-mini"
+        assert document.capabilities[0].capability_key == "summary_refresh"
+        assert calls == [
+            {
+                "filename": "summary-target.pdf",
+                "text": "Original searchable document text.",
+                "model": "gpt-5.4-mini",
+                "capability_key": "summary_refresh",
+                "prompt_cache_key": f"medusa-doc:{'9' * 64}:summary",
+            }
+        ]

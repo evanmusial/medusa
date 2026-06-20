@@ -103,7 +103,14 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     ),
 )
 
-CAPABILITY_BY_KEY = {capability.key: capability for capability in CURRENT_CAPABILITIES}
+SUMMARY_REFRESH_CAPABILITY = CapabilityDefinition(
+    key="summary_refresh",
+    label="Summary refresh",
+    version=1,
+    description="Regenerate the main Markdown document summary using only the selected Summary model.",
+)
+
+CAPABILITY_BY_KEY = {capability.key: capability for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY)}
 
 
 def _summary_needs_markdown_refresh(summary: str | None) -> bool:
@@ -346,6 +353,8 @@ class ConcordanceProcessor:
                 evidence = self._rebuild_search_index(document)
             elif job.capability_key == "citation_refresh":
                 evidence = self._refresh_citation(db, document, job)
+            elif job.capability_key == "summary_refresh":
+                evidence = self._refresh_summary(db, document, job)
             elif job.capability_key == "summary_topics":
                 evidence = self._refresh_summary_topics(db, document, job)
             elif job.capability_key == "figure_assets":
@@ -547,6 +556,45 @@ class ConcordanceProcessor:
             "filled_fields": filled_fields,
             "citation_model": document.apa_citation_model,
             "citation_source": document.apa_citation_source,
+        }
+
+    def _refresh_summary(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        before = document_correction_snapshot(document)
+        ai = get_ai_service()
+        summary_model = get_analysis_model(db, MODEL_SUMMARY)
+        summary = ai.generate_document_summary(
+            document.original_filename,
+            document.search_text or "",
+            model=summary_model,
+            usage_context=self._usage_context(document, job, "summary_refresh"),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:summary",
+        )
+        metadata_evidence = dict(document.metadata_evidence or {})
+        metadata_evidence["summary_refresh"] = {
+            "confidence": summary.get("confidence"),
+            "needs_review_reasons": summary.get("needs_review_reasons") or [],
+            **(summary.get("_openai") or {}),
+        }
+        document.metadata_evidence = metadata_evidence
+        if summary.get("rich_summary"):
+            document.rich_summary = summary["rich_summary"]
+        after = document_correction_snapshot(document)
+        changed_fields = changed_snapshot_fields(before, after)
+        if changed_fields:
+            document.search_text = rebuild_document_search_text(document)
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance summary refresh",
+                changed_fields=changed_fields,
+                before=before,
+                after=after,
+                extra={"run_id": job.run_id, "concordance_job_id": job.id},
+            )
+        return {
+            "confidence": summary.get("confidence"),
+            "summary_model": (summary.get("_openai") or {}).get("model") or summary_model,
+            "configured": (summary.get("_openai") or {}).get("configured", True),
         }
 
     def _refresh_summary_topics(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
