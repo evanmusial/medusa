@@ -37,3 +37,23 @@ def test_document_cache_budget_prunes_completed_document_copies(monkeypatch, tmp
         assert not second_path.exists()
         assert first.metadata_evidence["document_cache"]["status"] == "pruned"
         assert second.metadata_evidence["document_cache"]["status"] == "pruned"
+
+
+def test_current_document_cache_usage_reports_nearest_mb(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.services.document_cache import current_document_cache_usage, document_cache_root
+
+    get_settings.cache_clear()
+    root = document_cache_root()
+    (root / "first.pdf").write_bytes(b"a" * (1024 * 1024))
+    (root / "nested").mkdir()
+    (root / "nested" / "second.bin").write_bytes(b"b" * (512 * 1024))
+
+    usage = current_document_cache_usage()
+
+    assert usage["current_size_bytes"] == 1572864
+    assert usage["current_size_mb"] == 2
+    assert usage["file_count"] == 2

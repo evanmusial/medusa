@@ -3732,6 +3732,34 @@ pre {
   overflow: auto;
 }
 
+.tag-optimization-section {
+  border-top: 1px solid var(--line);
+}
+
+.tag-optimization-section:first-child {
+  border-top: 0;
+}
+
+.tag-optimization-section-head {
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.tag-optimization-section-head strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.tag-optimization-section-head span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 750;
+}
+
 .tag-optimization-suggestion {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -4583,8 +4611,19 @@ pre {
 
 .settings-tile {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   align-content: start;
+  min-height: 132px;
+}
+
+.settings-grid > .settings-tile {
+  padding: 18px 20px;
+}
+
+.settings-tile > svg {
+  width: 30px;
+  height: 30px;
+  color: var(--ink);
 }
 
 .settings-tile h2,
@@ -4600,6 +4639,11 @@ pre {
   font-size: 16px;
 }
 
+.settings-tile h2 {
+  font-size: 20px;
+  line-height: 1.1;
+}
+
 .settings-tile p,
 .export-panel p,
 .database-backup-panel p,
@@ -4610,6 +4654,11 @@ pre {
   margin: 0;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.settings-tile p {
+  font-size: 17px;
+  line-height: 1.35;
 }
 
 .preferences-panel {
@@ -4628,6 +4677,20 @@ pre {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: start;
+}
+
+.storage-settings-grid .preference-control {
+  align-content: start;
+  grid-template-rows: 24px auto auto auto;
+}
+
+.storage-settings-grid .preference-control label {
+  min-height: 24px;
+}
+
+.storage-settings-grid .preference-control input[type="text"] {
+  min-height: 42px;
 }
 
 .storage-settings-grid input[readonly] {
@@ -4944,7 +5007,7 @@ pre {
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 500;
   padding: 0 10px;
   text-align: left;
 }
@@ -5003,7 +5066,7 @@ pre {
   color: var(--ink);
   font: inherit;
   font-size: 13px;
-  font-weight: 750;
+  font-weight: 500;
   padding: 0 8px;
   text-align: left;
 }
@@ -5015,7 +5078,7 @@ pre {
 
 .model-default-marker {
   color: var(--muted);
-  font-weight: 700;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -5178,13 +5241,13 @@ pre {
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 
 .backup-size-estimate {
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 500;
 }
 
 .restore-source-grid {
@@ -5210,7 +5273,7 @@ pre {
   min-height: 38px;
   color: var(--ink);
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 500;
   text-transform: none;
 }
 
@@ -5249,6 +5312,7 @@ pre {
   min-width: 0;
   color: var(--ink);
   font-size: 13px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5263,13 +5327,14 @@ pre {
 
 .verified-backup-value strong {
   flex: 0 1 auto;
+  font-weight: 500;
 }
 
 .verified-backup-value small {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .backup-history {
@@ -5344,14 +5409,14 @@ pre {
 .backup-history-main strong {
   color: var(--ink);
   font-size: 12px;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .backup-history-main small,
 .backup-history-row > span:not(.pill) {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .legacy-export-actions {
@@ -5483,6 +5548,11 @@ pre {
 .run-history {
   display: grid;
   gap: 4px;
+}
+
+.concordance-run-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .run-row {

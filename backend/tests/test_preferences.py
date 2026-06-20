@@ -111,6 +111,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         MODEL_SUMMARY,
     )
     from app.services.preferences import (
+        DEFAULT_DOCUMENT_CACHE_SIZE_MB,
         DOCUMENT_CACHE_SIZE_MB_KEY,
         get_app_preferences,
         update_app_preferences,
@@ -118,6 +119,8 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
 
     Session = make_session()
     with Session() as db:
+        assert get_app_preferences(db)["document_cache_size_mb"] == DEFAULT_DOCUMENT_CACHE_SIZE_MB
+
         preferences = update_app_preferences(
             db,
             document_cache_size_mb=512,

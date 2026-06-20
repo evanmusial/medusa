@@ -61,6 +61,7 @@ import {
   Save,
   Search,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Sun,
   Tags,
@@ -198,6 +199,7 @@ type ConcordanceRunRequest = {
   scope_type?: string;
 };
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
+type SettingsSaveHandler = () => Promise<boolean>;
 type SelectMenuOption = { id: string; name: string };
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
@@ -7048,9 +7050,13 @@ function TagsView({ tags }: { tags: Tag[] }) {
     [selectedIds, visibleTags],
   );
   const optimizationScopeLabel = selectedIds.length ? `${selectedIds.length} selected` : `${visibleTags.length} visible`;
-  const optimizationAffectedDocuments = useMemo(
-    () => optimizationResult?.suggestions.reduce((total, suggestion) => total + suggestion.affected_documents, 0) ?? 0,
+  const allOptimizationSuggestions = useMemo(
+    () => [...(optimizationResult?.suggestions ?? []), ...(optimizationResult?.singleton_suggestions ?? [])],
     [optimizationResult],
+  );
+  const optimizationAffectedDocuments = useMemo(
+    () => allOptimizationSuggestions.reduce((total, suggestion) => total + suggestion.affected_documents, 0),
+    [allOptimizationSuggestions],
   );
   const renameTag = useMutation({
     mutationFn: ({ tag, name }: { tag: Tag; name: string }) => api.renameTag(tag.id, name),
@@ -7083,6 +7089,9 @@ function TagsView({ tags }: { tags: Tag[] }) {
           ? {
               ...current,
               suggestions: current.suggestions.filter((suggestion) => !suggestion.source_tag_ids.some((tagId) => approvedSourceIds.has(tagId))),
+              singleton_suggestions: (current.singleton_suggestions ?? []).filter(
+                (suggestion) => !suggestion.source_tag_ids.some((tagId) => approvedSourceIds.has(tagId)),
+              ),
             }
           : current,
       );
@@ -7097,9 +7106,10 @@ function TagsView({ tags }: { tags: Tag[] }) {
       setOptimizationError(null);
       setOperationError(null);
       setOptimizationPaneOpen(true);
+      const suggestionCount = result.suggestions.length + (result.singleton_suggestions?.length ?? 0);
       setNotice(
-        result.suggestions.length
-          ? `Found ${result.suggestions.length} optimization suggestion${result.suggestions.length === 1 ? "" : "s"}`
+        suggestionCount
+          ? `Found ${suggestionCount} optimization suggestion${suggestionCount === 1 ? "" : "s"}`
           : `No optimization suggestions found for ${optimizationScopeLabel}`,
       );
     },
@@ -7116,6 +7126,9 @@ function TagsView({ tags }: { tags: Tag[] }) {
         ? {
             ...current,
             suggestions: current.suggestions.filter((suggestion) => suggestion.source_tag_ids.every((tagId) => tagIdSet.has(tagId))),
+            singleton_suggestions: (current.singleton_suggestions ?? []).filter((suggestion) =>
+              suggestion.source_tag_ids.every((tagId) => tagIdSet.has(tagId)),
+            ),
           }
         : current,
     );
@@ -7152,7 +7165,13 @@ function TagsView({ tags }: { tags: Tag[] }) {
   };
   const dismissSuggestion = (suggestionId: string) => {
     setOptimizationResult((current) =>
-      current ? { ...current, suggestions: current.suggestions.filter((suggestion) => suggestion.id !== suggestionId) } : current,
+      current
+        ? {
+            ...current,
+            suggestions: current.suggestions.filter((suggestion) => suggestion.id !== suggestionId),
+            singleton_suggestions: (current.singleton_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
+          }
+        : current,
     );
   };
   const approveSuggestion = (suggestion: TagOptimizationSuggestion) => {
@@ -7169,6 +7188,66 @@ function TagsView({ tags }: { tags: Tag[] }) {
     optimizeTags.mutate();
   };
   const selectedTag = selectedTags.length === 1 ? selectedTags[0] : undefined;
+  const renderOptimizationSuggestion = (suggestion: TagOptimizationSuggestion) => {
+    const sortedSourceTags = sortByName(suggestion.source_tags);
+    return (
+      <article className="tag-optimization-suggestion" key={suggestion.id}>
+        <div className="tag-suggestion-main">
+          <div className="tag-suggestion-title">
+            <strong>{suggestion.target_name}</strong>
+            <span>
+              {suggestion.affected_documents} document{suggestion.affected_documents === 1 ? "" : "s"} affected /{" "}
+              {formatTagOptimizationConfidence(suggestion.confidence)} confidence
+            </span>
+          </div>
+          <p>{suggestion.rationale}</p>
+          <div className="tag-suggestion-tags" aria-label="Source tags">
+            {sortedSourceTags.map((tag) => (
+              <span key={tag.id}>
+                {tag.name}
+                <small>{tag.document_count}</small>
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="tag-suggestion-actions">
+          <button
+            className="primary-button compact"
+            type="button"
+            data-disabled-reason="a tag merge is already running."
+            data-tooltip={`Apply this suggestion by merging its source tags into ${suggestion.target_name}.`}
+            disabled={mergeTags.isPending}
+            onClick={() => approveSuggestion(suggestion)}
+          >
+            <Tags size={15} />
+            Approve Merge
+          </button>
+          <button
+            className="secondary-button compact"
+            type="button"
+            data-disabled-reason="a tag merge is already running."
+            data-tooltip="Choose a different tag name for this merge suggestion."
+            disabled={mergeTags.isPending}
+            onClick={() => openSuggestionMergeInto(suggestion)}
+          >
+            <Merge size={15} />
+            Merge Into...
+          </button>
+          <button
+            className="secondary-button compact"
+            type="button"
+            data-disabled-reason="a tag merge is already running."
+            data-tooltip="Dismiss this suggestion from the current optimization plan without changing tags."
+            disabled={mergeTags.isPending}
+            onClick={() => dismissSuggestion(suggestion.id)}
+          >
+            <X size={15} />
+            Dismiss
+          </button>
+        </div>
+      </article>
+    );
+  };
 
   return (
     <section className={`workbench tags-workbench${optimizationPaneOpen ? " has-optimization-pane" : ""}`}>
@@ -7285,7 +7364,13 @@ function TagsView({ tags }: { tags: Tag[] }) {
             <div className="tag-optimization-head">
               <div>
                 <span>Optimization Plan</span>
-                <strong>{optimizeTags.isPending ? "Building plan" : optimizationResult ? `${optimizationResult.suggestions.length} proposed merge${optimizationResult.suggestions.length === 1 ? "" : "s"}` : "Ready to optimize"}</strong>
+                <strong>
+                  {optimizeTags.isPending
+                    ? "Building plan"
+                    : optimizationResult
+                      ? `${allOptimizationSuggestions.length} proposed merge${allOptimizationSuggestions.length === 1 ? "" : "s"}`
+                      : "Ready to optimize"}
+                </strong>
               </div>
               <button className="icon-button" type="button" data-tooltip="Close the tag optimization plan pane." onClick={() => setOptimizationPaneOpen(false)}>
                 <X size={16} />
@@ -7294,7 +7379,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
             <div className="tag-optimization-summary">
               <span>{optimizationResult ? optimizationResult.model : "gpt-5.4-mini"}</span>
               <span>{optimizationResult ? `${optimizationResult.considered_tags} reviewed` : `${optimizationScopeLabel} tags`}</span>
-              {optimizationResult?.suggestions.length ? <span>{optimizationAffectedDocuments} affected document references</span> : null}
+              {allOptimizationSuggestions.length ? <span>{optimizationAffectedDocuments} affected document references</span> : null}
             </div>
             {optimizationError ? <p className="form-error tag-optimization-error">{optimizationError}</p> : null}
             {optimizeTags.isPending ? (
@@ -7302,68 +7387,26 @@ function TagsView({ tags }: { tags: Tag[] }) {
                 <BrainCircuit className="spin" size={18} />
                 <span>Drafting tag combination plan...</span>
               </div>
-            ) : optimizationResult?.suggestions.length ? (
+            ) : allOptimizationSuggestions.length ? (
               <div className="tag-optimization-list">
-                {optimizationResult.suggestions.map((suggestion) => {
-                  const sortedSourceTags = sortByName(suggestion.source_tags);
-                  return (
-                    <article className="tag-optimization-suggestion" key={suggestion.id}>
-                      <div className="tag-suggestion-main">
-                        <div className="tag-suggestion-title">
-                          <strong>{suggestion.target_name}</strong>
-                          <span>
-                            {suggestion.affected_documents} document{suggestion.affected_documents === 1 ? "" : "s"} affected /{" "}
-                            {formatTagOptimizationConfidence(suggestion.confidence)} confidence
-                          </span>
-                        </div>
-                        <p>{suggestion.rationale}</p>
-                        <div className="tag-suggestion-tags" aria-label="Source tags">
-                          {sortedSourceTags.map((tag) => (
-                            <span key={tag.id}>
-                              {tag.name}
-                              <small>{tag.document_count}</small>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="tag-suggestion-actions">
-                        <button
-                          className="primary-button compact"
-                          type="button"
-                          data-disabled-reason="a tag merge is already running."
-                          data-tooltip={`Apply this suggestion by merging its source tags into ${suggestion.target_name}.`}
-                          disabled={mergeTags.isPending}
-                          onClick={() => approveSuggestion(suggestion)}
-                        >
-                          <Tags size={15} />
-                          Approve Merge
-                        </button>
-                        <button
-                          className="secondary-button compact"
-                          type="button"
-                          data-disabled-reason="a tag merge is already running."
-                          data-tooltip="Choose a different tag name for this merge suggestion."
-                          disabled={mergeTags.isPending}
-                          onClick={() => openSuggestionMergeInto(suggestion)}
-                        >
-                          <Merge size={15} />
-                          Merge Into...
-                        </button>
-                        <button
-                          className="secondary-button compact"
-                          type="button"
-                          data-disabled-reason="a tag merge is already running."
-                          data-tooltip="Dismiss this suggestion from the current optimization plan without changing tags."
-                          disabled={mergeTags.isPending}
-                          onClick={() => dismissSuggestion(suggestion.id)}
-                        >
-                          <X size={15} />
-                          Dismiss
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
+                {optimizationResult?.suggestions.length ? (
+                  <section className="tag-optimization-section">
+                    <div className="tag-optimization-section-head">
+                      <strong>Primary merges</strong>
+                      <span>Strict duplicate, variant, and primitive-target candidates.</span>
+                    </div>
+                    {optimizationResult.suggestions.map(renderOptimizationSuggestion)}
+                  </section>
+                ) : null}
+                {optimizationResult?.singleton_suggestions?.length ? (
+                  <section className="tag-optimization-section singleton">
+                    <div className="tag-optimization-section-head">
+                      <strong>Single-document cleanup</strong>
+                      <span>Looser count-1 candidates from prefixes, plurals, and close variants.</span>
+                    </div>
+                    {optimizationResult.singleton_suggestions.map(renderOptimizationSuggestion)}
+                  </section>
+                ) : null}
               </div>
             ) : optimizationError ? null : optimizationResult ? (
               <p className="tag-optimization-empty">No merge suggestions found for this scope.</p>
@@ -8599,6 +8642,8 @@ function SettingsView({
   savedSearches,
   selectedDocument,
   startConcordanceRun,
+  onDirtyChange,
+  onRegisterSave,
   query,
 }: {
   backupRuns: BackupRun[];
@@ -8612,6 +8657,8 @@ function SettingsView({
   savedSearches: SavedSearch[];
   selectedDocument?: DocumentDetail;
   startConcordanceRun: StartConcordanceRun;
+  onDirtyChange?: (dirty: boolean) => void;
+  onRegisterSave?: (handler: SettingsSaveHandler | null) => void;
   query: string;
 }) {
   const [force, setForce] = useState(false);
@@ -8622,7 +8669,7 @@ function SettingsView({
   const [importWorkerConcurrency, setImportWorkerConcurrency] = useState(preferences?.import_worker_concurrency || 4);
   const [accentColorDay, setAccentColorDay] = useState(preferences?.accent_color_day || "#2563eb");
   const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
-  const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1000);
+  const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1024);
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
   const [downloadNamingTemplate, setDownloadNamingTemplate] = useState(preferences?.download_naming_template || "$title ($year)");
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
@@ -8650,6 +8697,12 @@ function SettingsView({
     enabled: Boolean(preferences),
     refetchInterval: activeBackupRun ? 4000 : 30000,
     retry: false,
+  });
+  const documentCacheStatus = useQuery({
+    queryKey: ["document-cache-status"],
+    queryFn: api.documentCacheStatus,
+    enabled: Boolean(preferences),
+    refetchInterval: 10000,
   });
 
   useEffect(() => {
@@ -8735,6 +8788,14 @@ function SettingsView({
       savePreferencesFeedback.showError(actionFailureMessage("Could not save preferences", error));
     },
   });
+  const saveAllPreferences = useCallback(async () => {
+    try {
+      await savePreferences.mutateAsync();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [savePreferences]);
   const uploadServiceAccount = useMutation({
     mutationFn: (file: File) => api.uploadGoogleServiceAccount(file),
     onSuccess: (updatedPreferences) => {
@@ -8792,7 +8853,21 @@ function SettingsView({
         (Boolean(gcsBucket.trim()) && !preferences.gcs_bucket_saved) ||
         !sameStringMap(preferences.analysis_models, analysisModels)),
   );
+  useEffect(() => {
+    onDirtyChange?.(preferenceDirty);
+  }, [onDirtyChange, preferenceDirty]);
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  useEffect(() => {
+    onRegisterSave?.(preferenceDirty ? saveAllPreferences : null);
+    return () => onRegisterSave?.(null);
+  }, [onRegisterSave, preferenceDirty, saveAllPreferences]);
+
   const importCostWarning = importWorkerConcurrency > warningThreshold;
+  const currentDocumentCacheSizeMb = documentCacheStatus.data?.current_size_mb;
+  const currentDocumentCacheSizeLabel =
+    typeof currentDocumentCacheSizeMb === "number" ? `${formatMetric(currentDocumentCacheSizeMb)} MB` : "... MB";
   const savePreferencesDisabled = !preferences || !preferenceDirty || savePreferences.isPending;
   const serviceAccountName =
     preferences?.google_service_account_name || "None, please upload a service account JSON";
@@ -8865,7 +8940,7 @@ function SettingsView({
         data-disabled-reason={savePreferencesDisabledReason}
         data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, download naming, and model selections.`}
         disabled={savePreferencesDisabled}
-        onClick={() => savePreferences.mutate()}
+        onClick={() => void saveAllPreferences()}
         type="button"
       >
         <Save size={16} />
@@ -8895,7 +8970,7 @@ function SettingsView({
       <div className="storage-settings-panel">
         <div className="panel-title-row">
           <div>
-            <h2>Storage & Google</h2>
+            <h2>Cloud Storage</h2>
             <span>{preferences?.gcs_bucket_saved ? "Saved bucket" : "Current default"}</span>
           </div>
           <Cloud size={20} />
@@ -8964,12 +9039,11 @@ function SettingsView({
             <h2>Preferences</h2>
             <span>Display and processing</span>
           </div>
-          <Settings size={20} />
+          <SlidersHorizontal size={20} />
         </div>
         <div className="preference-control">
           <label htmlFor="import-worker-concurrency">
             <span>Import workers</span>
-            <strong>{importWorkerConcurrency}</strong>
           </label>
           <input
             data-tooltip="Set how many import jobs the worker should process concurrently."
@@ -8979,7 +9053,7 @@ function SettingsView({
             type="number"
             value={importWorkerConcurrency}
           />
-          <p>Default is 4. Higher values can fan out many OpenAI calls at once.</p>
+          <p>(Default: 4) Higher values can fan out many OpenAI calls at once, but may incur cost more quickly.</p>
           {importCostWarning ? (
             <p className="preference-warning">Higher concurrency can incur a large OpenAI cost over a short amount of time.</p>
           ) : null}
@@ -8987,7 +9061,6 @@ function SettingsView({
         <div className="preference-control">
           <label htmlFor="document-cache-size">
             <span>Document Cache Size</span>
-            <strong>{documentCacheSizeMb.toLocaleString()} MB</strong>
           </label>
           <input
             data-tooltip="Set the maximum local processing-cache budget in MB for recently completed document PDFs."
@@ -8997,12 +9070,11 @@ function SettingsView({
             type="number"
             value={documentCacheSizeMb}
           />
-          <p>Default is 1,000 MB. Uploads still write originals to configured storage before cache rules apply.</p>
+          <p>(Default: 1024) Local storage before cache rules cause pruning. Current size: {currentDocumentCacheSizeLabel}</p>
         </div>
         <div className="preference-control">
           <label htmlFor="download-naming-template">
             <span>Download Naming</span>
-            <strong>{downloadNamingTemplate.trim() || "$title ($year)"}</strong>
           </label>
           <input
             autoComplete="off"
@@ -9172,18 +9244,7 @@ function SettingsView({
             <h2>Concordance Runs</h2>
             <span>{activeJobs} active jobs</span>
           </div>
-          <AsyncActionSlot busy={createRun.isPending} feedback={createRunFeedback.feedback} label="Concordance Run request in progress">
-            <button
-              className={asyncFeedbackClass("primary-button", createRunFeedback.feedback, createRun.isPending)}
-              data-disabled-reason={createRunDisabledReason}
-              data-tooltip="Start a durable Concordance Run for the selected scope and selected capabilities."
-              disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length}
-              onClick={() => createRun.mutate()}
-            >
-              <RefreshCw className={createRun.isPending ? "spin" : ""} size={16} />
-              {createRun.isPending ? "Starting" : "Start run"}
-            </button>
-          </AsyncActionSlot>
+          <RefreshCw size={20} />
         </div>
         <div className="scope-grid">
           <label>
@@ -9280,6 +9341,21 @@ function SettingsView({
               <p>{capability.description}</p>
             </article>
           ))}
+        </div>
+        <div className="concordance-run-actions">
+          <AsyncActionSlot busy={createRun.isPending} feedback={createRunFeedback.feedback} label="Concordance Run request in progress">
+            <button
+              className={asyncFeedbackClass("primary-button", createRunFeedback.feedback, createRun.isPending)}
+              data-disabled-reason={createRunDisabledReason}
+              data-tooltip="Start a durable Concordance Run for the selected scope and selected capabilities."
+              disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length}
+              onClick={() => createRun.mutate()}
+              type="button"
+            >
+              <RefreshCw className={createRun.isPending ? "spin" : ""} size={16} />
+              {createRun.isPending ? "Starting" : "Start run"}
+            </button>
+          </AsyncActionSlot>
         </div>
         <div className="run-history">
           <div className="run-row header">
@@ -9456,11 +9532,13 @@ function SettingsView({
 
 export default function App() {
   const [activeView, setActiveView] = useState<View>("library");
+  const [settingsDirty, setSettingsDirty] = useState(false);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
+  const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
   const queryClient = useQueryClient();
   const browserHost = window.location.hostname || "";
 
@@ -9598,6 +9676,26 @@ export default function App() {
     [queryClient],
   );
 
+  const requestActiveViewChange = useCallback(
+    async (view: View) => {
+      if (view === activeView) return;
+      if (activeView === "settings" && settingsDirty) {
+        const shouldSave = window.confirm(
+          "You have unsaved Settings changes. Save before leaving this page?\n\nOK saves first. Cancel leaves without saving.",
+        );
+        if (shouldSave) {
+          const saved = settingsSaveHandlerRef.current ? await settingsSaveHandlerRef.current() : false;
+          if (!saved) return;
+        }
+      }
+      setActiveView(view);
+    },
+    [activeView, settingsDirty],
+  );
+  const registerSettingsSave = useCallback((handler: SettingsSaveHandler | null) => {
+    settingsSaveHandlerRef.current = handler;
+  }, []);
+
   useEffect(() => {
     if (!selectedId && documents.data?.[0]) setSelectedId(documents.data[0].id);
   }, [documents.data, selectedId]);
@@ -9638,11 +9736,11 @@ export default function App() {
       if (event.key.toLowerCase() !== "b") return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
-      setActiveView("budget");
+      void requestActiveViewChange("budget");
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [requestActiveViewChange]);
 
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) {
@@ -9691,14 +9789,13 @@ export default function App() {
       Number(isTerminalBackgroundStatus(left.status)) - Number(isTerminalBackgroundStatus(right.status)) ||
       right.createdAt - left.createdAt,
   );
-
   return (
     <AppTooltipProvider>
       <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
         dashboard={dashboard.data}
-        onOpenQueue={() => setActiveView("queue")}
+        onOpenQueue={() => void requestActiveViewChange("queue")}
         query={query}
         setQuery={setQuery}
         theme={theme}
@@ -9707,7 +9804,7 @@ export default function App() {
       />
       <main className="content">
         <section className="content-top">
-          <WorkspaceNav activeView={activeView} counts={navCounts} setActiveView={setActiveView} />
+          <WorkspaceNav activeView={activeView} counts={navCounts} setActiveView={(view) => void requestActiveViewChange(view)} />
         </section>
         {activeView === "library" ? (
           <LibraryView
@@ -9761,6 +9858,8 @@ export default function App() {
             savedSearches={savedSearches.data || []}
             selectedDocument={selectedDocument.data}
             startConcordanceRun={startConcordanceRun}
+            onDirtyChange={setSettingsDirty}
+            onRegisterSave={registerSettingsSave}
           />
         ) : null}
       </main>

@@ -38,6 +38,26 @@ def write_document_cache(document_id: str, data: bytes) -> Path:
     return path
 
 
+def current_document_cache_usage() -> dict[str, int]:
+    root = document_cache_root()
+    total_bytes = 0
+    file_count = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            total_bytes += path.stat().st_size
+        except FileNotFoundError:
+            continue
+        file_count += 1
+    mb = 1024 * 1024
+    return {
+        "current_size_bytes": total_bytes,
+        "current_size_mb": (total_bytes + (mb // 2)) // mb,
+        "file_count": file_count,
+    }
+
+
 def metadata_cache_path(document: Document, *, require_managed: bool = False) -> Path | None:
     evidence = document.metadata_evidence or {}
     for key in ("local_cache_path", "document_cache_path"):

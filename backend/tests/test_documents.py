@@ -382,6 +382,13 @@ def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, t
         assert [tag.name for tag in suggestion.source_tags] == ["insider threat", "insider threat detection", "insider threats"]
         assert suggestion.affected_documents == 3
         assert suggestion.confidence == 0.84
+        singleton_groups = {frozenset(suggestion.source_tag_ids): suggestion for suggestion in result.singleton_suggestions}
+        plural_cleanup = singleton_groups[frozenset({base.id, plural.id})]
+        prefix_cleanup = singleton_groups[frozenset({base.id, detection.id})]
+        assert plural_cleanup.target_name == "insider threat"
+        assert plural_cleanup.confidence == 0.78
+        assert prefix_cleanup.target_name == "insider threat"
+        assert prefix_cleanup.confidence == 0.7
 
 
 def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_path):

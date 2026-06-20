@@ -27,7 +27,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Queue view with Import-style progress-shaded import rows, animated processing glyphs, model/cost/stage detail, row retry/cancel, Retry Failed, Clear, and Clear Failed controls, plus bounded citation-review cards with accept/reject actions and correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Domains management with searchable nested trees, top-level/child creation, rename, move, color, sibling reorder, soft delete, document-count visibility, and affected-document search/history updates
-- Tags management with sortable counts, scoped tag search, audited rename, confirmed merge into an existing or newly named tag, remembered merge aliases for future tag suggestions, flattened keyword/topic distinctions, and a right-side `gpt-5.4-mini` Optimize plan pane that shows scope, model, rationale, confidence, source tag counts, and affected-document counts before user-approved merges
+- Tags management with sortable counts, scoped tag search, audited rename, confirmed merge into an existing or newly named tag, remembered merge aliases for future tag suggestions, flattened keyword/topic distinctions, and a right-side `gpt-5.4-mini` Optimize plan pane that shows strict merge suggestions plus looser single-document cleanup candidates with scope, model, rationale, confidence, source tag counts, and affected-document counts before user-approved merges
 - Saved searches, smart filters, searchable filter/bulk dropdowns with Enter-to-select behavior, visible priority flags in Library rows and saved-search summaries, and bulk-edit controls with custom tag nomination
 - Concordance Runs for retroactively updating already-imported documents to current capability versions
 - Document correction pane for metadata, inline alphabetical tag add/remove chips, DOI Copy/Edit/Check, domains, custom attributes, rendered Markdown summaries/citations, rich Markdown summary editing, inline citation edits, extracted-text cleanup, duplicate visibility, and complete correction history with Restore as Current
@@ -81,7 +81,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/app/data/secrets/service-account.json
 
 Put the service-account JSON under ignored `data/secrets/`; Docker Compose mounts that directory read-only into backend and worker containers. The service account needs object create/read/delete access on the configured bucket and prefix.
 
-Settings > Storage & Google now shows the active GCS bucket and can save it to the local preferences table so future backend and worker operations default to that saved bucket. The same panel accepts an uploaded Google service-account JSON key; uploaded keys are stored under ignored `data/managed-secrets` with restrictive file permissions, and only the service account name/project/path summary is stored in PostgreSQL. When an uploaded key is available, Medusa prefers it for GCS, Google Vision, and Gemini/Vertex operations. If no Settings-managed key has been uploaded, the service account name field reads `None, please upload a service account JSON`, and Google clients may still fall back to configured env JSON or mounted ADC/gcloud credentials where available.
+Settings > Cloud Storage now shows the active GCS bucket and can save it to the local preferences table so future backend and worker operations default to that saved bucket. The same panel accepts an uploaded Google service-account JSON key; uploaded keys are stored under ignored `data/managed-secrets` with restrictive file permissions, and only the service account name/project/path summary is stored in PostgreSQL. When an uploaded key is available, Medusa prefers it for GCS, Google Vision, and Gemini/Vertex operations. If no Settings-managed key has been uploaded, the service account name field reads `None, please upload a service account JSON`, and Google clients may still fall back to configured env JSON or mounted ADC/gcloud credentials where available.
 
 OpenAI:
 
@@ -154,14 +154,14 @@ Worker recovery:
 ```bash
 MEDUSA_IMPORT_WORKER_CONCURRENCY=4
 MEDUSA_WORKER_STALE_JOB_SECONDS=900
-MEDUSA_DOCUMENT_CACHE_SIZE_MB=1000
+MEDUSA_DOCUMENT_CACHE_SIZE_MB=1024
 ```
 
 Medusa defaults to four concurrent import jobs. The env var sets the startup default, and Settings lets the local user change the active preference without editing tracked files. Values above four are allowed but can generate many OpenAI calls and costs over a short period.
 
 Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
 
-The document cache size defaults to 1,000 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time. Settings > Download Naming controls suggested original-PDF download names with `$title`, `$year`, `$authors`, `$author`, and `$pages` tokens.
+The document cache size defaults to 1,024 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time. Settings shows the current cache footprint rounded to the nearest MB. Settings > Download Naming controls suggested original-PDF download names with `$title`, `$year`, `$authors`, `$author`, and `$pages` tokens.
 
 ## Development
 

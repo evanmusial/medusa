@@ -139,9 +139,23 @@ TAG_OPTIMIZATION_SCHEMA: dict[str, Any] = {
                 },
                 "required": ["target_name", "source_tag_ids", "rationale", "confidence"],
             },
+        },
+        "singleton_suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "target_name": {"type": "string"},
+                    "source_tag_ids": {"type": "array", "items": {"type": "string"}},
+                    "rationale": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["target_name", "source_tag_ids", "rationale", "confidence"],
+            },
         }
     },
-    "required": ["suggestions"],
+    "required": ["suggestions", "singleton_suggestions"],
 }
 
 APA_CITATION_SCHEMA: dict[str, Any] = {
@@ -902,15 +916,20 @@ class AiService:
             schema_name="medusa_tag_optimization",
             schema=TAG_OPTIMIZATION_SCHEMA,
             prompt=(
-                "You are optimizing a research-library tag taxonomy. Return at most 12 merge suggestions. "
-                "Use exact tag ids from the inventory. A suggestion should merge overly specific, duplicated, "
-                "plural/singular, punctuation, casing, or parent/child variants when a concise primitive target "
-                "tag would improve retrieval. For example, many tags beginning with 'insider threat' can often "
-                "merge into 'insider threat' when the suffixes do not preserve important distinctions. Do not "
-                "merge conceptually distinct tags merely because they share a word. Prefer short reusable target "
-                "names. If the target already exists in the inventory, use that exact target name and include "
-                "that target tag id in source_tag_ids when it is part of the merge group. The user must approve "
-                "suggestions later, so only propose; do not claim any action has been taken."
+                "You are optimizing a research-library tag taxonomy. Return two arrays. First, suggestions: at "
+                "most 12 high-value merge suggestions under the usual stricter rules. Second, "
+                "singleton_suggestions: at most 12 additional cleanup candidates aimed at reducing tags with "
+                "document_count 1, using slightly looser judgment. Use exact tag ids from the inventory. A "
+                "strict suggestion should merge overly specific, duplicated, plural/singular, punctuation, "
+                "casing, or parent/child variants when a concise primitive target tag would improve retrieval. "
+                "For singleton_suggestions, especially look for single-document tags that can merge into an "
+                "existing broader prefix, plural/singular variants, hyphenation/format variants, or obvious "
+                "common-sense same-concept labels. For example, many tags beginning with 'insider threat' can "
+                "often merge into 'insider threat' when the suffixes do not preserve important distinctions. "
+                "Do not merge conceptually distinct tags merely because they share a word. Prefer short reusable "
+                "target names. If the target already exists in the inventory, use that exact target name and "
+                "include that target tag id in source_tag_ids when it is part of the merge group. The user must "
+                "approve suggestions later, so only propose; do not claim any action has been taken."
             ),
             input_content=[{"type": "input_text", "text": input_text}],
             timeout=self.settings.openai_request_timeout_seconds,

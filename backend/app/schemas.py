@@ -122,6 +122,7 @@ class TagOptimizationOut(BaseModel):
     model: str
     considered_tags: int
     suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
+    singleton_suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
 
 
 class SavedSearchCreate(BaseModel):
@@ -750,6 +751,12 @@ class AppPreferencesPatch(BaseModel):
     download_naming_template: str | None = Field(default=None, max_length=240)
     gcs_bucket: str | None = None
     analysis_models: dict[str, str] | None = None
+
+
+class DocumentCacheStatusOut(BaseModel):
+    current_size_bytes: int
+    current_size_mb: int
+    file_count: int
 
 
 class OpenAIUsageTotalsOut(BaseModel):

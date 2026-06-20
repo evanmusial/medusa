@@ -71,6 +71,7 @@ from app.schemas import (
     DashboardOut,
     DocumentDetail,
     DocumentCompositionOut,
+    DocumentCacheStatusOut,
     DocumentPatch,
     DocumentPagePatch,
     DocumentRecommendationDownloadCreate,
@@ -144,7 +145,7 @@ from app.services.backups import (
 from app.services.concordance import create_concordance_run, current_capabilities
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
-from app.services.document_cache import document_cache_root, register_document_cache
+from app.services.document_cache import current_document_cache_usage, document_cache_root, register_document_cache
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.ai import get_ai_service
@@ -511,6 +512,39 @@ def unique_tag_ids(tag_ids: list[str]) -> list[str]:
     return unique_ids
 
 
+TAG_CLEANUP_PREFIX_STOPWORDS = {"a", "an", "and", "by", "for", "in", "of", "on", "the", "to", "with"}
+
+
+def cleanup_tag_tokens(name: str) -> list[str]:
+    normalized = normalize_tag_name(name)
+    token_text = "".join(character if character.isalnum() else " " for character in normalized)
+    return [token for token in token_text.split() if token]
+
+
+def cleanup_tag_singular_token(token: str) -> str:
+    if len(token) > 4 and token.endswith("ies"):
+        return f"{token[:-3]}y"
+    if len(token) > 3 and token.endswith("s") and not token.endswith(("is", "ss", "us")):
+        return token[:-1]
+    return token
+
+
+def cleanup_tag_variant_key(name: str) -> str:
+    return " ".join(cleanup_tag_singular_token(token) for token in cleanup_tag_tokens(name))
+
+
+def cleanup_prefix_target(source_name: str, candidate_name: str) -> bool:
+    source_tokens = cleanup_tag_tokens(source_name)
+    candidate_tokens = cleanup_tag_tokens(candidate_name)
+    if len(candidate_tokens) < 2 or len(source_tokens) <= len(candidate_tokens):
+        return False
+    return source_tokens[: len(candidate_tokens)] == candidate_tokens
+
+
+def useful_cleanup_prefix(tokens: list[str]) -> bool:
+    return len(tokens) >= 2 and any(token not in TAG_CLEANUP_PREFIX_STOPWORDS for token in tokens)
+
+
 def record_tag_operation_history(
     db: Session,
     *,
@@ -858,6 +892,11 @@ def patch_preferences(
     )
     db.commit()
     return preferences
+
+
+@app.get("/api/document-cache/status", response_model=DocumentCacheStatusOut)
+def document_cache_status(_: Annotated[User, Depends(current_user)]) -> dict[str, int]:
+    return current_document_cache_usage()
 
 
 @app.post("/api/preferences/google-service-account", response_model=AppPreferencesOut)
@@ -1249,27 +1288,38 @@ def optimize_tags(
     tag_by_id = {tag.id: tag for tag in tag_rows}
     considered_tag_by_name = {tag.name: tag for tag in tag_rows}
     all_tag_by_name = {tag.name: tag for tag in db.query(Tag).all()}
+    document_counts_by_id = {item["id"]: int(item["document_count"]) for item in inventory}
     suggestions: list[TagOptimizationSuggestionOut] = []
+    singleton_suggestions: list[TagOptimizationSuggestionOut] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
-    raw_suggestions = result.get("suggestions") if isinstance(result, dict) else None
-    suggestion_items = raw_suggestions if isinstance(raw_suggestions, list) else []
-    for item in suggestion_items:
+
+    def append_suggestion(
+        item: dict[str, Any],
+        destination: list[TagOptimizationSuggestionOut],
+        *,
+        fallback_rationale: str,
+        id_prefix: str = "merge",
+        require_singleton: bool = False,
+        limit: int = 12,
+    ) -> bool:
         if not isinstance(item, dict):
-            continue
+            return False
         target_name = normalize_tag_name(str(item.get("target_name") or ""))
         if not target_name:
-            continue
+            return False
         source_ids = unique_tag_ids([str(tag_id) for tag_id in item.get("source_tag_ids") or [] if str(tag_id) in tag_by_id])
         target_in_scope = considered_tag_by_name.get(target_name)
         if target_in_scope and target_in_scope.id not in source_ids:
             source_ids.append(target_in_scope.id)
         if len(source_ids) < 2:
-            continue
+            return False
+        if require_singleton and not any(document_counts_by_id.get(tag_id) == 1 for tag_id in source_ids):
+            return False
         source_tags = sorted((tag_by_id[tag_id] for tag_id in source_ids), key=lambda tag: tag.name.lower())
         source_ids = [tag.id for tag in source_tags]
         key = (target_name, tuple(source_ids))
         if key in seen:
-            continue
+            return False
         seen.add(key)
         try:
             confidence = float(item.get("confidence") or 0)
@@ -1278,25 +1328,131 @@ def optimize_tags(
         confidence = min(1.0, max(0.0, confidence))
         affected_documents = len(active_documents_for_tag_ids(db, source_ids))
         target_tag = all_tag_by_name.get(target_name)
-        suggestions.append(
+        destination.append(
             TagOptimizationSuggestionOut(
-                id=f"{target_name}:{','.join(sorted(source_ids))}",
+                id=f"{id_prefix}:{target_name}:{','.join(sorted(source_ids))}",
                 target_name=target_name,
                 target_tag_id=target_tag.id if target_tag else None,
                 source_tag_ids=source_ids,
                 source_tags=[tag_out(tag, db) for tag in source_tags],
                 affected_documents=affected_documents,
-                rationale=str(item.get("rationale") or "These tags appear to overlap and may be clearer as one tag."),
+                rationale=str(item.get("rationale") or fallback_rationale),
                 confidence=confidence,
             )
         )
-        if len(suggestions) >= 12:
+        return len(destination) >= limit
+
+    raw_suggestions = result.get("suggestions") if isinstance(result, dict) else None
+    suggestion_items = raw_suggestions if isinstance(raw_suggestions, list) else []
+    for item in suggestion_items:
+        if append_suggestion(
+            item,
+            suggestions,
+            fallback_rationale="These tags appear to overlap and may be clearer as one tag.",
+            id_prefix="merge",
+        ):
             break
+
+    raw_singleton_suggestions = result.get("singleton_suggestions") if isinstance(result, dict) else None
+    singleton_items = raw_singleton_suggestions if isinstance(raw_singleton_suggestions, list) else []
+    for item in singleton_items:
+        if append_suggestion(
+            item,
+            singleton_suggestions,
+            fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
+            id_prefix="singleton",
+            require_singleton=True,
+        ):
+            break
+
+    singleton_rows = [tag for tag in tag_rows if document_counts_by_id.get(tag.id) == 1]
+    variant_groups: dict[str, list[Tag]] = {}
+    for tag in tag_rows:
+        key = cleanup_tag_variant_key(tag.name)
+        if key:
+            variant_groups.setdefault(key, []).append(tag)
+    for group in variant_groups.values():
+        if len(singleton_suggestions) >= 12:
+            break
+        if len(group) < 2 or not any(document_counts_by_id.get(tag.id) == 1 for tag in group):
+            continue
+        target = sorted(
+            group,
+            key=lambda tag: (
+                len(cleanup_tag_tokens(tag.name)),
+                1 if document_counts_by_id.get(tag.id) == 1 else 0,
+                tag.name,
+            ),
+        )[0]
+        append_suggestion(
+            {
+                "target_name": target.name,
+                "source_tag_ids": [tag.id for tag in group],
+                "rationale": "Single-document tags with matching singular/plural or formatting forms may be the same reusable tag.",
+                "confidence": 0.78,
+            },
+            singleton_suggestions,
+            fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
+            id_prefix="singleton",
+            require_singleton=True,
+        )
+
+    prefix_groups: dict[str, set[str]] = {}
+    for singleton in singleton_rows:
+        candidates = [candidate for candidate in tag_rows if candidate.id != singleton.id and cleanup_prefix_target(singleton.name, candidate.name)]
+        if not candidates:
+            continue
+        target = sorted(candidates, key=lambda tag: (-len(cleanup_tag_tokens(tag.name)), tag.name))[0]
+        prefix_groups.setdefault(target.name, {target.id}).add(singleton.id)
+    for target_name, source_ids in sorted(prefix_groups.items()):
+        if len(singleton_suggestions) >= 12:
+            break
+        append_suggestion(
+            {
+                "target_name": target_name,
+                "source_tag_ids": sorted(source_ids),
+                "rationale": "Single-document tags share an existing broader prefix tag and may not need separate labels.",
+                "confidence": 0.7,
+            },
+            singleton_suggestions,
+            fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
+            id_prefix="singleton",
+            require_singleton=True,
+        )
+
+    shared_prefix_groups: dict[str, list[Tag]] = {}
+    for singleton in singleton_rows:
+        tokens = cleanup_tag_tokens(singleton.name)
+        prefix_tokens = tokens[:2]
+        if len(tokens) < 3 or not useful_cleanup_prefix(prefix_tokens):
+            continue
+        prefix_name = " ".join(prefix_tokens)
+        if prefix_name in considered_tag_by_name:
+            continue
+        shared_prefix_groups.setdefault(prefix_name, []).append(singleton)
+    for prefix_name, group in sorted(shared_prefix_groups.items()):
+        if len(singleton_suggestions) >= 12:
+            break
+        if len(group) < 2:
+            continue
+        append_suggestion(
+            {
+                "target_name": prefix_name,
+                "source_tag_ids": [tag.id for tag in group],
+                "rationale": "Several single-document tags share the same prefix; a shorter primitive tag may cover them better.",
+                "confidence": 0.62,
+            },
+            singleton_suggestions,
+            fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
+            id_prefix="singleton",
+            require_singleton=True,
+        )
 
     return TagOptimizationOut(
         model=DEFAULT_KEYWORDS_TOPICS_MODEL,
         considered_tags=len(tag_rows),
         suggestions=suggestions,
+        singleton_suggestions=singleton_suggestions,
     )
 
 

@@ -56,6 +56,12 @@ export type AppPreferences = {
   model_options: Record<string, string[]>;
 };
 
+export type DocumentCacheStatus = {
+  current_size_bytes: number;
+  current_size_mb: number;
+  file_count: number;
+};
+
 export type BackupRun = {
   id: string;
   kind: "backup" | "restore" | string;
@@ -290,6 +296,7 @@ export type TagOptimizationResult = {
   model: string;
   considered_tags: number;
   suggestions: TagOptimizationSuggestion[];
+  singleton_suggestions?: TagOptimizationSuggestion[];
 };
 
 export type DocumentFilters = {
