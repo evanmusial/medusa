@@ -323,8 +323,6 @@ def _execute_backup_run(run_id: str) -> None:
             json.dumps(manifest, indent=2, sort_keys=True),
             content_type="application/json",
         )
-        blob.metadata = {**(blob.metadata or {}), "verified_at": manifest["verified_at"]}
-        blob.patch()
 
         _update_run(
             run_id,
@@ -542,14 +540,21 @@ def _gcs_bucket_from_db(db: Session):
     bucket_name = get_gcs_bucket(db)
     if not bucket_name:
         raise ValueError("Save a GCS bucket in Settings before running database backups.")
-    credentials_path = get_google_service_account_path(db)
-    credentials = load_service_account_credentials(credentials_path) if credentials_path else None
-    project = getattr(credentials, "project_id", None) if credentials else get_google_project_id(db)
+    credentials, project = _gcs_credentials_from_db(db)
     from google.cloud import storage
 
     client = storage.Client(project=project, credentials=credentials)
     bucket = client.bucket(bucket_name)
     return bucket, bucket_name, backup_object_prefix(get_settings().gcs_prefix)
+
+
+def _gcs_credentials_from_db(db: Session):
+    credentials_path = get_google_service_account_path(db)
+    if not credentials_path:
+        raise ValueError("Configure a Google service account JSON before using GCS backups.")
+    credentials = load_service_account_credentials(credentials_path)
+    project = getattr(credentials, "project_id", None) or get_google_project_id(db)
+    return credentials, project
 
 
 def _download_gcs_backup(gcs_uri: str, destination: Path) -> str | None:
@@ -559,9 +564,7 @@ def _download_gcs_backup(gcs_uri: str, destination: Path) -> str | None:
     from google.cloud import storage
 
     with session_scope() as db:
-        credentials_path = get_google_service_account_path(db)
-        credentials = load_service_account_credentials(credentials_path) if credentials_path else None
-        project = getattr(credentials, "project_id", None) if credentials else get_google_project_id(db)
+        credentials, project = _gcs_credentials_from_db(db)
     client = storage.Client(project=project, credentials=credentials)
     bucket = client.bucket(parsed.netloc)
     object_key = parsed.path.lstrip("/")

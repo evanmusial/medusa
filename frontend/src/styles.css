@@ -899,6 +899,16 @@ textarea {
   gap: 3px;
 }
 
+.domain-tool-row {
+  display: grid;
+  margin-top: 8px;
+}
+
+.domain-tool-row .async-action-slot,
+.domain-tool-row .secondary-button {
+  width: 100%;
+}
+
 .domain-row {
   min-height: 28px;
   display: grid;
@@ -5229,14 +5239,16 @@ pre {
   min-width: 0;
 }
 
-.backup-action-block strong {
+.backup-action-block strong,
+.restore-action-heading strong {
   display: block;
   color: var(--ink);
   font-size: 13px;
   font-weight: 850;
 }
 
-.backup-action-block span {
+.backup-action-block span,
+.restore-action-heading span {
   display: block;
   margin-top: 3px;
   color: var(--muted);

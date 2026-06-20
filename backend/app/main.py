@@ -12,11 +12,11 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
-from app.database import get_db, init_db, is_postgres, session_scope
+from app.database import get_db, init_db, session_scope
 from app.models import (
     Annotation,
     AttributeDefinition,
@@ -304,10 +304,6 @@ def apply_document_filters(
                 Document.apa_in_text_citation.ilike(like),
             )
         )
-        if is_postgres():
-            query = query.order_by(
-                text("ts_rank(to_tsvector('english', coalesce(search_text, '')), plainto_tsquery('english', :q)) DESC")
-            ).params(q=q)
     if domain_id:
         query = query.filter(Document.domains.any(Domain.id == domain_id))
     if tag_id:
@@ -319,6 +315,18 @@ def apply_document_filters(
     if citation_status:
         query = query.filter(Document.citation_status == citation_status)
     return query
+
+
+def document_title_order_columns(db: Session):
+    title_key = func.lower(Document.title)
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        title_key = title_key.collate("C")
+    return title_key, Document.title, Document.id
+
+
+def normalize_document_title_spacing(value: str | None) -> str:
+    return " ".join((value or "").split())
 
 
 def duplicate_checksum_select():
@@ -447,7 +455,7 @@ def active_documents_for_domain_ids(db: Session, domain_ids: list[str]) -> list[
         db.query(Document)
         .filter(Document.deleted_at.is_(None), Document.domains.any(Domain.id.in_(domain_ids)))
         .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
-        .order_by(Document.title, Document.id)
+        .order_by(*document_title_order_columns(db))
         .all()
     )
 
@@ -496,7 +504,7 @@ def active_documents_for_tag_ids(db: Session, tag_ids: list[str]) -> list[Docume
         db.query(Document)
         .filter(Document.deleted_at.is_(None), Document.tags.any(Tag.id.in_(tag_ids)))
         .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
-        .order_by(Document.title, Document.id)
+        .order_by(*document_title_order_columns(db))
         .all()
     )
 
@@ -1662,7 +1670,7 @@ def list_documents(
             query = query.filter(Document.checksum_sha256.in_(duplicate_checksums))
         elif duplicate_status == "unique":
             query = query.filter(Document.checksum_sha256.notin_(duplicate_checksums))
-    documents = query.order_by(Document.created_at.desc()).limit(limit).all()
+    documents = query.order_by(None).order_by(*document_title_order_columns(db)).limit(limit).all()
     duplicate_counts = duplicate_count_by_checksum(db, [document.checksum_sha256 for document in documents])
     return [document_summary_out(document, duplicate_counts.get(document.checksum_sha256, 0)) for document in documents]
 
@@ -2517,6 +2525,47 @@ def bulk_update_documents(
             apply_project_defaults(db, document, projects, document.priority)
     db.commit()
     return {"updated": len(documents)}
+
+
+@app.post("/api/documents/title-cleanup")
+def cleanup_document_titles(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, int]:
+    documents = (
+        db.query(Document)
+        .filter(Document.deleted_at.is_(None))
+        .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
+        .all()
+    )
+    updated = 0
+    for document in documents:
+        normalized_title = normalize_document_title_spacing(document.title)
+        if not normalized_title or normalized_title == document.title:
+            continue
+        before = document_correction_snapshot(document)
+        old_title = document.title
+        document.title = normalized_title
+        document.search_text = rebuild_document_search_text(document)
+        db.flush()
+        record_document_version(
+            db,
+            document=document,
+            change_note="Title cleanup",
+            changed_fields={"title", "search_text"},
+            before=before,
+            after=document_correction_snapshot(document),
+            extra={"old_title": old_title, "new_title": normalized_title},
+        )
+        record_manual_edit(
+            db,
+            document=document,
+            message="Title cleanup",
+            metadata={"old_title": old_title, "new_title": normalized_title},
+        )
+        updated += 1
+    db.commit()
+    return {"updated": updated}
 
 
 def validate_duplicate_strategy(strategy: str) -> str:

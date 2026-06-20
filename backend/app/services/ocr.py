@@ -16,7 +16,9 @@ class OcrService:
                 from google.cloud import vision
 
                 credentials_path = get_active_google_service_account_path()
-                credentials = load_service_account_credentials(credentials_path) if credentials_path else None
+                if not credentials_path:
+                    return
+                credentials = load_service_account_credentials(credentials_path)
                 self.client = vision.ImageAnnotatorClient(credentials=credentials)
                 self.vision = vision
             except Exception:

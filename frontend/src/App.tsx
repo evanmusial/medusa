@@ -2744,6 +2744,7 @@ function LibraryView({
   const [bulkDomainId, setBulkDomainId] = useState("");
   const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
   const queryClient = useQueryClient();
+  const titleCleanupFeedback = useAsyncActionFeedback();
   const saveSearch = useMutation({
     mutationFn: () => api.createSavedSearch({ name: saveName, query, filters: cleanFilters(filters) }),
     onSuccess: () => {
@@ -2754,6 +2755,18 @@ function LibraryView({
   const deleteSearch = useMutation({
     mutationFn: (id: string) => api.deleteSavedSearch(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-searches"] }),
+  });
+  const titleCleanup = useMutation({
+    mutationFn: api.cleanupDocumentTitles,
+    onSuccess: () => {
+      titleCleanupFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => {
+      titleCleanupFeedback.showError(actionFailureMessage("Could not clean up titles", error));
+    },
   });
   const bulkUpdate = useMutation({
     mutationFn: () => {
@@ -2969,6 +2982,27 @@ function LibraryView({
           Domains
         </div>
         <DomainTree domains={domains} />
+        <div className="domain-tool-row">
+          <AsyncActionSlot busy={titleCleanup.isPending} feedback={titleCleanupFeedback.feedback} label="Title cleanup in progress">
+            <button
+              className={asyncFeedbackClass("secondary-button", titleCleanupFeedback.feedback, titleCleanup.isPending)}
+              data-disabled-reason={
+                titleCleanup.isPending
+                  ? "title cleanup is already running."
+                  : !documents.length
+                    ? "there are no documents to clean up."
+                    : ""
+              }
+              data-tooltip="Normalize every document title by trimming leading and trailing whitespace and collapsing repeated whitespace to one space."
+              disabled={titleCleanup.isPending || !documents.length}
+              onClick={() => titleCleanup.mutate()}
+              type="button"
+            >
+              <Eraser className={titleCleanup.isPending ? "spin" : ""} size={15} />
+              Title Cleanup
+            </button>
+          </AsyncActionSlot>
+        </div>
         <div className="pane-heading tags-heading">
           <Tags size={17} />
           Keywords
@@ -8677,6 +8711,8 @@ function SettingsView({
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const [selectedBackupUri, setSelectedBackupUri] = useState("");
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
+  const completedBackupArtifactIdsRef = useRef<Set<string>>(new Set());
+  const completedBackupArtifactIdsInitializedRef = useRef(false);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
@@ -8730,6 +8766,23 @@ function SettingsView({
       setSelectedBackupUri(artifacts[0].gcs_uri);
     }
   }, [gcsBackupArtifacts.data, selectedBackupUri]);
+
+  useEffect(() => {
+    const completedBackupIds = backupRuns
+      .filter((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri)
+      .map((run) => run.id);
+    const seen = completedBackupArtifactIdsRef.current;
+    const hasNewCompletedBackup = completedBackupIds.some((id) => !seen.has(id));
+    completedBackupIds.forEach((id) => seen.add(id));
+    if (!completedBackupArtifactIdsInitializedRef.current) {
+      completedBackupArtifactIdsInitializedRef.current = true;
+      return;
+    }
+    if (hasNewCompletedBackup) {
+      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
+    }
+  }, [backupRuns, queryClient]);
 
   const scopeData = () => {
     if (scopeType === "documents") return { document_ids: selectedDocument ? [selectedDocument.id] : [] };
@@ -9410,6 +9463,10 @@ function SettingsView({
             <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isFetching)}</p>
           </div>
           <div className="restore-action-block">
+            <div className="restore-action-heading">
+              <strong>Restore Database</strong>
+              <span>{backupArtifacts.length ? `${backupArtifactCountLabel} in GCS` : preferences?.gcs_bucket ? "No GCS backups found" : "Save a GCS bucket first"}</span>
+            </div>
             <div className="restore-source-grid">
               <label>
                 GCS backup

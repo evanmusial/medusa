@@ -31,7 +31,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
-      - ${HOME}/.config/gcloud:/app/data/home/.config/gcloud:ro
     depends_on:
       db:
         condition: service_healthy
@@ -55,7 +54,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
-      - ${HOME}/.config/gcloud:/app/data/home/.config/gcloud:ro
     depends_on:
       db:
         condition: service_healthy

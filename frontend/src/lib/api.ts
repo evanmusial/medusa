@@ -154,6 +154,7 @@ export const api = {
   },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),
   documentComposition: (id: string) => request<DocumentComposition>(`/api/documents/${id}/composition`),
+  cleanupDocumentTitles: () => request<{ updated: number }>("/api/documents/title-cleanup", { method: "POST" }),
   updateDocument: (id: string, body: DocumentUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   updateDocumentPageText: (documentId: string, pageId: string, body: DocumentPageUpdatePayload) =>

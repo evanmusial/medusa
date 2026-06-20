@@ -418,6 +418,62 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
         assert [document.title for document in unique_documents] == ["Unique"]
 
 
+def test_list_documents_sorts_by_title(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_documents
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(title="Zeta", original_filename="zeta.pdf", checksum_sha256="z" * 64),
+                Document(title="alpha", original_filename="alpha.pdf", checksum_sha256="a" * 64),
+                Document(title="Beta", original_filename="beta.pdf", checksum_sha256="b" * 64),
+                Document(title="Advanced methods", original_filename="advanced.pdf", checksum_sha256="c" * 64),
+                Document(title="A framework", original_filename="framework.pdf", checksum_sha256="f" * 64),
+            ]
+        )
+        db.commit()
+
+        documents = list_documents(object(), db)
+
+    assert [document.title for document in documents] == ["A framework", "Advanced methods", "alpha", "Beta", "Zeta"]
+
+
+def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import cleanup_document_titles
+    from app.models import Document, DocumentVersion
+
+    Session = make_session()
+    with Session() as db:
+        messy = Document(title="  A   messy\n title\t ", original_filename="messy.pdf", checksum_sha256="m" * 64)
+        clean = Document(title="Clean Title", original_filename="clean.pdf", checksum_sha256="c" * 64)
+        db.add_all([messy, clean])
+        db.commit()
+
+        result = cleanup_document_titles(object(), db)
+
+        versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == messy.id).all()
+        clean_versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == clean.id).all()
+
+    assert result == {"updated": 1}
+    assert messy.title == "A messy title"
+    assert messy.search_text == "A messy title"
+    assert clean.title == "Clean Title"
+    assert len(versions) == 1
+    assert versions[0].change_note == "Title cleanup"
+    assert versions[0].metadata_snapshot["changed_fields"] == ["search_text", "title"]
+    assert versions[0].metadata_snapshot["before"]["title"] == "  A   messy\n title\t "
+    assert versions[0].metadata_snapshot["after"]["title"] == "A messy title"
+    assert clean_versions == []
+
+
 def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

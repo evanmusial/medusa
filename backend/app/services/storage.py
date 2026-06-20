@@ -43,8 +43,10 @@ class GcsStorageService(StorageService):
     def __init__(self, bucket_name: str, prefix: str, credentials_path: str | None = None):
         from google.cloud import storage
 
-        credentials = load_service_account_credentials(credentials_path) if credentials_path else None
-        project = getattr(credentials, "project_id", None) if credentials else None
+        if not credentials_path:
+            raise RuntimeError("Google service account credentials are not configured.")
+        credentials = load_service_account_credentials(credentials_path)
+        project = getattr(credentials, "project_id", None)
         self.client = storage.Client(project=project, credentials=credentials)
         self.bucket = self.client.bucket(bucket_name)
         self.bucket_name = bucket_name
