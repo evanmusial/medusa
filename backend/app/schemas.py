@@ -91,7 +91,7 @@ class TagGovernancePatch(BaseModel):
 
 
 class TagMerge(BaseModel):
-    source_tag_ids: list[str] = Field(min_length=2)
+    source_tag_ids: list[str] = Field(min_length=1)
     target_tag_id: str | None = None
     target_name: str | None = None
 
@@ -148,11 +148,18 @@ class TagOptimizationPruneApproval(BaseModel):
     rationale: str | None = None
 
 
+class TagOptimizationOrphanPruneApproval(BaseModel):
+    id: str | None = None
+    tag_id: str
+    rationale: str | None = None
+
+
 class TagOptimizationApproveAllCreate(BaseModel):
     merge_suggestions: list[TagOptimizationMergeApproval] = Field(default_factory=list)
     relationship_suggestions: list[TagOptimizationRelationshipApproval] = Field(default_factory=list)
     status_suggestions: list[TagOptimizationStatusApproval] = Field(default_factory=list)
     pruning_suggestions: list[TagOptimizationPruneApproval] = Field(default_factory=list)
+    orphan_prune_suggestions: list[TagOptimizationOrphanPruneApproval] = Field(default_factory=list)
 
 
 class TagOptimizationApproveAllOut(BaseModel):
@@ -160,6 +167,7 @@ class TagOptimizationApproveAllOut(BaseModel):
     relationships_applied: int = 0
     statuses_applied: int = 0
     prunes_applied: int = 0
+    orphans_pruned: int = 0
     updated_documents: int = 0
     removed_tag_ids: list[str] = Field(default_factory=list)
     skipped: list[dict[str, str]] = Field(default_factory=list)
@@ -220,14 +228,34 @@ class TagPruneSuggestionOut(BaseModel):
     overall_score: float
 
 
+class TagOrphanPruneCreate(BaseModel):
+    tag_id: str
+    rationale: str | None = None
+
+
+class TagOrphanPruneOut(BaseModel):
+    tag_id: str
+    tag_name: str
+    removed_tag_ids: list[str] = Field(default_factory=list)
+
+
+class TagOrphanPruneSuggestionOut(BaseModel):
+    id: str
+    tag: TagOut
+    rationale: str
+    confidence: float
+
+
 class TagOptimizationOut(BaseModel):
     model: str
     considered_tags: int
     suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
     singleton_suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
+    orphan_merge_suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
     relationship_suggestions: list[TagRelationshipSuggestionOut] = Field(default_factory=list)
     status_suggestions: list[TagStatusSuggestionOut] = Field(default_factory=list)
     pruning_suggestions: list[TagPruneSuggestionOut] = Field(default_factory=list)
+    orphan_prune_suggestions: list[TagOrphanPruneSuggestionOut] = Field(default_factory=list)
     health_summary: dict[str, Any] = Field(default_factory=dict)
 
 

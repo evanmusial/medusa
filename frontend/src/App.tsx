@@ -115,6 +115,7 @@ import type {
   ProjectItem,
   SavedSearch,
   Tag,
+  TagOrphanPruneSuggestion,
   TagOptimizationResult,
   TagPruneSuggestion,
   TagRelationshipSuggestion,
@@ -7431,14 +7432,24 @@ function TagsView({ tags }: { tags: Tag[] }) {
   );
   const optimizationScopeLabel = selectedIds.length ? `${selectedIds.length} selected` : `${visibleTags.length} visible`;
   const allOptimizationSuggestions = useMemo(
-    () => [...(optimizationResult?.suggestions ?? []), ...(optimizationResult?.singleton_suggestions ?? [])],
+    () => [
+      ...(optimizationResult?.suggestions ?? []),
+      ...(optimizationResult?.singleton_suggestions ?? []),
+      ...(optimizationResult?.orphan_merge_suggestions ?? []),
+    ],
     [optimizationResult],
   );
+  const orphanMergeSuggestions = optimizationResult?.orphan_merge_suggestions ?? [];
   const relationshipSuggestions = optimizationResult?.relationship_suggestions ?? [];
   const statusSuggestions = optimizationResult?.status_suggestions ?? [];
   const pruningSuggestions = optimizationResult?.pruning_suggestions ?? [];
+  const orphanPruneSuggestions = optimizationResult?.orphan_prune_suggestions ?? [];
   const governanceSuggestionCount =
-    allOptimizationSuggestions.length + relationshipSuggestions.length + statusSuggestions.length + pruningSuggestions.length;
+    allOptimizationSuggestions.length +
+    relationshipSuggestions.length +
+    statusSuggestions.length +
+    pruningSuggestions.length +
+    orphanPruneSuggestions.length;
   const optimizationAffectedDocuments = useMemo(
     () =>
       allOptimizationSuggestions.reduce((total, suggestion) => total + suggestion.affected_documents, 0) +
@@ -7477,6 +7488,9 @@ function TagsView({ tags }: { tags: Tag[] }) {
               ...current,
               suggestions: current.suggestions.filter((suggestion) => !suggestion.source_tag_ids.some((tagId) => approvedSourceIds.has(tagId))),
               singleton_suggestions: (current.singleton_suggestions ?? []).filter(
+                (suggestion) => !suggestion.source_tag_ids.some((tagId) => approvedSourceIds.has(tagId)),
+              ),
+              orphan_merge_suggestions: (current.orphan_merge_suggestions ?? []).filter(
                 (suggestion) => !suggestion.source_tag_ids.some((tagId) => approvedSourceIds.has(tagId)),
               ),
             }
@@ -7549,6 +7563,28 @@ function TagsView({ tags }: { tags: Tag[] }) {
     },
     onError: (error) => setOperationError(actionFailureMessage("Could not prune assignment", error)),
   });
+  const pruneOrphanTag = useMutation({
+    mutationFn: (suggestion: TagOrphanPruneSuggestion) =>
+      api.pruneOrphanTag({
+        tag_id: suggestion.tag.id,
+        rationale: suggestion.rationale,
+      }),
+    onSuccess: (result, suggestion) => {
+      setOperationError(null);
+      setOptimizationResult((current) =>
+        current
+          ? {
+              ...current,
+              orphan_prune_suggestions: (current.orphan_prune_suggestions ?? []).filter((item) => item.id !== suggestion.id),
+            }
+          : current,
+      );
+      setSelectedIds((current) => current.filter((tagId) => tagId !== result.tag_id));
+      setNotice(`Pruned orphaned tag ${result.tag_name}`);
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => setOperationError(actionFailureMessage("Could not prune orphaned tag", error)),
+  });
   const optimizeTags = useMutation({
     mutationFn: () => api.optimizeTags({ tag_ids: optimizationScopeIds }),
     onSuccess: (result) => {
@@ -7559,9 +7595,11 @@ function TagsView({ tags }: { tags: Tag[] }) {
       const suggestionCount =
         result.suggestions.length +
         (result.singleton_suggestions?.length ?? 0) +
+        (result.orphan_merge_suggestions?.length ?? 0) +
         (result.relationship_suggestions?.length ?? 0) +
         (result.status_suggestions?.length ?? 0) +
-        (result.pruning_suggestions?.length ?? 0);
+        (result.pruning_suggestions?.length ?? 0) +
+        (result.orphan_prune_suggestions?.length ?? 0);
       setNotice(
         suggestionCount
           ? `Found ${suggestionCount} optimization suggestion${suggestionCount === 1 ? "" : "s"}`
@@ -7602,10 +7640,19 @@ function TagsView({ tags }: { tags: Tag[] }) {
           tag_id: suggestion.tag.id,
           rationale: suggestion.rationale,
         })),
+        orphan_prune_suggestions: orphanPruneSuggestions.map((suggestion) => ({
+          id: suggestion.id,
+          tag_id: suggestion.tag.id,
+          rationale: suggestion.rationale,
+        })),
       }),
     onSuccess: (result) => {
       const applied =
-        result.merges_applied + result.relationships_applied + result.statuses_applied + result.prunes_applied;
+        result.merges_applied +
+        result.relationships_applied +
+        result.statuses_applied +
+        result.prunes_applied +
+        result.orphans_pruned;
       const skipped = result.skipped.length;
       setOptimizationResult((current) =>
         current
@@ -7613,9 +7660,11 @@ function TagsView({ tags }: { tags: Tag[] }) {
               ...current,
               suggestions: [],
               singleton_suggestions: [],
+              orphan_merge_suggestions: [],
               relationship_suggestions: [],
               status_suggestions: [],
               pruning_suggestions: [],
+              orphan_prune_suggestions: [],
             }
           : current,
       );
@@ -7638,6 +7687,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
     updateTagGovernance.isPending ||
     createTagRelationship.isPending ||
     pruneTagAssignment.isPending ||
+    pruneOrphanTag.isPending ||
     approveAllTagOptimizations.isPending;
 
   useEffect(() => {
@@ -7651,11 +7701,15 @@ function TagsView({ tags }: { tags: Tag[] }) {
             singleton_suggestions: (current.singleton_suggestions ?? []).filter((suggestion) =>
               suggestion.source_tag_ids.every((tagId) => tagIdSet.has(tagId)),
             ),
+            orphan_merge_suggestions: (current.orphan_merge_suggestions ?? []).filter((suggestion) =>
+              suggestion.source_tag_ids.every((tagId) => tagIdSet.has(tagId)),
+            ),
             relationship_suggestions: (current.relationship_suggestions ?? []).filter(
               (suggestion) => tagIdSet.has(suggestion.source_tag.id) && tagIdSet.has(suggestion.target_tag.id),
             ),
             status_suggestions: (current.status_suggestions ?? []).filter((suggestion) => tagIdSet.has(suggestion.tag.id)),
             pruning_suggestions: (current.pruning_suggestions ?? []).filter((suggestion) => tagIdSet.has(suggestion.tag.id)),
+            orphan_prune_suggestions: (current.orphan_prune_suggestions ?? []).filter((suggestion) => tagIdSet.has(suggestion.tag.id)),
           }
         : current,
     );
@@ -7716,6 +7770,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
             ...current,
             suggestions: current.suggestions.filter((suggestion) => suggestion.id !== suggestionId),
             singleton_suggestions: (current.singleton_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
+            orphan_merge_suggestions: (current.orphan_merge_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
           }
         : current,
     );
@@ -7821,6 +7876,16 @@ function TagsView({ tags }: { tags: Tag[] }) {
         ? {
             ...current,
             pruning_suggestions: (current.pruning_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
+          }
+        : current,
+    );
+  };
+  const dismissOrphanPruneSuggestion = (suggestionId: string) => {
+    setOptimizationResult((current) =>
+      current
+        ? {
+            ...current,
+            orphan_prune_suggestions: (current.orphan_prune_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
           }
         : current,
     );
@@ -7951,6 +8016,45 @@ function TagsView({ tags }: { tags: Tag[] }) {
       </div>
     </article>
   );
+  const renderOrphanPruneSuggestion = (suggestion: TagOrphanPruneSuggestion) => (
+    <article className="tag-optimization-suggestion" key={suggestion.id}>
+      <div className="tag-suggestion-main">
+        <div className="tag-suggestion-title">
+          <strong>{suggestion.tag.name}</strong>
+          <span>{formatTagOptimizationConfidence(suggestion.confidence)} prune confidence / 0 document links</span>
+        </div>
+        <p>{suggestion.rationale}</p>
+        <div className="tag-optimization-summary inline">
+          <span>{formatTagStatus(suggestion.tag.status)}</span>
+          <span>orphaned tag</span>
+        </div>
+      </div>
+      <div className="tag-suggestion-actions">
+        <button
+          className="primary-button compact"
+          data-disabled-reason="an orphaned tag prune is already saving."
+          data-tooltip="Delete this unused tag because it has no document links."
+          disabled={pruneOrphanTag.isPending}
+          onClick={() => pruneOrphanTag.mutate(suggestion)}
+          type="button"
+        >
+          <Eraser size={15} />
+          Prune Tag
+        </button>
+        <button
+          className="secondary-button compact"
+          data-disabled-reason="an orphaned tag prune is already saving."
+          data-tooltip="Dismiss this orphaned-tag prune suggestion from the current plan."
+          disabled={pruneOrphanTag.isPending}
+          onClick={() => dismissOrphanPruneSuggestion(suggestion.id)}
+          type="button"
+        >
+          <X size={15} />
+          Dismiss
+        </button>
+      </div>
+    </article>
+  );
 
   return (
     <section className={`workbench tags-workbench${optimizationPaneOpen ? " has-optimization-pane" : ""}`}>
@@ -8068,7 +8172,11 @@ function TagsView({ tags }: { tags: Tag[] }) {
           </div>
         </div>
         {optimizationPaneOpen ? (
-          <aside className="tag-optimization-panel" aria-label="Tag optimization plan">
+          <aside
+            className="tag-optimization-panel"
+            aria-busy={approveAllTagOptimizations.isPending}
+            aria-label="Tag optimization plan"
+          >
             <div className="tag-optimization-head">
               <div className="tag-optimization-title">
                 <span>Optimization Plan</span>
@@ -8101,6 +8209,25 @@ function TagsView({ tags }: { tags: Tag[] }) {
                 </button>
               </div>
             </div>
+            {approveAllTagOptimizations.isPending ? (
+              <div className="tag-optimization-bulk-progress" role="status" aria-live="polite">
+                <div className="tag-optimization-bulk-progress-copy">
+                  <span>Bulk apply</span>
+                  <strong>
+                    Applying {governanceSuggestionCount} action{governanceSuggestionCount === 1 ? "" : "s"}
+                    {optimizationAffectedDocuments ? ` across ${optimizationAffectedDocuments} document reference${optimizationAffectedDocuments === 1 ? "" : "s"}` : ""}
+                  </strong>
+                </div>
+                <div
+                  className="tag-optimization-bulk-progress-track"
+                  role="progressbar"
+                  aria-label="Bulk optimization approval in progress"
+                  aria-valuetext="Applying optimization actions"
+                >
+                  <span />
+                </div>
+              </div>
+            ) : null}
             <div className="tag-optimization-summary">
               <span>{optimizationResult ? optimizationResult.model : "gpt-5.4-mini"}</span>
               <span>{optimizationResult ? `${optimizationResult.considered_tags} reviewed` : `${optimizationScopeLabel} tags`}</span>
@@ -8124,6 +8251,16 @@ function TagsView({ tags }: { tags: Tag[] }) {
                       <span>Strict duplicate, variant, and primitive-target candidates.</span>
                     </div>
                     {optimizationResult.suggestions.map(renderOptimizationSuggestion)}
+                  </section>
+                ) : null}
+                {orphanMergeSuggestions.length || orphanPruneSuggestions.length ? (
+                  <section className="tag-optimization-section">
+                    <div className="tag-optimization-section-head">
+                      <strong>Orphaned tags</strong>
+                      <span>Zero-link tags should merge into useful used tags when there is a strong match, or be pruned entirely.</span>
+                    </div>
+                    {orphanMergeSuggestions.map(renderOptimizationSuggestion)}
+                    {orphanPruneSuggestions.map(renderOrphanPruneSuggestion)}
                   </section>
                 ) : null}
                 {optimizationResult?.singleton_suggestions?.length ? (

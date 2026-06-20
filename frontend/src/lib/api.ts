@@ -131,6 +131,8 @@ export const api = {
     request<unknown>("/api/tags/relationships", { method: "POST", body: JSON.stringify(body) }),
   pruneTagAssignment: (body: { document_id: string; tag_id: string; rationale?: string | null }) =>
     request<unknown>("/api/tags/assignments/prune", { method: "POST", body: JSON.stringify(body) }),
+  pruneOrphanTag: (body: { tag_id: string; rationale?: string | null }) =>
+    request<{ tag_id: string; tag_name: string; removed_tag_ids: string[] }>("/api/tags/orphans/prune", { method: "POST", body: JSON.stringify(body) }),
   optimizeTags: (body: { tag_ids?: string[] | null }) =>
     request<TagOptimizationResult>("/api/tags/optimize", { method: "POST", body: JSON.stringify(body) }),
   approveAllTagOptimizations: (body: TagOptimizationApproveAllPayload) =>

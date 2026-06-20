@@ -3778,6 +3778,61 @@ pre {
   flex-direction: column;
 }
 
+.tag-optimization-bulk-progress {
+  display: grid;
+  gap: 7px;
+  padding: 9px 12px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--blue) 24%, var(--line));
+  background: color-mix(in srgb, var(--blue) 7%, var(--panel));
+}
+
+.tag-optimization-bulk-progress-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 12px;
+}
+
+.tag-optimization-bulk-progress-copy span {
+  flex: 0 0 auto;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.tag-optimization-bulk-progress-copy strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: right;
+}
+
+.tag-optimization-bulk-progress-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--blue) 15%, var(--panel-2));
+}
+
+.tag-optimization-bulk-progress-track span {
+  display: block;
+  width: 44%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--blue) 20%, white) 0%,
+    var(--blue) 48%,
+    color-mix(in srgb, var(--teal) 30%, var(--blue)) 100%
+  );
+  animation: async-action-progress 1.1s ease-in-out infinite;
+}
+
 .tag-optimization-summary {
   display: flex;
   flex-wrap: wrap;

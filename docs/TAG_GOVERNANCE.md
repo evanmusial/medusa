@@ -33,8 +33,9 @@ Extend Optimize beyond merge suggestions:
 - Tag definitions: scope notes, use guidance, avoid guidance, and representative evidence help future import scoring decide what an existing tag means.
 - Relationship suggestions: covered-by, broader/narrower, sibling/related, and cluster-review relationships can be approved without forcing a merge.
 - Assignment pruning: weak document-tag links should be reviewable and removable from individual documents with `DocumentVersion` history. This fixes the "everything is miscellaneous" problem when the tag itself is valid but over-applied.
+- Orphan cleanup: true zero-link tags should not linger as retired clutter. Optimize should first try to alias-merge an orphan into a useful used tag with strong variant, broader-prefix, or semantic evidence; if no strong target exists, it should offer guarded prune-entirely approval that deletes only tags with no document links.
 - Candidate promotion: repeated, high-scoring candidate tags can be promoted to canonical; low-value candidates can be retired or blocked.
 - Legacy singleton review: older imports may have created many canonical one-document tags before governance scoring existed. Optimize should treat singleton canonical tags without score evidence as review candidates, suggesting downgrade to `candidate`, retirement for low-value or near-duplicate labels, and document-tag assignment pruning where the tag adds little retrieval value.
-- Cleanup plans, not instant mutation: Optimize should propose actions, explain rationale/confidence, and keep the user in the approval loop.
+- Cleanup plans, not instant mutation: Optimize should propose actions, explain rationale/confidence, and keep the user in the approval loop. When the user applies the whole current plan through Approve All, the pane should keep visible top-level progress feedback because bulk merge/orphan-prune/status/relationship/assignment-prune application can take noticeable time.
 
 Merge reduces vocabulary size. Pruning fixes bad assignments. Relationships teach the taxonomy without erasing useful specificity.

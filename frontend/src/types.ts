@@ -340,14 +340,23 @@ export type TagPruneSuggestion = {
   overall_score: number;
 };
 
+export type TagOrphanPruneSuggestion = {
+  id: string;
+  tag: Tag;
+  rationale: string;
+  confidence: number;
+};
+
 export type TagOptimizationResult = {
   model: string;
   considered_tags: number;
   suggestions: TagOptimizationSuggestion[];
   singleton_suggestions?: TagOptimizationSuggestion[];
+  orphan_merge_suggestions?: TagOptimizationSuggestion[];
   relationship_suggestions?: TagRelationshipSuggestion[];
   status_suggestions?: TagStatusSuggestion[];
   pruning_suggestions?: TagPruneSuggestion[];
+  orphan_prune_suggestions?: TagOrphanPruneSuggestion[];
   health_summary?: Record<string, number>;
 };
 
@@ -378,6 +387,11 @@ export type TagOptimizationApproveAllPayload = {
     tag_id: string;
     rationale?: string | null;
   }[];
+  orphan_prune_suggestions: {
+    id?: string | null;
+    tag_id: string;
+    rationale?: string | null;
+  }[];
 };
 
 export type TagOptimizationApproveAllResult = {
@@ -385,6 +399,7 @@ export type TagOptimizationApproveAllResult = {
   relationships_applied: number;
   statuses_applied: number;
   prunes_applied: number;
+  orphans_pruned: number;
   updated_documents: number;
   removed_tag_ids: string[];
   skipped: { kind: string; id: string; reason: string }[];

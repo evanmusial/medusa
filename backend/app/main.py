@@ -47,6 +47,7 @@ from app.models import (
     Tag,
     TagRelationship,
     User,
+    document_tags,
     utc_now,
 )
 from app.schemas import (
@@ -117,6 +118,8 @@ from app.schemas import (
     TagGovernancePatch,
     TagMerge,
     TagOperationOut,
+    TagOrphanPruneCreate,
+    TagOrphanPruneOut,
     TagOptimizationApproveAllCreate,
     TagOptimizationApproveAllOut,
     TagOptimizationCreate,
@@ -189,6 +192,7 @@ from app.services.recommendations import (
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import rebuild_document_search_text
 from app.services.tag_governance import (
+    hybrid_tag_similarity,
     normalize_governance_status,
     normalize_relationship_type,
     pruning_review_suggestions,
@@ -289,6 +293,10 @@ def tag_document_count(db: Session, tag_id: str) -> int:
         .scalar()
         or 0
     )
+
+
+def tag_document_link_count(db: Session, tag_id: str) -> int:
+    return int(db.execute(select(func.count()).select_from(document_tags).where(document_tags.c.tag_id == tag_id)).scalar() or 0)
 
 
 def tag_out(tag: Tag, db: Session) -> TagOut:
@@ -615,6 +623,50 @@ def cleanup_prefix_target(source_name: str, candidate_name: str) -> bool:
 
 def useful_cleanup_prefix(tokens: list[str]) -> bool:
     return len(tokens) >= 2 and any(token not in TAG_CLEANUP_PREFIX_STOPWORDS for token in tokens)
+
+
+def orphan_merge_candidate(
+    source: Tag,
+    candidates: list[Tag],
+    document_counts_by_id: dict[str, int],
+) -> tuple[Tag, float, str] | None:
+    source_variant = cleanup_tag_variant_key(source.name)
+    matches: list[tuple[float, Tag, str]] = []
+    for target in candidates:
+        if target.id == source.id or target.status not in {"canonical", "candidate"}:
+            continue
+        if document_counts_by_id.get(target.id, 0) <= 0:
+            continue
+        target_variant = cleanup_tag_variant_key(target.name)
+        confidence = 0.0
+        rationale = ""
+        if source_variant and source_variant == target_variant:
+            confidence = 0.92
+            rationale = f'This orphaned tag is a spelling, plural, or formatting variant of the used tag "{target.name}".'
+        elif cleanup_prefix_target(source.name, target.name):
+            confidence = 0.82
+            rationale = f'This orphaned tag appears to be covered by the used broader tag "{target.name}".'
+        else:
+            similarity = hybrid_tag_similarity(source.name, target.name)
+            if similarity >= 0.76:
+                confidence = min(0.9, similarity)
+                rationale = f'This orphaned tag is semantically close to the used tag "{target.name}".'
+        if confidence:
+            matches.append((confidence, target, rationale))
+    if not matches:
+        return None
+    confidence, target, rationale = sorted(
+        matches,
+        key=lambda item: (
+            item[0],
+            item[1].status == "canonical",
+            document_counts_by_id.get(item[1].id, 0),
+            -len(cleanup_tag_tokens(item[1].name)),
+            item[1].name,
+        ),
+        reverse=True,
+    )[0]
+    return target, confidence, rationale
 
 
 def record_tag_operation_history(
@@ -1268,8 +1320,8 @@ def merge_tags(
     db: Annotated[Session, Depends(get_db)],
 ) -> TagOperationOut:
     source_ids = unique_tag_ids(payload.source_tag_ids)
-    if len(source_ids) < 2:
-        raise HTTPException(status_code=400, detail="Select at least two tags to merge")
+    if not source_ids:
+        raise HTTPException(status_code=400, detail="Select at least one tag to merge")
     source_rows = db.query(Tag).filter(Tag.id.in_(source_ids)).all()
     if len(source_rows) != len(source_ids):
         raise HTTPException(status_code=404, detail="One or more tags were not found")
@@ -1281,9 +1333,9 @@ def merge_tags(
     target_name = normalize_tag_name(payload.target_name or "")
     target_name_matched_alias = False
     if payload.target_tag_id:
-        if payload.target_tag_id not in source_by_id:
-            raise HTTPException(status_code=400, detail="Kept tag must be one of the selected tags")
-        target_tag = source_by_id[payload.target_tag_id]
+        target_tag = source_by_id.get(payload.target_tag_id) or db.get(Tag, payload.target_tag_id)
+        if not target_tag:
+            raise HTTPException(status_code=404, detail="Kept tag was not found")
     elif target_name:
         target_tag = db.query(Tag).filter(Tag.name == target_name).one_or_none()
         if target_tag is None:
@@ -1293,6 +1345,9 @@ def merge_tags(
             target_tag = source_tags[0]
     else:
         raise HTTPException(status_code=400, detail="Choose a tag to keep or enter a new tag name")
+
+    if target_tag.id in source_by_id and len(source_ids) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two tags to merge, or choose an existing tag outside the source set")
 
     documents = active_documents_for_tag_ids(db, source_ids)
     before_by_id = {document.id: document_correction_snapshot(document) for document in documents}
@@ -1448,6 +1503,34 @@ def prune_tag_assignment(
     return TagPruneOut(document_id=document.id, tag_id=tag.id, updated_documents=1)
 
 
+@app.post("/api/tags/orphans/prune", response_model=TagOrphanPruneOut)
+def prune_orphan_tag(
+    payload: TagOrphanPruneCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagOrphanPruneOut:
+    tag = db.get(Tag, payload.tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag_document_link_count(db, tag.id) > 0:
+        raise HTTPException(status_code=400, detail="Only tags with no document links can be pruned entirely")
+    tag_id = tag.id
+    tag_name = tag.name
+    assessments = db.query(DocumentTagAssessment).filter(DocumentTagAssessment.tag_id == tag.id).all()
+    for assessment in assessments:
+        assessment.tag_id = None
+        assessment.status = "orphan_tag_pruned"
+        assessment.assessment_metadata = {
+            **(assessment.assessment_metadata or {}),
+            "orphan_pruned_tag_id": tag_id,
+            "orphan_pruned_tag_name": tag_name,
+            "orphan_pruned_rationale": (payload.rationale or "").strip() or None,
+        }
+    db.delete(tag)
+    db.commit()
+    return TagOrphanPruneOut(tag_id=tag_id, tag_name=tag_name, removed_tag_ids=[tag_id])
+
+
 @app.post("/api/tags/optimize/approve-all", response_model=TagOptimizationApproveAllOut)
 def approve_all_tag_optimizations(
     payload: TagOptimizationApproveAllCreate,
@@ -1461,6 +1544,7 @@ def approve_all_tag_optimizations(
     relationships_applied = 0
     statuses_applied = 0
     prunes_applied = 0
+    orphans_pruned = 0
 
     def skip(kind: str, item_id: str | None, reason: Any) -> None:
         skipped.append({"kind": kind, "id": item_id or "", "reason": str(reason or "Skipped stale suggestion")})
@@ -1478,6 +1562,16 @@ def approve_all_tag_optimizations(
             continue
         merges_applied += 1
         updated_documents += result.updated_documents
+        removed_tag_ids.extend(result.removed_tag_ids)
+
+    for item in payload.orphan_prune_suggestions:
+        try:
+            result = prune_orphan_tag(TagOrphanPruneCreate(tag_id=item.tag_id, rationale=item.rationale), user, db)
+        except HTTPException as exc:
+            db.rollback()
+            skip("orphan_prune", item.id, exc.detail)
+            continue
+        orphans_pruned += 1
         removed_tag_ids.extend(result.removed_tag_ids)
 
     for item in payload.relationship_suggestions:
@@ -1530,6 +1624,7 @@ def approve_all_tag_optimizations(
         relationships_applied=relationships_applied,
         statuses_applied=statuses_applied,
         prunes_applied=prunes_applied,
+        orphans_pruned=orphans_pruned,
         updated_documents=updated_documents,
         removed_tag_ids=unique_tag_ids(removed_tag_ids),
         skipped=skipped,
@@ -1571,10 +1666,15 @@ def optimize_tags(
 
     tag_by_id = {tag.id: tag for tag in tag_rows}
     considered_tag_by_name = {tag.name: tag for tag in tag_rows}
-    all_tag_by_name = {tag.name: tag for tag in db.query(Tag).all()}
+    all_tag_rows = db.query(Tag).order_by(Tag.name).all()
+    all_tag_by_name = {tag.name: tag for tag in all_tag_rows}
+    all_document_counts_by_id = {tag.id: tag_document_count(db, tag.id) for tag in all_tag_rows}
     document_counts_by_id = {item["id"]: int(item["document_count"]) for item in inventory}
     suggestions: list[TagOptimizationSuggestionOut] = []
     singleton_suggestions: list[TagOptimizationSuggestionOut] = []
+    orphan_merge_suggestions: list[TagOptimizationSuggestionOut] = []
+    orphan_prune_suggestions: list[dict[str, Any]] = []
+    orphan_action_tag_ids: set[str] = set()
     seen: set[tuple[str, tuple[str, ...]]] = set()
 
     def append_suggestion(
@@ -1625,6 +1725,28 @@ def optimize_tags(
             )
         )
         return len(destination) >= limit
+
+    def append_orphan_merge_suggestion(source: Tag, target: Tag, confidence: float, rationale: str) -> bool:
+        source_tags = [source]
+        source_ids = [source.id]
+        key = (target.name, tuple(source_ids))
+        if key in seen:
+            return False
+        seen.add(key)
+        orphan_action_tag_ids.add(source.id)
+        orphan_merge_suggestions.append(
+            TagOptimizationSuggestionOut(
+                id=f"orphan-merge:{target.name}:{source.id}",
+                target_name=target.name,
+                target_tag_id=target.id,
+                source_tag_ids=source_ids,
+                source_tags=[tag_out(tag, db) for tag in source_tags],
+                affected_documents=0,
+                rationale=rationale,
+                confidence=confidence,
+            )
+        )
+        return len(orphan_merge_suggestions) >= 12
 
     raw_suggestions = result.get("suggestions") if isinstance(result, dict) else None
     suggestion_items = raw_suggestions if isinstance(raw_suggestions, list) else []
@@ -1732,6 +1854,30 @@ def optimize_tags(
             require_singleton=True,
         )
 
+    true_orphan_rows = [tag for tag in tag_rows if document_counts_by_id.get(tag.id, 0) == 0 and tag_document_link_count(db, tag.id) == 0]
+    used_target_rows = [tag for tag in all_tag_rows if all_document_counts_by_id.get(tag.id, 0) > 0]
+    for orphan in sorted(true_orphan_rows, key=lambda tag: tag.name):
+        if len(orphan_merge_suggestions) >= 12:
+            break
+        match = orphan_merge_candidate(orphan, used_target_rows, all_document_counts_by_id)
+        if match:
+            target, confidence, rationale = match
+            append_orphan_merge_suggestion(orphan, target, confidence, rationale)
+    for orphan in sorted(true_orphan_rows, key=lambda tag: tag.name):
+        if orphan.id in orphan_action_tag_ids:
+            continue
+        orphan_action_tag_ids.add(orphan.id)
+        orphan_prune_suggestions.append(
+            {
+                "id": f"orphan-prune:{orphan.id}",
+                "tag": orphan,
+                "rationale": "This tag has no document links and no strong used-tag merge target; prune it entirely instead of keeping taxonomy clutter.",
+                "confidence": 0.88,
+            }
+        )
+        if len(orphan_prune_suggestions) >= 30:
+            break
+
     relationship_suggestions = [
         {
             "id": item["id"],
@@ -1752,6 +1898,7 @@ def optimize_tags(
             "confidence": float(item["confidence"]),
         }
         for item in status_review_suggestions(db, tag_rows)
+        if item["tag"].id not in orphan_action_tag_ids
     ]
     pruning_suggestions = [
         {
@@ -1774,9 +1921,19 @@ def optimize_tags(
         considered_tags=len(tag_rows),
         suggestions=suggestions,
         singleton_suggestions=singleton_suggestions,
+        orphan_merge_suggestions=orphan_merge_suggestions,
         relationship_suggestions=relationship_suggestions,
         status_suggestions=status_suggestions,
         pruning_suggestions=pruning_suggestions,
+        orphan_prune_suggestions=[
+            {
+                "id": item["id"],
+                "tag": tag_out(item["tag"], db),
+                "rationale": item["rationale"],
+                "confidence": float(item["confidence"]),
+            }
+            for item in orphan_prune_suggestions
+        ],
         health_summary=tag_health_summary(db, tag_rows),
     )
 

@@ -322,7 +322,8 @@ def test_optimize_returns_cleanup_actions_for_low_use_scope_without_ai_merges(mo
         status_pairs = {(item.tag.id, item.suggested_status) for item in result.status_suggestions}
         prune_pairs = {(item.document_id, item.tag.id) for item in result.pruning_suggestions}
 
-        assert (zero_candidate.id, "retired") in status_pairs
+        assert any(item.tag.id == zero_candidate.id for item in result.orphan_prune_suggestions)
+        assert (zero_candidate.id, "retired") not in status_pairs
         assert (singleton_candidate.id, "retired") in status_pairs
         assert (singleton_canonical.id, "candidate") in status_pairs
         assert (candidate_document.id, singleton_candidate.id) in prune_pairs
@@ -330,14 +331,49 @@ def test_optimize_returns_cleanup_actions_for_low_use_scope_without_ai_merges(mo
         assert result.health_summary["singletons"] == 3
 
 
+def test_optimize_merges_orphaned_tags_into_used_targets(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+
+    from app.main import optimize_tags
+    from app.models import Document, Tag
+    from app.schemas import TagOptimizationCreate
+
+    class FakeAiService:
+        def generate_tag_optimization_suggestions(self, *_, **__):
+            return {"suggestions": [], "singleton_suggestions": []}
+
+    monkeypatch.setattr("app.main.get_ai_service", lambda: FakeAiService())
+
+    with Session() as db:
+        useful = Tag(name="access control", kind="tag", status="canonical")
+        orphan = Tag(name="access controls", kind="tag", status="canonical")
+        fallback = Tag(name="abandoned note", kind="tag", status="candidate")
+        document = Document(
+            title="Useful Document",
+            original_filename="useful.pdf",
+            checksum_sha256="6" * 64,
+            processing_status="ready",
+            tags=[useful],
+        )
+        db.add_all([useful, orphan, fallback, document])
+        db.commit()
+
+        result = optimize_tags(TagOptimizationCreate(tag_ids=[orphan.id, fallback.id]), object(), db)
+
+        assert any(item.target_tag_id == useful.id and orphan.id in item.source_tag_ids for item in result.orphan_merge_suggestions)
+        assert any(item.tag.id == fallback.id for item in result.orphan_prune_suggestions)
+        assert all(item.tag.id != orphan.id for item in result.status_suggestions)
+
+
 def test_approve_all_tag_optimizations_applies_actions_and_reports_stale_skips(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
 
     from app.main import approve_all_tag_optimizations
-    from app.models import Document, Tag
+    from app.models import Document, Tag, TagAlias
     from app.schemas import (
         TagOptimizationApproveAllCreate,
         TagOptimizationMergeApproval,
+        TagOptimizationOrphanPruneApproval,
         TagOptimizationPruneApproval,
         TagOptimizationRelationshipApproval,
         TagOptimizationStatusApproval,
@@ -348,6 +384,8 @@ def test_approve_all_tag_optimizations_applies_actions_and_reports_stale_skips(m
         duplicate = Tag(name="access controls", kind="tag", status="canonical")
         weak = Tag(name="miscellaneous", kind="tag", status="candidate")
         unused = Tag(name="unused candidate", kind="tag", status="candidate")
+        orphan_variant = Tag(name="access control model", kind="tag", status="candidate")
+        orphan = Tag(name="orphaned tag", kind="tag", status="candidate")
         duplicate_document = Document(
             title="Duplicate Tag",
             original_filename="duplicate.pdf",
@@ -362,7 +400,7 @@ def test_approve_all_tag_optimizations_applies_actions_and_reports_stale_skips(m
             processing_status="ready",
             tags=[weak],
         )
-        db.add_all([keep, duplicate, weak, unused, duplicate_document, weak_document])
+        db.add_all([keep, duplicate, weak, unused, orphan_variant, orphan, duplicate_document, weak_document])
         db.commit()
 
         result = approve_all_tag_optimizations(
@@ -371,6 +409,12 @@ def test_approve_all_tag_optimizations_applies_actions_and_reports_stale_skips(m
                     TagOptimizationMergeApproval(
                         id="merge-duplicate",
                         source_tag_ids=[keep.id, duplicate.id],
+                        target_name=keep.name,
+                    ),
+                    TagOptimizationMergeApproval(
+                        id="merge-orphan-variant",
+                        source_tag_ids=[orphan_variant.id],
+                        target_tag_id=keep.id,
                         target_name=keep.name,
                     )
                 ],
@@ -394,17 +438,27 @@ def test_approve_all_tag_optimizations_applies_actions_and_reports_stale_skips(m
                         rationale="Weak assignment.",
                     )
                 ],
+                orphan_prune_suggestions=[
+                    TagOptimizationOrphanPruneApproval(id="prune-orphan", tag_id=orphan.id, rationale="Unused."),
+                    TagOptimizationOrphanPruneApproval(id="stale-orphan", tag_id=duplicate.id, rationale="No longer unused."),
+                ],
             ),
             object(),
             db,
         )
 
-        assert result.merges_applied == 1
+        assert result.merges_applied == 2
         assert result.statuses_applied == 1
         assert result.prunes_applied == 1
+        assert result.orphans_pruned == 1
         assert result.relationships_applied == 0
         assert duplicate.id in result.removed_tag_ids
-        assert {item["id"] for item in result.skipped} == {"stale-relationship", "stale-status"}
+        assert orphan_variant.id in result.removed_tag_ids
+        assert orphan.id in result.removed_tag_ids
+        assert {item["id"] for item in result.skipped} == {"stale-relationship", "stale-status", "stale-orphan"}
         assert unused.status == "retired"
+        assert db.get(Tag, orphan_variant.id) is None
+        assert db.get(TagAlias, "access control model").target_tag_id == keep.id
+        assert db.get(Tag, orphan.id) is None
         assert [tag.name for tag in duplicate_document.tags] == ["access control"]
         assert weak_document.tags == []
