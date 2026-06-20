@@ -155,12 +155,14 @@ def test_create_concordance_run_from_saved_search(monkeypatch, tmp_path):
             original_filename="cybernetics.pdf",
             checksum_sha256="d" * 64,
             read_status="unread",
+            processing_status="ready",
         )
         other = Document(
             title="Garden Notes",
             original_filename="garden.pdf",
             checksum_sha256="e" * 64,
             read_status="read",
+            processing_status="ready",
         )
         db.add_all([matching, other])
         db.flush()
@@ -374,7 +376,7 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
             title="Tagged Target",
             original_filename="tagged-target.pdf",
             checksum_sha256="8" * 64,
-            search_text="Original searchable document text.",
+            search_text="Original searchable document text about a new concept.",
             tags=[manual_tag],
         )
         db.add_all([manual_tag, shared_tag, document])
@@ -385,7 +387,7 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
             run_id=run.id,
             document_id=document.id,
             capability_key="summary_topics",
-            target_version=7,
+            target_version=8,
         )
         db.add(job)
         db.commit()
@@ -394,11 +396,14 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
         db.refresh(document)
 
         assert job.status == "complete"
-        assert sorted(tag.name for tag in document.tags) == ["manual keep", "new concept", "shared concept"]
+        assert sorted(tag.name for tag in document.tags) == ["manual keep", "shared concept"]
+        assert document.metadata_evidence["concordance_tag_governance"]["new_candidate_count"] == 0
+        assert document.metadata_evidence["concordance_tag_governance"]["decisions"][1]["candidate_name"] == "new concept"
+        assert document.metadata_evidence["concordance_tag_governance"]["decisions"][1]["status"] == "not_attached"
         assert calls == [
             {
                 "filename": "tagged-target.pdf",
-                "text": "Original searchable document text.",
+                "text": "Original searchable document text about a new concept.",
                 "existing_tags": ["manual keep", "shared concept"],
                 "capability_key": "summary_topics",
                 "prompt_cache_key": f"medusa-doc:{'8' * 64}",

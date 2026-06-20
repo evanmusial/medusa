@@ -44,6 +44,8 @@ import type {
   RuntimeLocation,
   SavedSearch,
   Tag,
+  TagOptimizationApproveAllPayload,
+  TagOptimizationApproveAllResult,
   TagOptimizationResult,
   TagOperationResult,
   User,
@@ -121,10 +123,18 @@ export const api = {
   createTag: (name: string) => request<Tag>("/api/tags", { method: "POST", body: JSON.stringify({ name }) }),
   renameTag: (id: string, name: string) =>
     request<TagOperationResult>(`/api/tags/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  updateTagGovernance: (id: string, body: { status?: string | null; definition?: string | null; use_guidance?: string | null; avoid_guidance?: string | null }) =>
+    request<Tag>(`/api/tags/${id}/governance`, { method: "PATCH", body: JSON.stringify(body) }),
   mergeTags: (body: { source_tag_ids: string[]; target_tag_id?: string | null; target_name?: string | null }) =>
     request<TagOperationResult>("/api/tags/merge", { method: "POST", body: JSON.stringify(body) }),
+  createTagRelationship: (body: { source_tag_id: string; target_tag_id: string; relationship_type: string; rationale?: string | null; confidence?: number | null }) =>
+    request<unknown>("/api/tags/relationships", { method: "POST", body: JSON.stringify(body) }),
+  pruneTagAssignment: (body: { document_id: string; tag_id: string; rationale?: string | null }) =>
+    request<unknown>("/api/tags/assignments/prune", { method: "POST", body: JSON.stringify(body) }),
   optimizeTags: (body: { tag_ids?: string[] | null }) =>
     request<TagOptimizationResult>("/api/tags/optimize", { method: "POST", body: JSON.stringify(body) }),
+  approveAllTagOptimizations: (body: TagOptimizationApproveAllPayload) =>
+    request<TagOptimizationApproveAllResult>("/api/tags/optimize/approve-all", { method: "POST", body: JSON.stringify(body) }),
   savedSearches: () => request<SavedSearch[]>("/api/saved-searches"),
   createSavedSearch: (body: { name: string; query?: string | null; filters?: DocumentFilters }) =>
     request<SavedSearch>("/api/saved-searches", { method: "POST", body: JSON.stringify(body) }),
@@ -215,6 +225,7 @@ export const api = {
     request<Note>(`/api/notes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
+  processStagedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/process-staged", { method: "POST" }),
   rescueImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/rescue`, { method: "POST" }),
   cancelImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/cancel`, { method: "POST" }),
   retryFailedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/retry-failed", { method: "POST" }),

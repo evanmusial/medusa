@@ -27,12 +27,14 @@ def test_project_run_sheet_items_and_used_bibliography(monkeypatch, tmp_path):
             original_filename="used.pdf",
             checksum_sha256="a" * 64,
             apa_citation="Used Resource citation.",
+            processing_status="ready",
         )
         candidate_document = Document(
             title="Candidate Resource",
             original_filename="candidate.pdf",
             checksum_sha256="b" * 64,
             apa_citation="Candidate Resource citation.",
+            processing_status="ready",
         )
         db.add_all([project, used_document, candidate_document])
         db.commit()

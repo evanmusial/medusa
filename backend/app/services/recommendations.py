@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import get_settings
 from app.models import Document, DocumentRecommendation, ImportBatch, ImportJob, ProcessingEvent, utc_now
 from app.services.document_cache import document_cache_path, document_cache_root, register_document_cache
+from app.services.document_visibility import filter_library_visible_documents, library_visible_document_filter
 from app.services.processing import refresh_import_batch_progress
 from app.services.storage import get_storage_service
 from app.services.verifier import normalized_title_similarity
@@ -855,7 +856,7 @@ def _apply_candidate(row: DocumentRecommendation, candidate: RecommendationCandi
 def mark_existing_library_matches(db: Session, recommendations: list[DocumentRecommendation], *, source_document_id: str) -> None:
     if not recommendations:
         return
-    documents = db.query(Document).filter(Document.deleted_at.is_(None), Document.id != source_document_id).all()
+    documents = filter_library_visible_documents(db.query(Document)).filter(Document.id != source_document_id).all()
     doi_map = {normalize_doi(document.doi): document for document in documents if normalize_doi(document.doi)}
     for recommendation in recommendations:
         match = doi_map.get(normalize_doi(recommendation.doi))
@@ -876,7 +877,7 @@ def _best_title_match(documents: list[Document], title: str) -> Document | None:
 def _first_active_checksum_match(db: Session, checksum: str) -> Document | None:
     return (
         db.query(Document)
-        .filter(Document.deleted_at.is_(None), Document.checksum_sha256 == checksum)
+        .filter(library_visible_document_filter(), Document.checksum_sha256 == checksum)
         .order_by(Document.created_at.desc(), Document.id)
         .first()
     )

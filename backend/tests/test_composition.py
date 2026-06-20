@@ -37,7 +37,13 @@ def test_document_composition_summary_reports_not_available(monkeypatch, tmp_pat
 def test_composition_syncs_usage_costs_and_local_duration(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.models import Document, ImportBatch, ImportJob, OpenAIUsageRecord
-    from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_stage, sync_import_usage_composition
+    from app.services.composition import (
+        active_import_cost_usd,
+        document_composition_summary,
+        record_import_cost_estimate,
+        record_import_stage,
+        sync_import_usage_composition,
+    )
 
     with Session() as db:
         document = Document(title="Costed", original_filename="costed.pdf", checksum_sha256="b" * 64)
@@ -45,6 +51,15 @@ def test_composition_syncs_usage_costs_and_local_duration(monkeypatch, tmp_path)
         job = ImportJob(batch=batch, document=document, status="running", current_step="enriching")
         db.add_all([document, batch, job])
         db.flush()
+        record_import_cost_estimate(
+            db,
+            document=document,
+            job=job,
+            estimated_cost_usd=3.0,
+            estimate_basis="task_exemplar",
+            estimated_page_count=20,
+            model_preferences={"summary": "gpt-5.4"},
+        )
         record_import_stage(
             db,
             document=document,
@@ -86,6 +101,11 @@ def test_composition_syncs_usage_costs_and_local_duration(monkeypatch, tmp_path)
     assert summary["provider_breakdown"][0]["provider"] == "OpenAI"
     assert summary["local_duration_entries"][0]["duration_ms"] == 120_000
     assert any(item["record_kind"] == "llm" for item in summary["pipeline"])
+    assert not any(item["record_kind"] == "estimate" for item in summary["cost_entries"])
+    assert summary["estimate_comparison"]["estimated_cost_usd"] == 3.0
+    assert summary["estimate_comparison"]["actual_cost_usd"] == 4.0
+    assert summary["estimate_comparison"]["variance_usd"] == 1.0
+    assert summary["estimate_comparison"]["status"] == "over"
 
 
 def test_composition_pipeline_preserves_import_execution_order(monkeypatch, tmp_path):

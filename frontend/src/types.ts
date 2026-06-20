@@ -146,6 +146,18 @@ export type DocumentCompositionEntry = {
   created_at?: string | null;
 };
 
+export type DocumentCompositionEstimate = {
+  estimated_cost_usd: number;
+  actual_cost_usd: number;
+  variance_usd?: number | null;
+  variance_percent?: number | null;
+  actual_to_estimate_ratio?: number | null;
+  estimated_page_count?: number | null;
+  basis?: string | null;
+  status: string;
+  created_at?: string | null;
+};
+
 export type DocumentComposition = {
   document_id: string;
   available: boolean;
@@ -156,6 +168,7 @@ export type DocumentComposition = {
   local_duration_entries: DocumentCompositionEntry[];
   pipeline: DocumentCompositionEntry[];
   errata: DocumentCompositionEntry[];
+  estimate_comparison?: DocumentCompositionEstimate | null;
 };
 
 export type OpenAIUsageTotals = {
@@ -273,6 +286,10 @@ export type Tag = {
   id: string;
   name: string;
   color?: string | null;
+  status: string;
+  definition?: string | null;
+  use_guidance?: string | null;
+  avoid_guidance?: string | null;
   document_count: number;
 };
 
@@ -293,11 +310,84 @@ export type TagOptimizationSuggestion = {
   confidence: number;
 };
 
+export type TagRelationshipSuggestion = {
+  id: string;
+  source_tag: Tag;
+  target_tag: Tag;
+  relationship_type: string;
+  rationale: string;
+  confidence: number;
+};
+
+export type TagStatusSuggestion = {
+  id: string;
+  tag: Tag;
+  suggested_status: string;
+  rationale: string;
+  confidence: number;
+};
+
+export type TagPruneSuggestion = {
+  id: string;
+  document_id: string;
+  document_title: string;
+  tag: Tag;
+  rationale: string;
+  confidence: number;
+  relevance_score: number;
+  library_fit_score: number;
+  novelty_score: number;
+  overall_score: number;
+};
+
 export type TagOptimizationResult = {
   model: string;
   considered_tags: number;
   suggestions: TagOptimizationSuggestion[];
   singleton_suggestions?: TagOptimizationSuggestion[];
+  relationship_suggestions?: TagRelationshipSuggestion[];
+  status_suggestions?: TagStatusSuggestion[];
+  pruning_suggestions?: TagPruneSuggestion[];
+  health_summary?: Record<string, number>;
+};
+
+export type TagOptimizationApproveAllPayload = {
+  merge_suggestions: {
+    id?: string | null;
+    source_tag_ids: string[];
+    target_tag_id?: string | null;
+    target_name?: string | null;
+  }[];
+  relationship_suggestions: {
+    id?: string | null;
+    source_tag_id: string;
+    target_tag_id: string;
+    relationship_type: string;
+    rationale?: string | null;
+    confidence?: number | null;
+  }[];
+  status_suggestions: {
+    id?: string | null;
+    tag_id: string;
+    suggested_status: string;
+    rationale?: string | null;
+  }[];
+  pruning_suggestions: {
+    id?: string | null;
+    document_id: string;
+    tag_id: string;
+    rationale?: string | null;
+  }[];
+};
+
+export type TagOptimizationApproveAllResult = {
+  merges_applied: number;
+  relationships_applied: number;
+  statuses_applied: number;
+  prunes_applied: number;
+  updated_documents: number;
+  removed_tag_ids: string[];
+  skipped: { kind: string; id: string; reason: string }[];
 };
 
 export type DocumentFilters = {
@@ -595,6 +685,8 @@ export type ImportJob = {
   current_step: string;
   current_model?: string | null;
   estimated_cost_usd: number;
+  estimated_cost_basis: string;
+  estimated_cost_page_count?: number | null;
   attempts: number;
   last_error?: string | null;
   locked_at?: string | null;

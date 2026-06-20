@@ -539,9 +539,9 @@ textarea {
   margin-right: 4px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.1;
   letter-spacing: 0;
   white-space: nowrap;
 }
@@ -1585,7 +1585,8 @@ textarea {
 
 .composition-legend,
 .composition-provider-list,
-.composition-issue-list {
+.composition-issue-list,
+.composition-estimate-grid {
   display: grid;
   gap: 8px;
 }
@@ -1607,9 +1608,35 @@ textarea {
 
 .composition-provider-row,
 .composition-local-row,
-.composition-issue-row {
+.composition-issue-row,
+.composition-estimate-row {
   border-top: 1px solid var(--line);
   padding-top: 8px;
+}
+
+.composition-estimate-grid {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.composition-estimate-row {
+  display: grid;
+  gap: 3px;
+}
+
+.composition-estimate-row span,
+.composition-estimate-row strong {
+  color: var(--ink);
+}
+
+.composition-estimate-row span {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.composition-estimate-row small {
+  color: var(--muted);
 }
 
 .composition-local-grid {
@@ -1662,6 +1689,32 @@ textarea {
   filter: drop-shadow(0 1px 1px rgb(15 23 42 / 0.12));
 }
 
+.composition-pipeline-edge {
+  color: var(--primary);
+  pointer-events: none;
+}
+
+.composition-pipeline-edge-shadow,
+.composition-pipeline-edge-path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.composition-pipeline-edge-shadow {
+  stroke: rgb(15 23 42 / 0.14);
+  stroke-width: 6;
+}
+
+.composition-pipeline-edge-path {
+  stroke: currentColor;
+  stroke-width: 2.75;
+}
+
+.composition-pipeline-edge-arrow {
+  fill: currentColor;
+}
+
 .composition-flow-chart .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1691,7 +1744,7 @@ textarea {
   border: 2px solid var(--panel);
   background: var(--primary);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 48%, var(--line));
-  opacity: 1;
+  opacity: 0;
   pointer-events: none;
   z-index: 2;
 }
@@ -3560,6 +3613,7 @@ pre {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -3571,6 +3625,19 @@ pre {
   color: var(--muted);
   font-size: 12px;
   font-weight: 750;
+}
+
+.job-list-head-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.queue-estimate-total {
+  color: var(--ink) !important;
 }
 
 .tags-workbench {
@@ -3673,10 +3740,18 @@ pre {
   background: var(--panel-2);
 }
 
-.tag-optimization-head > div {
+.tag-optimization-title {
   min-width: 0;
   display: grid;
   gap: 2px;
+}
+
+.tag-optimization-head-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .tag-optimization-head span {
@@ -3709,6 +3784,11 @@ pre {
   gap: 6px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
+}
+
+.tag-optimization-summary.inline {
+  padding: 0;
+  border-bottom: 0;
 }
 
 .tag-optimization-summary span {
@@ -3862,7 +3942,7 @@ pre {
 
 .tags-table-row {
   display: grid;
-  grid-template-columns: 44px minmax(180px, 1fr) minmax(110px, 0.28fr);
+  grid-template-columns: 44px minmax(170px, 1fr) minmax(96px, 0.24fr) minmax(90px, 0.2fr);
   align-items: center;
   min-height: 42px;
   border-bottom: 1px solid var(--line);
@@ -3881,6 +3961,18 @@ pre {
 }
 
 .tags-table-row.selected {
+  background: var(--blue-soft);
+}
+
+.tags-table-row:not(.header) {
+  cursor: pointer;
+}
+
+.tags-table-row:not(.header):hover {
+  background: var(--panel-2);
+}
+
+.tags-table-row.selected:not(.header):hover {
   background: var(--blue-soft);
 }
 
@@ -5822,6 +5914,14 @@ pre {
   gap: 3px;
 }
 
+.panel-title-row > .queue-title-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
 .panel-title-row span,
 .run-row.header {
   color: var(--muted);
@@ -6000,7 +6100,7 @@ pre {
   }
 
   .build-version {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .library-grid .resize-handle {

@@ -30,6 +30,7 @@ from app.models import (
     DocumentAttributeValue,
     DocumentPage,
     DocumentRecommendation,
+    DocumentTagAssessment,
     DocumentVersion,
     DoiStash,
     Domain,
@@ -44,6 +45,7 @@ from app.models import (
     ProjectItem,
     SavedSearch,
     Tag,
+    TagRelationship,
     User,
     utc_now,
 )
@@ -111,10 +113,17 @@ from app.schemas import (
     SavedSearchOut,
     SavedSearchPatch,
     TagCreate,
+    TagAssignmentPruneCreate,
+    TagGovernancePatch,
     TagMerge,
     TagOperationOut,
+    TagOptimizationApproveAllCreate,
+    TagOptimizationApproveAllOut,
     TagOptimizationCreate,
     TagOptimizationOut,
+    TagPruneOut,
+    TagRelationshipCreate,
+    TagRelationshipOut,
     TagOptimizationSuggestionOut,
     TagOut,
     TagRename,
@@ -143,9 +152,14 @@ from app.services.backups import (
     save_restore_upload,
 )
 from app.services.concordance import create_concordance_run, current_capabilities
-from app.services.composition import active_import_cost_usd, document_composition_summary, record_manual_edit
+from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
 from app.services.document_cache import current_document_cache_usage, document_cache_root, register_document_cache
+from app.services.document_visibility import (
+    document_is_library_visible,
+    filter_library_visible_documents,
+    library_visible_document_filter,
+)
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.import_sources import ImportSourceError, prepare_import_source, probe_import_source
@@ -174,6 +188,14 @@ from app.services.recommendations import (
 )
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import rebuild_document_search_text
+from app.services.tag_governance import (
+    normalize_governance_status,
+    normalize_relationship_type,
+    pruning_review_suggestions,
+    relationship_review_suggestions,
+    status_review_suggestions,
+    tag_health_summary,
+)
 from app.services.storage import get_storage_service
 from app.services.tags import (
     get_or_create_tag as get_or_create_canonical_tag,
@@ -188,6 +210,20 @@ app = FastAPI(title="Medusa Research Library", version="0.1.0")
 SERVER_IPV4: str | None = None
 
 DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
+STAGED_IMPORT_STATUS = "staged"
+IMPORT_JOB_QUEUE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
+IMPORT_JOB_CLEARABLE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
+IMPORT_ESTIMATE_TASK_KEYS = (
+    MODEL_METADATA,
+    MODEL_SUMMARY,
+    MODEL_APA_CITATION,
+    MODEL_KEYWORDS_TOPICS,
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_TEXT_CHUNK_ENCODING,
+)
+DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.01
+IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
+IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -238,7 +274,9 @@ def domain_out(domain: Domain, db: Session | None = None) -> DomainOut:
         description=domain.description,
         color=domain.color,
         sort_order=domain.sort_order,
-        document_count=domain_document_count(db, domain.id) if db else len([document for document in domain.documents if not document.deleted_at]),
+        document_count=domain_document_count(db, domain.id)
+        if db
+        else len([document for document in domain.documents if document_is_library_visible(document)]),
     )
 
 
@@ -247,7 +285,7 @@ def tag_document_count(db: Session, tag_id: str) -> int:
         db.query(func.count(Document.id))
         .select_from(Document)
         .join(Document.tags)
-        .filter(Tag.id == tag_id, Document.deleted_at.is_(None))
+        .filter(Tag.id == tag_id, library_visible_document_filter())
         .scalar()
         or 0
     )
@@ -259,7 +297,23 @@ def tag_out(tag: Tag, db: Session) -> TagOut:
         name=tag.name,
         kind=tag.kind,
         color=tag.color,
+        status=tag.status,
+        definition=tag.definition,
+        use_guidance=tag.use_guidance,
+        avoid_guidance=tag.avoid_guidance,
         document_count=tag_document_count(db, tag.id),
+    )
+
+
+def tag_relationship_out(relationship: TagRelationship, db: Session) -> TagRelationshipOut:
+    return TagRelationshipOut(
+        id=relationship.id,
+        source_tag=tag_out(relationship.source_tag, db),
+        target_tag=tag_out(relationship.target_tag, db),
+        relationship_type=relationship.relationship_type,
+        status=relationship.status,
+        rationale=relationship.rationale,
+        confidence=float(relationship.confidence) if relationship.confidence is not None else None,
     )
 
 
@@ -278,7 +332,7 @@ def project_detail_out(project: Project) -> ProjectDetail:
     items = [
         item
         for item in sorted(project.items, key=lambda value: (value.used_in_output, value.status, value.created_at, value.id))
-        if item.document and item.document.deleted_at is None
+        if document_is_library_visible(item.document)
     ]
     base = project_out(project).model_dump()
     base["item_count"] = len(items)
@@ -333,7 +387,7 @@ def normalize_document_title_spacing(value: str | None) -> str:
 def duplicate_checksum_select():
     return (
         select(Document.checksum_sha256)
-        .where(Document.deleted_at.is_(None))
+        .where(library_visible_document_filter())
         .group_by(Document.checksum_sha256)
         .having(func.count(Document.id) > 1)
     )
@@ -344,7 +398,7 @@ def duplicate_count_by_checksum(db: Session, checksums: list[str]) -> dict[str, 
         return {}
     rows = (
         db.query(Document.checksum_sha256, func.count(Document.id))
-        .filter(Document.deleted_at.is_(None), Document.checksum_sha256.in_(checksums))
+        .filter(library_visible_document_filter(), Document.checksum_sha256.in_(checksums))
         .group_by(Document.checksum_sha256)
         .all()
     )
@@ -355,6 +409,15 @@ def active_documents_for_checksum(db: Session, checksum: str) -> list[Document]:
     return (
         db.query(Document)
         .filter(Document.deleted_at.is_(None), Document.checksum_sha256 == checksum)
+        .order_by(Document.created_at.desc(), Document.id)
+        .all()
+    )
+
+
+def visible_documents_for_checksum(db: Session, checksum: str) -> list[Document]:
+    return (
+        db.query(Document)
+        .filter(library_visible_document_filter(), Document.checksum_sha256 == checksum)
         .order_by(Document.created_at.desc(), Document.id)
         .all()
     )
@@ -375,7 +438,7 @@ def document_summary_out(document: Document, duplicate_count: int = 0) -> Docume
 
 
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
-    duplicate_ids = [item.id for item in active_documents_for_checksum(db, document.checksum_sha256) if item.id != document.id]
+    duplicate_ids = [item.id for item in visible_documents_for_checksum(db, document.checksum_sha256) if item.id != document.id]
     return DocumentDetail.model_validate(document).model_copy(
         update={"duplicate_count": len(duplicate_ids), "duplicate_document_ids": duplicate_ids}
     )
@@ -405,7 +468,7 @@ def domain_document_count(db: Session | None, domain_id: str) -> int:
         return 0
     return (
         db.query(Document)
-        .filter(Document.deleted_at.is_(None), Document.domains.any(Domain.id == domain_id))
+        .filter(library_visible_document_filter(), Document.domains.any(Domain.id == domain_id))
         .count()
     )
 
@@ -454,7 +517,7 @@ def active_documents_for_domain_ids(db: Session, domain_ids: list[str]) -> list[
         return []
     return (
         db.query(Document)
-        .filter(Document.deleted_at.is_(None), Document.domains.any(Domain.id.in_(domain_ids)))
+        .filter(library_visible_document_filter(), Document.domains.any(Domain.id.in_(domain_ids)))
         .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
         .order_by(*document_title_order_columns(db))
         .all()
@@ -503,7 +566,7 @@ def active_documents_for_tag_ids(db: Session, tag_ids: list[str]) -> list[Docume
         return []
     return (
         db.query(Document)
-        .filter(Document.deleted_at.is_(None), Document.tags.any(Tag.id.in_(tag_ids)))
+        .filter(library_visible_document_filter(), Document.tags.any(Tag.id.in_(tag_ids)))
         .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
         .order_by(*document_title_order_columns(db))
         .all()
@@ -853,10 +916,11 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
     if active_import_job:
         active_started_at = active_import_job.locked_at or active_import_job.updated_at
     active_elapsed_seconds = int((utc_now() - active_started_at).total_seconds()) if active_started_at else None
+    visible_documents = filter_library_visible_documents(db.query(Document))
     return DashboardOut(
-        documents=db.query(Document).filter(Document.deleted_at.is_(None)).count(),
-        unread=db.query(Document).filter(Document.deleted_at.is_(None), Document.read_status == "unread").count(),
-        needs_review=db.query(Document).filter(Document.deleted_at.is_(None), Document.citation_status == "needs_review").count(),
+        documents=visible_documents.count(),
+        unread=filter_library_visible_documents(db.query(Document)).filter(Document.read_status == "unread").count(),
+        needs_review=filter_library_visible_documents(db.query(Document)).filter(Document.citation_status == "needs_review").count(),
         queued_jobs=active_import_jobs + active_concordance_jobs + active_accessory_summary_jobs,
         active_import_jobs=active_import_jobs,
         import_queued_jobs=import_queued_jobs,
@@ -1171,6 +1235,32 @@ def rename_tag(
     return TagOperationOut(tag=tag_out(tag, db), updated_documents=updated_documents, removed_tag_ids=[])
 
 
+@app.patch("/api/tags/{tag_id}/governance", response_model=TagOut)
+def update_tag_governance(
+    tag_id: str,
+    payload: TagGovernancePatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagOut:
+    tag = db.get(Tag, tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if payload.status is not None:
+        tag.status = normalize_governance_status(payload.status)
+    if payload.definition is not None:
+        tag.definition = payload.definition.strip() or None
+    if payload.use_guidance is not None:
+        tag.use_guidance = payload.use_guidance.strip() or None
+    if payload.avoid_guidance is not None:
+        tag.avoid_guidance = payload.avoid_guidance.strip() or None
+    metadata = dict(tag.governance_metadata or {})
+    metadata["last_manual_governance_update"] = utc_now().isoformat()
+    tag.governance_metadata = metadata
+    db.commit()
+    db.refresh(tag)
+    return tag_out(tag, db)
+
+
 @app.post("/api/tags/merge", response_model=TagOperationOut)
 def merge_tags(
     payload: TagMerge,
@@ -1260,6 +1350,190 @@ def merge_tags(
     db.commit()
     db.refresh(target_tag)
     return TagOperationOut(tag=tag_out(target_tag, db), updated_documents=updated_documents, removed_tag_ids=removed_tag_ids)
+
+
+@app.post("/api/tags/relationships", response_model=TagRelationshipOut)
+def create_tag_relationship(
+    payload: TagRelationshipCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagRelationshipOut:
+    if payload.source_tag_id == payload.target_tag_id:
+        raise HTTPException(status_code=400, detail="A tag relationship needs two different tags")
+    source_tag = db.get(Tag, payload.source_tag_id)
+    target_tag = db.get(Tag, payload.target_tag_id)
+    if not source_tag or not target_tag:
+        raise HTTPException(status_code=404, detail="One or more tags were not found")
+    try:
+        relationship_type = normalize_relationship_type(payload.relationship_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    relationship = (
+        db.query(TagRelationship)
+        .filter(
+            TagRelationship.source_tag_id == source_tag.id,
+            TagRelationship.target_tag_id == target_tag.id,
+            TagRelationship.relationship_type == relationship_type,
+        )
+        .one_or_none()
+    )
+    if not relationship:
+        relationship = TagRelationship(
+            source_tag=source_tag,
+            target_tag=target_tag,
+            relationship_type=relationship_type,
+            status="approved",
+            relationship_metadata={},
+        )
+        db.add(relationship)
+    relationship.status = "approved"
+    relationship.rationale = (payload.rationale or "").strip() or None
+    relationship.confidence = payload.confidence
+    relationship.relationship_metadata = {
+        **(relationship.relationship_metadata or {}),
+        "approved_from": "optimize",
+    }
+    db.commit()
+    db.refresh(relationship)
+    return tag_relationship_out(relationship, db)
+
+
+@app.post("/api/tags/assignments/prune", response_model=TagPruneOut)
+def prune_tag_assignment(
+    payload: TagAssignmentPruneCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagPruneOut:
+    document = (
+        db.query(Document)
+        .filter(Document.id == payload.document_id, library_visible_document_filter())
+        .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
+        .one_or_none()
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    tag = db.get(Tag, payload.tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if all(existing.id != tag.id for existing in document.tags):
+        return TagPruneOut(document_id=document.id, tag_id=tag.id, updated_documents=0)
+    before = document_correction_snapshot(document)
+    document.tags = [existing for existing in document.tags if existing.id != tag.id]
+    document.search_text = rebuild_document_search_text(document)
+    rationale = (payload.rationale or "").strip() or "Pruned weak tag assignment from Optimize"
+    assessments = (
+        db.query(DocumentTagAssessment)
+        .filter(DocumentTagAssessment.document_id == document.id, DocumentTagAssessment.tag_id == tag.id)
+        .all()
+    )
+    for assessment in assessments:
+        assessment.status = "pruned"
+    after = document_correction_snapshot(document)
+    record_document_version(
+        db,
+        document=document,
+        change_note=f'Pruned tag "{tag.name}"',
+        changed_fields={"tags"},
+        before=before,
+        after=after,
+        extra={"operation": "tag_assignment_prune", "tag_id": tag.id, "tag_name": tag.name, "rationale": rationale},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=f'Pruned tag "{tag.name}"',
+        metadata={"operation": "tag_assignment_prune", "tag_id": tag.id, "tag_name": tag.name, "rationale": rationale},
+    )
+    db.commit()
+    return TagPruneOut(document_id=document.id, tag_id=tag.id, updated_documents=1)
+
+
+@app.post("/api/tags/optimize/approve-all", response_model=TagOptimizationApproveAllOut)
+def approve_all_tag_optimizations(
+    payload: TagOptimizationApproveAllCreate,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TagOptimizationApproveAllOut:
+    skipped: list[dict[str, str]] = []
+    removed_tag_ids: list[str] = []
+    updated_documents = 0
+    merges_applied = 0
+    relationships_applied = 0
+    statuses_applied = 0
+    prunes_applied = 0
+
+    def skip(kind: str, item_id: str | None, reason: Any) -> None:
+        skipped.append({"kind": kind, "id": item_id or "", "reason": str(reason or "Skipped stale suggestion")})
+
+    for item in payload.merge_suggestions:
+        try:
+            result = merge_tags(
+                TagMerge(source_tag_ids=item.source_tag_ids, target_tag_id=item.target_tag_id, target_name=item.target_name),
+                user,
+                db,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            skip("merge", item.id, exc.detail)
+            continue
+        merges_applied += 1
+        updated_documents += result.updated_documents
+        removed_tag_ids.extend(result.removed_tag_ids)
+
+    for item in payload.relationship_suggestions:
+        try:
+            create_tag_relationship(
+                TagRelationshipCreate(
+                    source_tag_id=item.source_tag_id,
+                    target_tag_id=item.target_tag_id,
+                    relationship_type=item.relationship_type,
+                    rationale=item.rationale,
+                    confidence=item.confidence,
+                ),
+                user,
+                db,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            skip("relationship", item.id, exc.detail)
+            continue
+        relationships_applied += 1
+
+    for item in payload.status_suggestions:
+        try:
+            update_tag_governance(item.tag_id, TagGovernancePatch(status=item.suggested_status), user, db)
+        except HTTPException as exc:
+            db.rollback()
+            skip("status", item.id, exc.detail)
+            continue
+        statuses_applied += 1
+
+    for item in payload.pruning_suggestions:
+        try:
+            result = prune_tag_assignment(
+                TagAssignmentPruneCreate(document_id=item.document_id, tag_id=item.tag_id, rationale=item.rationale),
+                user,
+                db,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            skip("prune", item.id, exc.detail)
+            continue
+        if result.updated_documents <= 0:
+            skip("prune", item.id, "The tag assignment was already absent.")
+            continue
+        prunes_applied += 1
+        updated_documents += result.updated_documents
+
+    return TagOptimizationApproveAllOut(
+        merges_applied=merges_applied,
+        relationships_applied=relationships_applied,
+        statuses_applied=statuses_applied,
+        prunes_applied=prunes_applied,
+        updated_documents=updated_documents,
+        removed_tag_ids=unique_tag_ids(removed_tag_ids),
+        skipped=skipped,
+    )
 
 
 @app.post("/api/tags/optimize", response_model=TagOptimizationOut)
@@ -1458,11 +1732,52 @@ def optimize_tags(
             require_singleton=True,
         )
 
+    relationship_suggestions = [
+        {
+            "id": item["id"],
+            "source_tag": tag_out(item["source_tag"], db),
+            "target_tag": tag_out(item["target_tag"], db),
+            "relationship_type": item["relationship_type"],
+            "rationale": item["rationale"],
+            "confidence": float(item["confidence"]),
+        }
+        for item in relationship_review_suggestions(db, tag_rows)
+    ]
+    status_suggestions = [
+        {
+            "id": item["id"],
+            "tag": tag_out(item["tag"], db),
+            "suggested_status": item["suggested_status"],
+            "rationale": item["rationale"],
+            "confidence": float(item["confidence"]),
+        }
+        for item in status_review_suggestions(db, tag_rows)
+    ]
+    pruning_suggestions = [
+        {
+            "id": item["id"],
+            "document_id": item["document_id"],
+            "document_title": item["document_title"],
+            "tag": tag_out(item["tag"], db),
+            "rationale": item["rationale"],
+            "confidence": float(item["confidence"]),
+            "relevance_score": float(item["relevance_score"]),
+            "library_fit_score": float(item["library_fit_score"]),
+            "novelty_score": float(item["novelty_score"]),
+            "overall_score": float(item["overall_score"]),
+        }
+        for item in pruning_review_suggestions(db, tag_rows)
+    ]
+
     return TagOptimizationOut(
         model=DEFAULT_KEYWORDS_TOPICS_MODEL,
         considered_tags=len(tag_rows),
         suggestions=suggestions,
         singleton_suggestions=singleton_suggestions,
+        relationship_suggestions=relationship_suggestions,
+        status_suggestions=status_suggestions,
+        pruning_suggestions=pruning_suggestions,
+        health_summary=tag_health_summary(db, tag_rows),
     )
 
 
@@ -1589,7 +1904,7 @@ def add_project_items(
     document_ids = list(dict.fromkeys(payload.document_ids))
     if not document_ids:
         raise HTTPException(status_code=400, detail="document_ids is required")
-    documents = db.query(Document).filter(Document.id.in_(document_ids), Document.deleted_at.is_(None)).all()
+    documents = filter_library_visible_documents(db.query(Document)).filter(Document.id.in_(document_ids)).all()
     existing_ids = {item.document_id for item in project.items}
     for document in documents:
         if document.id in existing_ids:
@@ -1656,7 +1971,7 @@ def list_documents(
     duplicate_status: str | None = None,
     limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
 ) -> list[DocumentSummary]:
-    query = db.query(Document).filter(Document.deleted_at.is_(None))
+    query = filter_library_visible_documents(db.query(Document))
     query = apply_document_filters(
         query,
         q=q,
@@ -1687,7 +2002,7 @@ def get_document(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentDetail:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     return document_detail_out(document, db)
 
@@ -1699,7 +2014,7 @@ def get_document_composition(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     return document_composition_summary(db, document)
 
@@ -1711,7 +2026,7 @@ def refresh_document_citation(
     db: Annotated[Session, Depends(get_db)],
 ) -> ConcordanceRun:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     run = create_concordance_run(
         db,
@@ -1734,7 +2049,7 @@ def queue_document_accessory_summary(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentAccessorySummary:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     try:
         summary = create_accessory_summary(
@@ -1759,12 +2074,12 @@ def patch_accessory_summary(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentAccessorySummary:
     summary = db.get(DocumentAccessorySummary, summary_id)
-    if not summary or not summary.document or summary.document.deleted_at:
+    if not summary or not document_is_library_visible(summary.document):
         raise HTTPException(status_code=404, detail="Accessory summary not found")
     if payload.title is not None:
         title = " ".join(payload.title.strip().split())
         summary.title = title[:240] or None
-    if summary.document and not summary.document.deleted_at:
+    if document_is_library_visible(summary.document):
         summary.document.search_text = rebuild_document_search_text(summary.document)
     db.commit()
     db.refresh(summary)
@@ -1779,7 +2094,7 @@ def get_document_recommendations(
     hide_existing: bool = False,
 ) -> list[DocumentRecommendation]:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     rows = list_document_recommendations(db, document, hide_existing=hide_existing)
     db.commit()
@@ -1793,7 +2108,7 @@ def refresh_recommendations(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentRecommendationRefreshOut:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     if document.processing_status != "ready":
         raise HTTPException(status_code=409, detail="Recommendations are available after processing is complete")
@@ -1816,7 +2131,7 @@ def download_recommendations(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentRecommendationDownloadOut:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     query = db.query(DocumentRecommendation).filter(DocumentRecommendation.source_document_id == document.id)
     if payload.mode == "new":
@@ -2064,7 +2379,7 @@ def document_original(
     download: Annotated[bool, Query()] = False,
 ) -> FastAPIResponse:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     if not document.gcs_uri:
         raise HTTPException(status_code=404, detail="Original document is unavailable")
@@ -2091,7 +2406,7 @@ def list_annotations(
     db: Annotated[Session, Depends(get_db)],
 ) -> list[Annotation]:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     return (
         db.query(Annotation)
@@ -2109,7 +2424,7 @@ def create_annotation(
     db: Annotated[Session, Depends(get_db)],
 ) -> Annotation:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     annotation = Annotation(**payload.model_dump())
     document.annotations.append(annotation)
@@ -2133,7 +2448,7 @@ def patch_annotation(
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(annotation, key, value)
     document = db.get(Document, annotation.document_id)
-    if document and not document.deleted_at:
+    if document_is_library_visible(document):
         document.search_text = rebuild_document_search_text(document)
     db.commit()
     db.refresh(annotation)
@@ -2151,7 +2466,7 @@ def delete_annotation(
         raise HTTPException(status_code=404, detail="Annotation not found")
     annotation.deleted_at = utc_now()
     document = db.get(Document, annotation.document_id)
-    if document and not document.deleted_at:
+    if document_is_library_visible(document):
         document.search_text = rebuild_document_search_text(document)
     db.commit()
     return {"status": "deleted"}
@@ -2182,7 +2497,7 @@ def patch_document(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentDetail:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
 
     data = payload.model_dump(exclude_unset=True)
@@ -2309,7 +2624,7 @@ def patch_document_page(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentDetail:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     page = (
         db.query(DocumentPage)
@@ -2361,7 +2676,7 @@ def scrub_document_text(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentDetail:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     needle = payload.text.replace("\x00", "")
     if not needle.strip():
@@ -2426,7 +2741,7 @@ def restore_document_version(
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentDetail:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     version = db.get(DocumentVersion, version_id)
     if not version or version.document_id != document.id:
@@ -2494,7 +2809,7 @@ def delete_document(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, str]:
     document = db.get(Document, document_id)
-    if not document or document.deleted_at:
+    if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     document.deleted_at = utc_now()
     db.commit()
@@ -2511,7 +2826,7 @@ def bulk_update_documents(
     updates = payload.get("updates") or {}
     if not ids:
         raise HTTPException(status_code=400, detail="document_ids is required")
-    documents = db.query(Document).filter(Document.id.in_(ids), Document.deleted_at.is_(None)).all()
+    documents = filter_library_visible_documents(db.query(Document)).filter(Document.id.in_(ids)).all()
     for document in documents:
         for key in ["read_status", "priority", "citation_status"]:
             if key in updates:
@@ -2538,8 +2853,7 @@ def cleanup_document_titles(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, int]:
     documents = (
-        db.query(Document)
-        .filter(Document.deleted_at.is_(None))
+        filter_library_visible_documents(db.query(Document))
         .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.attributes))
         .all()
     )
@@ -2808,6 +3122,8 @@ async def create_import_batch(
     projects = db.query(Project).filter(Project.id.in_(parsed_project_ids)).all() if parsed_project_ids else []
     storage = get_storage_service()
     cache_dir = document_cache_root()
+    model_preferences = get_analysis_models(db)
+    estimate_rates = import_cost_exemplar_rates(db)
 
     batch_documents_by_checksum: dict[str, Document] = {}
     for prepared in prepared_files:
@@ -2864,14 +3180,20 @@ async def create_import_batch(
         document.checksum_sha256 = checksum
         document.gcs_uri = stored.uri
         document.storage_status = stored.backend
-        document.processing_status = "queued"
+        document.processing_status = STAGED_IMPORT_STATUS
         document.priority = priority
         document.read_status = read_status
+        estimated_page_count = prepared.stored_page_count or 0
+        document.page_count = estimated_page_count
         document.metadata_evidence = {
             "file_size_bytes": len(prepared.stored_data),
             "local_cache_path": str(cache_path),
             "document_cache_path": str(cache_path),
             "source_import": prepared.metadata,
+            "upload_cost_estimate": {
+                "estimated_page_count": estimated_page_count or None,
+                "basis": "pending_exemplar_cost_model",
+            },
             "import_defaults": batch.shared_defaults,
             "duplicate_import": {
                 "strategy": duplicate_strategy,
@@ -2884,7 +3206,37 @@ async def create_import_batch(
         apply_project_defaults(db, document, projects, priority)
         apply_attribute_defaults(db, document, parsed_attributes, replace=duplicate_strategy == "overwrite")
 
-        db.add(ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored"))
+        job = ImportJob(batch_id=batch.id, document_id=document.id, status=STAGED_IMPORT_STATUS, current_step=STAGED_IMPORT_STATUS)
+        db.add(job)
+        db.flush()
+        estimated_cost_usd, estimate_basis, estimate_page_count = estimate_import_job_cost_usd(
+            job,
+            model_preferences=model_preferences,
+            rates=estimate_rates,
+        )
+        upload_estimate = {
+            "estimated_cost_usd": estimated_cost_usd,
+            "estimated_page_count": estimate_page_count,
+            "basis": estimate_basis,
+            "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+            "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+            "model_preferences": model_preferences,
+            "estimated_at": utc_now().isoformat(),
+        }
+        document.metadata_evidence = {**(document.metadata_evidence or {}), "upload_cost_estimate": upload_estimate}
+        record_import_cost_estimate(
+            db,
+            document=document,
+            job=job,
+            estimated_cost_usd=estimated_cost_usd,
+            estimate_basis=estimate_basis,
+            estimated_page_count=estimate_page_count,
+            model_preferences=model_preferences,
+            metadata={
+                "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+                "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+            },
+        )
         batch_documents_by_checksum[checksum] = document
 
     refresh_import_batch_progress(db, batch)
@@ -2928,21 +3280,247 @@ def import_job_costs_usd(db: Session, import_job_ids: list[str]) -> dict[str, fl
     return {job_id: round(cost, 6) for job_id, cost in costs.items()}
 
 
-IMPORT_JOB_QUEUE_STATUSES = ("queued", "running", "failed", "restored_paused")
 IMPORT_JOB_STATUS_PRIORITY = {
     "running": 0,
     "failed": 1,
     "restored_paused": 2,
     "queued": 3,
-    "complete": 4,
-    "duplicate_skipped": 5,
-    "cleared": 6,
+    "staged": 4,
+    "complete": 5,
+    "duplicate_skipped": 6,
+    "cleared": 7,
 }
+
+
+def document_estimated_page_count(document: Document | None) -> int | None:
+    if not document:
+        return None
+    if document.page_count and document.page_count > 0:
+        return document.page_count
+    evidence = document.metadata_evidence or {}
+    estimate = evidence.get("upload_cost_estimate")
+    if isinstance(estimate, dict):
+        value = estimate.get("estimated_page_count")
+        if isinstance(value, int) and value > 0:
+            return value
+    source_import = evidence.get("source_import")
+    if isinstance(source_import, dict):
+        value = source_import.get("estimated_page_count") or source_import.get("extracted_page_count")
+        if isinstance(value, int) and value > 0:
+            return value
+        pages = source_import.get("extracted_pages")
+        if isinstance(pages, list) and pages:
+            return len(pages)
+    return None
+
+
+def document_persisted_cost_estimate(document: Document | None) -> tuple[float, str, int | None] | None:
+    if not document:
+        return None
+    estimate = (document.metadata_evidence or {}).get("upload_cost_estimate")
+    if not isinstance(estimate, dict):
+        return None
+    amount = estimate.get("estimated_cost_usd")
+    try:
+        estimated_cost = float(amount)
+    except (TypeError, ValueError):
+        return None
+    if estimated_cost <= 0:
+        return None
+    page_count = estimate.get("estimated_page_count")
+    if not isinstance(page_count, int) or page_count <= 0:
+        page_count = document_estimated_page_count(document)
+    basis = str(estimate.get("basis") or "persisted_estimate")
+    return round(estimated_cost, 6), basis, page_count
+
+
+def import_estimate_calibration(db: Session) -> tuple[float, int]:
+    estimate_rows = (
+        db.query(DocumentCompositionRecord.document_id, DocumentCompositionRecord.amount_usd, DocumentCompositionRecord.created_at)
+        .filter(
+            DocumentCompositionRecord.record_kind == "estimate",
+            DocumentCompositionRecord.stage_key == "import_cost_estimate",
+            DocumentCompositionRecord.amount_usd > 0,
+        )
+        .order_by(DocumentCompositionRecord.created_at.desc())
+        .limit(1000)
+        .all()
+    )
+    latest_estimates: dict[str, float] = {}
+    for document_id, amount, _created_at in estimate_rows:
+        if document_id in latest_estimates:
+            continue
+        try:
+            estimate_amount = float(amount or 0)
+        except (TypeError, ValueError):
+            continue
+        if estimate_amount > 0:
+            latest_estimates[document_id] = estimate_amount
+    if not latest_estimates:
+        return 1.0, 0
+
+    document_ids = list(latest_estimates)
+    complete_document_ids = {
+        row[0]
+        for row in db.query(ImportJob.document_id)
+        .filter(ImportJob.document_id.in_(document_ids), ImportJob.status == "complete")
+        .all()
+        if row[0]
+    }
+    if not complete_document_ids:
+        return 1.0, 0
+
+    actual_rows = (
+        db.query(DocumentCompositionRecord.document_id, func.sum(DocumentCompositionRecord.amount_usd))
+        .filter(
+            DocumentCompositionRecord.document_id.in_(complete_document_ids),
+            DocumentCompositionRecord.record_kind.in_(["llm", "embedding"]),
+            DocumentCompositionRecord.amount_usd > 0,
+        )
+        .group_by(DocumentCompositionRecord.document_id)
+        .all()
+    )
+    actual_by_document: dict[str, float] = {}
+    for document_id, amount in actual_rows:
+        try:
+            actual_amount = float(amount or 0)
+        except (TypeError, ValueError):
+            continue
+        if actual_amount > 0:
+            actual_by_document[document_id] = actual_amount
+
+    compared_document_ids = [document_id for document_id in complete_document_ids if document_id in actual_by_document]
+    if not compared_document_ids:
+        return 1.0, 0
+    total_estimated = sum(latest_estimates[document_id] for document_id in compared_document_ids)
+    total_actual = sum(actual_by_document[document_id] for document_id in compared_document_ids)
+    if total_estimated <= 0 or total_actual <= 0:
+        return 1.0, 0
+    factor = total_actual / total_estimated
+    factor = max(IMPORT_ESTIMATE_CALIBRATION_MIN, min(IMPORT_ESTIMATE_CALIBRATION_MAX, factor))
+    return round(factor, 4), len(compared_document_ids)
+
+
+def import_cost_exemplar_rates(db: Session) -> dict[str, Any]:
+    records = (
+        db.query(OpenAIUsageRecord, Document.page_count)
+        .join(Document, OpenAIUsageRecord.document_id == Document.id)
+        .filter(
+            OpenAIUsageRecord.source == "import",
+            OpenAIUsageRecord.status != "failed",
+            Document.page_count > 0,
+        )
+        .order_by(OpenAIUsageRecord.created_at.desc())
+        .limit(4000)
+        .all()
+    )
+    task_model_document_costs: dict[tuple[str, str, str], float] = {}
+    task_model_document_pages: dict[tuple[str, str, str], int] = {}
+    task_document_costs: dict[tuple[str, str], float] = {}
+    task_document_pages: dict[tuple[str, str], int] = {}
+    document_costs: dict[str, float] = {}
+    document_pages: dict[str, int] = {}
+
+    for record, page_count in records:
+        if not record.document_id or not page_count:
+            continue
+        cost = estimated_cost_usd_for_record(record) or 0.0
+        if cost <= 0:
+            continue
+        pages = max(1, int(page_count))
+        task_key = record.task_key or record.capability_key or "unknown"
+        model = record.model or "unknown"
+        task_model_key = (record.document_id, task_key, model)
+        task_key_only = (record.document_id, task_key)
+        task_model_document_costs[task_model_key] = task_model_document_costs.get(task_model_key, 0.0) + cost
+        task_model_document_pages[task_model_key] = pages
+        task_document_costs[task_key_only] = task_document_costs.get(task_key_only, 0.0) + cost
+        task_document_pages[task_key_only] = pages
+        document_costs[record.document_id] = document_costs.get(record.document_id, 0.0) + cost
+        document_pages[record.document_id] = pages
+
+    def aggregate_per_page(document_cost_map: dict[Any, float], document_page_map: dict[Any, int], key_index: slice | None = None) -> dict[Any, float]:
+        cost_by_key: dict[Any, float] = {}
+        page_by_key: dict[Any, int] = {}
+        for key, cost in document_cost_map.items():
+            aggregate_key = key[key_index] if key_index else "overall"
+            if isinstance(aggregate_key, tuple) and len(aggregate_key) == 1:
+                aggregate_key = aggregate_key[0]
+            cost_by_key[aggregate_key] = cost_by_key.get(aggregate_key, 0.0) + cost
+            page_by_key[aggregate_key] = page_by_key.get(aggregate_key, 0) + document_page_map.get(key, 0)
+        return {
+            key: cost / max(1, page_by_key.get(key, 0))
+            for key, cost in cost_by_key.items()
+            if page_by_key.get(key, 0) > 0
+        }
+
+    task_model_rates = aggregate_per_page(task_model_document_costs, task_model_document_pages, slice(1, 3))
+    task_rates = aggregate_per_page(task_document_costs, task_document_pages, slice(1, 2))
+    overall_rates = aggregate_per_page(document_costs, document_pages)
+    calibration_factor, calibration_sample_count = import_estimate_calibration(db)
+    return {
+        "task_model_rates": task_model_rates,
+        "task_rates": task_rates,
+        "overall_rate": overall_rates.get("overall", 0.0),
+        "exemplar_count": len(document_costs),
+        "estimate_calibration_factor": calibration_factor,
+        "estimate_calibration_sample_count": calibration_sample_count,
+    }
+
+
+def apply_import_estimate_calibration(amount: float, basis: str, rates: dict[str, Any]) -> tuple[float, str]:
+    factor = float(rates.get("estimate_calibration_factor") or 1.0)
+    sample_count = int(rates.get("estimate_calibration_sample_count") or 0)
+    if sample_count <= 0 or factor <= 0 or abs(factor - 1.0) < 0.0001:
+        return amount, basis
+    return round(amount * factor, 6), f"calibrated_{basis}"
+
+
+def estimate_import_job_cost_usd(
+    job: ImportJob,
+    *,
+    model_preferences: dict[str, str],
+    rates: dict[str, Any],
+) -> tuple[float, str, int | None]:
+    page_count = document_estimated_page_count(job.document)
+    if not page_count or page_count <= 0:
+        page_count = 1
+    task_model_rates: dict[tuple[str, str], float] = rates.get("task_model_rates", {})
+    task_rates: dict[str, float] = rates.get("task_rates", {})
+    overall_rate = float(rates.get("overall_rate") or 0.0)
+    total_rate = 0.0
+    exact_rate_count = 0
+    fallback_rate_count = 0
+    for task_key in IMPORT_ESTIMATE_TASK_KEYS:
+        model = model_preferences.get(task_key)
+        if not model:
+            continue
+        exact_rate = task_model_rates.get((task_key, model))
+        if exact_rate is not None:
+            total_rate += exact_rate
+            exact_rate_count += 1
+            continue
+        fallback_rate = task_rates.get(task_key)
+        if fallback_rate is not None:
+            total_rate += fallback_rate
+            fallback_rate_count += 1
+
+    if total_rate > 0:
+        basis = "exemplar" if exact_rate_count else "task_exemplar"
+        if fallback_rate_count:
+            basis = "mixed_exemplar"
+        amount, basis = apply_import_estimate_calibration(round(total_rate * page_count, 6), basis, rates)
+        return amount, basis, page_count
+    if overall_rate > 0:
+        amount, basis = apply_import_estimate_calibration(round(overall_rate * page_count, 6), "library_exemplar", rates)
+        return amount, basis, page_count
+    amount, basis = apply_import_estimate_calibration(round(DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE * page_count, 6), "default", rates)
+    return amount, basis, page_count
 
 
 def import_job_sort_key(job: ImportJob) -> tuple[int, float, str]:
     priority = IMPORT_JOB_STATUS_PRIORITY.get(job.status, 7)
-    if job.status in {"running", "queued", "restored_paused"}:
+    if job.status in {"running", "queued", "staged", "restored_paused"}:
         timestamp = job.created_at or job.updated_at or utc_now()
         return (priority, timestamp.timestamp(), job.id)
     timestamp = job.updated_at or job.created_at or utc_now()
@@ -2959,6 +3537,8 @@ def dedupe_import_jobs(*groups: list[ImportJob]) -> list[ImportJob]:
 
 def import_job_step_model(current_step: str, model_preferences: dict[str, str]) -> str | None:
     step = current_step or "stored"
+    if step == STAGED_IMPORT_STATUS:
+        return None
     if step in {"stored", "extracting"}:
         return model_preferences.get(MODEL_RAW_TEXT_EXTRACTION)
     if step == "normalizing_pages" or step.startswith("normalizing_page_"):
@@ -3005,8 +3585,19 @@ def import_job_out(
     *,
     model_preferences: dict[str, str] | None = None,
     estimated_cost_usd: float = 0.0,
+    cost_estimate: tuple[float, str, int | None] | None = None,
 ) -> dict[str, Any]:
     model_preferences = model_preferences or {}
+    projected_cost, estimate_basis, estimate_page_count = cost_estimate or (0.0, "none", document_estimated_page_count(job.document))
+    persisted_estimate = document_persisted_cost_estimate(job.document)
+    if persisted_estimate and job.status in {STAGED_IMPORT_STATUS, "queued"}:
+        projected_cost, estimate_basis, estimate_page_count = persisted_estimate
+    actual_cost = round(estimated_cost_usd, 6)
+    display_cost = actual_cost
+    display_basis = "actual" if actual_cost > 0 else "none"
+    if actual_cost <= 0 and job.status in {STAGED_IMPORT_STATUS, "queued"}:
+        display_cost = projected_cost
+        display_basis = estimate_basis
     event_title = import_job_event_value(job, "title", job.current_step) or import_job_event_value(job, "title")
     event_error = import_job_event_message(job, job.current_step) or import_job_event_message(job)
     last_error = job.last_error
@@ -3019,11 +3610,13 @@ def import_job_out(
         "document_title": job.document.title if job.document else event_title,
         "original_filename": job.document.original_filename if job.document else None,
         "file_size_bytes": import_job_file_size(job.document),
-        "document_page_count": job.document.page_count if job.document else None,
+        "document_page_count": document_estimated_page_count(job.document),
         "status": job.status,
         "current_step": job.current_step,
         "current_model": import_job_step_model(job.current_step, model_preferences),
-        "estimated_cost_usd": round(estimated_cost_usd, 6),
+        "estimated_cost_usd": round(display_cost, 6),
+        "estimated_cost_basis": display_basis,
+        "estimated_cost_page_count": estimate_page_count,
         "attempts": job.attempts,
         "last_error": last_error or (event_error if job.status == "failed" else None),
         "locked_at": job.locked_at,
@@ -3050,7 +3643,16 @@ def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Se
     jobs = dedupe_import_jobs(queue_jobs, recent_jobs)
     model_preferences = get_analysis_models(db)
     costs = import_job_costs_usd(db, [job.id for job in jobs])
-    return [import_job_out(job, model_preferences=model_preferences, estimated_cost_usd=costs.get(job.id, 0.0)) for job in jobs]
+    estimate_rates = import_cost_exemplar_rates(db)
+    return [
+        import_job_out(
+            job,
+            model_preferences=model_preferences,
+            estimated_cost_usd=costs.get(job.id, 0.0),
+            cost_estimate=estimate_import_job_cost_usd(job, model_preferences=model_preferences, rates=estimate_rates),
+        )
+        for job in jobs
+    ]
 
 
 def import_job_previous_state(job: ImportJob) -> dict[str, Any]:
@@ -3083,6 +3685,32 @@ def requeue_import_job(db: Session, job: ImportJob, *, event_type: str = "manual
     )
 
 
+def stage_import_job_for_processing(db: Session, job: ImportJob) -> None:
+    previous = import_job_previous_state(job)
+    job.status = "queued"
+    job.current_step = "stored"
+    job.locked_at = None
+    job.last_error = None
+    if job.document:
+        job.document.processing_status = "queued"
+        evidence = dict(job.document.metadata_evidence or {})
+        estimate = dict(evidence.get("upload_cost_estimate") or {})
+        estimate["queued_at"] = utc_now().isoformat()
+        evidence["upload_cost_estimate"] = estimate
+        job.document.metadata_evidence = evidence
+    if job.batch:
+        refresh_import_batch_progress(db, job.batch)
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=job.document_id,
+            event_type="manual_import_process_uploads",
+            message="Staged upload was released for import processing.",
+            payload={"previous": previous},
+        )
+    )
+
+
 def clear_import_job(
     db: Session,
     job: ImportJob,
@@ -3107,6 +3735,24 @@ def clear_import_job(
             payload={"previous": previous},
         )
     )
+
+
+@app.post("/api/imports/jobs/process-staged", response_model=ImportQueueActionOut)
+def process_staged_import_jobs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ImportQueueActionOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status == STAGED_IMPORT_STATUS)
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    for job in jobs:
+        stage_import_job_for_processing(db, job)
+    db.commit()
+    return ImportQueueActionOut(matched_count=len(jobs), updated_count=len(jobs))
 
 
 @app.post("/api/imports/jobs/retry-failed", response_model=ImportQueueActionOut)
@@ -3145,7 +3791,7 @@ def clear_import_queue(
     jobs = (
         db.query(ImportJob)
         .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
-        .filter(ImportJob.status.in_(["queued", "running", "failed", "restored_paused"]))
+        .filter(ImportJob.status.in_(IMPORT_JOB_CLEARABLE_STATUSES))
         .order_by(ImportJob.created_at.asc())
         .all()
     )
@@ -3199,8 +3845,8 @@ def cancel_import_job(
         raise HTTPException(status_code=404, detail="Import job not found")
     if job.status == "running":
         raise HTTPException(status_code=409, detail="Running imports cannot be canceled while the worker lock is active.")
-    if job.status not in {"queued", "failed", "restored_paused"}:
-        raise HTTPException(status_code=400, detail="Only queued, failed, or restored imports can be canceled.")
+    if job.status not in {STAGED_IMPORT_STATUS, "queued", "failed", "restored_paused"}:
+        raise HTTPException(status_code=400, detail="Only staged, queued, failed, or restored imports can be canceled.")
 
     clear_import_job(db, job, event_type="manual_import_cancel", message="Import job was canceled.")
     db.commit()
@@ -3426,7 +4072,7 @@ def patch_citation_candidate(
         candidate.status = payload.status
     if payload.apply_to_document:
         document = db.get(Document, candidate.document_id)
-        if not document or document.deleted_at:
+        if not document_is_library_visible(document):
             raise HTTPException(status_code=404, detail="Document not found")
         before = document_correction_snapshot(document)
         changed_fields: set[str] = set()
@@ -3495,7 +4141,7 @@ def project_bibliography(
     documents = [
         item.document
         for item in project.items
-        if item.document and item.document.deleted_at is None and (not used_only or item.used_in_output)
+        if document_is_library_visible(item.document) and (not used_only or item.used_in_output)
     ]
     metadata = [
         {
@@ -3549,7 +4195,7 @@ def create_note(
     db.flush()
     if note.document_id:
         document = db.get(Document, note.document_id)
-        if document and not document.deleted_at:
+        if document_is_library_visible(document):
             document.search_text = rebuild_document_search_text(document)
     db.commit()
     db.refresh(note)
@@ -3573,7 +4219,7 @@ def patch_note(
     for document_id in affected_document_ids:
         if document_id:
             document = db.get(Document, document_id)
-            if document and not document.deleted_at:
+            if document_is_library_visible(document):
                 document.search_text = rebuild_document_search_text(document)
     db.commit()
     db.refresh(note)
@@ -3592,7 +4238,7 @@ def delete_note(
     note.deleted_at = utc_now()
     if note.document_id:
         document = db.get(Document, note.document_id)
-        if document and not document.deleted_at:
+        if document_is_library_visible(document):
             document.search_text = rebuild_document_search_text(document)
     db.commit()
     return {"status": "deleted"}

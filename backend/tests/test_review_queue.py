@@ -26,6 +26,7 @@ def test_accept_citation_candidate_updates_document_and_history(monkeypatch, tmp
             original_filename="draft.pdf",
             checksum_sha256="c" * 64,
             citation_status="needs_review",
+            processing_status="ready",
         )
         db.add(document)
         db.flush()

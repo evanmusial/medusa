@@ -30,6 +30,7 @@ def test_domain_rename_rebuilds_document_search_and_rejects_cycles(monkeypatch, 
             title="Domain Paper",
             original_filename="domain.pdf",
             checksum_sha256="d" * 64,
+            processing_status="ready",
             domains=[child],
         )
         db.add_all([root, child, grandchild, document])
@@ -71,6 +72,7 @@ def test_domain_delete_soft_deletes_detaches_documents_and_reparents_children(mo
             title="Threat Paper",
             original_filename="threat.pdf",
             checksum_sha256="e" * 64,
+            processing_status="ready",
             domains=[child],
         )
         db.add_all([root, child, grandchild, document])

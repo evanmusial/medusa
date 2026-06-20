@@ -28,6 +28,7 @@ from app.services.analysis_models import (
 )
 from app.services.citations import decode_html_entities, merge_citation_metadata
 from app.services.document_cache import ensure_document_pdf_bytes
+from app.services.document_visibility import filter_library_visible_documents
 from app.services.figures import process_document_figures_from_storage
 from app.services.history import (
     changed_snapshot_fields,
@@ -41,13 +42,13 @@ from app.services.processing import (
     apply_document_citations,
     document_metadata,
     fill_missing_document_metadata,
-    get_or_create_tag,
     log_event,
     normalize_document_pages,
     rebuild_document_text_chunks,
 )
 from app.services.recommendations import refresh_document_recommendations
 from app.services.search import rebuild_document_search_text
+from app.services.tag_governance import apply_import_tag_governance
 from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
     crossref_lookup,
@@ -87,8 +88,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="summary_topics",
         label="AI metadata and summary",
-        version=7,
-        description="Use routed document intelligence: high-quality metadata, GPT-5.4 summaries from text, and GPT-5.4-mini topic tags without generating APA unless citation refresh needs it.",
+        version=8,
+        description="Use routed document intelligence plus tag governance: high-quality metadata, GPT-5.4 summaries from text, and scored GPT-5.4-mini topic tags without generating APA unless citation refresh needs it.",
     ),
     CapabilityDefinition(
         key="figure_assets",
@@ -188,7 +189,7 @@ def _already_queued_or_running(db: Session, document_id: str, capability_key: st
 
 
 def documents_for_scope(db: Session, scope_type: str, scope_data: dict[str, Any]) -> list[Document]:
-    query = db.query(Document).filter(Document.deleted_at.is_(None))
+    query = filter_library_visible_documents(db.query(Document))
     if scope_type == "library":
         pass
     elif scope_type == "documents":
@@ -657,17 +658,18 @@ class ConcordanceProcessor:
                     )
                 )
 
-        added_tags = 0
-        for topic in metadata.get("topics") or []:
-            tag = get_or_create_tag(db, topic)
-            if tag and tag not in document.tags:
-                document.tags.append(tag)
-                added_tags += 1
-        for keyword in metadata.get("keywords") or []:
-            tag = get_or_create_tag(db, keyword)
-            if tag and tag not in document.tags:
-                document.tags.append(tag)
-                added_tags += 1
+        before_tag_count = len(document.tags)
+        tag_governance = apply_import_tag_governance(
+            db,
+            document=document,
+            topics=metadata.get("topics") or [],
+            keywords=metadata.get("keywords") or [],
+            source="concordance",
+            concordance_job_id=job.id,
+            ai=ai,
+            usage_context=self._usage_context(document, job, "tag_governance"),
+        )
+        added_tags = max(0, len(document.tags) - before_tag_count)
         after = document_correction_snapshot(document)
         changed_fields = changed_snapshot_fields(before, after)
         if changed_fields:
@@ -683,6 +685,7 @@ class ConcordanceProcessor:
         return {
             "confidence": metadata.get("confidence"),
             "tags_added": added_tags,
+            "tag_governance": tag_governance,
             "used_pdf_file": bool((metadata.get("_openai") or {}).get("used_pdf_file")),
             "ai_apa_candidate": bool(metadata.get("apa_citation")),
         }

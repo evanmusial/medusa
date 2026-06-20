@@ -65,7 +65,6 @@ services:
     environment:
       MEDUSA_API_PROXY: http://backend:8000
       MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
-      MEDUSA_BUILD_SHA: ${MEDUSA_BUILD_SHA:-}
     ports:
       - "3737:3737"
     depends_on:

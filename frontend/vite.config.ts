@@ -1,22 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { execSync } from "node:child_process";
 
-function dateStamp(date = new Date()) {
-  return date.toISOString().slice(0, 10).replaceAll("-", ".");
+function pad2(value: number) {
+  return value.toString().padStart(2, "0");
 }
 
-function gitShortSha() {
-  try {
-    return execSync("git -C .. rev-parse --short=8 HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-  } catch {
-    return "";
-  }
+function buildTimestamp(date = new Date()) {
+  return `${date.getFullYear()}.${pad2(date.getMonth() + 1)}.${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}`;
 }
 
-const buildDate = process.env.MEDUSA_BUILD_DATE || dateStamp();
-const buildSha = process.env.MEDUSA_BUILD_SHA || gitShortSha();
-const buildVersion = buildSha ? `${buildDate}+${buildSha}` : buildDate;
+const buildVersion = process.env.MEDUSA_BUILD_DATE || buildTimestamp();
 
 export default defineConfig({
   plugins: [react()],

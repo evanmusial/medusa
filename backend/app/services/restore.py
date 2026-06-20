@@ -21,6 +21,7 @@ from app.models import (
     DocumentCapability,
     DocumentPage,
     DocumentRecommendation,
+    DocumentTagAssessment,
     DocumentVersion,
     Domain,
     Figure,
@@ -34,6 +35,7 @@ from app.models import (
     SavedSearch,
     Tag,
     TagAlias,
+    TagRelationship,
     TextChunk,
 )
 from app.services.exports import EXPORT_SCHEMA_VERSION
@@ -64,6 +66,7 @@ RESTORE_SECTIONS = [
     "domains",
     "tags",
     "tag_aliases",
+    "tag_relationships",
     "saved_searches",
     "attribute_definitions",
     "documents",
@@ -75,6 +78,7 @@ RESTORE_SECTIONS = [
     "import_jobs",
     "processing_events",
     "document_composition_records",
+    "document_tag_assessments",
     "concordance_runs",
     "concordance_jobs",
     "citation_candidates",
@@ -208,6 +212,12 @@ def restore_metadata_export(
             _section(data, "tag_aliases"),
             id_maps,
         )
+        restored_counts["tag_relationships"], skipped_rows["tag_relationships"] = _restore_tag_relationships(
+            db,
+            _section(data, "tag_relationships"),
+            id_maps,
+            preserve_ids,
+        )
         restored_counts["saved_searches"] = _restore_saved_searches(
             db,
             _section(data, "saved_searches"),
@@ -276,6 +286,12 @@ def restore_metadata_export(
             preserve_ids,
             park_active_jobs,
         )
+        restored_counts["document_tag_assessments"], skipped_rows["document_tag_assessments"] = _restore_document_tag_assessments(
+            db,
+            _section(data, "document_tag_assessments"),
+            id_maps,
+            preserve_ids,
+        )
         restored_counts["citation_candidates"], skipped_rows["citation_candidates"] = _restore_citation_candidates(
             db,
             _section(data, "citation_candidates"),
@@ -337,6 +353,11 @@ def _restore_tags(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, di
         tag.name = name
         tag.kind = "tag"
         tag.color = row.get("color")
+        tag.status = row.get("status") or "canonical"
+        tag.definition = row.get("definition")
+        tag.use_guidance = row.get("use_guidance")
+        tag.avoid_guidance = row.get("avoid_guidance")
+        tag.governance_metadata = row.get("metadata") or {}
         _apply_timestamps(tag, row)
         db.flush()
         if original_id:
@@ -370,6 +391,56 @@ def _restore_tag_aliases(
         alias.source = row.get("source") or "merge"
         alias.alias_metadata = row.get("metadata") or {}
         _apply_timestamps(alias, row)
+        count += 1
+    db.flush()
+    return count, skipped
+
+
+def _restore_tag_relationships(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        source_tag_id = id_maps["tags"].get(row.get("source_tag_id")) or row.get("source_tag_id")
+        target_tag_id = id_maps["tags"].get(row.get("target_tag_id")) or row.get("target_tag_id")
+        if not source_tag_id or not target_tag_id or not db.get(Tag, source_tag_id) or not db.get(Tag, target_tag_id):
+            skipped += 1
+            continue
+        relationship_type = row.get("relationship_type") or "related"
+        relationship = _get_existing(db, TagRelationship, row.get("id"))
+        if not relationship:
+            relationship = (
+                db.query(TagRelationship)
+                .filter(
+                    TagRelationship.source_tag_id == source_tag_id,
+                    TagRelationship.target_tag_id == target_tag_id,
+                    TagRelationship.relationship_type == relationship_type,
+                )
+                .one_or_none()
+            )
+        if not relationship:
+            relationship = TagRelationship(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    source_tag_id=source_tag_id,
+                    target_tag_id=target_tag_id,
+                    relationship_type=relationship_type,
+                )
+            )
+            db.add(relationship)
+        relationship.source_tag_id = source_tag_id
+        relationship.target_tag_id = target_tag_id
+        relationship.relationship_type = relationship_type
+        relationship.status = row.get("status") or "approved"
+        relationship.confidence = row.get("confidence")
+        relationship.rationale = row.get("rationale")
+        relationship.relationship_metadata = row.get("metadata") or {}
+        _apply_timestamps(relationship, row)
         count += 1
     db.flush()
     return count, skipped
@@ -805,6 +876,57 @@ def _restore_concordance_jobs(
         if row.get("id"):
             id_maps["concordance_jobs"][row["id"]] = job.id
         count += 1
+    return count, skipped
+
+
+def _restore_document_tag_assessments(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        document_id = id_maps["documents"].get(row.get("document_id"))
+        if not document_id:
+            skipped += 1
+            continue
+        tag_id = id_maps["tags"].get(row.get("tag_id")) if row.get("tag_id") else None
+        import_job_id = id_maps["import_jobs"].get(row.get("import_job_id")) if row.get("import_job_id") else None
+        concordance_job_id = id_maps["concordance_jobs"].get(row.get("concordance_job_id")) if row.get("concordance_job_id") else None
+        if row.get("tag_id") and not tag_id:
+            skipped += 1
+            continue
+        assessment = _get_existing(db, DocumentTagAssessment, row.get("id"))
+        if not assessment:
+            assessment = DocumentTagAssessment(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    document_id=document_id,
+                    candidate_name=row.get("candidate_name") or "restored",
+                    decision=row.get("decision") or "restored",
+                )
+            )
+            db.add(assessment)
+        assessment.document_id = document_id
+        assessment.tag_id = tag_id
+        assessment.import_job_id = import_job_id
+        assessment.concordance_job_id = concordance_job_id
+        assessment.candidate_name = row.get("candidate_name") or "restored"
+        assessment.source = row.get("source") or "restored"
+        assessment.decision = row.get("decision") or "restored"
+        assessment.status = row.get("status") or "attached"
+        assessment.relevance_score = row.get("relevance_score") or 0
+        assessment.library_fit_score = row.get("library_fit_score") or 0
+        assessment.novelty_score = row.get("novelty_score") or 0
+        assessment.overall_score = row.get("overall_score") or 0
+        assessment.rationale = row.get("rationale")
+        assessment.assessment_metadata = row.get("metadata") or {}
+        _apply_timestamps(assessment, row)
+        count += 1
+    db.flush()
     return count, skipped
 
 

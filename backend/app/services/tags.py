@@ -8,6 +8,18 @@ from app.models import Tag, TagAlias
 
 
 TAG_MANIFEST_LIMIT = 500
+ACTIVE_TAG_STATUSES = {"canonical", "candidate"}
+TAG_STATUS_CANONICAL = "canonical"
+TAG_STATUS_CANDIDATE = "candidate"
+TAG_STATUS_RETIRED = "retired"
+TAG_STATUS_BLOCKED = "blocked"
+
+
+def normalize_tag_status(status: str | None, *, default: str = TAG_STATUS_CANONICAL) -> str:
+    normalized = " ".join(str(status or "").strip().lower().split())
+    if normalized in {TAG_STATUS_CANONICAL, TAG_STATUS_CANDIDATE, TAG_STATUS_RETIRED, TAG_STATUS_BLOCKED}:
+        return normalized
+    return default
 
 
 def normalize_tag_name(name: str) -> str:
@@ -17,6 +29,10 @@ def normalize_tag_name(name: str) -> str:
 def _ensure_flat_tag(tag: Tag) -> Tag:
     if tag.kind != "tag":
         tag.kind = "tag"
+    if not getattr(tag, "status", None):
+        tag.status = TAG_STATUS_CANONICAL
+    if tag.governance_metadata is None:
+        tag.governance_metadata = {}
     return tag
 
 
@@ -30,7 +46,13 @@ def resolve_tag_alias(db: Session, name: str) -> Tag | None:
     return None
 
 
-def get_or_create_tag(db: Session, name: str) -> Tag | None:
+def get_or_create_tag(
+    db: Session,
+    name: str,
+    *,
+    status_if_new: str = TAG_STATUS_CANONICAL,
+    metadata_if_new: dict[str, Any] | None = None,
+) -> Tag | None:
     normalized = normalize_tag_name(name)
     if not normalized:
         return None
@@ -43,14 +65,24 @@ def get_or_create_tag(db: Session, name: str) -> Tag | None:
     if tag:
         return _ensure_flat_tag(tag)
 
-    tag = Tag(name=normalized, kind="tag")
+    tag = Tag(
+        name=normalized,
+        kind="tag",
+        status=normalize_tag_status(status_if_new),
+        governance_metadata=metadata_if_new or {},
+    )
     db.add(tag)
     db.flush()
     return tag
 
 
-def existing_tag_manifest(db: Session, *, limit: int = TAG_MANIFEST_LIMIT) -> list[str]:
-    rows = db.query(Tag.name).order_by(Tag.name).limit(limit).all()
+def existing_tag_manifest(db: Session, *, limit: int = TAG_MANIFEST_LIMIT, include_candidates: bool = True) -> list[str]:
+    query = db.query(Tag.name)
+    statuses = {TAG_STATUS_CANONICAL}
+    if include_candidates:
+        statuses.add(TAG_STATUS_CANDIDATE)
+    query = query.filter(Tag.status.in_(sorted(statuses)))
+    rows = query.order_by(Tag.name).limit(limit).all()
     return [name for (name,) in rows if normalize_tag_name(name)]
 
 

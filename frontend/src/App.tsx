@@ -12,10 +12,10 @@ import {
   Background,
   Controls,
   Handle,
-  MarkerType,
   Position,
   ReactFlow,
   type Edge,
+  type EdgeProps,
   type Node as FlowNode,
   type NodeProps,
 } from "@xyflow/react";
@@ -61,6 +61,7 @@ import {
   Moon,
   Orbit,
   PieChart,
+  Play,
   Plus,
   RefreshCw,
   RemoveFormatting,
@@ -115,6 +116,9 @@ import type {
   SavedSearch,
   Tag,
   TagOptimizationResult,
+  TagPruneSuggestion,
+  TagRelationshipSuggestion,
+  TagStatusSuggestion,
   TagOptimizationSuggestion,
 } from "./types";
 
@@ -219,7 +223,7 @@ const FILTER_PANE_MAX = 420;
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
 const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
-const QUEUE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "failed", "restored_paused"]);
+const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
@@ -276,7 +280,7 @@ type BudgetChartSegment = {
   value: number;
 };
 type StashSortKey = "created" | "doi" | "title" | "status";
-type TagSortKey = "name" | "documents";
+type TagSortKey = "name" | "status" | "documents";
 type SortDirection = "asc" | "desc";
 type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
 type BrowserHistoryMode = "none" | "push" | "replace";
@@ -1041,6 +1045,11 @@ function uniqueValues(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+function inputEventShiftKey(event: ChangeEvent<HTMLInputElement>) {
+  const nativeEvent = event.nativeEvent as Event & { shiftKey?: unknown };
+  return nativeEvent.shiftKey === true;
+}
+
 function authorsToText(document: DocumentSummary | DocumentDetail) {
   return (document.authors || [])
     .map((author) => {
@@ -1208,6 +1217,33 @@ function formatUsd(value?: number | null) {
   }).format(value);
 }
 
+function formatSignedUsd(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "Pending";
+  if (value === 0) return formatUsd(0);
+  return `${value > 0 ? "+" : "-"}${formatUsd(Math.abs(value))}`;
+}
+
+function formatSignedPercent(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "Pending";
+  if (value === 0) return "0%";
+  return `${value > 0 ? "+" : ""}${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}%`;
+}
+
+function isImportCostPreviewJob(job: ImportJob) {
+  return job.status === "staged" || job.status === "queued";
+}
+
+function importQueueEstimateTotal(jobs: ImportJob[]) {
+  return jobs.reduce((sum, job) => {
+    const value = job.estimated_cost_usd ?? 0;
+    return sum + (Number.isFinite(value) ? Math.max(0, value) : 0);
+  }, 0);
+}
+
+function importQueueEstimateLabel(jobs: ImportJob[]) {
+  return `Rough total ${formatUsd(importQueueEstimateTotal(jobs))}`;
+}
+
 function formatDuration(seconds?: number | null) {
   if (seconds === undefined || seconds === null || Number.isNaN(seconds)) return "";
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -1228,6 +1264,18 @@ const COMPOSITION_COLORS = ["#2563eb", "#14b8a6", "#f59e0b", "#8b5cf6", "#ef4444
 
 function compositionLabel(entry: DocumentCompositionEntry) {
   return entry.model || entry.method || entry.label || entry.stage_label || entry.provider || "Unknown";
+}
+
+function compositionEstimateStatusLabel(status?: string | null) {
+  if (status === "over") return "Actual over estimate";
+  if (status === "under") return "Actual under estimate";
+  if (status === "close") return "Actual close to estimate";
+  return "Waiting for actual cost";
+}
+
+function compositionEstimateBasisLabel(value?: string | null) {
+  const basis = (value || "estimate").replace(/^calibrated_/, "calibrated ");
+  return basis.replaceAll("_", " ");
 }
 
 function compositionPieGradient(entries: DocumentCompositionEntry[]) {
@@ -1260,9 +1308,16 @@ const compositionPipelineNodeTypes = {
   compositionPipeline: CompositionPipelineNodeView,
 };
 
+const compositionPipelineEdgeTypes = {
+  compositionPipeline: CompositionPipelineEdgeView,
+};
+
 const COMPOSITION_PIPELINE_NODE_WIDTH = 236;
 const COMPOSITION_PIPELINE_NODE_HEIGHT = 126;
 const COMPOSITION_PIPELINE_GAP = 96;
+const COMPOSITION_PIPELINE_HANDLE_OFFSET = 6;
+const COMPOSITION_PIPELINE_ARROW_LENGTH = 14;
+const COMPOSITION_PIPELINE_ARROW_WIDTH = 12;
 
 function pipelineTone(entry: DocumentCompositionEntry) {
   if (entry.status === "failed" || entry.status === "error") return "error";
@@ -1316,11 +1371,45 @@ function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
     sourceHandle: "pipeline-output",
     target: `pipeline-${index + 1}`,
     targetHandle: "pipeline-input",
-    type: "straight",
-    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: "var(--primary)" },
-    style: { stroke: "var(--primary)", strokeWidth: 2.5 },
+    type: "compositionPipeline",
   }));
   return { nodes, edges };
+}
+
+function CompositionPipelineEdgeView({ id, sourceX, sourceY, targetX, targetY }: EdgeProps) {
+  const deltaX = targetX - sourceX;
+  const deltaY = targetY - sourceY;
+  const length = Math.hypot(deltaX, deltaY);
+  if (!length) return null;
+
+  const unitX = deltaX / length;
+  const unitY = deltaY / length;
+  const edgeOffset = Math.min(COMPOSITION_PIPELINE_HANDLE_OFFSET, length * 0.2);
+  const startX = sourceX - unitX * edgeOffset;
+  const startY = sourceY - unitY * edgeOffset;
+  const tipX = targetX + unitX * edgeOffset;
+  const tipY = targetY + unitY * edgeOffset;
+  const visibleLength = Math.max(Math.hypot(tipX - startX, tipY - startY), 1);
+  const arrowLength = Math.min(COMPOSITION_PIPELINE_ARROW_LENGTH, visibleLength * 0.45);
+  const baseX = tipX - unitX * arrowLength;
+  const baseY = tipY - unitY * arrowLength;
+  const perpendicularX = -unitY;
+  const perpendicularY = unitX;
+  const halfArrowWidth = COMPOSITION_PIPELINE_ARROW_WIDTH / 2;
+  const path = `M ${startX} ${startY} L ${baseX} ${baseY}`;
+  const points = [
+    `${tipX},${tipY}`,
+    `${baseX + perpendicularX * halfArrowWidth},${baseY + perpendicularY * halfArrowWidth}`,
+    `${baseX - perpendicularX * halfArrowWidth},${baseY - perpendicularY * halfArrowWidth}`,
+  ].join(" ");
+
+  return (
+    <g className="composition-pipeline-edge" data-edge-id={id}>
+      <path className="composition-pipeline-edge-shadow" d={path} vectorEffect="non-scaling-stroke" />
+      <path className="composition-pipeline-edge-path" d={path} vectorEffect="non-scaling-stroke" />
+      <polygon className="composition-pipeline-edge-arrow" points={points} />
+    </g>
+  );
 }
 
 function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode>) {
@@ -1357,6 +1446,7 @@ function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode
 function importJobProgress(job: ImportJob) {
   if (job.status === "complete") return 100;
   if (job.status === "failed") return 100;
+  if (job.status === "staged") return 0;
   if (job.status === "queued") return 0;
   const step = job.current_step || "stored";
   const pageMatch = step.match(/^normalizing_page_(\d+)$/);
@@ -1386,9 +1476,10 @@ function importJobSortPriority(job: ImportJob) {
   if (job.status === "failed") return 1;
   if (job.status === "restored_paused") return 2;
   if (job.status === "queued") return 3;
-  if (job.status === "complete") return 4;
-  if (job.status === "duplicate_skipped") return 5;
-  if (job.status === "cleared") return 6;
+  if (job.status === "staged") return 4;
+  if (job.status === "complete") return 5;
+  if (job.status === "duplicate_skipped") return 6;
+  if (job.status === "cleared") return 7;
   return 7;
 }
 
@@ -1403,7 +1494,7 @@ function compareImportJobs(left: ImportJob, right: ImportJob) {
   if (left.status === "running") {
     return importJobTime(left.locked_at || left.updated_at || left.created_at) - importJobTime(right.locked_at || right.updated_at || right.created_at);
   }
-  if (left.status === "queued" || left.status === "restored_paused") {
+  if (left.status === "queued" || left.status === "staged" || left.status === "restored_paused") {
     return importJobTime(left.created_at) - importJobTime(right.created_at);
   }
   return importJobTime(right.updated_at || right.created_at) - importJobTime(left.updated_at || left.created_at);
@@ -1423,6 +1514,7 @@ function importJobStage(job: ImportJob) {
     const pageCount = job.document_page_count ? `/${job.document_page_count}` : "";
     return `normalizing page ${pageMatch[1]}${pageCount}`;
   }
+  if (job.current_step === "staged") return "staged";
   return job.current_step.replaceAll("_", " ");
 }
 
@@ -1457,9 +1549,32 @@ function citationCandidateReviewDate(candidate: CitationCandidate) {
 function importJobStatusLabel(job: ImportJob) {
   if (job.status === "complete") return "complete";
   if (job.status === "failed") return "failed";
+  if (job.status === "staged") return "staged";
   if (job.status === "queued") return "queued";
   if (job.status === "restored_paused") return "restored paused";
   return importJobStage(job);
+}
+
+function importJobEstimatePrefix(job: ImportJob) {
+  if (job.estimated_cost_basis === "actual") return "";
+  if (job.status === "staged" || job.status === "queued") return "rough ";
+  return "";
+}
+
+function importJobEstimateTitle(job: ImportJob) {
+  if (job.estimated_cost_basis === "actual") return "Known cost recorded so far.";
+  const calibrated = job.estimated_cost_basis.startsWith("calibrated_");
+  const basis = calibrated ? job.estimated_cost_basis.replace(/^calibrated_/, "") : job.estimated_cost_basis;
+  const pageCount = job.estimated_cost_page_count || job.document_page_count;
+  const pageText = pageCount ? ` across about ${pageCount} page${pageCount === 1 ? "" : "s"}` : "";
+  const calibrationText = calibrated ? " and calibrated by prior estimate accuracy" : "";
+  if (basis === "none") return "No model-cost estimate is available yet.";
+  if (basis === "default") return `Rough estimate from the default per-page import cost${pageText}${calibrationText}.`;
+  if (basis === "library_exemplar") return `Rough estimate from prior import costs per page${pageText}${calibrationText}.`;
+  if (basis === "task_exemplar") return `Rough estimate from prior import task costs per page${pageText}${calibrationText}.`;
+  if (basis === "mixed_exemplar") return `Rough estimate from prior task/model exemplars and task fallbacks${pageText}${calibrationText}.`;
+  if (basis === "persisted_estimate") return `Persisted rough estimate captured when this upload was staged${pageText}${calibrationText}.`;
+  return `Rough estimate from prior task/model exemplars${pageText}${calibrationText}.`;
 }
 
 function ImportJobStatusDetail({ job }: { job: ImportJob }) {
@@ -1467,10 +1582,10 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
   const model = modelDisplayName(job.current_model);
   const cost = formatUsd(job.estimated_cost_usd ?? 0);
   return (
-    <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : undefined}>
+    <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : importJobEstimateTitle(job)}>
       <strong>{status}</strong>
       {model ? ` (${model})` : ""}
-      {` (${cost})`}
+      {` (${importJobEstimatePrefix(job)}${cost})`}
     </small>
   );
 }
@@ -1478,7 +1593,7 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
 function importJobTone(job: ImportJob): "neutral" | "good" | "warn" | "blue" {
   if (job.status === "failed") return "warn";
   if (job.status === "complete" || job.status === "duplicate_skipped") return "good";
-  if (job.status === "restored_paused") return "neutral";
+  if (job.status === "restored_paused" || job.status === "staged") return "neutral";
   return "blue";
 }
 
@@ -1581,13 +1696,13 @@ function canRescueImportJob(job: ImportJob) {
 
 function canRetryImportJob(job: ImportJob) {
   if (!job.document_id) return false;
-  if (job.status === "complete" || job.status === "cleared") return false;
+  if (job.status === "complete" || job.status === "cleared" || job.status === "staged") return false;
   if (job.status === "running") return canRescueImportJob(job);
   return true;
 }
 
 function canCancelImportJob(job: ImportJob) {
-  return job.status === "queued" || job.status === "failed" || job.status === "restored_paused";
+  return job.status === "staged" || job.status === "queued" || job.status === "failed" || job.status === "restored_paused";
 }
 
 function importJobRetryTitle(job: ImportJob) {
@@ -1599,6 +1714,7 @@ function importJobRetryTitle(job: ImportJob) {
 function importJobCancelTitle(job: ImportJob) {
   if (job.status === "running") return "Running imports cannot be canceled while the worker lock is active";
   if (!canCancelImportJob(job)) return "This import cannot be canceled";
+  if (job.status === "staged") return "Remove this staged upload before it is processed";
   return "Cancel this import/download";
 }
 
@@ -2023,7 +2139,7 @@ function Header({
       <div className="topbar-actions">
         <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
         <span className="build-version" title={`Medusa build ${MEDUSA_BUILD_VERSION}`}>
-          v{MEDUSA_BUILD_VERSION}
+          {MEDUSA_BUILD_VERSION}
         </span>
         <button
           className="icon-button"
@@ -3744,6 +3860,7 @@ function CompositionDialog({
   const localEntries = composition?.local_duration_entries || [];
   const pipeline = composition?.pipeline || [];
   const issues = composition?.errata || [];
+  const estimateComparison = composition?.estimate_comparison || null;
   const pipelineGraph = useMemo(() => pipelineNodesAndEdges(pipeline), [pipeline]);
   const duration = formatDuration(composition?.total_duration_seconds);
   useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
@@ -3825,6 +3942,38 @@ function CompositionDialog({
                 )}
               </section>
             </div>
+            {estimateComparison ? (
+              <section className="composition-section composition-estimate-panel">
+                <div className="composition-section-title">
+                  <div>
+                    <h3>Estimate vs Actual</h3>
+                    <span>{compositionEstimateBasisLabel(estimateComparison.basis)}</span>
+                  </div>
+                  <strong>{compositionEstimateStatusLabel(estimateComparison.status)}</strong>
+                </div>
+                <div className="composition-estimate-grid">
+                  <div className="composition-estimate-row">
+                    <span>Estimated</span>
+                    <strong>{formatUsd(estimateComparison.estimated_cost_usd)}</strong>
+                    <small>
+                      {estimateComparison.estimated_page_count
+                        ? `${estimateComparison.estimated_page_count} pages`
+                        : "Page count unavailable"}
+                    </small>
+                  </div>
+                  <div className="composition-estimate-row">
+                    <span>Actual</span>
+                    <strong>{formatUsd(estimateComparison.actual_cost_usd)}</strong>
+                    <small>{estimateComparison.actual_cost_usd > 0 ? "Recorded model spend" : "Not recorded yet"}</small>
+                  </div>
+                  <div className="composition-estimate-row">
+                    <span>Difference</span>
+                    <strong>{formatSignedUsd(estimateComparison.variance_usd)}</strong>
+                    <small>{formatSignedPercent(estimateComparison.variance_percent)}</small>
+                  </div>
+                </div>
+              </section>
+            ) : null}
             <section className="composition-section">
               <div className="composition-section-title">
                 <h3>Local Time</h3>
@@ -3857,6 +4006,7 @@ function CompositionDialog({
                     defaultViewport={{ x: 24, y: 34, zoom: 1 }}
                     maxZoom={1.3}
                     minZoom={0.55}
+                    edgeTypes={compositionPipelineEdgeTypes}
                     nodeTypes={compositionPipelineNodeTypes}
                     nodes={pipelineGraph.nodes}
                     nodesConnectable={false}
@@ -6207,11 +6357,21 @@ function stashSortLabel(key: StashSortKey) {
 
 function tagSortLabel(key: TagSortKey) {
   if (key === "name") return "Tag";
+  if (key === "status") return "Status";
   return "Documents";
 }
 
 function formatTagOptimizationConfidence(value: number) {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function formatTagStatus(value?: string | null) {
+  const normalized = (value || "canonical").replace(/_/g, " ");
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function formatRelationshipType(value: string) {
+  return value.replace(/_/g, " ");
 }
 
 function StashesView({ stashes }: { stashes: DoiStash[] }) {
@@ -6455,6 +6615,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const queryClient = useQueryClient();
   const cancelFeedback = useAsyncActionFeedbackMap();
   const rescueFeedback = useAsyncActionFeedbackMap();
+  const processUploadsFeedback = useAsyncActionFeedback();
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const domainItems = useMemo(() => domainPickerItems(domains), [domains]);
@@ -6475,6 +6636,11 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     tag_ids: selectedTagIds,
     project_ids: selectedProjectIds,
   });
+  const refreshImportQueueData = () => {
+    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  };
   const createAndSelectDomain = async (name: string) => {
     const existing = domains.find((domain) => domain.name.toLowerCase() === name.toLowerCase() && !domain.parent_id);
     const domain = existing || (await api.createDomain(name));
@@ -6499,13 +6665,11 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     onMutate: ({ incomingFiles }) => {
       setDuplicateCheck(null);
       setPendingFiles([]);
-      setDropMessage(`Importing ${importFileCountLabel(incomingFiles.length)}`);
+      setDropMessage(`Staging ${importFileCountLabel(incomingFiles.length)}`);
     },
     onSuccess: (_batch, { incomingFiles }) => {
-      setDropMessage(`Queued ${importFileCountLabel(incomingFiles.length)}`);
-      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      setDropMessage(`Staged ${importFileCountLabel(incomingFiles.length)}`);
+      refreshImportQueueData();
     },
     onError: (error) => {
       setDropMessage(error instanceof Error ? error.message : "Import failed");
@@ -6538,9 +6702,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     onSuccess: (_job, jobId) => {
       rescueFeedback.showSuccess(jobId);
       setDropMessage("Import job requeued");
-      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      refreshImportQueueData();
     },
     onError: (error, jobId) => {
       const message = actionFailureMessage("Could not requeue import job", error);
@@ -6553,13 +6715,24 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     onSuccess: (_job, jobId) => {
       cancelFeedback.showSuccess(jobId);
       setDropMessage("Import job canceled");
-      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      refreshImportQueueData();
     },
     onError: (error, jobId) => {
       const message = actionFailureMessage("Could not cancel import job", error);
       cancelFeedback.showError(jobId, message);
+      setDropMessage(message);
+    },
+  });
+  const processStagedUploads = useMutation({
+    mutationFn: api.processStagedImportJobs,
+    onSuccess: (result) => {
+      processUploadsFeedback.showSuccess();
+      setDropMessage(result.updated_count ? `Processing ${importFileCountLabel(result.updated_count)}` : "No staged uploads");
+      refreshImportQueueData();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not process staged uploads", error);
+      processUploadsFeedback.showError(message);
       setDropMessage(message);
     },
   });
@@ -6569,6 +6742,10 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const retainedProcessingJobCount = jobs.filter((job) => !isImportCompletedRowExpired(job, processingListNow)).length;
   const processingJobs = visibleImportJobs(jobs, processingListNow);
   const hiddenProcessingJobCount = Math.max(0, retainedProcessingJobCount - processingJobs.length);
+  const stagedJobs = jobs.filter((job) => job.status === "staged");
+  const costPreviewJobs = jobs.filter(isImportCostPreviewJob);
+  const processUploadsBusy = processStagedUploads.isPending;
+  const processUploadsDisabled = !stagedJobs.length || importBusy || processUploadsBusy;
 
   useEffect(() => {
     if (!jobs.some((job) => job.status === "complete")) return undefined;
@@ -6590,7 +6767,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     }
     const rejectedCount = allFiles.length - supportedFiles.length;
     if (rejectedCount > 0) {
-      setDropMessage(`Importing ${supportedFiles.length}; ignored ${rejectedCount}`);
+      setDropMessage(`Staging ${supportedFiles.length}; ignored ${rejectedCount}`);
     }
     duplicatePreflight.mutate(supportedFiles);
   };
@@ -6635,7 +6812,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
         <input
           aria-label="Import PDF, HTML, or text files"
           data-disabled-reason="an import or duplicate preflight check is already running."
-          data-tooltip="Choose one or more PDF, HTML, or plain-text files; Medusa will hash them, check for duplicates, convert non-PDF files to PDF, and queue imports with the current batch defaults."
+          data-tooltip="Choose one or more PDF, HTML, or plain-text files; Medusa will hash them, check for duplicates, convert non-PDF files to PDF, and stage them with the current batch defaults."
           type="file"
           multiple
           accept={IMPORT_ACCEPT}
@@ -6709,7 +6886,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
           <div>
             <h2>Apply to this batch</h2>
             <p>
-              Defaults are optional. Selected domains, tags, projects, priority, and read state will be applied to every queued document.
+              Defaults are optional. Selected domains, tags, projects, priority, and read state will be applied to every staged document.
             </p>
           </div>
           <StatusPill value={selectedDefaultCount ? `${selectedDefaultCount} defaults` : "No organization defaults"} tone={selectedDefaultCount ? "blue" : "neutral"} />
@@ -6775,13 +6952,37 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
       <section className="job-list">
         <div className="job-list-head">
           <h2>Processing</h2>
-          <span>
-            {hiddenProcessingJobCount
-              ? `Showing ${processingJobs.length} of ${retainedProcessingJobCount}, active first`
-              : retainedProcessingJobCount
-                ? `${retainedProcessingJobCount} visible`
-                : "No recent import jobs"}
-          </span>
+          <div className="job-list-head-actions">
+            <span>
+              {hiddenProcessingJobCount
+                ? `Showing ${processingJobs.length} of ${retainedProcessingJobCount}, active first`
+                : retainedProcessingJobCount
+                  ? `${retainedProcessingJobCount} visible`
+                  : "No recent import jobs"}
+            </span>
+            <span className="queue-estimate-total" title="Rough total for staged and queued imports. Estimates use page count and prior import cost exemplars when available.">
+              {costPreviewJobs.length ? `${importQueueEstimateLabel(costPreviewJobs)} for ${costPreviewJobs.length}` : "Rough total $0.00"}
+            </span>
+            <AsyncActionSlot busy={processUploadsBusy} feedback={processUploadsFeedback.feedback} label="Process uploads in progress">
+              <button
+                className={asyncFeedbackClass("primary-button compact", processUploadsFeedback.feedback, processUploadsBusy)}
+                data-disabled-reason={
+                  processUploadsBusy
+                    ? "staged uploads are already being released."
+                    : importBusy
+                      ? "uploads are still being checked or staged."
+                      : "there are no staged uploads ready to process."
+                }
+                data-tooltip="Start all staged uploads through the import processing pipeline."
+                disabled={processUploadsDisabled}
+                onClick={() => processStagedUploads.mutate()}
+                type="button"
+              >
+                <Play className={processUploadsBusy ? "spin" : ""} size={15} />
+                Process Uploads
+              </button>
+            </AsyncActionSlot>
+          </div>
         </div>
         {processingJobs.map((job) => (
           <ImportJobRow
@@ -7183,6 +7384,7 @@ function TagSuggestionMergeIntoDialog({
 
 function TagsView({ tags }: { tags: Tag[] }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [sortKey, setSortKey] = useState<TagSortKey>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
@@ -7207,6 +7409,13 @@ function TagsView({ tags }: { tags: Tag[] }) {
         return tag.name.toLowerCase().includes(normalizedSearch);
       })
       .sort((left, right) => {
+        if (sortKey === "status") {
+          const statusCompare = formatTagStatus(left.status).localeCompare(formatTagStatus(right.status), undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+          return statusCompare * direction || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+        }
         if (sortKey === "documents") {
           const countCompare = (left.document_count - right.document_count) * direction;
           return countCompare || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
@@ -7225,9 +7434,16 @@ function TagsView({ tags }: { tags: Tag[] }) {
     () => [...(optimizationResult?.suggestions ?? []), ...(optimizationResult?.singleton_suggestions ?? [])],
     [optimizationResult],
   );
+  const relationshipSuggestions = optimizationResult?.relationship_suggestions ?? [];
+  const statusSuggestions = optimizationResult?.status_suggestions ?? [];
+  const pruningSuggestions = optimizationResult?.pruning_suggestions ?? [];
+  const governanceSuggestionCount =
+    allOptimizationSuggestions.length + relationshipSuggestions.length + statusSuggestions.length + pruningSuggestions.length;
   const optimizationAffectedDocuments = useMemo(
-    () => allOptimizationSuggestions.reduce((total, suggestion) => total + suggestion.affected_documents, 0),
-    [allOptimizationSuggestions],
+    () =>
+      allOptimizationSuggestions.reduce((total, suggestion) => total + suggestion.affected_documents, 0) +
+      pruningSuggestions.length,
+    [allOptimizationSuggestions, pruningSuggestions],
   );
   const renameTag = useMutation({
     mutationFn: ({ tag, name }: { tag: Tag; name: string }) => api.renameTag(tag.id, name),
@@ -7270,6 +7486,69 @@ function TagsView({ tags }: { tags: Tag[] }) {
     },
     onError: (error) => setOperationError(actionFailureMessage("Could not merge tags", error)),
   });
+  const updateTagGovernance = useMutation({
+    mutationFn: ({ tagId, status }: { tagId: string; status: string }) => api.updateTagGovernance(tagId, { status }),
+    onSuccess: (updatedTag) => {
+      setOperationError(null);
+      setOptimizationResult((current) =>
+        current
+          ? {
+              ...current,
+              status_suggestions: (current.status_suggestions ?? []).filter((suggestion) => suggestion.tag.id !== updatedTag.id),
+            }
+          : current,
+      );
+      setNotice(`Marked ${updatedTag.name} as ${updatedTag.status}`);
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => setOperationError(actionFailureMessage("Could not update tag status", error)),
+  });
+  const createTagRelationship = useMutation({
+    mutationFn: (suggestion: TagRelationshipSuggestion) =>
+      api.createTagRelationship({
+        source_tag_id: suggestion.source_tag.id,
+        target_tag_id: suggestion.target_tag.id,
+        relationship_type: suggestion.relationship_type,
+        rationale: suggestion.rationale,
+        confidence: suggestion.confidence,
+      }),
+    onSuccess: (_, suggestion) => {
+      setOperationError(null);
+      setOptimizationResult((current) =>
+        current
+          ? {
+              ...current,
+              relationship_suggestions: (current.relationship_suggestions ?? []).filter((item) => item.id !== suggestion.id),
+            }
+          : current,
+      );
+      setNotice(`Approved ${formatRelationshipType(suggestion.relationship_type)} relationship`);
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => setOperationError(actionFailureMessage("Could not approve relationship", error)),
+  });
+  const pruneTagAssignment = useMutation({
+    mutationFn: (suggestion: TagPruneSuggestion) =>
+      api.pruneTagAssignment({
+        document_id: suggestion.document_id,
+        tag_id: suggestion.tag.id,
+        rationale: suggestion.rationale,
+      }),
+    onSuccess: (_, suggestion) => {
+      setOperationError(null);
+      setOptimizationResult((current) =>
+        current
+          ? {
+              ...current,
+              pruning_suggestions: (current.pruning_suggestions ?? []).filter((item) => item.id !== suggestion.id),
+            }
+          : current,
+      );
+      setNotice(`Pruned ${suggestion.tag.name} from one document`);
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => setOperationError(actionFailureMessage("Could not prune assignment", error)),
+  });
   const optimizeTags = useMutation({
     mutationFn: () => api.optimizeTags({ tag_ids: optimizationScopeIds }),
     onSuccess: (result) => {
@@ -7277,7 +7556,12 @@ function TagsView({ tags }: { tags: Tag[] }) {
       setOptimizationError(null);
       setOperationError(null);
       setOptimizationPaneOpen(true);
-      const suggestionCount = result.suggestions.length + (result.singleton_suggestions?.length ?? 0);
+      const suggestionCount =
+        result.suggestions.length +
+        (result.singleton_suggestions?.length ?? 0) +
+        (result.relationship_suggestions?.length ?? 0) +
+        (result.status_suggestions?.length ?? 0) +
+        (result.pruning_suggestions?.length ?? 0);
       setNotice(
         suggestionCount
           ? `Found ${suggestionCount} optimization suggestion${suggestionCount === 1 ? "" : "s"}`
@@ -7289,9 +7573,76 @@ function TagsView({ tags }: { tags: Tag[] }) {
       setOptimizationError(actionFailureMessage("Could not optimize tags", error));
     },
   });
+  const approveAllTagOptimizations = useMutation({
+    mutationFn: () =>
+      api.approveAllTagOptimizations({
+        merge_suggestions: allOptimizationSuggestions.map((suggestion) => ({
+          id: suggestion.id,
+          source_tag_ids: suggestion.source_tag_ids,
+          target_tag_id: suggestion.target_tag_id ?? null,
+          target_name: suggestion.target_name,
+        })),
+        relationship_suggestions: relationshipSuggestions.map((suggestion) => ({
+          id: suggestion.id,
+          source_tag_id: suggestion.source_tag.id,
+          target_tag_id: suggestion.target_tag.id,
+          relationship_type: suggestion.relationship_type,
+          rationale: suggestion.rationale,
+          confidence: suggestion.confidence,
+        })),
+        status_suggestions: statusSuggestions.map((suggestion) => ({
+          id: suggestion.id,
+          tag_id: suggestion.tag.id,
+          suggested_status: suggestion.suggested_status,
+          rationale: suggestion.rationale,
+        })),
+        pruning_suggestions: pruningSuggestions.map((suggestion) => ({
+          id: suggestion.id,
+          document_id: suggestion.document_id,
+          tag_id: suggestion.tag.id,
+          rationale: suggestion.rationale,
+        })),
+      }),
+    onSuccess: (result) => {
+      const applied =
+        result.merges_applied + result.relationships_applied + result.statuses_applied + result.prunes_applied;
+      const skipped = result.skipped.length;
+      setOptimizationResult((current) =>
+        current
+          ? {
+              ...current,
+              suggestions: [],
+              singleton_suggestions: [],
+              relationship_suggestions: [],
+              status_suggestions: [],
+              pruning_suggestions: [],
+            }
+          : current,
+      );
+      setOperationError(null);
+      setOptimizationError(null);
+      setNotice(
+        `Approved ${applied} optimization action${applied === 1 ? "" : "s"}`
+        + (skipped ? `; skipped ${skipped} stale suggestion${skipped === 1 ? "" : "s"}` : ""),
+      );
+      refreshTagManagementData(queryClient);
+    },
+    onError: (error) => {
+      setOperationError(actionFailureMessage("Could not approve all optimizations", error));
+    },
+  });
+  const approveAllDisabled =
+    !governanceSuggestionCount ||
+    optimizeTags.isPending ||
+    mergeTags.isPending ||
+    updateTagGovernance.isPending ||
+    createTagRelationship.isPending ||
+    pruneTagAssignment.isPending ||
+    approveAllTagOptimizations.isPending;
 
   useEffect(() => {
     setSelectedIds((current) => current.filter((id) => tagIdSet.has(id)));
+    setSelectionAnchorId((current) => (current && tagIdSet.has(current) ? current : null));
     setOptimizationResult((current) =>
       current
         ? {
@@ -7300,6 +7651,11 @@ function TagsView({ tags }: { tags: Tag[] }) {
             singleton_suggestions: (current.singleton_suggestions ?? []).filter((suggestion) =>
               suggestion.source_tag_ids.every((tagId) => tagIdSet.has(tagId)),
             ),
+            relationship_suggestions: (current.relationship_suggestions ?? []).filter(
+              (suggestion) => tagIdSet.has(suggestion.source_tag.id) && tagIdSet.has(suggestion.target_tag.id),
+            ),
+            status_suggestions: (current.status_suggestions ?? []).filter((suggestion) => tagIdSet.has(suggestion.tag.id)),
+            pruning_suggestions: (current.pruning_suggestions ?? []).filter((suggestion) => tagIdSet.has(suggestion.tag.id)),
           }
         : current,
     );
@@ -7313,16 +7669,35 @@ function TagsView({ tags }: { tags: Tag[] }) {
     setSortKey(key);
     setSortDirection(key === "documents" ? "desc" : "asc");
   };
-  const toggleTag = (id: string) => {
-    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  const clearTagSelection = () => {
+    setSelectedIds([]);
+    setSelectionAnchorId(null);
+  };
+  const toggleTag = (id: string, selected: boolean, shiftKey = false) => {
+    const visibleIds = visibleTags.map((tag) => tag.id);
+    const anchorIndex = selectionAnchorId ? visibleIds.indexOf(selectionAnchorId) : -1;
+    const currentIndex = visibleIds.indexOf(id);
+    const shouldApplyRange = shiftKey && anchorIndex >= 0 && currentIndex >= 0;
+    const affectedIds = shouldApplyRange
+      ? visibleIds.slice(Math.min(anchorIndex, currentIndex), Math.max(anchorIndex, currentIndex) + 1)
+      : [id];
+
+    setSelectedIds((current) =>
+      selected ? uniqueValues([...current, ...affectedIds]) : current.filter((item) => !affectedIds.includes(item)),
+    );
+    if (!shouldApplyRange) {
+      setSelectionAnchorId(id);
+    }
   };
   const toggleVisibleTags = () => {
     if (allVisibleSelected) {
       const visibleIds = new Set(visibleTags.map((tag) => tag.id));
       setSelectedIds((current) => current.filter((id) => !visibleIds.has(id)));
+      setSelectionAnchorId((current) => (current && visibleIds.has(current) ? null : current));
       return;
     }
     setSelectedIds((current) => uniqueValues([...current, ...visibleTags.map((tag) => tag.id)]));
+    setSelectionAnchorId(visibleTags[0]?.id ?? null);
   };
   const openRename = () => {
     if (selectedTags.length !== 1) return;
@@ -7356,6 +7731,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
   const startOptimization = () => {
     setOptimizationPaneOpen(true);
     setOptimizationError(null);
+    setOperationError(null);
     optimizeTags.mutate();
   };
   const selectedTag = selectedTags.length === 1 ? selectedTags[0] : undefined;
@@ -7419,6 +7795,162 @@ function TagsView({ tags }: { tags: Tag[] }) {
       </article>
     );
   };
+  const dismissRelationshipSuggestion = (suggestionId: string) => {
+    setOptimizationResult((current) =>
+      current
+        ? {
+            ...current,
+            relationship_suggestions: (current.relationship_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
+          }
+        : current,
+    );
+  };
+  const dismissStatusSuggestion = (suggestionId: string) => {
+    setOptimizationResult((current) =>
+      current
+        ? {
+            ...current,
+            status_suggestions: (current.status_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
+          }
+        : current,
+    );
+  };
+  const dismissPruningSuggestion = (suggestionId: string) => {
+    setOptimizationResult((current) =>
+      current
+        ? {
+            ...current,
+            pruning_suggestions: (current.pruning_suggestions ?? []).filter((suggestion) => suggestion.id !== suggestionId),
+          }
+        : current,
+    );
+  };
+  const renderRelationshipSuggestion = (suggestion: TagRelationshipSuggestion) => (
+    <article className="tag-optimization-suggestion" key={suggestion.id}>
+      <div className="tag-suggestion-main">
+        <div className="tag-suggestion-title">
+          <strong>{formatRelationshipType(suggestion.relationship_type)}</strong>
+          <span>{formatTagOptimizationConfidence(suggestion.confidence)} confidence</span>
+        </div>
+        <p>{suggestion.rationale}</p>
+        <div className="tag-suggestion-tags" aria-label="Relationship tags">
+          <span>
+            {suggestion.source_tag.name}
+            <small>{formatTagStatus(suggestion.source_tag.status)}</small>
+          </span>
+          <span>
+            {suggestion.target_tag.name}
+            <small>{formatTagStatus(suggestion.target_tag.status)}</small>
+          </span>
+        </div>
+      </div>
+      <div className="tag-suggestion-actions">
+        <button
+          className="primary-button compact"
+          data-disabled-reason="a tag relationship is already being approved."
+          data-tooltip="Approve this semantic relationship without merging the two tags."
+          disabled={createTagRelationship.isPending}
+          onClick={() => createTagRelationship.mutate(suggestion)}
+          type="button"
+        >
+          <Orbit size={15} />
+          Approve
+        </button>
+        <button
+          className="secondary-button compact"
+          data-disabled-reason="a tag relationship is already being approved."
+          data-tooltip="Dismiss this relationship suggestion from the current plan."
+          disabled={createTagRelationship.isPending}
+          onClick={() => dismissRelationshipSuggestion(suggestion.id)}
+          type="button"
+        >
+          <X size={15} />
+          Dismiss
+        </button>
+      </div>
+    </article>
+  );
+  const renderStatusSuggestion = (suggestion: TagStatusSuggestion) => (
+    <article className="tag-optimization-suggestion" key={suggestion.id}>
+      <div className="tag-suggestion-main">
+        <div className="tag-suggestion-title">
+          <strong>{suggestion.tag.name}</strong>
+          <span>
+            {formatTagStatus(suggestion.tag.status)} to {formatTagStatus(suggestion.suggested_status)} /{" "}
+            {formatTagOptimizationConfidence(suggestion.confidence)} confidence
+          </span>
+        </div>
+        <p>{suggestion.rationale}</p>
+      </div>
+      <div className="tag-suggestion-actions">
+        <button
+          className="primary-button compact"
+          data-disabled-reason="a tag status update is already saving."
+          data-tooltip={`Approve this governance status change to ${formatTagStatus(suggestion.suggested_status)}.`}
+          disabled={updateTagGovernance.isPending}
+          onClick={() => updateTagGovernance.mutate({ tagId: suggestion.tag.id, status: suggestion.suggested_status })}
+          type="button"
+        >
+          <CheckCircle2 size={15} />
+          Approve
+        </button>
+        <button
+          className="secondary-button compact"
+          data-disabled-reason="a tag status update is already saving."
+          data-tooltip="Dismiss this status suggestion from the current plan."
+          disabled={updateTagGovernance.isPending}
+          onClick={() => dismissStatusSuggestion(suggestion.id)}
+          type="button"
+        >
+          <X size={15} />
+          Dismiss
+        </button>
+      </div>
+    </article>
+  );
+  const renderPruningSuggestion = (suggestion: TagPruneSuggestion) => (
+    <article className="tag-optimization-suggestion" key={suggestion.id}>
+      <div className="tag-suggestion-main">
+        <div className="tag-suggestion-title">
+          <strong>{suggestion.tag.name}</strong>
+          <span>
+            {formatTagOptimizationConfidence(suggestion.confidence)} prune confidence / score {formatTagOptimizationConfidence(suggestion.overall_score)}
+          </span>
+        </div>
+        <p>{suggestion.document_title}</p>
+        <p>{suggestion.rationale}</p>
+        <div className="tag-optimization-summary inline">
+          <span>relevance {formatTagOptimizationConfidence(suggestion.relevance_score)}</span>
+          <span>fit {formatTagOptimizationConfidence(suggestion.library_fit_score)}</span>
+          <span>novelty {formatTagOptimizationConfidence(suggestion.novelty_score)}</span>
+        </div>
+      </div>
+      <div className="tag-suggestion-actions">
+        <button
+          className="primary-button compact"
+          data-disabled-reason="a tag assignment prune is already saving."
+          data-tooltip="Remove this tag from the named document and record document history."
+          disabled={pruneTagAssignment.isPending}
+          onClick={() => pruneTagAssignment.mutate(suggestion)}
+          type="button"
+        >
+          <Eraser size={15} />
+          Prune
+        </button>
+        <button
+          className="secondary-button compact"
+          data-disabled-reason="a tag assignment prune is already saving."
+          data-tooltip="Dismiss this pruning suggestion from the current plan."
+          disabled={pruneTagAssignment.isPending}
+          onClick={() => dismissPruningSuggestion(suggestion.id)}
+          type="button"
+        >
+          <X size={15} />
+          Dismiss
+        </button>
+      </div>
+    </article>
+  );
 
   return (
     <section className={`workbench tags-workbench${optimizationPaneOpen ? " has-optimization-pane" : ""}`}>
@@ -7430,7 +7962,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
             data-disabled-reason="no tags are selected."
             data-tooltip="Clear the current tag selection without changing any tags."
             disabled={!selectedIds.length}
-            onClick={() => setSelectedIds([])}
+            onClick={clearTagSelection}
           >
             <X size={15} />
             Clear Selection
@@ -7501,7 +8033,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
               <span role="columnheader">
                 <input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleTags} aria-label="Select visible tags" />
               </span>
-              {(["name", "documents"] as TagSortKey[]).map((key) => (
+              {(["name", "status", "documents"] as TagSortKey[]).map((key) => (
                 <button
                   key={key}
                   aria-sort={sortKey === key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
@@ -7520,9 +8052,14 @@ function TagsView({ tags }: { tags: Tag[] }) {
               return (
                 <label key={tag.id} className={`tags-table-row${selected ? " selected" : ""}`} role="row">
                   <span role="cell">
-                    <input type="checkbox" checked={selected} onChange={() => toggleTag(tag.id)} />
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(event) => toggleTag(tag.id, event.currentTarget.checked, inputEventShiftKey(event))}
+                    />
                   </span>
                   <strong role="cell">{tag.name}</strong>
+                  <span role="cell">{formatTagStatus(tag.status)}</span>
                   <span role="cell">{tag.document_count}</span>
                 </label>
               );
@@ -7533,32 +8070,52 @@ function TagsView({ tags }: { tags: Tag[] }) {
         {optimizationPaneOpen ? (
           <aside className="tag-optimization-panel" aria-label="Tag optimization plan">
             <div className="tag-optimization-head">
-              <div>
+              <div className="tag-optimization-title">
                 <span>Optimization Plan</span>
                 <strong>
                   {optimizeTags.isPending
                     ? "Building plan"
                     : optimizationResult
-                      ? `${allOptimizationSuggestions.length} proposed merge${allOptimizationSuggestions.length === 1 ? "" : "s"}`
+                      ? `${governanceSuggestionCount} proposed action${governanceSuggestionCount === 1 ? "" : "s"}`
                       : "Ready to optimize"}
                 </strong>
               </div>
-              <button className="icon-button" type="button" data-tooltip="Close the tag optimization plan pane." onClick={() => setOptimizationPaneOpen(false)}>
-                <X size={16} />
-              </button>
+              <div className="tag-optimization-head-actions">
+                <button
+                  className="primary-button compact"
+                  type="button"
+                  data-disabled-reason={
+                    approveAllTagOptimizations.isPending
+                      ? "all optimization actions are already being approved."
+                      : "there are no optimization actions to approve."
+                  }
+                  data-tooltip="Approve every merge, relationship, status, and pruning suggestion currently in this optimization plan."
+                  disabled={approveAllDisabled}
+                  onClick={() => approveAllTagOptimizations.mutate()}
+                >
+                  <CheckCircle2 className={approveAllTagOptimizations.isPending ? "spin" : ""} size={15} />
+                  {approveAllTagOptimizations.isPending ? "Approving" : `Approve All${governanceSuggestionCount ? ` (${governanceSuggestionCount})` : ""}`}
+                </button>
+                <button className="icon-button" type="button" data-tooltip="Close the tag optimization plan pane." onClick={() => setOptimizationPaneOpen(false)}>
+                  <X size={16} />
+                </button>
+              </div>
             </div>
             <div className="tag-optimization-summary">
               <span>{optimizationResult ? optimizationResult.model : "gpt-5.4-mini"}</span>
               <span>{optimizationResult ? `${optimizationResult.considered_tags} reviewed` : `${optimizationScopeLabel} tags`}</span>
-              {allOptimizationSuggestions.length ? <span>{optimizationAffectedDocuments} affected document references</span> : null}
+              {optimizationResult?.health_summary?.candidate_tags ? <span>{optimizationResult.health_summary.candidate_tags} candidates</span> : null}
+              {optimizationResult?.health_summary?.weak_assignments ? <span>{optimizationResult.health_summary.weak_assignments} weak assignments</span> : null}
+              {governanceSuggestionCount ? <span>{optimizationAffectedDocuments} affected document references</span> : null}
             </div>
             {optimizationError ? <p className="form-error tag-optimization-error">{optimizationError}</p> : null}
+            {operationError && !renameOpen && !mergeOpen && !mergeIntoSuggestion ? <p className="form-error tag-optimization-error">{operationError}</p> : null}
             {optimizeTags.isPending ? (
               <div className="tag-optimization-loading">
                 <BrainCircuit className="spin" size={18} />
                 <span>Drafting tag combination plan...</span>
               </div>
-            ) : allOptimizationSuggestions.length ? (
+            ) : governanceSuggestionCount ? (
               <div className="tag-optimization-list">
                 {optimizationResult?.suggestions.length ? (
                   <section className="tag-optimization-section">
@@ -7578,11 +8135,38 @@ function TagsView({ tags }: { tags: Tag[] }) {
                     {optimizationResult.singleton_suggestions.map(renderOptimizationSuggestion)}
                   </section>
                 ) : null}
+                {relationshipSuggestions.length ? (
+                  <section className="tag-optimization-section">
+                    <div className="tag-optimization-section-head">
+                      <strong>Relationships</strong>
+                      <span>Semantic covered-by and cluster links that teach the taxonomy without merging.</span>
+                    </div>
+                    {relationshipSuggestions.map(renderRelationshipSuggestion)}
+                  </section>
+                ) : null}
+                {statusSuggestions.length ? (
+                  <section className="tag-optimization-section">
+                    <div className="tag-optimization-section-head">
+                      <strong>Statuses</strong>
+                      <span>Candidate promotion, retirement, or blocking suggestions for review.</span>
+                    </div>
+                    {statusSuggestions.map(renderStatusSuggestion)}
+                  </section>
+                ) : null}
+                {pruningSuggestions.length ? (
+                  <section className="tag-optimization-section">
+                    <div className="tag-optimization-section-head">
+                      <strong>Weak assignments</strong>
+                      <span>Document-tag links scored weakly enough to prune individually.</span>
+                    </div>
+                    {pruningSuggestions.map(renderPruningSuggestion)}
+                  </section>
+                ) : null}
               </div>
             ) : optimizationError ? null : optimizationResult ? (
-              <p className="tag-optimization-empty">No merge suggestions found for this scope.</p>
+              <p className="tag-optimization-empty">No governance suggestions found for this scope.</p>
             ) : (
-              <p className="tag-optimization-empty">Run Optimize to draft a tag combination plan for the current scope.</p>
+              <p className="tag-optimization-empty">Run Optimize to draft a tag governance plan for the current scope.</p>
             )}
           </aside>
         ) : null}
@@ -7840,6 +8424,7 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
   const [queueActionMessage, setQueueActionMessage] = useState("");
   const cancelFeedback = useAsyncActionFeedbackMap();
   const rescueFeedback = useAsyncActionFeedbackMap();
+  const processUploadsFeedback = useAsyncActionFeedback();
   const retryFailedFeedback = useAsyncActionFeedback();
   const clearQueueFeedback = useAsyncActionFeedback();
   const clearFailedFeedback = useAsyncActionFeedback();
@@ -7887,8 +8472,21 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
     },
   });
   const queueJobs = orderedImportJobs(jobs.filter(isQueueImportJob));
+  const stagedQueueJobs = queueJobs.filter((job) => job.status === "staged");
+  const costPreviewQueueJobs = queueJobs.filter(isImportCostPreviewJob);
   const failedQueueJobs = queueJobs.filter((job) => job.status === "failed");
   const clearableQueueJobs = queueJobs.filter((job) => job.status !== "running");
+  const processStagedUploads = useMutation({
+    mutationFn: api.processStagedImportJobs,
+    onSuccess: (result) => {
+      processUploadsFeedback.showSuccess();
+      setQueueActionMessage(describeQueueAction("Processing", result));
+      refreshQueueData();
+    },
+    onError: (error) => {
+      processUploadsFeedback.showError(actionFailureMessage("Could not process staged uploads", error));
+    },
+  });
   const retryFailedJobs = useMutation({
     mutationFn: api.retryFailedImportJobs,
     onSuccess: (result) => {
@@ -7923,7 +8521,16 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
     },
   });
   const bulkActionBusy =
-    retryFailedJobs.isPending || clearQueue.isPending || clearFailedJobs.isPending || rescueJob.isPending || cancelJob.isPending;
+    processStagedUploads.isPending ||
+    retryFailedJobs.isPending ||
+    clearQueue.isPending ||
+    clearFailedJobs.isPending ||
+    rescueJob.isPending ||
+    cancelJob.isPending;
+  const queueStatusText = queueActionMessage
+    || (queueJobs.length
+      ? `${queueJobs.length} active or waiting; ${importQueueEstimateLabel(costPreviewQueueJobs)}`
+      : "No import jobs waiting");
 
   return (
     <section className="workbench queue-workbench">
@@ -7931,9 +8538,22 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
         <div className="panel-title-row">
           <div>
             <h2>Import Queue</h2>
-            <span>{queueActionMessage || (queueJobs.length ? `${queueJobs.length} active or waiting` : "No import jobs waiting")}</span>
+            <span>{queueStatusText}</span>
           </div>
           <div className="queue-title-actions">
+            <AsyncActionSlot busy={processStagedUploads.isPending} feedback={processUploadsFeedback.feedback} label="Process uploads in progress">
+              <button
+                className={asyncFeedbackClass("primary-button compact", processUploadsFeedback.feedback, processStagedUploads.isPending)}
+                data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no staged uploads ready to process."}
+                data-tooltip="Start all staged uploads through the import processing pipeline."
+                disabled={!stagedQueueJobs.length || bulkActionBusy}
+                onClick={() => processStagedUploads.mutate()}
+                type="button"
+              >
+                <Play className={processStagedUploads.isPending ? "spin" : ""} size={15} />
+                Process Uploads
+              </button>
+            </AsyncActionSlot>
             <AsyncActionSlot busy={retryFailedJobs.isPending} feedback={retryFailedFeedback.feedback} label="Retry failed imports in progress">
               <button
                 className={asyncFeedbackClass("secondary-button compact", retryFailedFeedback.feedback, retryFailedJobs.isPending)}
@@ -7950,8 +8570,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
             <AsyncActionSlot busy={clearQueue.isPending} feedback={clearQueueFeedback.feedback} label="Clear import queue in progress">
               <button
                 className={asyncFeedbackClass("secondary-button compact", clearQueueFeedback.feedback, clearQueue.isPending)}
-                data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no clearable queued, failed, or restored import jobs."}
-                data-tooltip="Move all clearable queued, failed, or restored import jobs to the cleared terminal state."
+                data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no clearable staged, queued, failed, or restored import jobs."}
+                data-tooltip="Move all clearable staged, queued, failed, or restored import jobs to the cleared terminal state."
                 disabled={!clearableQueueJobs.length || bulkActionBusy}
                 onClick={() => clearQueue.mutate()}
                 type="button"

@@ -83,6 +83,13 @@ class TagRename(BaseModel):
     name: str
 
 
+class TagGovernancePatch(BaseModel):
+    status: str | None = None
+    definition: str | None = None
+    use_guidance: str | None = None
+    avoid_guidance: str | None = None
+
+
 class TagMerge(BaseModel):
     source_tag_ids: list[str] = Field(min_length=2)
     target_tag_id: str | None = None
@@ -94,6 +101,10 @@ class TagOut(ApiModel):
     name: str
     kind: str
     color: str | None = None
+    status: str = "canonical"
+    definition: str | None = None
+    use_guidance: str | None = None
+    avoid_guidance: str | None = None
     document_count: int = 0
 
 
@@ -107,6 +118,53 @@ class TagOptimizationCreate(BaseModel):
     tag_ids: list[str] | None = None
 
 
+class TagOptimizationMergeApproval(BaseModel):
+    id: str | None = None
+    source_tag_ids: list[str] = Field(default_factory=list)
+    target_tag_id: str | None = None
+    target_name: str | None = None
+
+
+class TagOptimizationRelationshipApproval(BaseModel):
+    id: str | None = None
+    source_tag_id: str
+    target_tag_id: str
+    relationship_type: str
+    rationale: str | None = None
+    confidence: float | None = None
+
+
+class TagOptimizationStatusApproval(BaseModel):
+    id: str | None = None
+    tag_id: str
+    suggested_status: str
+    rationale: str | None = None
+
+
+class TagOptimizationPruneApproval(BaseModel):
+    id: str | None = None
+    document_id: str
+    tag_id: str
+    rationale: str | None = None
+
+
+class TagOptimizationApproveAllCreate(BaseModel):
+    merge_suggestions: list[TagOptimizationMergeApproval] = Field(default_factory=list)
+    relationship_suggestions: list[TagOptimizationRelationshipApproval] = Field(default_factory=list)
+    status_suggestions: list[TagOptimizationStatusApproval] = Field(default_factory=list)
+    pruning_suggestions: list[TagOptimizationPruneApproval] = Field(default_factory=list)
+
+
+class TagOptimizationApproveAllOut(BaseModel):
+    merges_applied: int = 0
+    relationships_applied: int = 0
+    statuses_applied: int = 0
+    prunes_applied: int = 0
+    updated_documents: int = 0
+    removed_tag_ids: list[str] = Field(default_factory=list)
+    skipped: list[dict[str, str]] = Field(default_factory=list)
+
+
 class TagOptimizationSuggestionOut(BaseModel):
     id: str
     target_name: str
@@ -118,11 +176,75 @@ class TagOptimizationSuggestionOut(BaseModel):
     confidence: float
 
 
+class TagRelationshipCreate(BaseModel):
+    source_tag_id: str
+    target_tag_id: str
+    relationship_type: str
+    rationale: str | None = None
+    confidence: float | None = None
+
+
+class TagRelationshipSuggestionOut(BaseModel):
+    id: str
+    source_tag: TagOut
+    target_tag: TagOut
+    relationship_type: str
+    rationale: str
+    confidence: float
+
+
+class TagStatusSuggestionOut(BaseModel):
+    id: str
+    tag: TagOut
+    suggested_status: str
+    rationale: str
+    confidence: float
+
+
+class TagAssignmentPruneCreate(BaseModel):
+    document_id: str
+    tag_id: str
+    rationale: str | None = None
+
+
+class TagPruneSuggestionOut(BaseModel):
+    id: str
+    document_id: str
+    document_title: str
+    tag: TagOut
+    rationale: str
+    confidence: float
+    relevance_score: float
+    library_fit_score: float
+    novelty_score: float
+    overall_score: float
+
+
 class TagOptimizationOut(BaseModel):
     model: str
     considered_tags: int
     suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
     singleton_suggestions: list[TagOptimizationSuggestionOut] = Field(default_factory=list)
+    relationship_suggestions: list[TagRelationshipSuggestionOut] = Field(default_factory=list)
+    status_suggestions: list[TagStatusSuggestionOut] = Field(default_factory=list)
+    pruning_suggestions: list[TagPruneSuggestionOut] = Field(default_factory=list)
+    health_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class TagRelationshipOut(BaseModel):
+    id: str
+    source_tag: TagOut
+    target_tag: TagOut
+    relationship_type: str
+    status: str
+    rationale: str | None = None
+    confidence: float | None = None
+
+
+class TagPruneOut(BaseModel):
+    document_id: str
+    tag_id: str
+    updated_documents: int
 
 
 class SavedSearchCreate(BaseModel):
@@ -521,6 +643,8 @@ class ImportJobOut(ApiModel):
     current_step: str
     current_model: str | None = None
     estimated_cost_usd: float = 0.0
+    estimated_cost_basis: str = "none"
+    estimated_cost_page_count: int | None = None
     attempts: int
     last_error: str | None = None
     locked_at: datetime | None = None
@@ -566,6 +690,18 @@ class DocumentCompositionEntryOut(BaseModel):
     created_at: datetime | None = None
 
 
+class DocumentCompositionEstimateOut(BaseModel):
+    estimated_cost_usd: float = 0.0
+    actual_cost_usd: float = 0.0
+    variance_usd: float | None = None
+    variance_percent: float | None = None
+    actual_to_estimate_ratio: float | None = None
+    estimated_page_count: int | None = None
+    basis: str | None = None
+    status: str = "pending"
+    created_at: datetime | None = None
+
+
 class DocumentCompositionOut(BaseModel):
     document_id: str
     available: bool
@@ -576,6 +712,7 @@ class DocumentCompositionOut(BaseModel):
     local_duration_entries: list[DocumentCompositionEntryOut] = Field(default_factory=list)
     pipeline: list[DocumentCompositionEntryOut] = Field(default_factory=list)
     errata: list[DocumentCompositionEntryOut] = Field(default_factory=list)
+    estimate_comparison: DocumentCompositionEstimateOut | None = None
 
 
 class NoteCreate(BaseModel):

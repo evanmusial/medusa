@@ -23,6 +23,7 @@ from app.models import (
     DocumentCapability,
     DocumentPage,
     DocumentRecommendation,
+    DocumentTagAssessment,
     DocumentVersion,
     Domain,
     Figure,
@@ -36,6 +37,7 @@ from app.models import (
     SavedSearch,
     Tag,
     TagAlias,
+    TagRelationship,
     TextChunk,
     User,
 )
@@ -165,6 +167,11 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
                 "name": tag.name,
                 "kind": tag.kind,
                 "color": tag.color,
+                "status": tag.status,
+                "definition": tag.definition,
+                "use_guidance": tag.use_guidance,
+                "avoid_guidance": tag.avoid_guidance,
+                "metadata": tag.governance_metadata,
                 **_timestamps(tag),
             }
             for tag in db.query(Tag).order_by(Tag.name).all()
@@ -178,6 +185,24 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
                 **_timestamps(alias),
             }
             for alias in db.query(TagAlias).order_by(TagAlias.alias_name).all()
+        ],
+        "tag_relationships": [
+            {
+                "id": relationship.id,
+                "source_tag_id": relationship.source_tag_id,
+                "target_tag_id": relationship.target_tag_id,
+                "relationship_type": relationship.relationship_type,
+                "status": relationship.status,
+                "confidence": _value(relationship.confidence),
+                "rationale": relationship.rationale,
+                "metadata": relationship.relationship_metadata,
+                **_timestamps(relationship),
+            }
+            for relationship in db.query(TagRelationship).order_by(
+                TagRelationship.relationship_type,
+                TagRelationship.created_at,
+                TagRelationship.id,
+            ).all()
         ],
         "saved_searches": [
             {
@@ -331,6 +356,30 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
             for record in db.query(DocumentCompositionRecord).order_by(
                 DocumentCompositionRecord.created_at,
                 DocumentCompositionRecord.id,
+            ).all()
+        ],
+        "document_tag_assessments": [
+            {
+                "id": assessment.id,
+                "document_id": assessment.document_id,
+                "tag_id": assessment.tag_id,
+                "import_job_id": assessment.import_job_id,
+                "concordance_job_id": assessment.concordance_job_id,
+                "candidate_name": assessment.candidate_name,
+                "source": assessment.source,
+                "decision": assessment.decision,
+                "status": assessment.status,
+                "relevance_score": _value(assessment.relevance_score),
+                "library_fit_score": _value(assessment.library_fit_score),
+                "novelty_score": _value(assessment.novelty_score),
+                "overall_score": _value(assessment.overall_score),
+                "rationale": assessment.rationale,
+                "metadata": assessment.assessment_metadata,
+                **_timestamps(assessment),
+            }
+            for assessment in db.query(DocumentTagAssessment).order_by(
+                DocumentTagAssessment.created_at,
+                DocumentTagAssessment.id,
             ).all()
         ],
         "concordance_runs": [

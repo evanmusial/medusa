@@ -651,7 +651,7 @@ def test_duplicate_preflight_and_skip_strategy(monkeypatch, tmp_path):
 
     from app.database import Base
     from app import main
-    from app.models import Document, ImportJob
+    from app.models import Document, DocumentCompositionRecord, ImportJob
 
     class FakeStorage:
         def put_bytes(self, key, data, content_type):
@@ -702,7 +702,7 @@ def test_import_anyway_allows_same_checksum_document(monkeypatch, tmp_path):
 
     from app.database import Base
     from app import main
-    from app.models import Document, ImportJob
+    from app.models import Document, DocumentCompositionRecord, ImportJob
 
     class FakeStorage:
         def put_bytes(self, key, data, content_type):
@@ -733,7 +733,18 @@ def test_import_anyway_allows_same_checksum_document(monkeypatch, tmp_path):
         documents = db.query(Document).filter(Document.checksum_sha256 == checksum).all()
         assert len(documents) == 2
         job = db.query(ImportJob).filter(ImportJob.batch_id == batch.id).one()
-        assert job.status == "queued"
+        assert job.status == "staged"
+        assert job.current_step == "staged"
+        estimate_record = (
+            db.query(DocumentCompositionRecord)
+            .filter(
+                DocumentCompositionRecord.import_job_id == job.id,
+                DocumentCompositionRecord.record_kind == "estimate",
+                DocumentCompositionRecord.stage_key == "import_cost_estimate",
+            )
+            .one()
+        )
+        assert float(estimate_record.amount_usd) > 0
 
 
 def test_html_import_converts_to_pdf_mezzanine_and_uses_source_pages(monkeypatch, tmp_path):

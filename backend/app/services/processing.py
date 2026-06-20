@@ -46,7 +46,8 @@ from app.services.figures import process_document_figures
 from app.services.history import document_correction_snapshot, record_document_version
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
-from app.services.tags import existing_tag_manifest, get_or_create_tag
+from app.services.tag_governance import apply_import_tag_governance
+from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
     crossref_lookup,
     crossref_to_citation_metadata,
@@ -393,14 +394,24 @@ def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
         ImportJob.batch_id == batch.id,
         ImportJob.status == "cleared",
     ).count()
+    staged_files = db.query(ImportJob).filter(
+        ImportJob.batch_id == batch.id,
+        ImportJob.status == "staged",
+    ).count()
+    active_files = db.query(ImportJob).filter(
+        ImportJob.batch_id == batch.id,
+        ImportJob.status.in_(["queued", "running", "restored_paused"]),
+    ).count()
     finished_files = batch.completed_files + batch.failed_files + cleared_files
     if finished_files >= batch.total_files:
         if cleared_files and batch.completed_files == 0 and batch.failed_files == 0:
             batch.status = "cleared"
         else:
             batch.status = "complete" if batch.failed_files == 0 else "complete_with_errors"
-    elif finished_files > 0:
+    elif active_files > 0 or (finished_files > 0 and not staged_files):
         batch.status = "running"
+    elif staged_files > 0:
+        batch.status = "staged"
     else:
         batch.status = "queued"
 
@@ -750,14 +761,21 @@ class DocumentProcessor:
                 )
             )
 
-        for topic in metadata.get("topics") or []:
-            tag = get_or_create_tag(db, topic)
-            if tag and tag not in document.tags:
-                document.tags.append(tag)
-        for keyword in metadata.get("keywords") or []:
-            tag = get_or_create_tag(db, keyword)
-            if tag and tag not in document.tags:
-                document.tags.append(tag)
+        tag_governance = apply_import_tag_governance(
+            db,
+            document=document,
+            topics=metadata.get("topics") or [],
+            keywords=metadata.get("keywords") or [],
+            source="import",
+            job=job,
+            ai=ai,
+            usage_context=OpenAIUsageContext(
+                document_id=document.id,
+                import_job_id=job.id,
+                source="import",
+                capability_key="tag_governance",
+            ),
+        )
 
         record_document_version(
             db,
@@ -803,6 +821,7 @@ class DocumentProcessor:
                 },
                 "citation_status": document.citation_status,
                 "crossref_used": bool(crossref),
+                "tag_governance": tag_governance,
             },
         )
         sync_import_usage_composition(db, document=document, job=job)

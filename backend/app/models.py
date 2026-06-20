@@ -231,9 +231,25 @@ class Tag(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(40), default="tag", nullable=False)
     color: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(40), default="canonical", nullable=False, index=True)
+    definition: Mapped[str | None] = mapped_column(Text)
+    use_guidance: Mapped[str | None] = mapped_column(Text)
+    avoid_guidance: Mapped[str | None] = mapped_column(Text)
+    governance_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
 
     documents: Mapped[list["Document"]] = relationship(secondary=document_tags, back_populates="tags")
     aliases: Mapped[list["TagAlias"]] = relationship(back_populates="target_tag", cascade="all, delete-orphan")
+    outgoing_relationships: Mapped[list["TagRelationship"]] = relationship(
+        back_populates="source_tag",
+        cascade="all, delete-orphan",
+        foreign_keys="TagRelationship.source_tag_id",
+    )
+    incoming_relationships: Mapped[list["TagRelationship"]] = relationship(
+        back_populates="target_tag",
+        cascade="all, delete-orphan",
+        foreign_keys="TagRelationship.target_tag_id",
+    )
+    tag_assessments: Mapped[list["DocumentTagAssessment"]] = relationship(back_populates="tag")
 
 
 class TagAlias(Base, TimestampMixin):
@@ -245,6 +261,26 @@ class TagAlias(Base, TimestampMixin):
     alias_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
 
     target_tag: Mapped[Tag] = relationship(back_populates="aliases")
+
+
+class TagRelationship(Base, TimestampMixin):
+    __tablename__ = "tag_relationships"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source_tag_id: Mapped[str] = mapped_column(String(36), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_tag_id: Mapped[str] = mapped_column(String(36), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False, index=True)
+    relationship_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="approved", nullable=False, index=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    rationale: Mapped[str | None] = mapped_column(Text)
+    relationship_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    source_tag: Mapped[Tag] = relationship(foreign_keys=[source_tag_id], back_populates="outgoing_relationships")
+    target_tag: Mapped[Tag] = relationship(foreign_keys=[target_tag_id], back_populates="incoming_relationships")
+
+    __table_args__ = (
+        UniqueConstraint("source_tag_id", "target_tag_id", "relationship_type", name="uq_tag_relationship"),
+    )
 
 
 class SavedSearch(Base, TimestampMixin, SoftDeleteMixin):
@@ -334,6 +370,31 @@ class DocumentVersion(Base, TimestampMixin):
     metadata_snapshot: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
 
     document: Mapped[Document] = relationship(back_populates="versions")
+
+
+class DocumentTagAssessment(Base, TimestampMixin):
+    __tablename__ = "document_tag_assessments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    tag_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tags.id", ondelete="SET NULL"), index=True)
+    import_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("import_jobs.id", ondelete="SET NULL"), index=True)
+    concordance_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("concordance_jobs.id", ondelete="SET NULL"), index=True)
+    candidate_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(40), default="import", nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="attached", nullable=False, index=True)
+    relevance_score: Mapped[float] = mapped_column(Numeric(4, 3), default=0, nullable=False)
+    library_fit_score: Mapped[float] = mapped_column(Numeric(4, 3), default=0, nullable=False)
+    novelty_score: Mapped[float] = mapped_column(Numeric(4, 3), default=0, nullable=False)
+    overall_score: Mapped[float] = mapped_column(Numeric(4, 3), default=0, nullable=False)
+    rationale: Mapped[str | None] = mapped_column(Text)
+    assessment_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    document: Mapped[Document] = relationship()
+    tag: Mapped[Tag | None] = relationship(back_populates="tag_assessments")
+    import_job: Mapped["ImportJob | None"] = relationship()
+    concordance_job: Mapped["ConcordanceJob | None"] = relationship()
 
 
 class DocumentPage(Base, TimestampMixin):

@@ -6,11 +6,11 @@ import threading
 import time
 from datetime import timedelta
 
-from sqlalchemy import and_, asc, or_
+from sqlalchemy import and_, asc, or_, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.database import init_db, session_scope
+from app.database import engine, init_db, is_postgres, session_scope
 from app.models import ConcordanceJob, DocumentAccessorySummary, ImportJob, ProcessingEvent, utc_now
 from app.security import ensure_admin_user
 from app.services.accessory_summaries import AccessorySummaryProcessor
@@ -79,6 +79,21 @@ def claim_import_job(db: Session, stale_after_seconds: int, exclude_ids: set[str
     job.last_error = None
     db.flush()
     return job.id
+
+
+def import_pipeline_active(db: Session) -> bool:
+    return db.query(ImportJob.id).filter(ImportJob.status.in_(["queued", "running"])).first() is not None
+
+
+def vacuum_database_after_import_queue() -> None:
+    if not is_postgres():
+        return
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text("VACUUM (ANALYZE)"))
+        logger.info("PostgreSQL VACUUM (ANALYZE) completed after import queue drain.")
+    except Exception:
+        logger.exception("PostgreSQL VACUUM (ANALYZE) failed after import queue drain.")
 
 
 def claim_concordance_job(db: Session, stale_after_seconds: int) -> str | None:
@@ -256,8 +271,12 @@ def main() -> None:
         recover_interrupted_jobs_on_start(db)
     settings = get_settings()
     inflight_imports: dict[threading.Thread, str] = {}
+    processed_import_queue_since_vacuum = False
     while running:
-        worked = collect_finished_imports(inflight_imports)
+        finished_imports = collect_finished_imports(inflight_imports)
+        worked = finished_imports
+        if finished_imports:
+            processed_import_queue_since_vacuum = True
         import_concurrency = configured_import_concurrency()
         active_import_ids = set(inflight_imports.values())
 
@@ -274,7 +293,16 @@ def main() -> None:
             thread.start()
             inflight_imports[thread] = job_id
             active_import_ids.add(job_id)
+            processed_import_queue_since_vacuum = True
             worked = True
+
+        if processed_import_queue_since_vacuum and not inflight_imports:
+            with session_scope() as db:
+                should_vacuum = not import_pipeline_active(db)
+            if should_vacuum:
+                vacuum_database_after_import_queue()
+                processed_import_queue_since_vacuum = False
+                worked = True
 
         if not inflight_imports:
             concordance_job_id = claim_next_concordance_job()

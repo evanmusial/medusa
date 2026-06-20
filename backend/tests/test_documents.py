@@ -27,6 +27,7 @@ def test_patch_document_records_manual_correction(monkeypatch, tmp_path):
             publication_year=2020,
             original_filename="paper.pdf",
             checksum_sha256="c" * 64,
+            processing_status="ready",
         )
         db.add(document)
         db.flush()
@@ -89,6 +90,7 @@ def test_patch_document_marks_inline_citation_edits_user_provided(monkeypatch, t
             apa_in_text_citation="(Lovelace, 1843)",
             apa_in_text_citation_model="gpt-5.5",
             apa_in_text_citation_source="model",
+            processing_status="ready",
         )
         db.add(document)
         db.commit()
@@ -127,6 +129,7 @@ def test_create_document_note_updates_search_text(monkeypatch, tmp_path):
             original_filename="methods.pdf",
             checksum_sha256="f" * 64,
             search_text="Methods Paper",
+            processing_status="ready",
         )
         db.add(document)
         db.commit()
@@ -150,8 +153,8 @@ def test_bulk_update_documents_can_create_custom_tag(monkeypatch, tmp_path):
 
     Session = make_session()
     with Session() as db:
-        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64)
-        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64)
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready")
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, processing_status="ready")
         db.add_all([first, second])
         db.commit()
 
@@ -180,8 +183,8 @@ def test_rename_tag_updates_counts_search_and_document_history(monkeypatch, tmp_
     Session = make_session()
     with Session() as db:
         tag = Tag(name="old topic", kind="tag")
-        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[tag])
-        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[tag])
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready", tags=[tag])
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, processing_status="ready", tags=[tag])
         db.add_all([first, second])
         db.commit()
 
@@ -216,10 +219,10 @@ def test_merge_tags_collapses_links_records_history_and_remembers_aliases(monkey
         keep = Tag(name="keep me", kind="tag")
         collapse = Tag(name="collapse me", kind="tag")
         untouched = Tag(name="untouched", kind="tag")
-        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[collapse])
-        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[keep, collapse])
-        third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, tags=[keep])
-        fourth = Document(title="Fourth", original_filename="fourth.pdf", checksum_sha256="4" * 64, tags=[untouched])
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready", tags=[collapse])
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, processing_status="ready", tags=[keep, collapse])
+        third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, processing_status="ready", tags=[keep])
+        fourth = Document(title="Fourth", original_filename="fourth.pdf", checksum_sha256="4" * 64, processing_status="ready", tags=[untouched])
         db.add_all([first, second, third, fourth])
         db.commit()
 
@@ -267,7 +270,7 @@ def test_merge_tags_carries_forward_existing_aliases(monkeypatch, tmp_path):
         alpha = Tag(name="alpha", kind="tag")
         beta = Tag(name="beta", kind="tag")
         gamma = Tag(name="gamma", kind="tag")
-        document = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[alpha])
+        document = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready", tags=[alpha])
         db.add_all([alpha, beta, gamma, document])
         db.commit()
 
@@ -297,7 +300,7 @@ def test_merge_tags_target_name_uses_existing_alias_target(monkeypatch, tmp_path
         canonical = Tag(name="canonical", kind="tag")
         first_source = Tag(name="first source", kind="tag")
         second_source = Tag(name="second source", kind="tag")
-        document = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[first_source])
+        document = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready", tags=[first_source])
         db.add_all([canonical, first_source, second_source, document])
         db.flush()
         db.add(TagAlias(alias_name="old canonical", target_tag_id=canonical.id, source="merge", alias_metadata={}))
@@ -361,10 +364,10 @@ def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, t
         detection = Tag(name="insider threat detection", kind="tag")
         plural = Tag(name="insider threats", kind="tag")
         unrelated = Tag(name="network defense", kind="tag")
-        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, tags=[base])
-        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, tags=[detection])
-        third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, tags=[plural])
-        fourth = Document(title="Fourth", original_filename="fourth.pdf", checksum_sha256="4" * 64, tags=[unrelated])
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready", tags=[base])
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, processing_status="ready", tags=[detection])
+        third = Document(title="Third", original_filename="third.pdf", checksum_sha256="3" * 64, processing_status="ready", tags=[plural])
+        fourth = Document(title="Fourth", original_filename="fourth.pdf", checksum_sha256="4" * 64, processing_status="ready", tags=[unrelated])
         db.add_all([first, second, third, fourth])
         db.commit()
 
@@ -400,9 +403,9 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
 
     Session = make_session()
     with Session() as db:
-        first = Document(title="First duplicate", original_filename="first.pdf", checksum_sha256="d" * 64)
-        second = Document(title="Second duplicate", original_filename="second.pdf", checksum_sha256="d" * 64)
-        unique = Document(title="Unique", original_filename="unique.pdf", checksum_sha256="u" * 64)
+        first = Document(title="First duplicate", original_filename="first.pdf", checksum_sha256="d" * 64, processing_status="ready")
+        second = Document(title="Second duplicate", original_filename="second.pdf", checksum_sha256="d" * 64, processing_status="ready")
+        unique = Document(title="Unique", original_filename="unique.pdf", checksum_sha256="u" * 64, processing_status="ready")
         db.add_all([first, second, unique])
         db.commit()
 
@@ -429,11 +432,11 @@ def test_list_documents_sorts_by_title(monkeypatch, tmp_path):
     with Session() as db:
         db.add_all(
             [
-                Document(title="Zeta", original_filename="zeta.pdf", checksum_sha256="z" * 64),
-                Document(title="alpha", original_filename="alpha.pdf", checksum_sha256="a" * 64),
-                Document(title="Beta", original_filename="beta.pdf", checksum_sha256="b" * 64),
-                Document(title="Advanced methods", original_filename="advanced.pdf", checksum_sha256="c" * 64),
-                Document(title="A framework", original_filename="framework.pdf", checksum_sha256="f" * 64),
+                Document(title="Zeta", original_filename="zeta.pdf", checksum_sha256="z" * 64, processing_status="ready"),
+                Document(title="alpha", original_filename="alpha.pdf", checksum_sha256="a" * 64, processing_status="ready"),
+                Document(title="Beta", original_filename="beta.pdf", checksum_sha256="b" * 64, processing_status="ready"),
+                Document(title="Advanced methods", original_filename="advanced.pdf", checksum_sha256="c" * 64, processing_status="ready"),
+                Document(title="A framework", original_filename="framework.pdf", checksum_sha256="f" * 64, processing_status="ready"),
             ]
         )
         db.commit()
@@ -458,6 +461,7 @@ def test_list_documents_default_does_not_truncate_at_80(monkeypatch, tmp_path):
                     title=f"Document {index:03d}",
                     original_filename=f"document-{index:03d}.pdf",
                     checksum_sha256=f"{index:064x}"[-64:],
+                    processing_status="ready",
                 )
                 for index in range(85)
             ]
@@ -480,8 +484,8 @@ def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypa
 
     Session = make_session()
     with Session() as db:
-        messy = Document(title="  A   messy\n title\t ", original_filename="messy.pdf", checksum_sha256="m" * 64)
-        clean = Document(title="Clean Title", original_filename="clean.pdf", checksum_sha256="c" * 64)
+        messy = Document(title="  A   messy\n title\t ", original_filename="messy.pdf", checksum_sha256="m" * 64, processing_status="ready")
+        clean = Document(title="Clean Title", original_filename="clean.pdf", checksum_sha256="c" * 64, processing_status="ready")
         db.add_all([messy, clean])
         db.commit()
 
@@ -526,6 +530,7 @@ def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
             checksum_sha256="a" * 64,
             gcs_uri="gs://bucket/documents/paper.pdf",
             content_type="application/pdf",
+            processing_status="ready",
         )
         db.add(document)
         db.commit()
@@ -594,6 +599,7 @@ def test_patch_document_page_records_history_and_updates_search_text(monkeypatch
             original_filename="editable.pdf",
             checksum_sha256="e" * 64,
             search_text="Editable Text Paper old OCR",
+            processing_status="ready",
         )
         db.add(document)
         db.flush()
@@ -643,6 +649,7 @@ def test_scrub_document_text_removes_matches_across_pages(monkeypatch, tmp_path)
             original_filename="scrub.pdf",
             checksum_sha256="s" * 64,
             search_text="Scrub Paper Copyright 2026",
+            processing_status="ready",
         )
         db.add(document)
         db.flush()
@@ -697,6 +704,7 @@ def test_restore_document_version_creates_current_version(monkeypatch, tmp_path)
             original_filename="restore.pdf",
             checksum_sha256="r" * 64,
             search_text="Current Title current page text",
+            processing_status="ready",
         )
         db.add(document)
         db.flush()
@@ -799,6 +807,7 @@ def test_refresh_document_citation_queues_citation_concordance(monkeypatch, tmp_
             original_filename="citation.pdf",
             checksum_sha256="9" * 64,
             citation_status="needs_review",
+            processing_status="ready",
         )
         db.add(document)
         db.commit()
@@ -828,6 +837,7 @@ def test_document_annotations_update_search_text_and_soft_delete(monkeypatch, tm
             original_filename="annotated.pdf",
             checksum_sha256="b" * 64,
             search_text="Annotated Paper",
+            processing_status="ready",
         )
         db.add(document)
         db.commit()

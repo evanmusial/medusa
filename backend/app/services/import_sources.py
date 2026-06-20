@@ -51,6 +51,7 @@ class PreparedImportSource:
     stored_content_type: str
     stored_data: bytes
     stored_checksum_sha256: str
+    stored_page_count: int | None
     title: str
     metadata: dict[str, Any]
 
@@ -94,6 +95,18 @@ def probe_import_source(data: bytes, filename: str | None, content_type: str | N
         file_size_bytes=len(data),
         stored_filename=safe_name if source_kind == "pdf" else _pdf_filename(safe_name),
     )
+
+
+def estimate_pdf_page_count(data: bytes) -> int | None:
+    try:
+        import fitz
+    except Exception:
+        return None
+    try:
+        with fitz.open(stream=data, filetype="pdf") as document:
+            return max(0, int(document.page_count or 0)) or None
+    except Exception:
+        return None
 
 
 def _decode_text(data: bytes) -> str:
@@ -336,6 +349,7 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
     probe = probe_import_source(data, filename, content_type)
     source_content_type = _normalized_content_type(content_type)
     if probe.source_kind == "pdf":
+        page_count = estimate_pdf_page_count(data)
         return PreparedImportSource(
             source_kind="pdf",
             source_filename=probe.filename,
@@ -346,8 +360,9 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
             stored_content_type=PDF_CONTENT_TYPE,
             stored_data=data,
             stored_checksum_sha256=probe.checksum_sha256,
+            stored_page_count=page_count,
             title=Path(probe.filename).stem.replace("_", " ").replace("-", " "),
-            metadata={"kind": "pdf"},
+            metadata={"kind": "pdf", "estimated_page_count": page_count},
         )
 
     text = _decode_text(data)
@@ -386,6 +401,7 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
         stored_content_type=PDF_CONTENT_TYPE,
         stored_data=pdf_bytes,
         stored_checksum_sha256=stored_checksum,
+        stored_page_count=len(pages),
         title=title,
         metadata=metadata,
     )

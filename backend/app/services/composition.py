@@ -21,6 +21,7 @@ from app.services.openai_usage import estimated_cost_usd_for_record
 
 
 STAGE_SEQUENCE = {
+    "import_cost_estimate": 1,
     "raw_text_extraction": 10,
     "figure_assets": 20,
     "summary_topics": 30,
@@ -31,6 +32,7 @@ STAGE_SEQUENCE = {
 }
 
 STAGE_LABELS = {
+    "import_cost_estimate": "Import cost estimate",
     "raw_text_extraction": "Text extraction",
     "figure_assets": "Figure extraction",
     "summary_topics": "Metadata, summary, and topics",
@@ -39,6 +41,8 @@ STAGE_LABELS = {
     "cache_cleanup": "Cache cleanup",
     "manual_correction": "Manual correction",
 }
+
+IMPORT_COST_ESTIMATE_STAGE = "import_cost_estimate"
 
 CAPABILITY_STAGE = {
     "page_text_normalization": "raw_text_extraction",
@@ -134,6 +138,57 @@ def record_import_stage(
         message=message,
         record_metadata=metadata or {},
     )
+    db.add(record)
+    return record
+
+
+def record_import_cost_estimate(
+    db: Session,
+    *,
+    document: Document,
+    job: ImportJob | None,
+    estimated_cost_usd: float,
+    estimate_basis: str,
+    estimated_page_count: int | None,
+    model_preferences: dict[str, str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DocumentCompositionRecord:
+    record_metadata = {
+        "estimate_basis": estimate_basis,
+        "estimated_page_count": estimated_page_count,
+        "model_preferences": model_preferences or {},
+        **(metadata or {}),
+    }
+    existing = (
+        db.query(DocumentCompositionRecord)
+        .filter(
+            DocumentCompositionRecord.document_id == document.id,
+            DocumentCompositionRecord.import_job_id == (job.id if job else None),
+            DocumentCompositionRecord.record_kind == "estimate",
+            DocumentCompositionRecord.stage_key == IMPORT_COST_ESTIMATE_STAGE,
+        )
+        .one_or_none()
+    )
+    record = existing or DocumentCompositionRecord(
+        document_id=document.id,
+        import_job_id=job.id if job else None,
+        record_kind="estimate",
+        stage_key=IMPORT_COST_ESTIMATE_STAGE,
+        stage_label=STAGE_LABELS[IMPORT_COST_ESTIMATE_STAGE],
+    )
+    record.sequence = STAGE_SEQUENCE[IMPORT_COST_ESTIMATE_STAGE]
+    record.provider = "medusa"
+    record.method = estimate_basis
+    record.model = None
+    record.status = "estimated"
+    record.amount_usd = max(0.0, float(estimated_cost_usd or 0.0))
+    record.duration_ms = 0
+    record.input_tokens = 0
+    record.output_tokens = 0
+    record.total_tokens = 0
+    record.completed_at = utc_now()
+    record.message = "Pre-processing import cost estimate."
+    record.record_metadata = record_metadata
     db.add(record)
     return record
 
@@ -300,6 +355,52 @@ def _group_key(record: DocumentCompositionRecord, *fields: str) -> tuple[Any, ..
     return tuple(getattr(record, field) for field in fields)
 
 
+def _estimate_comparison(records: list[DocumentCompositionRecord]) -> dict[str, Any] | None:
+    estimate_records = [
+        record
+        for record in records
+        if record.record_kind == "estimate" and record.stage_key == IMPORT_COST_ESTIMATE_STAGE and _float(record.amount_usd) > 0
+    ]
+    if not estimate_records:
+        return None
+    estimate = max(estimate_records, key=lambda record: record.completed_at or record.created_at)
+    metadata = _record_metadata(estimate)
+    estimated_cost = round(_float(estimate.amount_usd), 6)
+    actual_cost = round(
+        sum(
+            _float(record.amount_usd)
+            for record in records
+            if record.record_kind in {"llm", "embedding"} and _float(record.amount_usd) > 0
+        ),
+        6,
+    )
+    variance = round(actual_cost - estimated_cost, 6) if actual_cost > 0 else None
+    variance_percent = round((variance / estimated_cost) * 100, 2) if variance is not None and estimated_cost > 0 else None
+    ratio = round(actual_cost / estimated_cost, 4) if actual_cost > 0 and estimated_cost > 0 else None
+    if actual_cost <= 0:
+        status = "pending"
+    elif variance_percent is not None and abs(variance_percent) <= 5:
+        status = "close"
+    elif actual_cost > estimated_cost:
+        status = "over"
+    else:
+        status = "under"
+    estimated_page_count = metadata.get("estimated_page_count")
+    if not isinstance(estimated_page_count, int) or estimated_page_count <= 0:
+        estimated_page_count = None
+    return {
+        "estimated_cost_usd": estimated_cost,
+        "actual_cost_usd": actual_cost,
+        "variance_usd": variance,
+        "variance_percent": variance_percent,
+        "actual_to_estimate_ratio": ratio,
+        "estimated_page_count": estimated_page_count,
+        "basis": metadata.get("estimate_basis") or estimate.method,
+        "status": status,
+        "created_at": estimate.completed_at or estimate.created_at,
+    }
+
+
 def document_composition_summary(db: Session, document: Document) -> dict[str, Any]:
     records = (
         db.query(DocumentCompositionRecord)
@@ -318,6 +419,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             "local_duration_entries": [],
             "pipeline": [],
             "errata": [],
+            "estimate_comparison": None,
         }
 
     cost_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -329,7 +431,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
     for record_index, record in enumerate(records):
         amount = _float(record.amount_usd)
         provider = provider_label(record.provider)
-        if amount > 0:
+        if amount > 0 and record.record_kind != "estimate":
             key = _group_key(record, "provider", "model", "stage_key", "record_kind")
             group = cost_groups.setdefault(
                 key,
@@ -470,4 +572,5 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
         "local_duration_entries": local_duration_entries,
         "pipeline": pipeline,
         "errata": errata,
+        "estimate_comparison": _estimate_comparison(records),
     }
