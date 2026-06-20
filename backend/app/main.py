@@ -135,7 +135,6 @@ from app.schemas import (
 from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
 from app.services.accessory_summaries import create_accessory_summary
 from app.services.analysis_models import (
-    DEFAULT_KEYWORDS_TOPICS_MODEL,
     MODEL_APA_CITATION,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
@@ -593,6 +592,13 @@ def unique_tag_ids(tag_ids: list[str]) -> list[str]:
 
 
 TAG_CLEANUP_PREFIX_STOPWORDS = {"a", "an", "and", "by", "for", "in", "of", "on", "the", "to", "with"}
+TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT = 60
+TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT = 120
+TAG_OPTIMIZATION_ORPHAN_MERGE_LIMIT = 100
+TAG_OPTIMIZATION_ORPHAN_PRUNE_LIMIT = 200
+TAG_OPTIMIZATION_RELATIONSHIP_LIMIT = 120
+TAG_OPTIMIZATION_STATUS_LIMIT = 200
+TAG_OPTIMIZATION_ASSIGNMENT_PRUNE_LIMIT = 200
 
 
 def cleanup_tag_tokens(name: str) -> list[str]:
@@ -1655,10 +1661,13 @@ def optimize_tags(
         }
         for tag in tag_rows
     ]
+    tag_creation_model = get_analysis_model(db, MODEL_KEYWORDS_TOPICS)
     try:
         result = get_ai_service().generate_tag_optimization_suggestions(
             inventory,
-            model=DEFAULT_KEYWORDS_TOPICS_MODEL,
+            model=tag_creation_model,
+            primary_limit=TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT,
+            singleton_limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
             usage_context=OpenAIUsageContext(source="tags", capability_key="tag_optimization"),
         )
     except Exception as exc:
@@ -1684,7 +1693,7 @@ def optimize_tags(
         fallback_rationale: str,
         id_prefix: str = "merge",
         require_singleton: bool = False,
-        limit: int = 12,
+        limit: int = TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT,
     ) -> bool:
         if not isinstance(item, dict):
             return False
@@ -1746,7 +1755,7 @@ def optimize_tags(
                 confidence=confidence,
             )
         )
-        return len(orphan_merge_suggestions) >= 12
+        return len(orphan_merge_suggestions) >= TAG_OPTIMIZATION_ORPHAN_MERGE_LIMIT
 
     raw_suggestions = result.get("suggestions") if isinstance(result, dict) else None
     suggestion_items = raw_suggestions if isinstance(raw_suggestions, list) else []
@@ -1756,6 +1765,7 @@ def optimize_tags(
             suggestions,
             fallback_rationale="These tags appear to overlap and may be clearer as one tag.",
             id_prefix="merge",
+            limit=TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT,
         ):
             break
 
@@ -1768,6 +1778,7 @@ def optimize_tags(
             fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
             id_prefix="singleton",
             require_singleton=True,
+            limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
         ):
             break
 
@@ -1778,7 +1789,7 @@ def optimize_tags(
         if key:
             variant_groups.setdefault(key, []).append(tag)
     for group in variant_groups.values():
-        if len(singleton_suggestions) >= 12:
+        if len(singleton_suggestions) >= TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT:
             break
         if len(group) < 2 or not any(document_counts_by_id.get(tag.id) == 1 for tag in group):
             continue
@@ -1801,6 +1812,7 @@ def optimize_tags(
             fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
             id_prefix="singleton",
             require_singleton=True,
+            limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
         )
 
     prefix_groups: dict[str, set[str]] = {}
@@ -1811,7 +1823,7 @@ def optimize_tags(
         target = sorted(candidates, key=lambda tag: (-len(cleanup_tag_tokens(tag.name)), tag.name))[0]
         prefix_groups.setdefault(target.name, {target.id}).add(singleton.id)
     for target_name, source_ids in sorted(prefix_groups.items()):
-        if len(singleton_suggestions) >= 12:
+        if len(singleton_suggestions) >= TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT:
             break
         append_suggestion(
             {
@@ -1824,6 +1836,7 @@ def optimize_tags(
             fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
             id_prefix="singleton",
             require_singleton=True,
+            limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
         )
 
     shared_prefix_groups: dict[str, list[Tag]] = {}
@@ -1837,7 +1850,7 @@ def optimize_tags(
             continue
         shared_prefix_groups.setdefault(prefix_name, []).append(singleton)
     for prefix_name, group in sorted(shared_prefix_groups.items()):
-        if len(singleton_suggestions) >= 12:
+        if len(singleton_suggestions) >= TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT:
             break
         if len(group) < 2:
             continue
@@ -1852,12 +1865,13 @@ def optimize_tags(
             fallback_rationale="These low-count tags look close enough to review as a cleanup merge.",
             id_prefix="singleton",
             require_singleton=True,
+            limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
         )
 
     true_orphan_rows = [tag for tag in tag_rows if document_counts_by_id.get(tag.id, 0) == 0 and tag_document_link_count(db, tag.id) == 0]
     used_target_rows = [tag for tag in all_tag_rows if all_document_counts_by_id.get(tag.id, 0) > 0]
     for orphan in sorted(true_orphan_rows, key=lambda tag: tag.name):
-        if len(orphan_merge_suggestions) >= 12:
+        if len(orphan_merge_suggestions) >= TAG_OPTIMIZATION_ORPHAN_MERGE_LIMIT:
             break
         match = orphan_merge_candidate(orphan, used_target_rows, all_document_counts_by_id)
         if match:
@@ -1875,7 +1889,7 @@ def optimize_tags(
                 "confidence": 0.88,
             }
         )
-        if len(orphan_prune_suggestions) >= 30:
+        if len(orphan_prune_suggestions) >= TAG_OPTIMIZATION_ORPHAN_PRUNE_LIMIT:
             break
 
     relationship_suggestions = [
@@ -1887,7 +1901,7 @@ def optimize_tags(
             "rationale": item["rationale"],
             "confidence": float(item["confidence"]),
         }
-        for item in relationship_review_suggestions(db, tag_rows)
+        for item in relationship_review_suggestions(db, tag_rows, limit=TAG_OPTIMIZATION_RELATIONSHIP_LIMIT)
     ]
     status_suggestions = [
         {
@@ -1897,7 +1911,7 @@ def optimize_tags(
             "rationale": item["rationale"],
             "confidence": float(item["confidence"]),
         }
-        for item in status_review_suggestions(db, tag_rows)
+        for item in status_review_suggestions(db, tag_rows, limit=TAG_OPTIMIZATION_STATUS_LIMIT)
         if item["tag"].id not in orphan_action_tag_ids
     ]
     pruning_suggestions = [
@@ -1913,11 +1927,11 @@ def optimize_tags(
             "novelty_score": float(item["novelty_score"]),
             "overall_score": float(item["overall_score"]),
         }
-        for item in pruning_review_suggestions(db, tag_rows)
+        for item in pruning_review_suggestions(db, tag_rows, limit=TAG_OPTIMIZATION_ASSIGNMENT_PRUNE_LIMIT)
     ]
 
     return TagOptimizationOut(
-        model=DEFAULT_KEYWORDS_TOPICS_MODEL,
+        model=tag_creation_model,
         considered_tags=len(tag_rows),
         suggestions=suggestions,
         singleton_suggestions=singleton_suggestions,

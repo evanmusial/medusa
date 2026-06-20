@@ -134,6 +134,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
             document_cache_size_mb=512,
             analysis_models={
                 MODEL_METADATA: "gpt-5.4-mini",
+                MODEL_KEYWORDS_TOPICS: "gpt-5.4",
                 MODEL_PAGE_TEXT_NORMALIZATION: "gpt-5.4-nano",
             },
         )
@@ -145,7 +146,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert preferences["analysis_models"][MODEL_RAW_TEXT_EXTRACTION] == "marker"
         assert preferences["analysis_models"][MODEL_METADATA] == "gpt-5.4-mini"
         assert preferences["analysis_models"][MODEL_SUMMARY] == "gpt-5.4"
-        assert preferences["analysis_models"][MODEL_KEYWORDS_TOPICS] == "gpt-5.4-mini"
+        assert preferences["analysis_models"][MODEL_KEYWORDS_TOPICS] == "gpt-5.4"
         assert preferences["analysis_models"][MODEL_ACCESSORY_SUMMARIES] == "gpt-5.4"
         assert preferences["analysis_models"][MODEL_PAGE_TEXT_NORMALIZATION] == "gpt-5.4-nano"
 
@@ -167,6 +168,8 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert "gpt-5.2-pro" in payload["model_options"]["gpt"]
         assert "gpt-5.5" in payload["model_options"]["gpt"]
         assert payload["model_options"]["raw_text_extraction"][:3] == ["docling", "marker", "pymupdf"]
+        tag_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_KEYWORDS_TOPICS)
+        assert tag_task["selected_model"] == "gpt-5.4"
 
 
 def test_gcs_bucket_preference_falls_back_to_env_and_can_be_saved(monkeypatch, tmp_path):

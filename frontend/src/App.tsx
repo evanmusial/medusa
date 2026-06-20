@@ -216,6 +216,7 @@ type SelectMenuOption = { id: string; name: string };
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const SUMMARY_MODEL_KEY = "summary";
+const TAG_SUGGESTIONS_MODEL_KEY = "keywords_topics";
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
 const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
@@ -7383,7 +7384,7 @@ function TagSuggestionMergeIntoDialog({
   );
 }
 
-function TagsView({ tags }: { tags: Tag[] }) {
+function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPreferences }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -7431,6 +7432,9 @@ function TagsView({ tags }: { tags: Tag[] }) {
     [selectedIds, visibleTags],
   );
   const optimizationScopeLabel = selectedIds.length ? `${selectedIds.length} selected` : `${visibleTags.length} visible`;
+  const tagSuggestionsModel = preferences
+    ? selectedAnalysisModel(preferences, TAG_SUGGESTIONS_MODEL_KEY, "gpt-5.4-mini")
+    : "Loading model";
   const allOptimizationSuggestions = useMemo(
     () => [
       ...(optimizationResult?.suggestions ?? []),
@@ -8229,7 +8233,7 @@ function TagsView({ tags }: { tags: Tag[] }) {
               </div>
             ) : null}
             <div className="tag-optimization-summary">
-              <span>{optimizationResult ? optimizationResult.model : "gpt-5.4-mini"}</span>
+              <span>{optimizationResult ? optimizationResult.model : tagSuggestionsModel}</span>
               <span>{optimizationResult ? `${optimizationResult.considered_tags} reviewed` : `${optimizationScopeLabel} tags`}</span>
               {optimizationResult?.health_summary?.candidate_tags ? <span>{optimizationResult.health_summary.candidate_tags} candidates</span> : null}
               {optimizationResult?.health_summary?.weak_assignments ? <span>{optimizationResult.health_summary.weak_assignments} weak assignments</span> : null}
@@ -11104,7 +11108,7 @@ export default function App() {
           <ImportView domains={domains.data || []} jobs={jobs.data || []} projects={projects.data || []} tags={tags.data || []} />
         ) : null}
         {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
-        {activeView === "tags" ? <TagsView tags={tags.data || []} /> : null}
+        {activeView === "tags" ? <TagsView tags={tags.data || []} preferences={preferences.data} /> : null}
         {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
         {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
         {activeView === "notes" ? (

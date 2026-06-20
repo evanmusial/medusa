@@ -27,6 +27,8 @@ Import should attach only the strongest scored candidates by default. The curren
 
 Tag management should remain user-in-the-loop. Optimize is the right home for semantics, relationships, merging, pruning, and candidate governance because it already presents a review plan and waits for approval.
 
+Optimize should use the same Settings-selected Tag Suggestions model that import uses for tag creation. When the user chooses a stronger model, such as `gpt-5.4`, both import tag creation and the taxonomy cleanup prompt should use that model; Optimize should ask for a thorough pass rather than a small sample. Broad scopes can produce several hundred suggested actions across model merges, deterministic singleton cleanup, orphan cleanup, relationship review, status review, and assignment pruning.
+
 Extend Optimize beyond merge suggestions:
 
 - Tag statuses: `canonical`, `candidate`, `retired`, and `blocked`. Alias behavior remains handled by `TagAlias`, not by keeping duplicate visible tags alive.

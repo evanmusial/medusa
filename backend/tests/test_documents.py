@@ -338,9 +338,11 @@ def test_optimize_tags_returns_reviewable_suggestions_with_counts(monkeypatch, t
     seen_inventory = []
 
     class FakeAiService:
-        def generate_tag_optimization_suggestions(self, tags, *, model, usage_context):
+        def generate_tag_optimization_suggestions(self, tags, *, model, primary_limit, singleton_limit, usage_context):
             seen_inventory.extend(tags)
             assert model == "gpt-5.4-mini"
+            assert primary_limit >= 60
+            assert singleton_limit >= 120
             assert usage_context.source == "tags"
             assert usage_context.capability_key == "tag_optimization"
             assert all(set(tag) == {"id", "name", "document_count"} for tag in tags)

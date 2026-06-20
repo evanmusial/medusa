@@ -253,6 +253,41 @@ def test_optimize_includes_relationship_status_and_pruning_suggestions(monkeypat
         assert result.health_summary["candidate_tags"] == 2
 
 
+def test_optimize_uses_import_tag_creation_model(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+
+    from app.main import optimize_tags
+    from app.models import Tag
+    from app.schemas import TagOptimizationCreate
+    from app.services.analysis_models import MODEL_KEYWORDS_TOPICS
+    from app.services.preferences import update_app_preferences
+
+    seen: dict[str, object] = {}
+
+    class FakeAiService:
+        def generate_tag_optimization_suggestions(self, tags, *, model, primary_limit, singleton_limit, usage_context):
+            seen["model"] = model
+            seen["primary_limit"] = primary_limit
+            seen["singleton_limit"] = singleton_limit
+            return {"suggestions": [], "singleton_suggestions": []}
+
+    monkeypatch.setattr("app.main.get_ai_service", lambda: FakeAiService())
+
+    with Session() as db:
+        first = Tag(name="access control", kind="tag", status="canonical")
+        second = Tag(name="access controls", kind="tag", status="candidate")
+        db.add_all([first, second])
+        update_app_preferences(db, analysis_models={MODEL_KEYWORDS_TOPICS: "gpt-5.4"})
+        db.commit()
+
+        result = optimize_tags(TagOptimizationCreate(tag_ids=[first.id, second.id]), object(), db)
+
+        assert seen["model"] == "gpt-5.4"
+        assert seen["primary_limit"] >= 60
+        assert seen["singleton_limit"] >= 120
+        assert result.model == "gpt-5.4"
+
+
 def test_optimize_flags_legacy_singleton_canonical_tags(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
 

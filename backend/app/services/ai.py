@@ -899,6 +899,8 @@ class AiService:
         tags: list[dict[str, Any]],
         *,
         model: str = DEFAULT_KEYWORDS_TOPICS_MODEL,
+        primary_limit: int = 60,
+        singleton_limit: int = 120,
         usage_context: OpenAIUsageContext | None = None,
     ) -> dict[str, Any]:
         if not self._can_call_text_model(model):
@@ -906,27 +908,33 @@ class AiService:
         input_text = (
             "Tag inventory JSON:\n"
             f"{json.dumps(tags, ensure_ascii=True, sort_keys=True)}\n\n"
-            "Each tag has id, name, and document_count. Suggest only high-value merge candidates."
+            "Each tag has id, name, and document_count. Suggest high-value cleanup candidates. "
+            f"Return up to {primary_limit} strict merge suggestions and up to {singleton_limit} singleton cleanup suggestions."
         )
         return self._responses_json(
             model=model,
             schema_name="medusa_tag_optimization",
             schema=TAG_OPTIMIZATION_SCHEMA,
             prompt=(
-                "You are optimizing a research-library tag taxonomy. Return two arrays. First, suggestions: at "
-                "most 12 high-value merge suggestions under the usual stricter rules. Second, "
-                "singleton_suggestions: at most 12 additional cleanup candidates aimed at reducing tags with "
-                "document_count 1, using slightly looser judgment. Use exact tag ids from the inventory. A "
-                "strict suggestion should merge overly specific, duplicated, plural/singular, punctuation, "
-                "casing, or parent/child variants when a concise primitive target tag would improve retrieval. "
-                "For singleton_suggestions, especially look for single-document tags that can merge into an "
-                "existing broader prefix, plural/singular variants, hyphenation/format variants, or obvious "
-                "common-sense same-concept labels. For example, many tags beginning with 'insider threat' can "
-                "often merge into 'insider threat' when the suffixes do not preserve important distinctions. "
-                "Do not merge conceptually distinct tags merely because they share a word. Prefer short reusable "
-                "target names. If the target already exists in the inventory, use that exact target name and "
-                "include that target tag id in source_tag_ids when it is part of the merge group. The user must "
-                "approve suggestions later, so only propose; do not claim any action has been taken."
+                "You are optimizing a research-library tag taxonomy. Do a thorough cleanup pass rather than a "
+                "small sample. Return two arrays. First, suggestions: up to "
+                f"{primary_limit} high-value merge suggestions under strict rules. Second, singleton_suggestions: "
+                f"up to {singleton_limit} additional cleanup candidates aimed at reducing tags with document_count "
+                "0 or 1, using slightly looser judgment. Use exact tag ids from the inventory. A strict suggestion "
+                "should merge overly specific, duplicated, plural/singular, punctuation, casing, spelling, acronym, "
+                "or parent/child variants when a concise primitive target tag would improve retrieval. For "
+                "singleton_suggestions, especially look for low-count tags that can merge into an existing broader "
+                "prefix, plural/singular variants, hyphenation/format variants, word-order variants, acronym/name "
+                "variants, or obvious common-sense same-concept labels. Make multiple passes through the inventory: "
+                "first exact/near duplicate labels, then plural/singular and punctuation variants, then prefix "
+                "families, then long labels that are covered by shorter reusable tags. For example, many tags "
+                "beginning with 'insider threat' can often merge into 'insider threat' when the suffixes do not "
+                "preserve important distinctions. Prefer returning more actionable suggestions when confidence is "
+                "reasonable; the user will review and approve them later. Do not merge conceptually distinct tags "
+                "merely because they share a word. Prefer short reusable target names. If the target already exists "
+                "in the inventory, use that exact target name and include that target tag id in source_tag_ids when "
+                "it is part of the merge group. The user must approve suggestions later, so only propose; do not "
+                "claim any action has been taken."
             ),
             input_content=[{"type": "input_text", "text": input_text}],
             timeout=self.settings.openai_request_timeout_seconds,
