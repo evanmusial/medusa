@@ -2135,6 +2135,35 @@ def import_job_costs_usd(db: Session, import_job_ids: list[str]) -> dict[str, fl
     return {job_id: round(cost, 6) for job_id, cost in costs.items()}
 
 
+IMPORT_JOB_QUEUE_STATUSES = ("queued", "running", "failed", "restored_paused")
+IMPORT_JOB_STATUS_PRIORITY = {
+    "running": 0,
+    "failed": 1,
+    "restored_paused": 2,
+    "queued": 3,
+    "complete": 4,
+    "duplicate_skipped": 5,
+    "cleared": 6,
+}
+
+
+def import_job_sort_key(job: ImportJob) -> tuple[int, float, str]:
+    priority = IMPORT_JOB_STATUS_PRIORITY.get(job.status, 7)
+    if job.status in {"running", "queued", "restored_paused"}:
+        timestamp = job.created_at or job.updated_at or utc_now()
+        return (priority, timestamp.timestamp(), job.id)
+    timestamp = job.updated_at or job.created_at or utc_now()
+    return (priority, -timestamp.timestamp(), job.id)
+
+
+def dedupe_import_jobs(*groups: list[ImportJob]) -> list[ImportJob]:
+    by_id: dict[str, ImportJob] = {}
+    for group in groups:
+        for job in group:
+            by_id[job.id] = job
+    return sorted(by_id.values(), key=import_job_sort_key)
+
+
 def import_job_step_model(current_step: str, model_preferences: dict[str, str]) -> str | None:
     step = current_step or "stored"
     if step in {"stored", "extracting"}:
@@ -2212,13 +2241,20 @@ def import_job_out(
 
 @app.get("/api/imports/jobs", response_model=list[ImportJobOut])
 def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
-    jobs = (
+    query = db.query(ImportJob).options(joinedload(ImportJob.document), selectinload(ImportJob.events))
+    queue_jobs = (
+        query.filter(ImportJob.status.in_(IMPORT_JOB_QUEUE_STATUSES))
+        .order_by(ImportJob.created_at.asc(), ImportJob.id.asc())
+        .all()
+    )
+    recent_jobs = (
         db.query(ImportJob)
         .options(joinedload(ImportJob.document), selectinload(ImportJob.events))
         .order_by(ImportJob.created_at.desc())
         .limit(100)
         .all()
     )
+    jobs = dedupe_import_jobs(queue_jobs, recent_jobs)
     model_preferences = get_analysis_models(db)
     costs = import_job_costs_usd(db, [job.id for job in jobs])
     return [import_job_out(job, model_preferences=model_preferences, estimated_cost_usd=costs.get(job.id, 0.0)) for job in jobs]
@@ -2254,7 +2290,13 @@ def requeue_import_job(db: Session, job: ImportJob, *, event_type: str = "manual
     )
 
 
-def clear_import_job(db: Session, job: ImportJob) -> None:
+def clear_import_job(
+    db: Session,
+    job: ImportJob,
+    *,
+    event_type: str = "manual_import_clear",
+    message: str = "Import job was cleared from the queue.",
+) -> None:
     previous = import_job_previous_state(job)
     job.status = "cleared"
     job.current_step = "cleared"
@@ -2267,8 +2309,8 @@ def clear_import_job(db: Session, job: ImportJob) -> None:
         ProcessingEvent(
             import_job_id=job.id,
             document_id=job.document_id,
-            event_type="manual_import_clear",
-            message="Import job was cleared from the queue.",
+            event_type=event_type,
+            message=message,
             payload={"previous": previous},
         )
     )
@@ -2346,6 +2388,33 @@ def clear_failed_import_jobs(
         clear_import_job(db, job)
     db.commit()
     return ImportQueueActionOut(matched_count=len(jobs), updated_count=len(jobs))
+
+
+@app.post("/api/imports/jobs/{job_id}/cancel", response_model=ImportJobOut)
+def cancel_import_job(
+    job_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    job = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch), selectinload(ImportJob.events))
+        .filter(ImportJob.id == job_id)
+        .one_or_none()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    if job.status == "running":
+        raise HTTPException(status_code=409, detail="Running imports cannot be canceled while the worker lock is active.")
+    if job.status not in {"queued", "failed", "restored_paused"}:
+        raise HTTPException(status_code=400, detail="Only queued, failed, or restored imports can be canceled.")
+
+    clear_import_job(db, job, event_type="manual_import_cancel", message="Import job was canceled.")
+    db.commit()
+    db.refresh(job)
+    model_preferences = get_analysis_models(db)
+    costs = import_job_costs_usd(db, [job.id])
+    return import_job_out(job, model_preferences=model_preferences, estimated_cost_usd=costs.get(job.id, 0.0))
 
 
 @app.post("/api/imports/jobs/{job_id}/rescue", response_model=ImportJobOut)

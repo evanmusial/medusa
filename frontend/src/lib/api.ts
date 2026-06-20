@@ -194,6 +194,7 @@ export const api = {
   deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
   rescueImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/rescue`, { method: "POST" }),
+  cancelImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/cancel`, { method: "POST" }),
   retryFailedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/retry-failed", { method: "POST" }),
   clearImportQueue: () => request<ImportQueueActionResult>("/api/imports/jobs/clear", { method: "POST" }),
   clearFailedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/clear-failed", { method: "POST" }),

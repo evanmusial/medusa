@@ -40,7 +40,7 @@ def short_hostname(value: str | None = None) -> str:
 
 def backup_timestamp(value: datetime | None = None) -> str:
     now = value or datetime.now(timezone.utc)
-    return now.strftime("%Y%m%d-%H%M")
+    return now.strftime("%Y%m%d-%H%M%S")
 
 
 def backup_basename(value: datetime | None = None, hostname: str | None = None) -> str:

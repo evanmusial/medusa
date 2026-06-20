@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Background,
   Controls,
+  Handle,
   MarkerType,
+  Position,
   ReactFlow,
   type Edge,
   type Node as FlowNode,
@@ -39,6 +41,7 @@ import {
   ListChecks,
   LogOut,
   Moon,
+  Orbit,
   PieChart,
   Plus,
   RefreshCw,
@@ -112,6 +115,61 @@ type BackgroundJob = {
   createdAt: number;
   completedAt?: number;
 };
+
+type EscapeLayer = {
+  id: symbol;
+  onEscape: () => void;
+  order: number;
+  priority: number;
+};
+
+const ESCAPE_PRIORITY_READER = 10;
+const ESCAPE_PRIORITY_EXPANDED = 20;
+const ESCAPE_PRIORITY_POPOVER = 30;
+const ESCAPE_PRIORITY_DIALOG = 40;
+const ESCAPE_PRIORITY_MENU = 50;
+const ESCAPE_PRIORITY_TOOLTIP = 60;
+
+const escapeLayers: EscapeLayer[] = [];
+let escapeLayerOrder = 0;
+
+function handleRegisteredEscape(event: KeyboardEvent) {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  const topLayer = escapeLayers.reduce<EscapeLayer | null>((selected, layer) => {
+    if (!selected) return layer;
+    if (layer.priority !== selected.priority) return layer.priority > selected.priority ? layer : selected;
+    return layer.order > selected.order ? layer : selected;
+  }, null);
+  if (!topLayer) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  topLayer.onEscape();
+}
+
+function useEscapeLayer(active: boolean, onEscape: () => void, priority: number) {
+  const onEscapeRef = useRef(onEscape);
+  useEffect(() => {
+    onEscapeRef.current = onEscape;
+  }, [onEscape]);
+
+  useEffect(() => {
+    if (!active) return;
+    const layer: EscapeLayer = {
+      id: Symbol("escape-layer"),
+      onEscape: () => onEscapeRef.current(),
+      order: ++escapeLayerOrder,
+      priority,
+    };
+    const needsListener = escapeLayers.length === 0;
+    escapeLayers.push(layer);
+    if (needsListener) window.addEventListener("keydown", handleRegisteredEscape, true);
+    return () => {
+      const index = escapeLayers.findIndex((item) => item.id === layer.id);
+      if (index >= 0) escapeLayers.splice(index, 1);
+      if (!escapeLayers.length) window.removeEventListener("keydown", handleRegisteredEscape, true);
+    };
+  }, [active, priority]);
+}
 type ConcordanceRunRequest = {
   backgroundDetail?: string;
   backgroundLabel?: string;
@@ -138,6 +196,7 @@ const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
+const IMPORT_JOB_LIST_LIMIT = 20;
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
   { value: "last_month", label: "Last month" },
@@ -563,6 +622,23 @@ function backupArtifactLabel(artifact: BackupArtifact) {
   return pieces.join(" - ");
 }
 
+function backupRunLabel(run: BackupRun) {
+  if (run.kind === "restore") return "Database restore";
+  if (run.reason === "pre_restore") return "Safety backup";
+  return "Database backup";
+}
+
+function backupRunTimestamp(run: BackupRun) {
+  return backupDateLabel(run.completed_at || run.started_at || run.created_at);
+}
+
+function backupRunDetail(run: BackupRun) {
+  if (run.filename) return run.filename;
+  if (run.source_filename) return run.source_filename;
+  if (run.source_uri) return run.source_uri;
+  return run.status_detail || run.id;
+}
+
 function backupEstimateLabel(estimate?: BackupEstimate, loading = false) {
   if (!estimate && loading) return "Likely backup size: calculating";
   if (!estimate) return "Likely backup size: unavailable";
@@ -863,6 +939,8 @@ function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
       x: (index % columns) * (nodeWidth + horizontalGap),
       y: Math.floor(index / columns) * (nodeHeight + verticalGap),
     },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     data: {
       amountUsd: entry.amount_usd || 0,
       callCount: entry.call_count || 0,
@@ -877,10 +955,12 @@ function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
   const edges: Edge[] = pipeline.slice(1).map((_, index) => ({
     id: `pipeline-edge-${index}`,
     source: `pipeline-${index}`,
+    sourceHandle: "pipeline-output",
     target: `pipeline-${index + 1}`,
+    targetHandle: "pipeline-input",
     type: "smoothstep",
-    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
-    style: { strokeWidth: 2 },
+    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: "var(--primary)" },
+    style: { stroke: "var(--primary)", strokeWidth: 2.25 },
   }));
   return { nodes, edges };
 }
@@ -890,6 +970,13 @@ function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode
   const hasDuration = data.durationMs > 0;
   return (
     <div className={`composition-pipeline-node ${data.tone}`}>
+      <Handle
+        className="composition-pipeline-handle input"
+        id="pipeline-input"
+        isConnectable={false}
+        position={Position.Left}
+        type="target"
+      />
       <span>{data.title}</span>
       <strong>{data.subtitle}</strong>
       {data.meta ? <small>{data.meta}</small> : null}
@@ -898,6 +985,13 @@ function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode
         {hasSpend ? <em>{formatUsd(data.amountUsd)}</em> : null}
         {hasDuration ? <em>{formatDurationMs(data.durationMs)}</em> : null}
       </div>
+      <Handle
+        className="composition-pipeline-handle output"
+        id="pipeline-output"
+        isConnectable={false}
+        position={Position.Right}
+        type="source"
+      />
     </div>
   );
 }
@@ -929,6 +1023,42 @@ function importJobProgress(job: ImportJob) {
   return progressByStep[step] ?? (job.status === "running" ? 8 : 0);
 }
 
+function importJobSortPriority(job: ImportJob) {
+  if (job.status === "running") return 0;
+  if (job.status === "failed") return 1;
+  if (job.status === "restored_paused") return 2;
+  if (job.status === "queued") return 3;
+  if (job.status === "complete") return 4;
+  if (job.status === "duplicate_skipped") return 5;
+  if (job.status === "cleared") return 6;
+  return 7;
+}
+
+function importJobTime(value?: string | null) {
+  const timestamp = value ? new Date(value).getTime() : NaN;
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function compareImportJobs(left: ImportJob, right: ImportJob) {
+  const priorityDelta = importJobSortPriority(left) - importJobSortPriority(right);
+  if (priorityDelta) return priorityDelta;
+  if (left.status === "running") {
+    return importJobTime(left.locked_at || left.updated_at || left.created_at) - importJobTime(right.locked_at || right.updated_at || right.created_at);
+  }
+  if (left.status === "queued" || left.status === "restored_paused") {
+    return importJobTime(left.created_at) - importJobTime(right.created_at);
+  }
+  return importJobTime(right.updated_at || right.created_at) - importJobTime(left.updated_at || left.created_at);
+}
+
+function orderedImportJobs(jobs: ImportJob[]) {
+  return [...jobs].sort(compareImportJobs);
+}
+
+function visibleImportJobs(jobs: ImportJob[], now: number, limit = IMPORT_JOB_LIST_LIMIT) {
+  return orderedImportJobs(jobs.filter((job) => !isImportCompletedRowExpired(job, now))).slice(0, limit);
+}
+
 function importJobStage(job: ImportJob) {
   const pageMatch = job.current_step.match(/^normalizing_page_(\d+)$/);
   if (pageMatch) {
@@ -942,12 +1072,6 @@ function importJobLabel(job: ImportJob) {
   const name = job.original_filename || job.document_title || job.current_step || "Import";
   const size = formatFileSize(job.file_size_bytes);
   return `${name}${size ? ` (${size})` : ""}${job.status === "complete" ? " (done)" : ""}`;
-}
-
-function importJobStepLabel(job: ImportJob) {
-  if (job.status === "complete") return "complete";
-  if (job.status === "failed") return job.last_error || "failed";
-  return importJobStage(job);
 }
 
 function candidateMetadataText(candidate: CitationCandidate, key: string) {
@@ -993,6 +1117,101 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
   );
 }
 
+function importJobTone(job: ImportJob): "neutral" | "good" | "warn" | "blue" {
+  if (job.status === "failed") return "warn";
+  if (job.status === "complete" || job.status === "duplicate_skipped") return "good";
+  if (job.status === "restored_paused") return "neutral";
+  return "blue";
+}
+
+function importJobShowsActivityGlyph(job: ImportJob) {
+  return job.status === "queued" || job.status === "running" || job.status === "restored_paused";
+}
+
+function ImportJobRow({
+  job,
+  cancelBusy = false,
+  cancelDisabled = false,
+  cancelFeedback,
+  cancelTitle,
+  onCancel,
+  onRetry,
+  retryBusy = false,
+  retryDisabled = false,
+  retryFeedback,
+  retryTitle,
+  showCancelSlot = false,
+  showRetrySlot = false,
+}: {
+  job: ImportJob;
+  cancelBusy?: boolean;
+  cancelDisabled?: boolean;
+  cancelFeedback?: AsyncActionFeedback | null;
+  cancelTitle?: string;
+  onCancel?: () => void;
+  onRetry?: () => void;
+  retryBusy?: boolean;
+  retryDisabled?: boolean;
+  retryFeedback?: AsyncActionFeedback | null;
+  retryTitle?: string;
+  showCancelSlot?: boolean;
+  showRetrySlot?: boolean;
+}) {
+  const progress = importJobProgress(job);
+  const cancelSlot = showCancelSlot || onCancel;
+  const retrySlot = showRetrySlot || onRetry;
+  const showActivityGlyph = importJobShowsActivityGlyph(job);
+  return (
+    <div
+      className={`job-row ${job.status}`}
+      style={{ "--job-progress": `${progress}%` } as CSSProperties}
+      title={`${importJobStatusLabel(job)}: ${progress}%`}
+    >
+      <span className="job-copy">
+        <span>{importJobLabel(job)}</span>
+        <ImportJobStatusDetail job={job} />
+      </span>
+      <span className="job-actions">
+        <span className="job-status-cluster">
+          {showActivityGlyph ? <Orbit aria-hidden="true" className="job-activity-glyph" size={15} /> : null}
+          <StatusPill value={job.status} tone={importJobTone(job)} />
+        </span>
+        {retrySlot ? (
+          <AsyncActionSlot busy={retryBusy} feedback={retryFeedback} label="Import retry in progress">
+            <button
+              aria-label={`Retry ${importJobLabel(job)}`}
+              className={asyncFeedbackClass("icon-button compact job-retry-button", retryFeedback, retryBusy)}
+              disabled={!onRetry || retryDisabled}
+              onClick={onRetry}
+              title={retryTitle || importJobRetryTitle(job)}
+              type="button"
+            >
+              <RefreshCw className={retryBusy ? "spin" : ""} size={15} />
+            </button>
+          </AsyncActionSlot>
+        ) : null}
+        {cancelSlot ? (
+          <span className="job-cancel-slot">
+            <AsyncActionSlot busy={cancelBusy} feedback={cancelFeedback} label="Import cancel in progress">
+              <button
+                aria-label={`Cancel ${importJobLabel(job)}`}
+                className={asyncFeedbackClass("secondary-button compact job-cancel-button", cancelFeedback, cancelBusy)}
+                disabled={!onCancel || cancelDisabled}
+                onClick={onCancel}
+                title={cancelTitle || importJobCancelTitle(job)}
+                type="button"
+              >
+                <X size={14} />
+                Cancel
+              </button>
+            </AsyncActionSlot>
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
 function canRescueImportJob(job: ImportJob) {
   if (!job.document_id) return false;
   if (job.status === "failed" || job.status === "restored_paused") return true;
@@ -1007,10 +1226,20 @@ function canRetryImportJob(job: ImportJob) {
   return true;
 }
 
+function canCancelImportJob(job: ImportJob) {
+  return job.status === "queued" || job.status === "failed" || job.status === "restored_paused";
+}
+
 function importJobRetryTitle(job: ImportJob) {
   if (!job.document_id) return "This queue row has no document record to retry";
   if (job.status === "running" && !canRescueImportJob(job)) return "This import still has an active worker lock";
   return "Retry this import job";
+}
+
+function importJobCancelTitle(job: ImportJob) {
+  if (job.status === "running") return "Running imports cannot be canceled while the worker lock is active";
+  if (!canCancelImportJob(job)) return "This import cannot be canceled";
+  return "Cancel this import/download";
 }
 
 function isImportCompletedRowExpired(job: ImportJob, now: number) {
@@ -1485,6 +1714,7 @@ function BulkMultiSelect({
     window.addEventListener("mousedown", closeOnOutsideClick);
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
   }, [open]);
+  useEscapeLayer(open, () => setOpen(false), ESCAPE_PRIORITY_MENU);
 
   const toggleId = (id: string) => {
     onChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : uniqueValues([...selectedIds, id]));
@@ -1540,6 +1770,7 @@ function LibrarySingleSelect({
     window.addEventListener("mousedown", closeOnOutsideClick);
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
   }, [open]);
+  useEscapeLayer(open, () => setOpen(false), ESCAPE_PRIORITY_MENU);
 
   const choose = (nextValue: string) => {
     onChange(nextValue);
@@ -1704,22 +1935,8 @@ function LibraryView({
   const batchConcordanceBusy =
     batchConcordance.isPending ||
     Boolean(batchConcordanceRunId && (!trackedBatchConcordanceJobs.length || trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))));
-  useEffect(() => {
-    if (!confirmBatchConcordance) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setConfirmBatchConcordance(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmBatchConcordance]);
-  useEffect(() => {
-    if (!readerOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setReaderOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [readerOpen]);
+  useEscapeLayer(confirmBatchConcordance, () => setConfirmBatchConcordance(false), ESCAPE_PRIORITY_DIALOG);
+  useEscapeLayer(readerOpen, () => setReaderOpen(false), ESCAPE_PRIORITY_READER);
   useEffect(() => {
     if (!batchConcordanceRunId || trackedBatchConcordanceJobs.length === 0) return;
     if (trackedBatchConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
@@ -2003,6 +2220,7 @@ function LibraryView({
         {confirmBatchConcordance ? (
           <div
             className="confirm-backdrop"
+            data-escape-layer="dialog"
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) setConfirmBatchConcordance(false);
             }}
@@ -2519,9 +2737,11 @@ function CompositionDialog({
   const issues = composition?.errata || [];
   const pipelineGraph = useMemo(() => pipelineNodesAndEdges(pipeline), [pipeline]);
   const duration = formatDuration(composition?.total_duration_seconds);
+  useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
   return (
     <div
       className="modal-backdrop composition-backdrop"
+      data-escape-layer="dialog"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -3264,6 +3484,12 @@ function DocumentPanelContent({
     createAccessorySummary.mutate();
   };
 
+  useEscapeLayer(recommendationsOpen, () => setRecommendationsOpen(false), ESCAPE_PRIORITY_POPOVER);
+  useEscapeLayer(accessoryComposerOpen && !accessorySummaryBusy, () => setAccessoryComposerOpen(false), ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(editing && !updateDocument.isPending, () => setEditing(false), ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(pageTextEditing && !pageTextBusy, cancelPageTextEdit, ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(Boolean(editingCitation) && !updateCitation.isPending, cancelCitationEdit, ESCAPE_PRIORITY_EXPANDED);
+
   const saveAccessorySummaryTitle = (summary: AccessorySummary) => {
     const title = accessoryTitleDrafts[summary.id] ?? summary.title ?? "";
     updateAccessorySummary.mutate({ id: summary.id, title });
@@ -3324,6 +3550,7 @@ function DocumentPanelContent({
         {isEditing ? (
           <form
             className="citation-editor"
+            data-escape-layer="expanded"
             onSubmit={(event) => {
               event.preventDefault();
               saveCitationEdit(kind);
@@ -3454,7 +3681,7 @@ function DocumentPanelContent({
             </div>
           </header>
           {pageTextEditing ? (
-            <div className="reader-page-editor">
+            <div className="reader-page-editor" data-escape-layer="expanded">
               <textarea
                 aria-label={`Extracted text for page ${currentPage.page_number}`}
                 disabled={pageTextBusy}
@@ -3609,7 +3836,7 @@ function DocumentPanelContent({
           </button>
         </div>
         {recommendationsOpen ? (
-          <div className="recommendations-popover">
+          <div className="recommendations-popover" data-escape-layer="popover">
             <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} />
           </div>
         ) : null}
@@ -3627,6 +3854,7 @@ function DocumentPanelContent({
       {editing ? (
         <form
           className="document-editor"
+          data-escape-layer="expanded"
           onSubmit={(event) => {
             event.preventDefault();
             saveCorrection();
@@ -3777,6 +4005,7 @@ function DocumentPanelContent({
         {accessoryComposerOpen ? (
           <form
             className="accessory-summary-composer"
+            data-escape-layer="expanded"
             onSubmit={(event) => {
               event.preventDefault();
               submitAccessorySummary();
@@ -4386,6 +4615,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const [duplicateCheck, setDuplicateCheck] = useState<ImportDuplicateCheck | null>(null);
   const [processingListNow, setProcessingListNow] = useState(() => Date.now());
   const queryClient = useQueryClient();
+  const cancelFeedback = useAsyncActionFeedbackMap();
   const rescueFeedback = useAsyncActionFeedbackMap();
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
@@ -4480,10 +4710,27 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
       setDropMessage(message);
     },
   });
+  const cancelJob = useMutation({
+    mutationFn: (jobId: string) => api.cancelImportJob(jobId),
+    onSuccess: (_job, jobId) => {
+      cancelFeedback.showSuccess(jobId);
+      setDropMessage("Import job canceled");
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error, jobId) => {
+      const message = actionFailureMessage("Could not cancel import job", error);
+      cancelFeedback.showError(jobId, message);
+      setDropMessage(message);
+    },
+  });
   const isDraggingFiles = dragDepth > 0;
   const importBusy = upload.isPending || duplicatePreflight.isPending;
   const duplicateFiles = duplicateCheck?.files.filter((file) => file.duplicate_in_upload || file.existing_documents.length > 0) || [];
-  const processingJobs = jobs.filter((job) => !isImportCompletedRowExpired(job, processingListNow)).slice(0, 20);
+  const retainedProcessingJobCount = jobs.filter((job) => !isImportCompletedRowExpired(job, processingListNow)).length;
+  const processingJobs = visibleImportJobs(jobs, processingListNow);
+  const hiddenProcessingJobCount = Math.max(0, retainedProcessingJobCount - processingJobs.length);
 
   useEffect(() => {
     if (!jobs.some((job) => job.status === "complete")) return undefined;
@@ -4659,39 +4906,34 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
         </div>
       </section>
       <section className="job-list">
-        <h2>Processing</h2>
-        {processingJobs.map((job) => {
-          const progress = importJobProgress(job);
-          return (
-            <div
-              key={job.id}
-              className={`job-row ${job.status}`}
-              style={{ "--job-progress": `${progress}%` } as CSSProperties}
-              title={`${importJobStatusLabel(job)}: ${progress}%`}
-            >
-              <span className="job-copy">
-                <span>{importJobLabel(job)}</span>
-                <ImportJobStatusDetail job={job} />
-              </span>
-              <span className="job-actions">
-                <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
-                {canRescueImportJob(job) ? (
-                  <AsyncActionSlot feedback={rescueFeedback.feedbackFor(job.id)}>
-                    <button
-                      className={asyncFeedbackClass("icon-button compact", rescueFeedback.feedbackFor(job.id))}
-                      disabled={rescueJob.isPending}
-                      onClick={() => rescueJob.mutate(job.id)}
-                      title="Requeue this import job"
-                      type="button"
-                    >
-                      <RefreshCw size={15} />
-                    </button>
-                  </AsyncActionSlot>
-                ) : null}
-              </span>
-            </div>
-          );
-        })}
+        <div className="job-list-head">
+          <h2>Processing</h2>
+          <span>
+            {hiddenProcessingJobCount
+              ? `Showing ${processingJobs.length} of ${retainedProcessingJobCount}, active first`
+              : retainedProcessingJobCount
+                ? `${retainedProcessingJobCount} visible`
+                : "No recent import jobs"}
+          </span>
+        </div>
+        {processingJobs.map((job) => (
+          <ImportJobRow
+            key={job.id}
+            job={job}
+            cancelBusy={cancelJob.isPending}
+            cancelDisabled={!canCancelImportJob(job) || cancelJob.isPending}
+            cancelFeedback={cancelFeedback.feedbackFor(job.id)}
+            cancelTitle={importJobCancelTitle(job)}
+            onCancel={isQueueImportJob(job) ? () => cancelJob.mutate(job.id) : undefined}
+            onRetry={canRescueImportJob(job) ? () => rescueJob.mutate(job.id) : undefined}
+            retryBusy={rescueJob.isPending}
+            retryDisabled={rescueJob.isPending}
+            retryFeedback={rescueFeedback.feedbackFor(job.id)}
+            retryTitle="Requeue this import job"
+            showCancelSlot={isQueueImportJob(job)}
+            showRetrySlot={canRescueImportJob(job)}
+          />
+        ))}
       </section>
     </section>
   );
@@ -4919,6 +5161,7 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
 function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJob[] }) {
   const queryClient = useQueryClient();
   const [queueActionMessage, setQueueActionMessage] = useState("");
+  const cancelFeedback = useAsyncActionFeedbackMap();
   const rescueFeedback = useAsyncActionFeedbackMap();
   const retryFailedFeedback = useAsyncActionFeedback();
   const clearQueueFeedback = useAsyncActionFeedback();
@@ -4955,7 +5198,18 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
       rescueFeedback.showError(jobId, actionFailureMessage("Could not requeue import job", error));
     },
   });
-  const queueJobs = jobs.filter(isQueueImportJob);
+  const cancelJob = useMutation({
+    mutationFn: (jobId: string) => api.cancelImportJob(jobId),
+    onSuccess: (_job, jobId) => {
+      cancelFeedback.showSuccess(jobId);
+      setQueueActionMessage("Canceled 1");
+      refreshQueueData();
+    },
+    onError: (error, jobId) => {
+      cancelFeedback.showError(jobId, actionFailureMessage("Could not cancel import job", error));
+    },
+  });
+  const queueJobs = orderedImportJobs(jobs.filter(isQueueImportJob));
   const failedQueueJobs = queueJobs.filter((job) => job.status === "failed");
   const clearableQueueJobs = queueJobs.filter((job) => job.status !== "running");
   const retryFailedJobs = useMutation({
@@ -4991,7 +5245,8 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
       clearFailedFeedback.showError(actionFailureMessage("Could not clear failed imports", error));
     },
   });
-  const bulkActionBusy = retryFailedJobs.isPending || clearQueue.isPending || clearFailedJobs.isPending || rescueJob.isPending;
+  const bulkActionBusy =
+    retryFailedJobs.isPending || clearQueue.isPending || clearFailedJobs.isPending || rescueJob.isPending || cancelJob.isPending;
 
   return (
     <section className="workbench queue-workbench">
@@ -5040,41 +5295,27 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
         </div>
         <div className="queue-job-list">
           {queueJobs.map((job) => {
-            const progress = importJobProgress(job);
+            const cancelDisabled = !canCancelImportJob(job) || bulkActionBusy;
+            const cancelFeedbackForJob = cancelFeedback.feedbackFor(job.id);
             const retryFeedback = rescueFeedback.feedbackFor(job.id);
             const retryDisabled = !canRetryImportJob(job) || bulkActionBusy;
             return (
-              <div key={job.id} className="queue-job-row">
-                <span className="job-copy">
-                  <span>{importJobLabel(job)}</span>
-                  <small>{importJobStepLabel(job)}</small>
-                </span>
-                <span className="queue-job-status">
-                  <StatusPill value={job.status} tone={job.status === "failed" ? "warn" : job.status === "complete" ? "good" : "blue"} />
-                </span>
-                <span
-                  aria-label={`${importJobStage(job)}: ${progress}%`}
-                  aria-valuemax={100}
-                  aria-valuemin={0}
-                  aria-valuenow={progress}
-                  className="queue-job-progress"
-                  role="progressbar"
-                  title={`${importJobStage(job)}: ${progress}%`}
-                >
-                  <span style={{ width: `${progress}%` }} />
-                </span>
-                <AsyncActionSlot feedback={retryFeedback}>
-                  <button
-                    className={asyncFeedbackClass("icon-button compact queue-job-retry", retryFeedback)}
-                    disabled={retryDisabled}
-                    onClick={() => rescueJob.mutate(job.id)}
-                    title={importJobRetryTitle(job)}
-                    type="button"
-                  >
-                    <RefreshCw size={15} />
-                  </button>
-                </AsyncActionSlot>
-              </div>
+              <ImportJobRow
+                key={job.id}
+                job={job}
+                cancelBusy={cancelJob.isPending}
+                cancelDisabled={cancelDisabled}
+                cancelFeedback={cancelFeedbackForJob}
+                cancelTitle={importJobCancelTitle(job)}
+                onCancel={() => cancelJob.mutate(job.id)}
+                onRetry={() => rescueJob.mutate(job.id)}
+                retryBusy={rescueJob.isPending}
+                retryDisabled={retryDisabled}
+                retryFeedback={retryFeedback}
+                retryTitle={importJobRetryTitle(job)}
+                showCancelSlot
+                showRetrySlot
+              />
             );
           })}
           {!queueJobs.length ? <p className="empty-note">The import queue is clear.</p> : null}
@@ -5347,6 +5588,7 @@ function ViewportTooltip({
       window.removeEventListener("scroll", updatePosition, true);
     };
   }, [text, updatePosition, visible]);
+  useEscapeLayer(visible, () => setVisible(false), ESCAPE_PRIORITY_TOOLTIP);
 
   return (
     <span
@@ -5366,6 +5608,7 @@ function ViewportTooltip({
       {visible ? (
         <span
           className="info-popover-tooltip"
+          data-escape-layer="tooltip"
           data-placement={position.placement}
           data-ready={position.ready ? "true" : "false"}
           ref={tooltipRef}
@@ -5441,6 +5684,7 @@ function ModelSelect({
     }
     return groups;
   })();
+  useEscapeLayer(open, () => setOpen(false), ESCAPE_PRIORITY_MENU);
 
   return (
     <div
@@ -5451,7 +5695,7 @@ function ModelSelect({
         }
       }}
     >
-      <button className="model-select-trigger" type="button" onClick={() => setOpen((current) => !current)}>
+      <button aria-expanded={open} aria-haspopup="listbox" className="model-select-trigger" type="button" onClick={() => setOpen((current) => !current)}>
         <span>{modelDisplayName(value)}</span>
         <ChevronRight size={14} aria-hidden="true" />
       </button>
@@ -5919,9 +6163,11 @@ function SettingsView({
     preferences?.google_service_account_source === "uploaded" ? "Uploaded" : "Missing";
   const backupArtifacts = gcsBackupArtifacts.data || [];
   const latestBackupRun = backupRuns[0];
-  const verifiedBackupComplete = Boolean(latestBackupRun?.gcs_uri && latestBackupRun.status === "complete");
-  const verifiedBackupFilename = verifiedBackupComplete ? latestBackupRun?.filename || "Complete" : "Waiting";
-  const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestBackupRun?.size_bytes) : "";
+  const backupHistoryRuns = backupRuns.slice(0, 10);
+  const latestVerifiedBackupRun = backupRuns.find((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri);
+  const verifiedBackupComplete = Boolean(latestVerifiedBackupRun);
+  const verifiedBackupFilename = verifiedBackupComplete ? latestVerifiedBackupRun?.filename || "Complete" : "Waiting";
+  const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestVerifiedBackupRun?.size_bytes) : "";
   const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
   const restoreDisabled =
     Boolean(activeBackupRun) || startRestore.isPending || (!restoreUploadFile && !selectedBackupUri);
@@ -6477,6 +6723,40 @@ function SettingsView({
               <strong>{verifiedBackupFilename}</strong>
               {verifiedBackupSize ? <small>{verifiedBackupSize}</small> : null}
             </div>
+          </div>
+        </div>
+        <div className="backup-history">
+          <div className="backup-history-head">
+            <strong>Recent history</strong>
+            <span>{backupRuns.length ? `${backupHistoryRuns.length} shown from ${backupRuns.length} tracked` : "No backup runs tracked"}</span>
+          </div>
+          <div className="backup-history-list">
+            <div className="backup-history-row header">
+              <span>Run</span>
+              <span>Status</span>
+              <span>When</span>
+              <span>Size</span>
+            </div>
+            {backupHistoryRuns.length ? (
+              backupHistoryRuns.map((run) => (
+                <div className="backup-history-row" key={run.id}>
+                  <span className="backup-history-main">
+                    <strong>{backupRunLabel(run)}</strong>
+                    <small title={backupRunDetail(run)}>{backupRunDetail(run)}</small>
+                  </span>
+                  <StatusPill value={run.status} tone={run.status === "failed" ? "warn" : run.status === "complete" ? "good" : "blue"} />
+                  <span>{backupRunTimestamp(run) || backupPhaseLabel(run.phase)}</span>
+                  <span>{formatFileSize(run.size_bytes) || `${run.progress}%`}</span>
+                </div>
+              ))
+            ) : (
+              <div className="backup-history-row empty">
+                <span>No backup or restore runs yet</span>
+                <span />
+                <span />
+                <span />
+              </div>
+            )}
           </div>
         </div>
         {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}

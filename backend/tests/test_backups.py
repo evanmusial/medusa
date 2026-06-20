@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -24,7 +24,7 @@ def test_backup_names_use_timestamp_and_short_hostname(monkeypatch, tmp_path):
     get_settings.cache_clear()
     when = datetime(2026, 6, 19, 14, 5, tzinfo=timezone.utc)
 
-    assert backup_basename(when, "Research-Desk.local") == "medusa-postgres-20260619-1405-research-desk"
+    assert backup_basename(when, "Research-Desk.local") == "medusa-postgres-20260619-140500-research-desk"
     assert backup_object_prefix() == "medusa/backups"
     assert backup_storage_uri("bucket", "medusa/backups/example.dump.zst") == "gs://bucket/medusa/backups/example.dump.zst"
 
@@ -97,6 +97,37 @@ def test_backup_runs_block_overlapping_work(monkeypatch, tmp_path):
             assert "already running" in str(exc)
         else:
             raise AssertionError("Expected active backup to block restore.")
+
+
+def test_list_backup_runs_returns_recent_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import BackupRun, utc_now
+    from app.services.backups import list_backup_runs
+
+    Session = make_session()
+    now = utc_now()
+    with Session() as db:
+        for index in range(3):
+            db.add(
+                BackupRun(
+                    kind="backup",
+                    reason="manual",
+                    status="complete",
+                    phase="complete",
+                    progress=100,
+                    filename=f"backup-{index}.dump.zst",
+                    backup_metadata={},
+                    created_at=now + timedelta(minutes=index),
+                    completed_at=now + timedelta(minutes=index),
+                )
+            )
+        db.commit()
+
+        runs = list_backup_runs(db)
+
+    assert [run.filename for run in runs] == ["backup-2.dump.zst", "backup-1.dump.zst", "backup-0.dump.zst"]
 
 
 def test_backup_estimate_uses_latest_completed_backup_ratio(monkeypatch, tmp_path):

@@ -8,6 +8,15 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import Document, DocumentCompositionRecord, ImportJob, OpenAIUsageRecord, utc_now
+from app.services.analysis_models import (
+    MODEL_APA_CITATION,
+    MODEL_CORE_DOCUMENT_INTELLIGENCE,
+    MODEL_KEYWORDS_TOPICS,
+    MODEL_METADATA,
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_SUMMARY,
+    MODEL_TEXT_CHUNK_ENCODING,
+)
 from app.services.openai_usage import estimated_cost_usd_for_record
 
 
@@ -36,6 +45,24 @@ CAPABILITY_STAGE = {
     "summary_topics": "summary_topics",
     "citation_refresh": "citation_refresh",
     "text_chunk_encoding": "text_chunk_encoding",
+}
+
+PIPELINE_TASK_OFFSETS = {
+    MODEL_PAGE_TEXT_NORMALIZATION: 0.2,
+    MODEL_METADATA: 0.1,
+    MODEL_CORE_DOCUMENT_INTELLIGENCE: 0.1,
+    MODEL_SUMMARY: 0.2,
+    MODEL_KEYWORDS_TOPICS: 0.3,
+    MODEL_APA_CITATION: 0.1,
+    MODEL_TEXT_CHUNK_ENCODING: 0.1,
+}
+
+PIPELINE_LOCAL_OFFSETS = {
+    "raw_text_extraction": 0.0,
+    "figure_assets": 0.0,
+    "summary_topics": 0.9,
+    "text_chunk_encoding": 0.9,
+    "cache_cleanup": 0.0,
 }
 
 
@@ -244,6 +271,27 @@ def _float(value: Any) -> float:
         return 0.0
 
 
+def _record_metadata(record: DocumentCompositionRecord) -> dict[str, Any]:
+    return record.record_metadata if isinstance(record.record_metadata, dict) else {}
+
+
+def _timestamp_sort_value(value: datetime | None) -> float:
+    return value.timestamp() if value else float("inf")
+
+
+def _pipeline_record_order(record: DocumentCompositionRecord, fallback_index: int) -> tuple[float, float, int]:
+    task_key = _record_metadata(record).get("task_key")
+    base = float(record.sequence if record.sequence is not None else STAGE_SEQUENCE.get(record.stage_key, 80))
+    if isinstance(task_key, str) and task_key in PIPELINE_TASK_OFFSETS:
+        offset = PIPELINE_TASK_OFFSETS[task_key]
+    elif record.record_kind == "local":
+        offset = PIPELINE_LOCAL_OFFSETS.get(record.stage_key, 0.5)
+    else:
+        offset = 0.4
+    occurred_at = record.completed_at or record.started_at or record.created_at
+    return (base + offset, _timestamp_sort_value(occurred_at), fallback_index)
+
+
 def _sum_duration(records: list[DocumentCompositionRecord]) -> int:
     return sum(max(0, int(record.duration_ms or 0)) for record in records if record.record_kind == "local")
 
@@ -278,7 +326,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
     pipeline_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     errata: list[dict[str, Any]] = []
 
-    for record in records:
+    for record_index, record in enumerate(records):
         amount = _float(record.amount_usd)
         provider = provider_label(record.provider)
         if amount > 0:
@@ -335,6 +383,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
 
         if record.record_kind in {"local", "llm", "embedding"}:
             key = _group_key(record, "stage_key", "provider", "method", "model", "record_kind")
+            pipeline_order = _pipeline_record_order(record, record_index)
             group = pipeline_groups.setdefault(
                 key,
                 {
@@ -352,8 +401,13 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
                     "total_tokens": 0,
                     "call_count": 0,
                     "sequence": record.sequence,
+                    "created_at": record.completed_at or record.started_at or record.created_at,
+                    "_sort_order": pipeline_order,
                 },
             )
+            if pipeline_order < group["_sort_order"]:
+                group["_sort_order"] = pipeline_order
+                group["created_at"] = record.completed_at or record.started_at or record.created_at
             group["amount_usd"] += amount
             group["duration_ms"] += record.duration_ms or 0
             group["input_tokens"] += record.input_tokens
@@ -401,8 +455,10 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
     )
     pipeline = sorted(
         rounded_groups(list(pipeline_groups.values())),
-        key=lambda row: (row.get("sequence") or 0, row["stage_key"], row.get("model") or row.get("method") or ""),
+        key=lambda row: row.get("_sort_order") or (row.get("sequence") or 0, float("inf"), 0),
     )
+    for row in pipeline:
+        row.pop("_sort_order", None)
     total_cost = round(sum(row["amount_usd"] for row in cost_entries), 6)
     return {
         "document_id": document.id,
