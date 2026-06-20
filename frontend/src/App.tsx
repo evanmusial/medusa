@@ -256,6 +256,14 @@ const DUPLICATE_STATUS_OPTIONS: SelectMenuOption[] = [
 ];
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
+type BudgetChartSegment = {
+  color: string;
+  displayValue: string;
+  key: string;
+  label: string;
+  shareLabel: string;
+  value: number;
+};
 type StashSortKey = "created" | "doi" | "title" | "status";
 type TagSortKey = "name" | "documents";
 type SortDirection = "asc" | "desc";
@@ -272,7 +280,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?
   { id: "notes", label: "Notes", icon: BookOpen },
   { id: "import", label: "Import", icon: Upload },
   { id: "stashes", label: "Stashes", icon: Bookmark },
-  { id: "budget", label: "Budget", icon: CircleDollarSign, shortcut: "B" },
+  { id: "budget", label: "Budget & Costs", icon: CircleDollarSign, shortcut: "B" },
   { id: "settings", label: "Settings", icon: Settings, align: "end" },
 ];
 
@@ -8490,6 +8498,205 @@ function formatBudgetCost(row: Pick<OpenAIUsageGroup, "estimated_cost_usd" | "pr
   return formatUsd(row.estimated_cost_usd);
 }
 
+const BUDGET_CHART_COLORS = ["#2563eb", "#0f9f8d", "#b87503", "#7c3aed", "#ba2f36", "#64748b", "#22c55e"];
+
+function positiveBudgetValue(value?: number | null) {
+  return Number.isFinite(value) ? Math.max(0, value || 0) : 0;
+}
+
+function formatBudgetShare(value: number, total: number) {
+  if (!total || value <= 0) return "0%";
+  const percent = (value / total) * 100;
+  if (percent > 0 && percent < 1) return "<1%";
+  return `${percent < 10 ? percent.toFixed(1) : percent.toFixed(0)}%`;
+}
+
+function budgetPieGradient(segments: BudgetChartSegment[]) {
+  const total = segments.reduce((sum, segment) => sum + positiveBudgetValue(segment.value), 0);
+  if (!total) return "conic-gradient(var(--line) 0 100%)";
+  let cursor = 0;
+  const stops = segments.map((segment) => {
+    const start = cursor;
+    cursor += (positiveBudgetValue(segment.value) / total) * 100;
+    return `${segment.color} ${start}% ${cursor}%`;
+  });
+  return `conic-gradient(${stops.join(", ")})`;
+}
+
+function budgetSegments(
+  rows: OpenAIUsageGroup[],
+  valueFor: (row: OpenAIUsageGroup) => number,
+  labelFor: (row: OpenAIUsageGroup) => string,
+  displayFor: (value: number) => string,
+) {
+  const sorted = rows
+    .map((row, index) => ({
+      key: row.group_key || row.model || row.task_key || row.document_id || `segment-${index}`,
+      label: labelFor(row),
+      value: positiveBudgetValue(valueFor(row)),
+    }))
+    .filter((segment) => segment.value > 0)
+    .sort((left, right) => right.value - left.value);
+  const visible = sorted.slice(0, 5);
+  const otherValue = sorted.slice(5).reduce((sum, segment) => sum + segment.value, 0);
+  const baseSegments = otherValue > 0 ? [...visible, { key: "other", label: "Other", value: otherValue }] : visible;
+  const total = baseSegments.reduce((sum, segment) => sum + segment.value, 0);
+  return baseSegments.map((segment, index) => ({
+    ...segment,
+    color: BUDGET_CHART_COLORS[index % BUDGET_CHART_COLORS.length],
+    displayValue: displayFor(segment.value),
+    shareLabel: formatBudgetShare(segment.value, total),
+  }));
+}
+
+function budgetTrendLabel(row: OpenAIUsageGroup, period: OpenAIUsagePeriod) {
+  const timestamp = row.calendar_start ? Date.parse(row.calendar_start) : NaN;
+  if (!Number.isFinite(timestamp)) return row.group_key || "Unknown";
+  const date = new Date(timestamp);
+  if (period === "last_day") return date.toLocaleTimeString([], { hour: "numeric" });
+  return date.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+function budgetTrendPoints(rows: OpenAIUsageGroup[], period: OpenAIUsagePeriod) {
+  return rows
+    .map((row, index) => {
+      const timestamp = row.calendar_start ? Date.parse(row.calendar_start) : NaN;
+      return {
+        key: row.group_key || row.calendar_start || `trend-${index}`,
+        label: budgetTrendLabel(row, period),
+        sortValue: Number.isFinite(timestamp) ? timestamp : index,
+        value: positiveBudgetValue(row.estimated_cost_usd),
+      };
+    })
+    .sort((left, right) => left.sortValue - right.sortValue);
+}
+
+function budgetTrendSubtitle(period: OpenAIUsagePeriod) {
+  if (period === "last_day") return "Hourly estimated cost";
+  return "Daily estimated cost";
+}
+
+function budgetRecentCost(row: { estimated_cost_usd?: number | null }) {
+  return row.estimated_cost_usd === undefined || row.estimated_cost_usd === null ? "Unpriced" : formatUsd(row.estimated_cost_usd);
+}
+
+function budgetRecentLabel(row: { page_number?: number | null; task_key: string }) {
+  const task = row.task_key || "unknown";
+  return row.page_number ? `${task.replaceAll("_", " ")} p.${row.page_number}` : task.replaceAll("_", " ");
+}
+
+function BudgetPiePanel({
+  emptyLabel,
+  segments,
+  subtitle,
+  title,
+  totalLabel,
+}: {
+  emptyLabel: string;
+  segments: BudgetChartSegment[];
+  subtitle: string;
+  title: string;
+  totalLabel: string;
+}) {
+  return (
+    <section className="budget-chart-panel">
+      <div className="budget-chart-head">
+        <div>
+          <h3>{title}</h3>
+          <span>{subtitle}</span>
+        </div>
+        <strong>{totalLabel}</strong>
+      </div>
+      <div className="budget-pie-wrap">
+        <div className="budget-pie" style={{ background: budgetPieGradient(segments) }}>
+          <span>{totalLabel}</span>
+        </div>
+        <div className="budget-chart-legend">
+          {segments.length ? (
+            segments.map((segment) => (
+              <div className="budget-chart-legend-row" key={segment.key}>
+                <i style={{ background: segment.color }} />
+                <span>{segment.label}</span>
+                <strong>{segment.displayValue}</strong>
+                <em>{segment.shareLabel}</em>
+              </div>
+            ))
+          ) : (
+            <span className="budget-chart-empty">{emptyLabel}</span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BudgetTrendChart({ period, rows }: { period: OpenAIUsagePeriod; rows: OpenAIUsageGroup[] }) {
+  const points = budgetTrendPoints(rows, period);
+  const maxValue = Math.max(0, ...points.map((point) => point.value));
+  const latestPoint = points[points.length - 1];
+  const peakPoint = points.reduce<(typeof points)[number] | undefined>(
+    (selected, point) => (!selected || point.value > selected.value ? point : selected),
+    undefined,
+  );
+  const chartWidth = 640;
+  const chartHeight = 188;
+  const left = 18;
+  const right = 622;
+  const top = 18;
+  const bottom = 150;
+  const innerWidth = right - left;
+  const innerHeight = bottom - top;
+  const coordinates = points.map((point, index) => {
+    const x = points.length <= 1 ? chartWidth / 2 : left + (index / (points.length - 1)) * innerWidth;
+    const y = maxValue > 0 ? bottom - (point.value / maxValue) * innerHeight : bottom;
+    return { ...point, x, y };
+  });
+  const linePoints = coordinates.map((point) => `${point.x},${point.y}`).join(" ");
+  const areaPath = coordinates.length
+    ? `M ${coordinates[0].x} ${bottom} L ${coordinates.map((point) => `${point.x} ${point.y}`).join(" L ")} L ${coordinates[coordinates.length - 1].x} ${bottom} Z`
+    : "";
+  const firstLabel = points[0]?.label || "";
+  const lastLabel = latestPoint?.label || "";
+  const peakLabel = peakPoint ? `${formatUsd(peakPoint.value)} peak` : "No peak";
+
+  return (
+    <section className="budget-chart-panel budget-trend-panel">
+      <div className="budget-chart-head">
+        <div>
+          <h3>Cost Trend</h3>
+          <span>{budgetTrendSubtitle(period)}</span>
+        </div>
+        <strong>{formatUsd(latestPoint?.value ?? 0)}</strong>
+      </div>
+      {maxValue > 0 ? (
+        <div className="budget-trend-body">
+          <svg className="budget-trend-svg" role="img" aria-label={`${budgetTrendSubtitle(period)} trend line`} viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
+            {[0, 0.5, 1].map((tick) => {
+              const y = bottom - tick * innerHeight;
+              return <line className="budget-trend-grid-line" key={tick} x1={left} x2={right} y1={y} y2={y} />;
+            })}
+            <path className="budget-trend-area" d={areaPath} />
+            {coordinates.length > 1 ? <polyline className="budget-trend-line" points={linePoints} /> : null}
+            {coordinates.length === 1 ? <circle className="budget-trend-point" cx={coordinates[0].x} cy={coordinates[0].y} r="4" /> : null}
+            {coordinates.length > 1 && coordinates.length <= 24
+              ? coordinates.map((point) => <circle className="budget-trend-point" key={point.key} cx={point.x} cy={point.y} r="3" />)
+              : null}
+          </svg>
+          <div className="budget-trend-axis">
+            <span>{firstLabel}</span>
+            <strong>{peakLabel}</strong>
+            <span>{lastLabel}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="budget-trend-empty">
+          <span>No priced cost recorded</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BudgetView() {
   const [period, setPeriod] = useState<OpenAIUsagePeriod>("last_month");
   const [metricMode, setMetricMode] = useState<BudgetMetricMode>("tokens_cost");
@@ -8512,46 +8719,62 @@ function BudgetView() {
             : usage.data?.by_calendar_hour || [];
   const showTokens = metricMode !== "cost";
   const showCost = metricMode !== "tokens";
+  const trendRows = period === "last_day" ? usage.data?.by_calendar_hour || [] : usage.data?.by_calendar_day || [];
+  const recentRows = usage.data?.recent || [];
+  const costByModelSegments = budgetSegments(
+    usage.data?.by_model || [],
+    (row) => row.estimated_cost_usd,
+    (row) => budgetRowLabel(row, "model"),
+    (value) => formatUsd(value),
+  );
+  const tokensByTaskSegments = budgetSegments(
+    usage.data?.by_task || [],
+    (row) => row.total_tokens,
+    (row) => budgetRowLabel(row, "task"),
+    (value) => `${formatMetric(value)} tokens`,
+  );
 
   return (
     <section className="workbench budget-view">
       <div className="budget-panel">
-        <div className="panel-title-row">
-          <div>
-            <h2>Budget</h2>
-            <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isFetching ? "Loading usage" : "No recorded calls"}</span>
+        <div className="budget-command-surface">
+          <div className="panel-title-row">
+            <div>
+              <h2>Budget & Costs</h2>
+              <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isFetching ? "Loading usage" : "No recorded calls"}</span>
+            </div>
+            <CircleDollarSign size={20} />
           </div>
-          <CircleDollarSign size={20} />
-        </div>
-        <div className="budget-controls">
-          <label>
-            Period
-            <select data-tooltip="Choose the time window used for Budget usage totals and rollups." value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
-              {USAGE_PERIOD_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Metric
-            <select data-tooltip="Choose whether Budget tables show tokens, estimated cost, or both." value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
-              <option value="tokens_cost">Tokens + cost</option>
-              <option value="tokens">Tokens</option>
-              <option value="cost">Cost</option>
-            </select>
-          </label>
-          <label>
-            Group
-            <select data-tooltip="Choose how Budget usage rows are grouped." value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
-              <option value="model">By model</option>
-              <option value="task">By task</option>
-              <option value="document">By document</option>
-              <option value="day">By calendar day</option>
-              <option value="hour">By calendar hour</option>
-            </select>
-          </label>
+          <div className="budget-controls">
+            <label>
+              Period
+              <select data-tooltip="Choose the time window used for Budget & Costs usage totals and rollups." value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
+                {USAGE_PERIOD_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Metric
+              <select data-tooltip="Choose whether Budget & Costs tables show tokens, estimated cost, or both." value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
+                <option value="tokens_cost">Tokens + cost</option>
+                <option value="tokens">Tokens</option>
+                <option value="cost">Cost</option>
+              </select>
+            </label>
+            <label>
+              Group
+              <select data-tooltip="Choose how Budget & Costs usage rows are grouped." value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
+                <option value="model">By model</option>
+                <option value="task">By task</option>
+                <option value="document">By document</option>
+                <option value="day">By calendar day</option>
+                <option value="hour">By calendar hour</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div className="budget-metric-grid">
           <div>
@@ -8579,69 +8802,125 @@ function BudgetView() {
             <strong>{formatMetric(summary?.unpriced_request_count)}</strong>
           </div>
         </div>
-        <div className="budget-table">
-          <div className={`budget-row header ${metricMode}`}>
-            <span>{budgetGroupHeader(groupMode)}</span>
-            <span>Calls</span>
-            {showTokens ? (
-              <>
-                <span>Input</span>
-                <span>Cached</span>
-                <span>Output</span>
-                <span>Total</span>
-              </>
-            ) : null}
-            {showCost ? (
-              <>
-                <span>Cost</span>
-                {metricMode === "cost" ? <span>Priced</span> : null}
-                <span>Unpriced</span>
-              </>
-            ) : null}
-          </div>
-          {rows.length ? (
-            rows.map((row) => (
-              <div className={`budget-row ${metricMode}`} key={`${groupMode}-${row.group_key || budgetRowLabel(row, groupMode)}`}>
-                <span>{budgetRowLabel(row, groupMode)}</span>
-                <span>{formatMetric(row.request_count)}</span>
+        <div className="budget-chart-grid">
+          <BudgetTrendChart period={period} rows={trendRows} />
+          <BudgetPiePanel
+            emptyLabel="No priced model spend recorded."
+            segments={costByModelSegments}
+            subtitle="Estimated cost by model"
+            title="Cost By Model"
+            totalLabel={formatUsd(summary?.estimated_cost_usd ?? 0)}
+          />
+          <BudgetPiePanel
+            emptyLabel="No token usage recorded."
+            segments={tokensByTaskSegments}
+            subtitle="Total tokens by task"
+            title="Tokens By Task"
+            totalLabel={formatMetric(summary?.total_tokens)}
+          />
+        </div>
+        <div className="budget-lower-grid">
+          <section className="budget-detail-panel">
+            <div className="budget-section-head">
+              <div>
+                <h3>{budgetGroupHeader(groupMode)} Rollup</h3>
+                <span>{rows.length ? `${formatMetric(rows.length)} rows in selected period` : "No matching usage"}</span>
+              </div>
+              <Gauge size={18} />
+            </div>
+            <div className="budget-table">
+              <div className={`budget-row header ${metricMode}`}>
+                <span>{budgetGroupHeader(groupMode)}</span>
+                <span>Calls</span>
                 {showTokens ? (
                   <>
-                    <span>{formatMetric(row.input_tokens)}</span>
-                    <span>{formatMetric(row.cached_input_tokens)}</span>
-                    <span>{formatMetric(row.output_tokens)}</span>
-                    <span>{formatMetric(row.total_tokens)}</span>
+                    <span>Input</span>
+                    <span>Cached</span>
+                    <span>Output</span>
+                    <span>Total</span>
                   </>
                 ) : null}
                 {showCost ? (
                   <>
-                    <span>{formatBudgetCost(row)}</span>
-                    {metricMode === "cost" ? <span>{formatMetric(row.priced_request_count)}</span> : null}
-                    <span>{formatMetric(row.unpriced_request_count)}</span>
+                    <span>Cost</span>
+                    {metricMode === "cost" ? <span>Priced</span> : null}
+                    <span>Unpriced</span>
                   </>
                 ) : null}
               </div>
-            ))
-          ) : (
-            <div className={`budget-row empty ${metricMode}`}>
-              <span>No usage recorded</span>
-              <span />
-              {showTokens ? (
-                <>
+              {rows.length ? (
+                rows.map((row) => (
+                  <div className={`budget-row ${metricMode}`} key={`${groupMode}-${row.group_key || budgetRowLabel(row, groupMode)}`}>
+                    <span>{budgetRowLabel(row, groupMode)}</span>
+                    <span>{formatMetric(row.request_count)}</span>
+                    {showTokens ? (
+                      <>
+                        <span>{formatMetric(row.input_tokens)}</span>
+                        <span>{formatMetric(row.cached_input_tokens)}</span>
+                        <span>{formatMetric(row.output_tokens)}</span>
+                        <span>{formatMetric(row.total_tokens)}</span>
+                      </>
+                    ) : null}
+                    {showCost ? (
+                      <>
+                        <span>{formatBudgetCost(row)}</span>
+                        {metricMode === "cost" ? <span>{formatMetric(row.priced_request_count)}</span> : null}
+                        <span>{formatMetric(row.unpriced_request_count)}</span>
+                      </>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <div className={`budget-row empty ${metricMode}`}>
+                  <span>No usage recorded</span>
                   <span />
-                  <span />
-                  <span />
-                  <span />
-                </>
-              ) : null}
-              {showCost ? (
-                <>
-                  <span />
-                  {metricMode === "cost" ? <span /> : null}
-                  <span />
-                </>
-              ) : null}
+                  {showTokens ? (
+                    <>
+                      <span />
+                      <span />
+                      <span />
+                      <span />
+                    </>
+                  ) : null}
+                  {showCost ? (
+                    <>
+                      <span />
+                      {metricMode === "cost" ? <span /> : null}
+                      <span />
+                    </>
+                  ) : null}
+                </div>
+              )}
             </div>
-          )}
+          </section>
+          <section className="budget-recent-panel">
+            <div className="budget-section-head">
+              <div>
+                <h3>Recent Calls</h3>
+                <span>{recentRows.length ? "Latest ledger entries" : "No recent calls"}</span>
+              </div>
+              <List size={18} />
+            </div>
+            <div className="budget-recent-list">
+              {recentRows.length ? (
+                recentRows.slice(0, 7).map((row) => (
+                  <div className="budget-recent-row" key={row.id}>
+                    <div>
+                      <strong>{budgetRecentLabel(row)}</strong>
+                      <span>{row.model || "unknown model"}</span>
+                    </div>
+                    <StatusPill value={row.status} tone={row.status === "failed" ? "warn" : "good"} />
+                    <em>{budgetRecentCost(row)}</em>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-inline">
+                  <Info size={16} />
+                  <span>No recent AI usage recorded.</span>
+                </div>
+              )}
+            </div>
+          </section>
         </div>
         <div className="budget-footnote">
           <span>{usage.data?.pricing.updated_at ? `Pricing ${usage.data.pricing.updated_at}` : "Pricing"}</span>
