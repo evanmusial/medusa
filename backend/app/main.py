@@ -178,11 +178,18 @@ from app.services.preferences import (
     get_app_preferences,
     get_download_naming_template,
     import_processing_snapshot,
+    import_processing_cloud_page_cap,
     render_download_filename,
     store_google_service_account,
     update_app_preferences,
 )
-from app.services.openai_usage import OpenAIUsageContext, estimated_cost_usd_for_record, openai_usage_summary, refresh_model_pricing
+from app.services.openai_usage import (
+    OpenAIUsageContext,
+    estimated_cost_usd_for_model_tokens,
+    estimated_cost_usd_for_record,
+    openai_usage_summary,
+    refresh_model_pricing,
+)
 from app.services.recommendations import (
     doi_url,
     list_document_recommendations,
@@ -229,17 +236,19 @@ IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
     "failed",
     "restored_paused",
 )
-IMPORT_ESTIMATE_TASK_KEYS = (
-    MODEL_METADATA,
-    MODEL_SUMMARY,
-    MODEL_APA_CITATION,
-    MODEL_KEYWORDS_TOPICS,
-    MODEL_PAGE_TEXT_NORMALIZATION,
-    MODEL_TEXT_CHUNK_ENCODING,
-)
 DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.01
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
+IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
+IMPORT_ESTIMATE_TASK_TOKEN_PROFILES: dict[str, dict[str, int]] = {
+    MODEL_METADATA: {"input_per_page": 650, "output_base": 900},
+    MODEL_SUMMARY: {"input_per_page": 650, "output_base": 750},
+    MODEL_APA_CITATION: {"input_per_page": 450, "output_base": 550},
+    MODEL_KEYWORDS_TOPICS: {"input_per_page": 500, "output_base": 350},
+    MODEL_PAGE_TEXT_NORMALIZATION: {"input_per_page": 650, "output_per_page": 500},
+    MODEL_TEXT_CHUNK_ENCODING: {"input_per_page": 650, "output_base": 0},
+}
+IMPORT_ESTIMATE_LOCAL_MODELS = {"", "local", "none", "marker", "pymupdf", "docling"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -3489,7 +3498,7 @@ async def create_import_batch(
             "source_import": prepared.metadata,
             "upload_cost_estimate": {
                 "estimated_page_count": estimated_page_count or None,
-                "basis": "pending_exemplar_cost_model",
+                "basis": "pending_preset_step_cost_model",
             },
             "import_defaults": batch.shared_defaults,
             "import_processing_preset": preset_snapshot,
@@ -3507,15 +3516,23 @@ async def create_import_batch(
         job = ImportJob(batch_id=batch.id, document_id=document.id, status=STAGED_IMPORT_STATUS, current_step=STAGED_IMPORT_STATUS)
         db.add(job)
         db.flush()
-        estimated_cost_usd, estimate_basis, estimate_page_count = estimate_import_job_cost_usd(
+        cost_estimate = estimate_import_job_cost(
             job,
             model_preferences=model_preferences,
             rates=estimate_rates,
+            db=db,
         )
+        estimated_cost_usd = float(cost_estimate.get("estimated_cost_usd") or 0.0)
+        estimate_basis = str(cost_estimate.get("basis") or "none")
+        estimate_page_count = cost_estimate.get("estimated_page_count")
+        if not isinstance(estimate_page_count, int):
+            estimate_page_count = document_estimated_page_count(document)
         upload_estimate = {
             "estimated_cost_usd": estimated_cost_usd,
             "estimated_page_count": estimate_page_count,
             "basis": estimate_basis,
+            "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+            "step_estimates": cost_estimate.get("steps", []),
             "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
             "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
             "model_preferences": model_preferences,
@@ -3538,6 +3555,8 @@ async def create_import_batch(
             metadata={
                 "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
                 "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+                "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+                "step_estimates": cost_estimate.get("steps", []),
                 "processing_preset": {
                     "id": preset_snapshot["id"],
                     "name": preset_snapshot["name"],
@@ -3803,45 +3822,312 @@ def apply_import_estimate_calibration(amount: float, basis: str, rates: dict[str
     return round(amount * factor, 6), f"calibrated_{basis}"
 
 
+def import_estimate_model_is_cloud(model: str | None) -> bool:
+    normalized = (model or "").strip().lower()
+    if normalized in IMPORT_ESTIMATE_LOCAL_MODELS:
+        return False
+    return normalized.startswith(("gpt-", "o", "gemini-", "text-embedding-"))
+
+
+def import_estimate_tokens(task_key: str, page_count: int) -> tuple[int, int]:
+    profile = IMPORT_ESTIMATE_TASK_TOKEN_PROFILES.get(
+        task_key,
+        {"input_per_page": IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE, "output_base": 500},
+    )
+    input_tokens = int(profile.get("input_base", 0)) + int(profile.get("input_per_page", 0)) * page_count
+    output_tokens = int(profile.get("output_base", 0)) + int(profile.get("output_per_page", 0)) * page_count
+    return max(0, input_tokens), max(0, output_tokens)
+
+
+def import_estimate_step_cost(
+    *,
+    task_key: str,
+    label: str,
+    model: str | None,
+    page_count: int,
+    rates: dict[str, Any],
+    db: Session | None,
+    status: str = "estimated",
+    note: str | None = None,
+) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "task_key": task_key,
+        "label": label,
+        "model": model or "local",
+        "estimated_page_count": page_count,
+        "estimated_cost_usd": 0.0,
+        "basis": "local",
+        "status": status,
+    }
+    if note:
+        step["note"] = note
+    if page_count <= 0:
+        step["basis"] = "not_expected"
+        return step
+    if not import_estimate_model_is_cloud(model):
+        return step
+
+    task_model_rates: dict[tuple[str, str], float] = rates.get("task_model_rates", {})
+    task_rates: dict[str, float] = rates.get("task_rates", {})
+    exact_rate = task_model_rates.get((task_key, model or ""))
+    if exact_rate is not None:
+        step["estimated_cost_usd"] = round(max(0.0, float(exact_rate)) * page_count, 6)
+        step["basis"] = "task_model_exemplar"
+        return step
+    fallback_rate = task_rates.get(task_key)
+    if fallback_rate is not None:
+        step["estimated_cost_usd"] = round(max(0.0, float(fallback_rate)) * page_count, 6)
+        step["basis"] = "task_exemplar"
+        return step
+
+    input_tokens, output_tokens = import_estimate_tokens(task_key, page_count)
+    priced = estimated_cost_usd_for_model_tokens(
+        model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        db=db,
+    )
+    if priced is not None:
+        step["estimated_cost_usd"] = round(priced, 6)
+        step["basis"] = "model_pricing"
+        step["estimated_input_tokens"] = input_tokens
+        step["estimated_output_tokens"] = output_tokens
+    else:
+        step["basis"] = "unpriced_model"
+        step["status"] = "unpriced"
+        step["estimated_input_tokens"] = input_tokens
+        step["estimated_output_tokens"] = output_tokens
+    return step
+
+
+def import_estimate_processing_steps(
+    *,
+    preset: dict[str, Any] | None,
+    model_preferences: dict[str, str],
+    page_count: int,
+    rates: dict[str, Any],
+    db: Session | None,
+) -> list[dict[str, Any]]:
+    preset = preset or {}
+    cleanup = preset.get("cleanup") if isinstance(preset.get("cleanup"), dict) else {}
+    ocr = preset.get("ocr") if isinstance(preset.get("ocr"), dict) else {}
+    structured_tables = preset.get("structured_tables") if isinstance(preset.get("structured_tables"), dict) else {}
+    bibliography = preset.get("bibliography") if isinstance(preset.get("bibliography"), dict) else {}
+    visuals = preset.get("visuals") if isinstance(preset.get("visuals"), dict) else {}
+    cost = preset.get("cost") if isinstance(preset.get("cost"), dict) else {}
+    second_pass_enabled = bool(preset.get("second_pass_enabled", True))
+    steps: list[dict[str, Any]] = [
+        {
+            "task_key": "raw_text_extraction",
+            "label": "Raw text extraction",
+            "model": model_preferences.get(MODEL_RAW_TEXT_EXTRACTION, "marker"),
+            "estimated_page_count": page_count,
+            "estimated_cost_usd": 0.0,
+            "basis": "local",
+            "status": "local",
+            "note": "Marker/PyMuPDF extraction is local in the current pipeline; cloud raw extraction fallbacks are not wired yet.",
+        }
+    ]
+
+    if second_pass_enabled:
+        steps.append(
+            {
+                "task_key": "document_structure_cleanup",
+                "label": "Structure cleanup",
+                "model": "local",
+                "estimated_page_count": page_count if bool(cleanup.get("enabled", True)) else 0,
+                "estimated_cost_usd": 0.0,
+                "basis": "local",
+                "status": "local" if bool(cleanup.get("enabled", True)) else "disabled_by_preset",
+            }
+        )
+        ocr_enabled = bool(ocr.get("enabled", True))
+        steps.append(
+            {
+                "task_key": "ocr_fallback",
+                "label": "OCR fallback",
+                "model": str(ocr.get("provider") or "google_vision") if ocr_enabled else "none",
+                "estimated_page_count": 0,
+                "estimated_cost_usd": 0.0,
+                "basis": "pending_provider_integration" if ocr_enabled else "disabled_by_preset",
+                "status": "pending_provider_integration" if ocr_enabled else "disabled_by_preset",
+                "note": "Low-text OCR is eligibility-audit only until Google Vision execution is wired.",
+            }
+        )
+        cleanup_cloud_enabled = bool(cleanup.get("cloud_escalation", True))
+        cleanup_model = str(cleanup.get("model") or model_preferences.get(MODEL_PAGE_TEXT_NORMALIZATION) or "gpt-5.4-mini")
+        cleanup_page_count = 0
+        if bool(cleanup.get("enabled", True)) and cleanup_cloud_enabled and import_estimate_model_is_cloud(cleanup_model):
+            cleanup_page_count = min(page_count, import_processing_cloud_page_cap(preset, page_count))
+        steps.append(
+            import_estimate_step_cost(
+                task_key=MODEL_PAGE_TEXT_NORMALIZATION,
+                label="Flagged-page normalization",
+                model=cleanup_model if cleanup_page_count else "local",
+                page_count=cleanup_page_count,
+                rates=rates,
+                db=db,
+                status="estimated" if cleanup_page_count else "local_or_not_flagged",
+                note="Uses the selected preset cleanup model and cap; actual calls only happen for flagged pages.",
+            )
+        )
+        steps.append(
+            {
+                "task_key": "structured_tables",
+                "label": "Structured tables",
+                "model": "local",
+                "estimated_page_count": page_count if bool(structured_tables.get("enabled", True)) else 0,
+                "estimated_cost_usd": 0.0,
+                "basis": "evidence_only" if bool(structured_tables.get("enabled", True)) else "disabled_by_preset",
+                "status": "evidence_only" if bool(structured_tables.get("enabled", True)) else "disabled_by_preset",
+            }
+        )
+        steps.append(
+            {
+                "task_key": "visual_asset_extraction",
+                "label": "Visual asset extraction",
+                "model": "local",
+                "estimated_page_count": page_count if bool(visuals.get("enabled", True)) else 0,
+                "estimated_cost_usd": 0.0,
+                "basis": "local" if bool(visuals.get("enabled", True)) else "disabled_by_preset",
+                "status": "local" if bool(visuals.get("enabled", True)) else "disabled_by_preset",
+            }
+        )
+        visual_model = str(visuals.get("model") or "gemini-3.1-flash-lite")
+        visual_calls_enabled = (
+            bool(visuals.get("context_enabled", True))
+            and str(cost.get("visual_model_calls") or "cropped_regions_only") != "none"
+            and import_estimate_model_is_cloud(visual_model)
+        )
+        steps.append(
+            {
+                "task_key": "visual_asset_context",
+                "label": "Visual context",
+                "model": visual_model if visual_calls_enabled else "local",
+                "estimated_page_count": 0,
+                "estimated_cost_usd": 0.0,
+                "basis": "pending_cropped_region_model_calls" if visual_calls_enabled else "local",
+                "status": "pending_provider_integration" if visual_calls_enabled else "local_or_disabled",
+                "note": "Current visual context uses local captions/nearby text; cropped-region visual model calls are not wired yet.",
+            }
+        )
+        steps.append(
+            {
+                "task_key": "bibliography_extraction",
+                "label": "Bibliography extraction",
+                "model": "local",
+                "estimated_page_count": page_count if bool(bibliography.get("enabled", True)) else 0,
+                "estimated_cost_usd": 0.0,
+                "basis": "local" if bool(bibliography.get("enabled", True)) else "disabled_by_preset",
+                "status": "local" if bool(bibliography.get("enabled", True)) else "disabled_by_preset",
+            }
+        )
+
+    shared_steps = [
+        (MODEL_METADATA, "Metadata extraction", model_preferences.get(MODEL_METADATA)),
+        (MODEL_SUMMARY, "Summary", model_preferences.get(MODEL_SUMMARY)),
+        (MODEL_APA_CITATION, "APA citation fallback", model_preferences.get(MODEL_APA_CITATION)),
+        (MODEL_KEYWORDS_TOPICS, "Tag suggestions", model_preferences.get(MODEL_KEYWORDS_TOPICS)),
+        (MODEL_TEXT_CHUNK_ENCODING, "Text chunk encoding", model_preferences.get(MODEL_TEXT_CHUNK_ENCODING)),
+    ]
+    for task_key, label, model in shared_steps:
+        steps.append(
+            import_estimate_step_cost(
+                task_key=task_key,
+                label=label,
+                model=model,
+                page_count=page_count,
+                rates=rates,
+                db=db,
+            )
+        )
+    return steps
+
+
+def estimate_import_job_cost(
+    job: ImportJob,
+    *,
+    model_preferences: dict[str, str],
+    rates: dict[str, Any],
+    db: Session | None = None,
+) -> dict[str, Any]:
+    page_count = document_estimated_page_count(job.document)
+    if not page_count or page_count <= 0:
+        page_count = 1
+    preset = document_import_processing_preset(job.document, job.batch)
+    steps = import_estimate_processing_steps(
+        preset=preset,
+        model_preferences=model_preferences,
+        page_count=page_count,
+        rates=rates,
+        db=db,
+    )
+    priced_steps = [step for step in steps if float(step.get("estimated_cost_usd") or 0) > 0]
+    uncalibrated_amount = round(sum(float(step.get("estimated_cost_usd") or 0) for step in priced_steps), 6)
+    if uncalibrated_amount > 0:
+        exact_rate_count = sum(1 for step in priced_steps if step.get("basis") == "task_model_exemplar")
+        fallback_rate_count = sum(1 for step in priced_steps if step.get("basis") == "task_exemplar")
+        priced_count = sum(1 for step in priced_steps if step.get("basis") == "model_pricing")
+        if exact_rate_count and not fallback_rate_count and not priced_count:
+            basis = "preset_task_model_exemplar"
+        elif exact_rate_count or fallback_rate_count or priced_count:
+            basis = "preset_steps"
+        else:
+            basis = "preset_steps"
+        amount, basis = apply_import_estimate_calibration(uncalibrated_amount, basis, rates)
+        return {
+            "estimated_cost_usd": amount,
+            "basis": basis,
+            "estimated_page_count": page_count,
+            "uncalibrated_cost_usd": uncalibrated_amount,
+            "steps": steps,
+            "processing_preset": (
+                {
+                    "id": preset.get("id"),
+                    "name": preset.get("name"),
+                    "mode": preset.get("mode"),
+                    "second_pass_enabled": preset.get("second_pass_enabled", True),
+                }
+                if preset
+                else None
+            ),
+        }
+
+    overall_rate = float(rates.get("overall_rate") or 0.0)
+    if overall_rate > 0:
+        amount, basis = apply_import_estimate_calibration(round(overall_rate * page_count, 6), "library_exemplar", rates)
+        return {
+            "estimated_cost_usd": amount,
+            "basis": basis,
+            "estimated_page_count": page_count,
+            "uncalibrated_cost_usd": round(overall_rate * page_count, 6),
+            "steps": steps,
+            "processing_preset": None,
+        }
+    amount, basis = apply_import_estimate_calibration(round(DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE * page_count, 6), "default", rates)
+    return {
+        "estimated_cost_usd": amount,
+        "basis": basis,
+        "estimated_page_count": page_count,
+        "uncalibrated_cost_usd": round(DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE * page_count, 6),
+        "steps": steps,
+        "processing_preset": None,
+    }
+
+
 def estimate_import_job_cost_usd(
     job: ImportJob,
     *,
     model_preferences: dict[str, str],
     rates: dict[str, Any],
+    db: Session | None = None,
 ) -> tuple[float, str, int | None]:
-    page_count = document_estimated_page_count(job.document)
-    if not page_count or page_count <= 0:
-        page_count = 1
-    task_model_rates: dict[tuple[str, str], float] = rates.get("task_model_rates", {})
-    task_rates: dict[str, float] = rates.get("task_rates", {})
-    overall_rate = float(rates.get("overall_rate") or 0.0)
-    total_rate = 0.0
-    exact_rate_count = 0
-    fallback_rate_count = 0
-    for task_key in IMPORT_ESTIMATE_TASK_KEYS:
-        model = model_preferences.get(task_key)
-        if not model:
-            continue
-        exact_rate = task_model_rates.get((task_key, model))
-        if exact_rate is not None:
-            total_rate += exact_rate
-            exact_rate_count += 1
-            continue
-        fallback_rate = task_rates.get(task_key)
-        if fallback_rate is not None:
-            total_rate += fallback_rate
-            fallback_rate_count += 1
-
-    if total_rate > 0:
-        basis = "exemplar" if exact_rate_count else "task_exemplar"
-        if fallback_rate_count:
-            basis = "mixed_exemplar"
-        amount, basis = apply_import_estimate_calibration(round(total_rate * page_count, 6), basis, rates)
-        return amount, basis, page_count
-    if overall_rate > 0:
-        amount, basis = apply_import_estimate_calibration(round(overall_rate * page_count, 6), "library_exemplar", rates)
-        return amount, basis, page_count
-    amount, basis = apply_import_estimate_calibration(round(DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE * page_count, 6), "default", rates)
+    estimate = estimate_import_job_cost(job, model_preferences=model_preferences, rates=rates, db=db)
+    amount = float(estimate.get("estimated_cost_usd") or 0.0)
+    basis = str(estimate.get("basis") or "none")
+    page_count = estimate.get("estimated_page_count")
+    if not isinstance(page_count, int):
+        page_count = None
     return amount, basis, page_count
 
 
@@ -3988,7 +4274,7 @@ def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Se
             job,
             model_preferences=model_preferences,
             estimated_cost_usd=costs.get(job.id, 0.0),
-            cost_estimate=estimate_import_job_cost_usd(job, model_preferences=model_preferences, rates=estimate_rates),
+            cost_estimate=estimate_import_job_cost_usd(job, model_preferences=model_preferences, rates=estimate_rates, db=db),
         )
         for job in jobs
     ]

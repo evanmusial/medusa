@@ -114,8 +114,8 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "OCR Fallback",
         "default_enabled": True,
         "configurable": True,
-        "description": "Runs OCR only for low-text or scanned pages when credentials and the selected preset allow it.",
-        "accomplishes": "Recovers searchable text from pages where normal PDF extraction produced too little body text.",
+        "description": "Audits low-text or scanned pages for OCR eligibility under the selected preset; Google Vision execution is still pending integration.",
+        "accomplishes": "Identifies pages that need OCR without adding provider cost until the OCR retry loop is wired.",
     },
     {
         "key": "page_text_normalization",
@@ -130,8 +130,8 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "Structured Tables",
         "default_enabled": True,
         "configurable": True,
-        "description": "Detects table-like regions and stores table text, page anchors, captions, and source evidence separately from narrative body text.",
-        "accomplishes": "Keeps tables searchable and reviewable without blending table layout noise into paragraphs.",
+        "description": "Detects table-like regions as cleanup evidence; first-class table rows, cells, captions, and page regions are still planned.",
+        "accomplishes": "Keeps table evidence visible for audit while richer table persistence is built.",
     },
     {
         "key": "visual_asset_extraction",
@@ -146,8 +146,8 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "Visual Context",
         "default_enabled": True,
         "configurable": True,
-        "description": "Links figures and tables to captions, headings, nearby paragraphs, and explicit mentions such as Figure 2 or Table 1.",
-        "accomplishes": "Lets search, summaries, citations, and review surfaces understand where each visual belongs in the document.",
+        "description": "Links figures to local captions, nearby text, and explicit mentions such as Figure 2; cropped-region visual model calls are still pending.",
+        "accomplishes": "Gives each extracted visual local document context now, with visual gists and model-backed review still planned.",
     },
     {
         "key": "bibliography_extraction",
@@ -202,7 +202,7 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "Composition Ledger",
         "default_enabled": True,
         "configurable": False,
-        "description": "Records local stage timings, model/provider choices, token and file-context usage, warnings, failures, and estimated or actual costs.",
+        "description": "Records preset-aware import estimates, local stage timings, model/provider choices, token and file-context usage, warnings, failures, and actual costs when calls occur.",
         "accomplishes": "Makes the quality/cost tradeoff visible on staged rows, Composition, Budget & Costs, and Concordance evidence.",
     },
 )

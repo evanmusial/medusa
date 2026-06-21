@@ -2,10 +2,56 @@
 
 Last updated: 2026-06-21
 
-This document is the implementation contract for Medusa's second-pass document
-processing branch. It must be kept current as the branch evolves. Runtime code
-should not be written before this document, `docs/ARCHITECTURE.md`, and
-`TODO.md` describe the goals and acceptance checks for the work.
+This document is the implementation contract and status record for Medusa's
+second-pass document processing branch. It must be kept current as the branch
+evolves. Runtime code should not be written before this document,
+`docs/ARCHITECTURE.md`, and `TODO.md` describe the goals and acceptance checks
+for the work.
+
+## Current Branch Status
+
+The branch implements the second-pass foundation and several first usable
+stages, but it does not yet implement every target in this design. The sections
+below describe the intended product direction and acceptance criteria; this
+status section and `TODO.md` describe the current implementation state.
+
+Completed or substantially implemented:
+
+- Documentation-first branch plan and architecture/TODO updates.
+- Settings `Import Processing` presets, built-in Balanced/Strict Local/Deep
+  Review modes, user preset CRUD, default selection, step tooltips, and shared
+  model defaults inside the Import Processing section.
+- Import `Processing preset` selection with staged batch/job/document evidence
+  preserving the selected preset snapshot.
+- Preset-aware staged import cost estimates that break out local-only,
+  pending-provider, capped page-normalization, and shared model-backed steps.
+- Deterministic document structure cleanup used by import and Concordance,
+  with removed boilerplate retained as metadata evidence.
+- Source-document `Bibliography` extraction, storage, detail editing,
+  search/export/restore/history support, and Markdown italics preservation when
+  PDF span evidence exposes emphasis.
+- Local visual asset extraction for embedded images, rendered page image
+  regions, and vector drawing clusters, with durable `Figure` records, captions,
+  local context, and basic extraction warnings.
+- Versioned Concordance capability entries for the new second-pass capabilities,
+  routed to the currently implemented handlers.
+
+Partially implemented or still pending:
+
+- `ocr_fallback` currently audits low-text eligibility and records evidence;
+  Google Vision execution is not yet wired into the page extraction retry loop.
+- `structured_tables` currently records table-like evidence in metadata;
+  first-class rows/cells/captions/page-region persistence is still pending.
+- Visual context is local caption/nearby-text/mention linking today; cropped
+  visual-region model calls, searchable visual gists, premium gating, and
+  visual-call usage/cost records are still pending.
+- Visual coverage audit is basic; robust missed-region, duplicate crop,
+  incomplete crop, full-page scan, and table-region audits still need fixture
+  coverage and implementation.
+- Composition records stage and synced usage evidence, but it still needs a
+  more explicit preset-snapshot display and richer second-pass warning surfaces.
+- The strongest fixture suite for cleanup, OCR, tables, and visual extraction
+  remains backlog work.
 
 ## Goals
 
@@ -232,28 +278,47 @@ default preset, initially Balanced.
 
 ## Data Model And API Changes
 
-Planned schema additions:
+Implemented so far:
 
-- import processing preset storage in preferences or dedicated preset rows
-- preset id and preset snapshot on import batches/jobs
+- Import-processing presets are stored in preferences, including built-in and
+  custom preset definitions plus the default preset id.
+- Import batches/jobs/documents store the selected preset id/name/mode and a
+  preset snapshot in evidence so later Settings changes do not alter queued
+  work.
+- `Document.bibliography` stores the extracted source reference list as
+  Markdown-compatible text separate from generated APA citations and project
+  bibliographies.
+- Existing `Figure` rows store local visual crops with page geometry, labels,
+  captions, source kind, orientation metadata, storage URI, and local context.
+- `DocumentCompositionRecord` rows capture estimates, local stages, synced
+  model usage, warnings, method/model/provider, duration, and costs when known.
+
+Remaining planned schema additions:
+
 - layout blocks with page, text, bbox, kind, source, confidence, and metadata
 - structured table records with page geometry, rows/cells, caption, and source
 - visual asset candidates and audit warnings
 - richer figure context and crop-quality metadata
-- `Document.bibliography` as a Markdown-compatible extracted reference-list
-  field separate from generated APA citations and project bibliographies
 
-Planned API additions:
+Implemented API surface so far:
 
-- preferences payload includes built-in and user presets, default preset id,
-  import-processing step metadata, and tooltip descriptions
-- preferences patch can save presets and default preset id
-- import batch creation accepts processing preset id and/or preset snapshot
-- import job output includes preset name, cleanup status, visual extraction
-  status, and warning summary
-- document detail exposes cleaned-text provenance, removed-boilerplate summary,
-  structured tables, layout evidence, richer asset context, and Bibliography
-- Composition exposes cleanup and visual extraction stages, warnings, and costs
+- Preferences payloads include built-in and user presets, default preset id,
+  import-processing step metadata, and tooltip descriptions.
+- Preferences patches can save presets, the default preset id, and the emergency
+  second-pass enable/disable flag.
+- Import batch creation accepts a processing preset id and writes a snapshot to
+  batch/job/document evidence.
+- Import job output includes the selected preset id/name/mode.
+- Document detail exposes the source-document `Bibliography` field.
+- Composition exposes cleanup, bibliography, visual extraction, usage, warning,
+  and cost rows when those stages run.
+
+Remaining API work:
+
+- First-class layout-block and structured-table detail responses.
+- Explicit cleaned-text provenance and removed-boilerplate inspection surfaces.
+- Dedicated visual audit warning and richer asset-context response shapes.
+- More explicit Composition display for the exact preset snapshot used.
 
 ## Concordance Behavior
 
@@ -262,14 +327,17 @@ Every second-pass capability must be import-time and retroactive.
 - `document_structure_cleanup`: clean existing page text unless the page has
   manual `text_source`; manual pages are skipped or produce reviewable
   candidates.
-- `ocr_fallback`: run only where pages remain low-text and provider settings
-  allow it.
-- `structured_tables`: model table rows/cells/geometry and preserve searchable
-  Markdown text.
+- `ocr_fallback`: currently audit low-text eligibility and record candidate
+  pages; future work should run OCR only where pages remain low-text and
+  provider settings allow it.
+- `structured_tables`: currently refresh table-like evidence in document
+  metadata; future work should model table rows/cells/geometry and preserve
+  searchable Markdown text.
 - `visual_asset_extraction`: refresh figures/assets idempotently and avoid
   duplicate rows on retry.
 - `visual_asset_context`: enrich existing assets with captions, mentions,
-  surrounding text, and searchable gists.
+  surrounding text, and local context today; searchable visual gists remain
+  future work.
 - `bibliography_extraction`: fill missing Bibliography fields from existing
   extracted pages/PDF layout evidence without overwriting manual edits unless
   forced through an explicit correction workflow.

@@ -574,6 +574,25 @@ def estimated_cost_usd_for_record(record: OpenAIUsageRecord, db: Session | None 
     return _cost_for_record(record, _pricing_index(db))
 
 
+def estimated_cost_usd_for_model_tokens(
+    model: str | None,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+    provider: str | None = None,
+    db: Session | None = None,
+) -> float | None:
+    pricing = _pricing_from_index(model, provider=provider, pricing_index=_pricing_index(db))
+    return _estimated_cost_usd(
+        model,
+        input_tokens=max(0, int(input_tokens or 0)),
+        cached_input_tokens=max(0, int(cached_input_tokens or 0)),
+        output_tokens=max(0, int(output_tokens or 0)),
+        pricing=pricing,
+    )
+
+
 def _summary_from_query(
     query,
     records: list[OpenAIUsageRecord],

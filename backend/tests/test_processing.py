@@ -806,6 +806,11 @@ def test_import_anyway_allows_same_checksum_document(monkeypatch, tmp_path):
             .one()
         )
         assert float(estimate_record.amount_usd) > 0
+        assert estimate_record.record_metadata["estimate_basis"] == "preset_steps"
+        assert any(
+            step["task_key"] == "page_text_normalization"
+            for step in estimate_record.record_metadata.get("step_estimates", [])
+        )
 
 
 def test_html_import_converts_to_pdf_mezzanine_and_uses_source_pages(monkeypatch, tmp_path):

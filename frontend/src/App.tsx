@@ -1794,6 +1794,8 @@ function importJobEstimateTitle(job: ImportJob) {
   const calibrationText = calibrated ? " and calibrated by prior estimate accuracy" : "";
   if (basis === "none") return "No model-cost estimate is available yet.";
   if (basis === "default") return `Rough estimate from the default per-page import cost${pageText}${calibrationText}.`;
+  if (basis === "preset_steps") return `Rough estimate from the selected import preset, model prices, and prior task exemplars${pageText}${calibrationText}.`;
+  if (basis === "preset_task_model_exemplar") return `Rough estimate from selected import preset steps and prior task/model exemplars${pageText}${calibrationText}.`;
   if (basis === "library_exemplar") return `Rough estimate from prior import costs per page${pageText}${calibrationText}.`;
   if (basis === "task_exemplar") return `Rough estimate from prior import task costs per page${pageText}${calibrationText}.`;
   if (basis === "mixed_exemplar") return `Rough estimate from prior task/model exemplars and task fallbacks${pageText}${calibrationText}.`;

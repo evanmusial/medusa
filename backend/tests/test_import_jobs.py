@@ -97,9 +97,9 @@ def test_staged_import_job_has_default_cost_estimate(monkeypatch, tmp_path):
 
     assert rows[0]["id"] == job.id
     assert rows[0]["status"] == "staged"
-    assert rows[0]["estimated_cost_basis"] == "default"
+    assert rows[0]["estimated_cost_basis"] == "preset_steps"
     assert rows[0]["estimated_cost_page_count"] == 12
-    assert rows[0]["estimated_cost_usd"] == 0.12
+    assert rows[0]["estimated_cost_usd"] > 0
 
 
 def test_staged_documents_stay_out_of_library_surfaces(monkeypatch, tmp_path):
@@ -289,8 +289,55 @@ def test_import_estimates_use_prior_estimate_accuracy(monkeypatch, tmp_path):
         rows = list_import_jobs(object(), db)
 
     staged_row = next(row for row in rows if row["id"] == staged_job.id)
-    assert staged_row["estimated_cost_basis"] == "calibrated_default"
-    assert staged_row["estimated_cost_usd"] == 0.20
+    assert staged_row["estimated_cost_basis"] == "calibrated_preset_steps"
+    assert staged_row["estimated_cost_usd"] > 0
+
+
+def test_import_estimates_reflect_processing_preset_steps(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import estimate_import_job_cost
+    from app.models import Document, ImportBatch, ImportJob
+    from app.services.preferences import built_in_import_processing_presets, get_analysis_models
+
+    presets = {preset["id"]: preset for preset in built_in_import_processing_presets()}
+    rates = {"estimate_calibration_factor": 1.0, "estimate_calibration_sample_count": 0}
+
+    with Session() as db:
+        model_preferences = get_analysis_models(db)
+        strict_batch = ImportBatch(total_files=1, shared_defaults={"processing_preset_snapshot": presets["strict_local"]})
+        strict_document = Document(
+            title="Strict",
+            original_filename="strict.pdf",
+            checksum_sha256="1" * 64,
+            page_count=40,
+            metadata_evidence={"import_processing_preset": presets["strict_local"]},
+        )
+        strict_job = ImportJob(batch=strict_batch, document=strict_document, status="staged", current_step="staged")
+        deep_batch = ImportBatch(total_files=1, shared_defaults={"processing_preset_snapshot": presets["deep_review"]})
+        deep_document = Document(
+            title="Deep",
+            original_filename="deep.pdf",
+            checksum_sha256="2" * 64,
+            page_count=40,
+            metadata_evidence={"import_processing_preset": presets["deep_review"]},
+        )
+        deep_job = ImportJob(batch=deep_batch, document=deep_document, status="staged", current_step="staged")
+        db.add_all([strict_batch, strict_document, strict_job, deep_batch, deep_document, deep_job])
+        db.commit()
+
+        strict_estimate = estimate_import_job_cost(strict_job, model_preferences=model_preferences, rates=rates, db=db)
+        deep_estimate = estimate_import_job_cost(deep_job, model_preferences=model_preferences, rates=rates, db=db)
+
+    strict_steps = {step["task_key"]: step for step in strict_estimate["steps"]}
+    deep_steps = {step["task_key"]: step for step in deep_estimate["steps"]}
+    assert strict_steps["page_text_normalization"]["estimated_cost_usd"] == 0
+    assert deep_steps["page_text_normalization"]["estimated_page_count"] == 20
+    assert deep_steps["page_text_normalization"]["estimated_cost_usd"] > 0
+    assert deep_steps["ocr_fallback"]["basis"] == "pending_provider_integration"
+    assert deep_steps["ocr_fallback"]["estimated_cost_usd"] == 0
+    assert deep_steps["visual_asset_context"]["basis"] == "pending_cropped_region_model_calls"
+    assert deep_steps["visual_asset_context"]["estimated_cost_usd"] == 0
+    assert deep_estimate["estimated_cost_usd"] > strict_estimate["estimated_cost_usd"]
 
 
 def test_cancel_import_job_clears_queued_row(monkeypatch, tmp_path):
