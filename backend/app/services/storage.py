@@ -22,6 +22,9 @@ class StorageService:
     def get_bytes(self, uri: str) -> bytes:
         raise NotImplementedError
 
+    def delete_uri(self, uri: str) -> bool:
+        raise NotImplementedError
+
 
 class LocalStorageService(StorageService):
     def __init__(self, root: Path):
@@ -37,6 +40,17 @@ class LocalStorageService(StorageService):
 
     def get_bytes(self, uri: str) -> bytes:
         return Path(uri).read_bytes()
+
+    def delete_uri(self, uri: str) -> bool:
+        parsed = urlparse(uri)
+        if parsed.scheme == "gs":
+            return False
+        path = Path(uri)
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
 
 
 class GcsStorageService(StorageService):
@@ -65,6 +79,21 @@ class GcsStorageService(StorageService):
         bucket = self.client.bucket(parsed.netloc)
         blob = bucket.blob(parsed.path.lstrip("/"))
         return blob.download_as_bytes()
+
+    def delete_uri(self, uri: str) -> bool:
+        parsed = urlparse(uri)
+        if parsed.scheme != "gs":
+            try:
+                Path(uri).unlink()
+                return True
+            except FileNotFoundError:
+                return False
+        bucket = self.client.bucket(parsed.netloc)
+        blob = bucket.blob(parsed.path.lstrip("/"))
+        if not blob.exists():
+            return False
+        blob.delete()
+        return True
 
 
 def get_storage_service() -> StorageService:

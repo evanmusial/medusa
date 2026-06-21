@@ -156,7 +156,7 @@ from app.services.backups import (
 from app.services.concordance import create_concordance_run, current_capabilities
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
-from app.services.document_cache import current_document_cache_usage, document_cache_root, register_document_cache
+from app.services.document_cache import current_document_cache_usage, document_cache_root, metadata_cache_path, register_document_cache
 from app.services.document_visibility import (
     document_is_library_visible,
     filter_library_visible_documents,
@@ -3995,6 +3995,70 @@ def clear_import_job(
     )
 
 
+def delete_staged_document_cache(document: Document) -> int:
+    cache_path = metadata_cache_path(document, require_managed=True)
+    if not cache_path:
+        return 0
+    try:
+        cache_path.unlink()
+        return 1
+    except FileNotFoundError:
+        return 0
+
+
+def delete_staged_original(document: Document) -> int:
+    if not document.gcs_uri:
+        return 0
+    return 1 if get_storage_service().delete_uri(document.gcs_uri) else 0
+
+
+def staged_document_has_other_import_history(db: Session, job: ImportJob, document: Document) -> bool:
+    return (
+        db.query(ImportJob)
+        .filter(
+            ImportJob.document_id == document.id,
+            ImportJob.id != job.id,
+        )
+        .count()
+        > 0
+    )
+
+
+def hard_delete_staged_import_job(db: Session, job: ImportJob) -> tuple[int, int, int]:
+    document = job.document
+    if not document or staged_document_has_other_import_history(db, job, document):
+        clear_import_job(
+            db,
+            job,
+            event_type="manual_staged_import_clear",
+            message="Staged upload was cleared without deleting a shared document record.",
+        )
+        return (0, 0, 0)
+
+    deleted_cache_files = delete_staged_document_cache(document)
+    deleted_original_objects = delete_staged_original(document)
+    document.domains.clear()
+    document.tags.clear()
+    db.query(ProjectItem).filter(ProjectItem.document_id == document.id).delete(synchronize_session=False)
+    db.delete(job)
+    db.delete(document)
+    return (1, deleted_cache_files, deleted_original_objects)
+
+
+def refresh_or_delete_import_batches(db: Session, batch_ids: set[str]) -> None:
+    db.flush()
+    for batch_id in batch_ids:
+        batch = db.get(ImportBatch, batch_id)
+        if not batch:
+            continue
+        remaining_jobs = db.query(ImportJob).filter(ImportJob.batch_id == batch.id).count()
+        if remaining_jobs == 0:
+            db.delete(batch)
+            continue
+        batch.total_files = remaining_jobs
+        refresh_import_batch_progress(db, batch)
+
+
 @app.post("/api/imports/jobs/process-staged", response_model=ImportQueueActionOut)
 def process_staged_import_jobs(
     _: Annotated[User, Depends(current_user)],
@@ -4011,6 +4075,38 @@ def process_staged_import_jobs(
         stage_import_job_for_processing(db, job)
     db.commit()
     return ImportQueueActionOut(matched_count=len(jobs), updated_count=len(jobs))
+
+
+@app.post("/api/imports/jobs/clear-staged", response_model=ImportQueueActionOut)
+def clear_staged_import_jobs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ImportQueueActionOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status == STAGED_IMPORT_STATUS)
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    batch_ids = {job.batch_id for job in jobs if job.batch_id}
+    deleted_documents = 0
+    deleted_cache_files = 0
+    deleted_original_objects = 0
+    for job in jobs:
+        document_count, cache_count, original_count = hard_delete_staged_import_job(db, job)
+        deleted_documents += document_count
+        deleted_cache_files += cache_count
+        deleted_original_objects += original_count
+    refresh_or_delete_import_batches(db, batch_ids)
+    db.commit()
+    return ImportQueueActionOut(
+        matched_count=len(jobs),
+        updated_count=len(jobs),
+        deleted_documents=deleted_documents,
+        deleted_cache_files=deleted_cache_files,
+        deleted_original_objects=deleted_original_objects,
+    )
 
 
 @app.post("/api/imports/jobs/retry-failed", response_model=ImportQueueActionOut)

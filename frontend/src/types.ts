@@ -714,6 +714,9 @@ export type ImportQueueActionResult = {
   updated_count: number;
   skipped_running_count: number;
   skipped_unretryable_count: number;
+  deleted_documents?: number;
+  deleted_cache_files?: number;
+  deleted_original_objects?: number;
 };
 
 export type DuplicateImportStrategy = "skip" | "overwrite" | "import_anyway";

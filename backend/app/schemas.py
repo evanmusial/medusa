@@ -685,6 +685,9 @@ class ImportQueueActionOut(ApiModel):
     updated_count: int
     skipped_running_count: int = 0
     skipped_unretryable_count: int = 0
+    deleted_documents: int = 0
+    deleted_cache_files: int = 0
+    deleted_original_objects: int = 0
 
 
 class ProcessingEventOut(ApiModel):

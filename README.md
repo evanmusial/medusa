@@ -10,7 +10,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs
-- Batch PDF, HTML, and plain-text/Markdown upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, checksum duplicate detection, explicit skip/overwrite/import-anyway choices, local PDF mezzanine conversion for non-PDF sources, staged upload rows with rough per-file and grand-total cost previews, a Process Uploads release action, staged-document invisibility from Library/search until import completion, and active-first progress-shaded import processing rows with model/cost detail
+- Batch PDF, HTML, and plain-text/Markdown upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, checksum duplicate detection, explicit skip/overwrite/import-anyway choices, local PDF mezzanine conversion for non-PDF sources, staged upload rows with rough per-file and grand-total cost previews, Process Uploads and staged-upload cleanup actions, staged-document invisibility from Library/search until import completion, and active-first progress-shaded import processing rows with model/cost detail
 - GCS storage adapter with local fallback when credentials are not configured
 - Raw text extraction preference with Local choices for Docling, Marker, and PyMuPDF; Marker is the default preference and PyMuPDF remains the bundled local fallback
 - Authenticated original PDF preview/open/download route in the document detail pane and expanded Reader mode
@@ -164,7 +164,7 @@ Medusa defaults to four concurrent import jobs. The env var sets the startup def
 
 Worker startup immediately requeues `running` import and Concordance jobs left by the previous worker process. This setting is the secondary guard for stale locks that remain while the worker is alive.
 
-The document cache size defaults to 1,024 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time. Settings shows the current cache footprint rounded to the nearest MB. Settings > Download Naming controls suggested original-PDF download names with `$title`, `$year`, `$authors`, `$author`, and `$pages` tokens.
+The document cache size defaults to 1,024 MB. It controls how many completed import PDFs are kept locally under `data/processing-cache` for Concordance and Accessory Summary work; originals are still written to GCS or local durable storage at upload time. Clearing staged uploads removes their managed processing-cache copies and staged original objects before deleting their queue-only records. Settings shows the current cache footprint rounded to the nearest MB. Settings > Download Naming controls suggested original-PDF download names with `$title`, `$year`, `$authors`, `$author`, and `$pages` tokens.
 
 ## Development
 
@@ -232,7 +232,7 @@ Staged and queued upload rows show rough dollar estimates from stored page count
 
 If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint. In-flight documents may repeat the current step, and page normalization resumes from persisted page checkpoints when possible.
 
-The Import Queue can release staged uploads, retry failed imports in bulk, retry individual queued/failed/restored jobs, cancel individual staged/queued/failed/restored rows, and clear staged/queued/failed/restored rows into a terminal `cleared` state. Fresh running jobs are protected from manual retry, cancel, or clear to avoid racing an active worker.
+The Import page can release staged uploads with Process Uploads or discard all staged uploads with Clear Staged, which removes their queue-only document/job rows, managed processing-cache files, and staged original storage objects. The Import Queue can release staged uploads, retry failed imports in bulk, retry individual queued/failed/restored jobs, cancel individual staged/queued/failed/restored rows, and clear staged/queued/failed/restored rows into a terminal `cleared` state. Fresh running jobs are protected from manual retry, cancel, or clear to avoid racing an active worker.
 
 After a released import queue drains and no queued/running import jobs remain, the worker runs PostgreSQL `VACUUM (ANALYZE)` across the database when Medusa is using Postgres.
 

@@ -6618,6 +6618,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const cancelFeedback = useAsyncActionFeedbackMap();
   const rescueFeedback = useAsyncActionFeedbackMap();
   const processUploadsFeedback = useAsyncActionFeedback();
+  const clearStagedFeedback = useAsyncActionFeedback();
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const domainItems = useMemo(() => domainPickerItems(domains), [domains]);
@@ -6738,6 +6739,20 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
       setDropMessage(message);
     },
   });
+  const clearStagedUploads = useMutation({
+    mutationFn: api.clearStagedImportJobs,
+    onSuccess: (result) => {
+      clearStagedFeedback.showSuccess();
+      const cacheLabel = result.deleted_cache_files ? `; removed ${importFileCountLabel(result.deleted_cache_files)} from cache` : "";
+      setDropMessage(result.updated_count ? `Cleared ${importFileCountLabel(result.updated_count)}${cacheLabel}` : "No staged uploads");
+      refreshImportQueueData();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not clear staged uploads", error);
+      clearStagedFeedback.showError(message);
+      setDropMessage(message);
+    },
+  });
   const isDraggingFiles = dragDepth > 0;
   const importBusy = upload.isPending || duplicatePreflight.isPending;
   const duplicateFiles = duplicateCheck?.files.filter((file) => file.duplicate_in_upload || file.existing_documents.length > 0) || [];
@@ -6747,7 +6762,9 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
   const stagedJobs = jobs.filter((job) => job.status === "staged");
   const costPreviewJobs = jobs.filter(isImportCostPreviewJob);
   const processUploadsBusy = processStagedUploads.isPending;
-  const processUploadsDisabled = !stagedJobs.length || importBusy || processUploadsBusy;
+  const clearStagedBusy = clearStagedUploads.isPending;
+  const processUploadsDisabled = !stagedJobs.length || importBusy || processUploadsBusy || clearStagedBusy;
+  const clearStagedDisabled = !stagedJobs.length || importBusy || processUploadsBusy || clearStagedBusy;
 
   useEffect(() => {
     if (!jobs.some((job) => job.status === "complete")) return undefined;
@@ -6967,7 +6984,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             </span>
             <AsyncActionSlot busy={processUploadsBusy} feedback={processUploadsFeedback.feedback} label="Process uploads in progress">
               <button
-                className={asyncFeedbackClass("primary-button compact", processUploadsFeedback.feedback, processUploadsBusy)}
+                className={asyncFeedbackClass("primary-button", processUploadsFeedback.feedback, processUploadsBusy)}
                 data-disabled-reason={
                   processUploadsBusy
                     ? "staged uploads are already being released."
@@ -6982,6 +6999,27 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
               >
                 <Play className={processUploadsBusy ? "spin" : ""} size={15} />
                 Process Uploads
+              </button>
+            </AsyncActionSlot>
+            <AsyncActionSlot busy={clearStagedBusy} feedback={clearStagedFeedback.feedback} label="Clear staged uploads in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button compact", clearStagedFeedback.feedback, clearStagedBusy)}
+                data-disabled-reason={
+                  clearStagedBusy
+                    ? "staged uploads are already being cleared."
+                    : processUploadsBusy
+                      ? "staged uploads are already being released."
+                      : importBusy
+                        ? "uploads are still being checked or staged."
+                        : "there are no staged uploads to clear."
+                }
+                data-tooltip="Delete all staged uploads before processing and remove their managed cache files and stored originals."
+                disabled={clearStagedDisabled}
+                onClick={() => clearStagedUploads.mutate()}
+                type="button"
+              >
+                <Trash2 className={clearStagedBusy ? "spin" : ""} size={15} />
+                Clear Staged
               </button>
             </AsyncActionSlot>
           </div>
@@ -8717,7 +8755,7 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
           <div className="queue-title-actions">
             <AsyncActionSlot busy={processStagedUploads.isPending} feedback={processUploadsFeedback.feedback} label="Process uploads in progress">
               <button
-                className={asyncFeedbackClass("primary-button compact", processUploadsFeedback.feedback, processStagedUploads.isPending)}
+                className={asyncFeedbackClass("primary-button", processUploadsFeedback.feedback, processStagedUploads.isPending)}
                 data-disabled-reason={bulkActionBusy ? "another queue action is already running." : "there are no staged uploads ready to process."}
                 data-tooltip="Start all staged uploads through the import processing pipeline."
                 disabled={!stagedQueueJobs.length || bulkActionBusy}

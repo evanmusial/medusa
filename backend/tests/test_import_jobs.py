@@ -9,10 +9,15 @@ from sqlalchemy.orm import sessionmaker
 def make_session(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+    monkeypatch.setenv("GCS_BUCKET", "")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
+    from app.config import get_settings
     from app.database import Base
     import app.models  # noqa: F401
 
+    get_settings.cache_clear()
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
@@ -178,6 +183,53 @@ def test_process_staged_import_jobs_promotes_rows(monkeypatch, tmp_path):
             .count()
             == 1
         )
+
+
+def test_clear_staged_import_jobs_deletes_records_cache_and_original(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import clear_staged_import_jobs, list_import_jobs
+    from app.models import Document, ImportBatch, ImportJob, Project, ProjectItem
+    from app.services.document_cache import document_cache_path, register_document_cache
+
+    stored_original = tmp_path / "stored" / "staged.pdf"
+    stored_original.parent.mkdir(parents=True)
+    stored_original.write_bytes(b"original")
+
+    with Session() as db:
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        project = Project(name="Cleanup Project")
+        document = Document(
+            title="Staged",
+            original_filename="staged.pdf",
+            checksum_sha256="e" * 64,
+            processing_status="staged",
+            storage_status="local",
+            gcs_uri=str(stored_original),
+        )
+        job = ImportJob(batch=batch, document=document, status="staged", current_step="staged")
+        db.add_all([batch, project, document, job])
+        db.flush()
+        db.add(ProjectItem(project=project, document=document))
+        cache_path = document_cache_path(document.id)
+        cache_path.write_bytes(b"cache")
+        register_document_cache(document, cache_path, source="upload")
+        db.commit()
+        db.expunge_all()
+
+        result = clear_staged_import_jobs(object(), db)
+
+        assert result.matched_count == 1
+        assert result.updated_count == 1
+        assert result.deleted_documents == 1
+        assert result.deleted_cache_files == 1
+        assert result.deleted_original_objects == 1
+        assert db.query(Document).count() == 0
+        assert db.query(ImportJob).count() == 0
+        assert db.query(ImportBatch).count() == 0
+        assert db.query(ProjectItem).count() == 0
+        assert list_import_jobs(object(), db) == []
+        assert not cache_path.exists()
+        assert not stored_original.exists()
 
 
 def test_import_estimates_use_prior_estimate_accuracy(monkeypatch, tmp_path):
