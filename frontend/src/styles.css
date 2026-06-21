@@ -3598,12 +3598,35 @@ pre {
 .stash-title-line {
   min-width: 0;
   justify-content: space-between;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .stash-title-line strong {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.stash-row-status {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stash-library-match {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  color: var(--teal);
+  background: var(--teal-soft);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .stash-main code {

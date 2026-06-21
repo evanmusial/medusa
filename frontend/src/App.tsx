@@ -6821,6 +6821,14 @@ function stashStatusTone(stash: DoiStash): "neutral" | "good" | "warn" | "blue" 
   return "neutral";
 }
 
+function stashLibraryMatchLabel(stash: DoiStash) {
+  if (!stash.imported_document_id) return "";
+  if (stash.library_match_basis === "doi_title") return "Matched DOI + title";
+  if (stash.library_match_basis === "doi") return "Matched DOI";
+  if (stash.library_match_basis === "title") return "Matched title";
+  return "In library";
+}
+
 function stashSortLabel(key: StashSortKey) {
   if (key === "created") return "Created";
   if (key === "doi") return "DOI";
@@ -7009,12 +7017,28 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
             const importUnavailable = stash.status === "import_queued" || stash.status === "imported";
             const doiCopied = copiedKey === `stash-doi-${stash.id}`;
             const sciHubTitleCopied = copiedKey === `stash-sci-hub-title-${stash.id}`;
+            const libraryMatchLabel = stashLibraryMatchLabel(stash);
             return (
               <article key={stash.id} className="stash-row">
                 <div className="stash-main">
                   <div className="stash-title-line">
                     <strong>{stash.title || stash.doi}</strong>
-                    <StatusPill value={stashStatusLabel(stash)} tone={stashStatusTone(stash)} />
+                    <div className="stash-row-status">
+                      {libraryMatchLabel ? (
+                        <span
+                          className="stash-library-match"
+                          data-tooltip={
+                            stash.imported_document_title
+                              ? `This stash appears to match ${stash.imported_document_title} in the Library.`
+                              : "This stash appears to match a document already in the Library."
+                          }
+                        >
+                          <CheckCircle2 size={13} />
+                          {libraryMatchLabel}
+                        </span>
+                      ) : null}
+                      <StatusPill value={stashStatusLabel(stash)} tone={stashStatusTone(stash)} />
+                    </div>
                   </div>
                   <code>{stash.doi}</code>
                   <span>

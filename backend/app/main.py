@@ -212,6 +212,7 @@ from app.services.recommendations import (
 )
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import rebuild_document_search_text
+from app.services.verifier import normalized_title_similarity
 from app.services.tag_governance import (
     hybrid_tag_similarity,
     normalize_governance_status,
@@ -2539,39 +2540,119 @@ def sync_doi_stash_import_status(stash: DoiStash) -> bool:
     return stash.status != previous_status
 
 
+DOI_STASH_TITLE_MATCH_THRESHOLD = 0.94
+
+
+def _doi_stash_match_basis(stash: DoiStash, document: Document | None) -> str | None:
+    if not document:
+        return None
+    reasons: list[str] = []
+    stash_doi = normalize_doi(stash.doi)
+    document_doi = normalize_doi(document.doi)
+    if stash_doi and document_doi and stash_doi == document_doi:
+        reasons.append("doi")
+    if stash.title and normalized_title_similarity(stash.title, document.title) >= DOI_STASH_TITLE_MATCH_THRESHOLD:
+        reasons.append("title")
+    if "doi" in reasons and "title" in reasons:
+        return "doi_title"
+    return reasons[0] if reasons else None
+
+
+def _doi_stash_metadata_match_basis(stash: DoiStash) -> str | None:
+    metadata = stash.stash_metadata or {}
+    matched_import = metadata.get("matched_import") if isinstance(metadata, dict) else None
+    if not isinstance(matched_import, dict):
+        return None
+    reasons = matched_import.get("match_reasons")
+    if not isinstance(reasons, list):
+        source = matched_import.get("source")
+        if source == "library_doi_title_match":
+            return "doi_title"
+        if source == "library_title_match":
+            return "title"
+        if source == "library_doi_match":
+            return "doi"
+        return None
+    normalized_reasons = {str(reason) for reason in reasons}
+    if {"doi", "title"}.issubset(normalized_reasons):
+        return "doi_title"
+    if "doi" in normalized_reasons:
+        return "doi"
+    if "title" in normalized_reasons:
+        return "title"
+    return None
+
+
+def doi_stash_library_match_basis(stash: DoiStash) -> str | None:
+    return _doi_stash_metadata_match_basis(stash) or _doi_stash_match_basis(stash, stash.imported_document)
+
+
+def _best_doi_stash_title_match(documents: list[Document], stash: DoiStash) -> tuple[Document | None, float]:
+    if not stash.title:
+        return None, 0.0
+    best: tuple[float, Document | None] = (0.0, None)
+    for document in documents:
+        score = normalized_title_similarity(document.title, stash.title)
+        if score > best[0]:
+            best = (score, document)
+    return (best[1], best[0]) if best[0] >= DOI_STASH_TITLE_MATCH_THRESHOLD else (None, best[0])
+
+
 def sync_doi_stash_library_matches(db: Session, stashes: list[DoiStash]) -> bool:
-    matchable: dict[str, DoiStash] = {}
+    matchable_by_doi: dict[str, DoiStash] = {}
+    matchable_by_title: list[DoiStash] = []
     for stash in stashes:
         if stash.status == "import_queued":
             continue
         normalized = normalize_doi(stash.doi)
-        if normalized and not (stash.status == "imported" and stash.imported_document_id):
-            matchable.setdefault(normalized, stash)
-    if not matchable:
+        if stash.status == "imported" and stash.imported_document_id:
+            continue
+        if normalized:
+            matchable_by_doi.setdefault(normalized, stash)
+        if stash.title:
+            matchable_by_title.append(stash)
+    if not matchable_by_doi and not matchable_by_title:
         return False
 
     changed = False
     documents = (
         filter_library_visible_documents(db.query(Document))
-        .filter(Document.doi.isnot(None))
         .order_by(Document.updated_at.desc(), Document.created_at.desc(), Document.id)
         .all()
     )
-    for document in documents:
-        normalized = normalize_doi(document.doi)
-        stash = matchable.get(normalized or "")
-        if not stash:
+    documents_by_doi = {normalize_doi(document.doi): document for document in documents if normalize_doi(document.doi)}
+    matched_stash_ids: set[str] = set()
+    match_candidates: list[tuple[DoiStash, Document, str, float | None]] = []
+    for doi, stash in matchable_by_doi.items():
+        document = documents_by_doi.get(doi)
+        if not document:
             continue
+        basis = _doi_stash_match_basis(stash, document) or "doi"
+        match_candidates.append((stash, document, basis, None))
+        matched_stash_ids.add(stash.id)
+    for stash in matchable_by_title:
+        if stash.id in matched_stash_ids:
+            continue
+        document, score = _best_doi_stash_title_match(documents, stash)
+        if not document:
+            continue
+        match_candidates.append((stash, document, "title", score))
+        matched_stash_ids.add(stash.id)
+
+    for stash, document, basis, title_score in match_candidates:
         stash.imported_document_id = document.id
         stash.status = "imported"
         stash.imported_at = stash.imported_at or document.updated_at or document.created_at or utc_now()
+        match_reasons = ["doi", "title"] if basis == "doi_title" else [basis]
         metadata = dict(stash.stash_metadata or {})
         metadata["matched_import"] = {
             "document_id": document.id,
             "document_title": document.title,
-            "doi": normalized,
+            "doi": normalize_doi(document.doi),
+            "match_reasons": match_reasons,
+            "title_similarity": title_score,
             "matched_at": utc_now().isoformat(),
-            "source": "library_doi_match",
+            "source": f"library_{basis}_match",
         }
         stash.stash_metadata = metadata
         changed = True
@@ -2597,6 +2678,7 @@ def doi_stash_out(stash: DoiStash) -> DoiStashOut:
         recommendation_id=stash.recommendation_id,
         imported_document_id=stash.imported_document_id,
         imported_document_title=stash.imported_document.title if stash.imported_document else None,
+        library_match_basis=doi_stash_library_match_basis(stash),
         import_job_id=stash.import_job_id,
         import_job_status=stash.import_job.status if stash.import_job else None,
         status=stash.status,

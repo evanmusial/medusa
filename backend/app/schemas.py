@@ -563,6 +563,7 @@ class DoiStashOut(ApiModel):
     recommendation_id: str | None = None
     imported_document_id: str | None = None
     imported_document_title: str | None = None
+    library_match_basis: str | None = None
     import_job_id: str | None = None
     import_job_status: str | None = None
     status: str

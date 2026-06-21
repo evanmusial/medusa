@@ -803,6 +803,7 @@ export type DoiStash = {
   recommendation_id?: string | null;
   imported_document_id?: string | null;
   imported_document_title?: string | null;
+  library_match_basis?: "doi" | "title" | "doi_title" | string | null;
   import_job_id?: string | null;
   import_job_status?: string | null;
   status: string;
