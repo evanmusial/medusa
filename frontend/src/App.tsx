@@ -21,6 +21,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
+  Activity,
   Archive,
   AlertTriangle,
   ArrowDown,
@@ -40,6 +41,8 @@ import {
   Cloud,
   CornerDownRight,
   Copy,
+  Cpu,
+  Database,
   Download,
   Edit3,
   Eraser,
@@ -56,6 +59,7 @@ import {
   Inbox,
   Italic,
   Library,
+  HardDrive,
   ListChecks,
   List,
   ListOrdered,
@@ -71,15 +75,18 @@ import {
   RotateCcw,
   Save,
   Search,
+  Server,
   Settings,
   SlidersHorizontal,
   Sparkles,
   Sun,
   Tags,
+  Timer,
   Trash2,
   Underline,
   Upload,
   UploadCloud,
+  Wrench,
   X,
 } from "lucide-react";
 import { api } from "./lib/api";
@@ -94,7 +101,12 @@ import type {
   ConcordanceCapability,
   ConcordanceJob,
   ConcordanceRun,
+  ConcordanceRunEstimate,
+  ContainerFootprintStatus,
+  ContainerRuntimeVersion,
+  ContainerRestartResult,
   Dashboard,
+  DatabaseMaintenanceStatus,
   DocumentComposition,
   DocumentCompositionEntry,
   DocumentDetail,
@@ -106,6 +118,8 @@ import type {
   Domain,
   DomainUpdatePayload,
   DuplicateImportStrategy,
+  HAProxyServiceStat,
+  HAProxyStatsStatus,
   ImportDuplicateCheck,
   ImportDuplicateFile,
   ImportJob,
@@ -128,7 +142,7 @@ import type {
   TagOptimizationSuggestion,
 } from "./types";
 
-type View = "library" | "domains" | "projects" | "tags" | "queue" | "notes" | "import" | "stashes" | "budget" | "settings";
+type View = "library" | "domains" | "projects" | "tags" | "queue" | "notes" | "import" | "stashes" | "budget" | "utilities" | "settings";
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
@@ -232,6 +246,8 @@ const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
+const MEDUSA_FRONTEND_NODE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_NODE_VERSION || "unknown";
+const MEDUSA_FRONTEND_VITE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_VITE_VERSION || "unknown";
 const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
@@ -312,6 +328,7 @@ const navItems: WorkspaceNavItem[] = [
   { id: "import", label: "Import", icon: Upload, shortcut: "I" },
   { id: "stashes", label: "Stashes", icon: Bookmark, shortcut: "A" },
   { id: "budget", label: "Budget & Costs", icon: CircleDollarSign, shortcut: "B" },
+  { id: "utilities", label: "Utilities", icon: Wrench, shortcut: "U" },
   { id: "settings", label: "Settings", icon: Settings, shortcut: "S", align: "end" },
 ];
 const navShortcutByKey = new Map(navItems.map((item) => [item.shortcut.toLowerCase(), item.id]));
@@ -326,6 +343,7 @@ const VIEW_PATHS: Record<View, string> = {
   import: "/import",
   stashes: "/stashes",
   budget: "/budget",
+  utilities: "/utilities",
   settings: "/settings",
 };
 
@@ -1415,6 +1433,38 @@ function formatFileSize(bytes?: number | null) {
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+function formatDatabaseSize(bytes?: number | null) {
+  if (bytes === undefined || bytes === null) return "Unavailable";
+  if (bytes <= 0) return "0.00 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(2)} ${units[unitIndex]}`;
+}
+
+function formatPercent(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "";
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}%`;
+}
+
+function formatCpuLimit(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "No limit";
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, minimumFractionDigits: value < 1 ? 2 : 0 }).format(value)} cores`;
+}
+
+function waitMs(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isLikelyRestartInterruption(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
+  return message.includes("failed to fetch") || message.includes("load failed") || message.includes("network") || message.includes("abort");
+}
+
 function isSupportedImportFile(file: File) {
   const type = (file.type || "").split(";")[0].toLowerCase();
   const name = file.name.toLowerCase();
@@ -1548,6 +1598,8 @@ function pipelineTone(entry: DocumentCompositionEntry) {
   if (entry.status === "warning") return "warning";
   if (entry.record_kind === "llm") return "llm";
   if (entry.record_kind === "embedding") return "embedding";
+  if (entry.record_kind === "concordance") return "concordance";
+  if (entry.record_kind === "estimate_step") return "estimate";
   if (entry.record_kind === "edit") return "edit";
   return "local";
 }
@@ -4500,21 +4552,42 @@ function DocumentPanelContent({
     onError: (error) => setHistoryRestoreError(actionFailureMessage("Could not restore history version", error)),
   });
   const runConcordance = useMutation({
-    mutationFn: () =>
-      startConcordanceRun({
+    mutationFn: async () => {
+      const estimate = await api.estimateConcordanceRun({
+        scope_type: "documents",
+        scope_data: { document_ids: [document.id] },
+      });
+      if (estimate.planned_jobs <= 0) {
+        window.alert(
+          `Document Concordance estimate: ${formatUsd(estimate.estimated_cost_usd)}.\n\nNo jobs need to run because the selected work is already current or same-model no-op.`,
+        );
+        return { run: null, skipped: true };
+      }
+      const ok = window.confirm(
+        `Start Document Concordance?\n\nEstimated cloud cost: ${formatUsd(estimate.estimated_cost_usd)}\nJobs to run: ${estimate.planned_jobs}\nNo-op or skipped: ${estimate.skipped_jobs}`,
+      );
+      if (!ok) return { run: null, skipped: false };
+      const run = await startConcordanceRun({
         backgroundDetail: document.title,
         backgroundLabel: "Document Concordance",
         label: `Document Concordance: ${document.title}`,
         scope_type: "documents",
         scope_data: { document_ids: [document.id] },
         documentId: document.id,
-      }),
-    onSuccess: (run) => {
+      });
+      return { run, skipped: false };
+    },
+    onSuccess: ({ run, skipped }) => {
+      if (!run) {
+        if (skipped) runConcordanceFeedback.showSuccess();
+        return;
+      }
       if (run.total_jobs > 0) setDocumentConcordanceRunId(run.id);
       else runConcordanceFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-estimate"] });
     },
     onError: (error) => {
       setDocumentConcordanceRunId(null);
@@ -5868,6 +5941,114 @@ function DocumentPanelContent({
       )}
     </section>
   );
+  const readerButton = onOpenReader ? (
+    <button
+      className="secondary-button"
+      data-disabled-reason={readerExpanded ? "expanded Reader mode is already open." : undefined}
+      data-tooltip={readerExpanded ? "Expanded Reader mode is already open." : "Expand this document into full Reader mode."}
+      disabled={readerExpanded}
+      onClick={readerExpanded ? undefined : onOpenReader}
+      type="button"
+    >
+      <BookOpen size={15} />
+      Reader
+    </button>
+  ) : null;
+  const editButton = (
+    <button
+      className="secondary-button"
+      data-tooltip={editing ? "Close the document metadata correction form without saving." : "Open the document metadata correction form."}
+      onClick={toggleDocumentEditing}
+      type="button"
+    >
+      {editing ? <X size={15} /> : <Edit3 size={15} />}
+      {editing ? "Cancel" : "Edit"}
+    </button>
+  );
+  const linkButton = (
+    <button
+      className="secondary-button"
+      data-tooltip="Copy a bookmarkable link that opens Library with this document focused."
+      onClick={() => copyToClipboard("document-link", documentLinkUrl(document.id))}
+      type="button"
+    >
+      {copiedKey === "document-link" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+      {copiedKey === "document-link" ? "Copied" : "Link"}
+    </button>
+  );
+  const relatedButton = (
+    <button
+      className="secondary-button"
+      aria-expanded={recommendationsOpen}
+      data-tooltip={document.doi ? "Open related-paper recommendations for this DOI-bearing document." : "Open the recommendations panel to see why related papers are unavailable."}
+      onClick={() => setRecommendationsOpen((value) => !value)}
+      type="button"
+    >
+      <BookSearchIcon size={15} />
+      Related
+    </button>
+  );
+  const compositionButton = (
+    <button
+      className="secondary-button"
+      data-tooltip="Open this document's cost composition, provider spend, local processing time, issues, and pipeline chart."
+      onClick={() => setCompositionOpen(true)}
+      type="button"
+    >
+      <PieChart size={15} />
+      Composition
+    </button>
+  );
+  const concordButton = (
+    <AsyncActionSlot busy={documentConcordanceBusy} feedback={runConcordanceFeedback.feedback} label="Document Concordance in progress">
+      <button
+        className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback, documentConcordanceBusy)}
+        data-disabled-reason={documentConcordanceBusyReason}
+        data-tooltip="Queue a document-scoped Concordance Run to bring this document up to the current selected capabilities."
+        onClick={() => runConcordance.mutate()}
+        disabled={documentConcordanceBusy}
+        type="button"
+      >
+        <RefreshCw className={documentConcordanceBusy ? "spin" : ""} size={15} />
+        {documentConcordanceBusy ? "Concording" : "Concord"}
+      </button>
+    </AsyncActionSlot>
+  );
+  const downloadOriginalLink = (
+    <a
+      className="secondary-button"
+      data-tooltip="Download the authenticated original PDF using the Settings Download Naming template."
+      href={`/api/documents/${document.id}/original?download=1`}
+      download
+    >
+      <Download size={15} />
+      Download Original
+    </a>
+  );
+  const openOriginalLink = (
+    <a
+      className="secondary-button"
+      data-tooltip="Open the authenticated original PDF in a new browser tab."
+      href={`/api/documents/${document.id}/original`}
+      target="_blank"
+      rel="noreferrer"
+    >
+      <FileSearch size={15} />
+      Open Original
+    </a>
+  );
+  const closeReaderButton =
+    onCloseReader && readerExpanded ? (
+      <button
+        className="secondary-button reader-close-action"
+        data-tooltip="Close expanded Reader mode and return to the normal Library panes."
+        onClick={onCloseReader}
+        type="button"
+      >
+        <X size={15} />
+        Close
+      </button>
+    ) : null;
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
@@ -5881,91 +6062,39 @@ function DocumentPanelContent({
           <PriorityPill value={document.priority} />
         </div>
       </div>
-      <div className="detail-actions">
-        <button
-          className="secondary-button"
-          data-tooltip={editing ? "Close the document metadata correction form without saving." : "Open the document metadata correction form."}
-          onClick={toggleDocumentEditing}
-        >
-          {editing ? <X size={15} /> : <Edit3 size={15} />}
-          {editing ? "Cancel" : "Edit"}
-        </button>
-        <button
-          className="secondary-button"
-          data-tooltip="Copy a bookmarkable link that opens Library with this document focused."
-          onClick={() => copyToClipboard("document-link", documentLinkUrl(document.id))}
-          type="button"
-        >
-          {copiedKey === "document-link" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-          {copiedKey === "document-link" ? "Copied" : "Link"}
-        </button>
-        <AsyncActionSlot busy={documentConcordanceBusy} feedback={runConcordanceFeedback.feedback} label="Document Concordance in progress">
-          <button
-            className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback, documentConcordanceBusy)}
-            data-disabled-reason={documentConcordanceBusyReason}
-            data-tooltip="Queue a document-scoped Concordance Run to bring this document up to the current selected capabilities."
-            onClick={() => runConcordance.mutate()}
-            disabled={documentConcordanceBusy}
-          >
-            <RefreshCw className={documentConcordanceBusy ? "spin" : ""} size={15} />
-            {documentConcordanceBusy ? "Concording" : "Concord"}
-          </button>
-        </AsyncActionSlot>
-        <button
-          className="secondary-button"
-          data-tooltip="Open this document's cost composition, provider spend, local processing time, issues, and pipeline chart."
-          onClick={() => setCompositionOpen(true)}
-          type="button"
-        >
-          <PieChart size={15} />
-          Composition
-        </button>
-        {onOpenReader && !readerExpanded ? (
-          <button className="secondary-button" data-tooltip="Expand this document into full Reader mode." onClick={onOpenReader} type="button">
-            <BookOpen size={15} />
-            Reader
-          </button>
-        ) : null}
-        <button
-          className="secondary-button"
-          aria-expanded={recommendationsOpen}
-          data-tooltip={document.doi ? "Open related-paper recommendations for this DOI-bearing document." : "Open the recommendations panel to see why related papers are unavailable."}
-          onClick={() => setRecommendationsOpen((value) => !value)}
-          type="button"
-        >
-          <BookSearchIcon size={15} />
-          Related
-        </button>
-        <a
-          className="secondary-button"
-          data-tooltip="Open the authenticated original PDF in a new browser tab."
-          href={`/api/documents/${document.id}/original`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          <FileSearch size={15} />
-          Open Original
-        </a>
-        <a
-          className="secondary-button"
-          data-tooltip="Download the authenticated original PDF using the Settings Download Naming template."
-          href={`/api/documents/${document.id}/original?download=1`}
-          download
-        >
-          <Download size={15} />
-          Download Original
-        </a>
-        {onCloseReader && readerExpanded ? (
-          <button
-            className="secondary-button reader-close-action"
-            data-tooltip="Close expanded Reader mode and return to the normal Library panes."
-            onClick={onCloseReader}
-            type="button"
-          >
-            <X size={15} />
-            Close
-          </button>
-        ) : null}
+      <div className={`detail-actions ${readerExpanded ? "detail-actions-expanded" : ""}`}>
+        {readerExpanded ? (
+          <>
+            <div className="detail-actions-row">
+              {readerButton}
+              {editButton}
+              {linkButton}
+              {relatedButton}
+              {compositionButton}
+              {concordButton}
+              {downloadOriginalLink}
+              {openOriginalLink}
+            </div>
+            {closeReaderButton}
+          </>
+        ) : (
+          <>
+            <div className="detail-actions-row">
+              {readerButton}
+              {editButton}
+              {linkButton}
+            </div>
+            <div className="detail-actions-row">
+              {relatedButton}
+              {compositionButton}
+              {concordButton}
+            </div>
+            <div className="detail-actions-row">
+              {downloadOriginalLink}
+              {openOriginalLink}
+            </div>
+          </>
+        )}
       </div>
       {compositionOpen ? (
         <CompositionDialog
@@ -10237,6 +10366,623 @@ function BudgetView() {
   );
 }
 
+function UtilitiesView() {
+  const queryClient = useQueryClient();
+  const [lastResult, setLastResult] = useState("");
+  const [restartPhase, setRestartPhase] = useState<"idle" | "requesting" | "waiting" | "healthy" | "failed">("idle");
+  const [restartMessage, setRestartMessage] = useState("");
+  const restartPollTokenRef = useRef(0);
+  const compactFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const optimizeFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const clearCacheFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const restartFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const maintenanceStatus = useQuery({
+    queryKey: ["database-maintenance-status"],
+    queryFn: api.databaseMaintenanceStatus,
+    refetchInterval: 10000,
+  });
+  const containerStatus = useQuery({
+    queryKey: ["container-footprint-status"],
+    queryFn: api.containerFootprintStatus,
+    refetchInterval: 30000,
+  });
+  const haproxyStatus = useQuery({
+    queryKey: ["haproxy-status"],
+    queryFn: api.haproxyStatus,
+    refetchInterval: 10000,
+  });
+  const status: DatabaseMaintenanceStatus | undefined = maintenanceStatus.data;
+  const container: ContainerFootprintStatus | undefined = containerStatus.data;
+  const haproxy: HAProxyStatsStatus | undefined = haproxyStatus.data;
+  const refreshMaintenanceQueries = (result: DatabaseMaintenanceStatus & { message?: string; database_size_after_bytes?: number | null }) => {
+    setLastResult(result.message || "");
+    queryClient.setQueryData<DatabaseMaintenanceStatus>(["database-maintenance-status"], {
+      import_cache_count: result.import_cache_count,
+      hidden_project_item_count: result.hidden_project_item_count,
+      terminal_import_job_count: result.terminal_import_job_count,
+      orphan_import_job_count: result.orphan_import_job_count,
+      database_size_bytes: result.database_size_after_bytes ?? result.database_size_bytes,
+    });
+    void queryClient.invalidateQueries({ queryKey: ["database-maintenance-status"] });
+    void queryClient.invalidateQueries({ queryKey: ["document-cache-status"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    void queryClient.invalidateQueries({ queryKey: ["project"] });
+    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["container-footprint-status"] });
+  };
+  const pollBackendHealth = useCallback(
+    async (result?: ContainerRestartResult) => {
+      const token = Date.now();
+      restartPollTokenRef.current = token;
+      setRestartPhase("waiting");
+      setRestartMessage(result?.message || "Backend restart requested. Waiting for health.");
+      await waitMs(Math.max(1000, (result?.poll_after_seconds ?? 2) * 1000));
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && restartPollTokenRef.current === token) {
+        try {
+          const response = await fetch(`/api/health?restart_check=${Date.now()}`, {
+            cache: "no-store",
+            credentials: "include",
+          });
+          if (response.ok) {
+            const body = await response.json().catch(() => null);
+            if (!body || body.status === "ok") {
+              setRestartPhase("healthy");
+              setRestartMessage("Backend is healthy again.");
+              restartFeedback.showSuccess();
+              void queryClient.invalidateQueries({ queryKey: ["container-footprint-status"] });
+              void queryClient.invalidateQueries({ queryKey: ["database-maintenance-status"] });
+              void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+              window.setTimeout(() => {
+                if (restartPollTokenRef.current === token) {
+                  setRestartPhase("idle");
+                  setRestartMessage("");
+                }
+              }, 3000);
+              return;
+            }
+          }
+        } catch {
+          // Backend is expected to be temporarily unavailable during restart.
+        }
+        await waitMs(1000);
+      }
+      if (restartPollTokenRef.current === token) {
+        setRestartPhase("failed");
+        setRestartMessage("Backend health check timed out.");
+        restartFeedback.showError("Backend did not report healthy within 60 seconds.");
+      }
+    },
+    [queryClient, restartFeedback],
+  );
+  const compactDatabase = useMutation({
+    mutationFn: api.compactDatabase,
+    onSuccess: (result) => {
+      compactFeedback.showSuccess();
+      refreshMaintenanceQueries(result);
+    },
+    onError: (error) => compactFeedback.showError(actionFailureMessage("Could not compact database", error)),
+  });
+  const optimizeDatabase = useMutation({
+    mutationFn: api.optimizeDatabase,
+    onSuccess: (result) => {
+      optimizeFeedback.showSuccess();
+      refreshMaintenanceQueries(result);
+    },
+    onError: (error) => optimizeFeedback.showError(actionFailureMessage("Could not optimize database", error)),
+  });
+  const clearImportCache = useMutation({
+    mutationFn: api.clearImportCache,
+    onSuccess: (result) => {
+      clearCacheFeedback.showSuccess();
+      refreshMaintenanceQueries(result);
+    },
+    onError: (error) => clearCacheFeedback.showError(actionFailureMessage("Could not clear import cache", error)),
+  });
+  const restartContainer = useMutation({
+    mutationFn: api.restartContainer,
+    onMutate: () => {
+      setRestartPhase("requesting");
+      setRestartMessage("Requesting backend container restart.");
+    },
+    onSuccess: (result) => {
+      void pollBackendHealth(result);
+    },
+    onError: (error) => {
+      if (isLikelyRestartInterruption(error)) {
+        void pollBackendHealth({
+          status: "scheduled",
+          message: "Restart request was interrupted. Waiting for backend health.",
+          restart_mode: "process_exit",
+          poll_after_seconds: 1,
+        });
+        return;
+      }
+      const message = actionFailureMessage("Could not restart backend container", error);
+      setRestartPhase("failed");
+      setRestartMessage(message);
+      restartFeedback.showError(message);
+    },
+  });
+  const databaseBusy = compactDatabase.isPending || optimizeDatabase.isPending || clearImportCache.isPending;
+  const restartBusy = restartContainer.isPending || restartPhase === "requesting" || restartPhase === "waiting";
+  const busy = databaseBusy || restartBusy;
+  const importCacheCount = status?.import_cache_count ?? 0;
+  const cacheCountLabel = maintenanceStatus.isFetching && !status ? "..." : formatMetric(importCacheCount);
+  const databaseSizeLabel = maintenanceStatus.isFetching && !status ? "..." : formatDatabaseSize(status?.database_size_bytes);
+  const utilitiesRefreshing = maintenanceStatus.isFetching || containerStatus.isFetching || haproxyStatus.isFetching;
+  const memoryPercent =
+    container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null && container?.memory_limit_bytes
+      ? (container.memory_current_bytes / container.memory_limit_bytes) * 100
+      : null;
+  const memoryLimitDetail = container?.memory_limit_bytes
+    ? `${memoryPercent !== null ? `${formatPercent(memoryPercent)} of ` : ""}${formatDatabaseSize(container.memory_limit_bytes)}`
+    : "No cgroup limit";
+  const memoryDetail = [
+    memoryLimitDetail,
+    container?.memory_peak_bytes ? `Peak ${formatDatabaseSize(container.memory_peak_bytes)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+  const cpuDetail = container?.cpu_usage_seconds !== undefined && container?.cpu_usage_seconds !== null ? `CPU time ${formatDuration(container.cpu_usage_seconds) || "0s"}` : "CPU time unavailable";
+  const dataFilesystemDetail = container?.data_filesystem
+    ? `${formatDatabaseSize(container.data_filesystem.free_bytes)} free of ${formatDatabaseSize(container.data_filesystem.total_bytes)}`
+    : "Filesystem unavailable";
+  const processDetail = [
+    container?.thread_count !== undefined && container?.thread_count !== null ? `${formatMetric(container.thread_count)} threads` : "",
+    container?.python_version ? `Python ${container.python_version}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+  const runtimeVersionRows: ContainerRuntimeVersion[] = [
+    ...(container?.runtime_versions || []),
+    {
+      name: "Frontend Node.js",
+      version: MEDUSA_FRONTEND_NODE_VERSION,
+      source: "frontend image node:26-slim",
+      status: "reported",
+    },
+    {
+      name: "Vite",
+      version: MEDUSA_FRONTEND_VITE_VERSION,
+      source: "frontend package vite",
+      status: "reported",
+    },
+    {
+      name: "Frontend build",
+      version: MEDUSA_BUILD_VERSION,
+      source: "Vite build stamp",
+      status: "reported",
+    },
+  ];
+  const proxyRows = haproxy?.services || [];
+  const tlsFrontend = proxyRows.find((row) => row.proxy_name === "medusa_https" && row.service_name === "FRONTEND");
+  const proxyBackend = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.service_name === "BACKEND");
+  const proxyServer = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.kind === "server");
+  const proxyVisibleRows = proxyRows
+    .filter((row) => ["medusa_mux", "medusa_https", "medusa_http_redirect", "medusa_frontend"].includes(row.proxy_name))
+    .slice(0, 8);
+  const proxyStatusLabel = haproxyStatus.isFetching && !haproxy ? "Refreshing" : haproxy?.available ? "Online" : "Unavailable";
+  const proxyRouteDetail = proxyServer
+    ? `${proxyServer.proxy_name}/${proxyServer.service_name}`
+    : proxyBackend
+      ? `${proxyBackend.proxy_name}/BACKEND`
+      : "frontend:3737";
+  const proxyCheckDetail = proxyServer?.check_status
+    ? `${proxyServer.check_status}${proxyServer.check_code ? ` ${proxyServer.check_code}` : ""}${
+        proxyServer.check_duration_ms !== undefined && proxyServer.check_duration_ms !== null ? ` in ${proxyServer.check_duration_ms}ms` : ""
+      }`
+    : proxyBackend?.status || "No check yet";
+  const compactDisabledReason = compactDatabase.isPending
+    ? "database compaction is already running."
+    : busy
+      ? "another database utility is already running."
+      : "";
+  const optimizeDisabledReason = optimizeDatabase.isPending
+    ? "database optimization is already running."
+    : busy
+      ? "another database utility is already running."
+      : "";
+  const clearDisabledReason = clearImportCache.isPending
+    ? "import cache cleanup is already running."
+    : busy
+      ? "another database utility is already running."
+      : importCacheCount <= 0
+        ? "no hidden import cache rows are available to clear."
+        : "";
+  const restartDisabledReason = restartBusy
+    ? "backend container restart is already in progress."
+    : databaseBusy
+      ? "a database utility is already running."
+      : !container?.restart_available
+        ? container?.restart_note || "backend container restart is not available in this runtime."
+        : "";
+
+  return (
+    <section className="workbench utilities-workbench">
+      <div className="utilities-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Utilities</h2>
+            <span>{utilitiesRefreshing ? "Refreshing utility status" : "Database and container"}</span>
+          </div>
+          <Wrench size={20} />
+        </div>
+        <section className="utilities-section">
+          <div className="panel-title-row utility-section-title">
+            <div>
+              <h3>Database</h3>
+              <span>{lastResult || "Ready"}</span>
+            </div>
+            <Database size={19} />
+          </div>
+          <div className="utilities-status-grid">
+            <div>
+              <span>Import cache</span>
+              <strong>{cacheCountLabel}</strong>
+            </div>
+            <div>
+              <span>Hidden project rows</span>
+              <strong>{formatMetric(status?.hidden_project_item_count)}</strong>
+            </div>
+            <div>
+              <span>Terminal jobs</span>
+              <strong>{formatMetric((status?.terminal_import_job_count || 0) + (status?.orphan_import_job_count || 0))}</strong>
+            </div>
+          </div>
+          <div className="database-size-readout">
+            <span>Current database size on disk</span>
+            <strong>{databaseSizeLabel}</strong>
+          </div>
+          <div className="utilities-action-grid">
+            <div className="utility-action-block">
+              <div>
+                <strong>Compact Database</strong>
+                <span>{databaseSizeLabel}</span>
+              </div>
+              <AsyncActionSlot busy={compactDatabase.isPending} feedback={compactFeedback.feedback} label="Database compaction in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button", compactFeedback.feedback, compactDatabase.isPending)}
+                  data-disabled-reason={compactDisabledReason}
+                  data-tooltip="Run PostgreSQL VACUUM FULL with ANALYZE to reclaim database space where possible."
+                  disabled={busy}
+                  onClick={() => compactDatabase.mutate()}
+                  type="button"
+                >
+                  <Archive className={compactDatabase.isPending ? "spin" : ""} size={16} />
+                  {compactDatabase.isPending ? "Compacting" : "Compact Database"}
+                </button>
+              </AsyncActionSlot>
+            </div>
+            <div className="utility-action-block">
+              <div>
+                <strong>Optimize Database</strong>
+                <span>{maintenanceStatus.isFetching ? "Refreshing" : "Statistics"}</span>
+              </div>
+              <AsyncActionSlot busy={optimizeDatabase.isPending} feedback={optimizeFeedback.feedback} label="Database optimization in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button", optimizeFeedback.feedback, optimizeDatabase.isPending)}
+                  data-disabled-reason={optimizeDisabledReason}
+                  data-tooltip="Run PostgreSQL ANALYZE to refresh planner statistics across database tables."
+                  disabled={busy}
+                  onClick={() => optimizeDatabase.mutate()}
+                  type="button"
+                >
+                  <Gauge className={optimizeDatabase.isPending ? "spin" : ""} size={16} />
+                  {optimizeDatabase.isPending ? "Optimizing" : "Optimize Database"}
+                </button>
+              </AsyncActionSlot>
+            </div>
+            <div className="utility-action-block">
+              <div>
+                <strong>Clear Import Cache</strong>
+                <span>{`${cacheCountLabel} cached ${importCacheCount === 1 ? "item" : "items"}`}</span>
+              </div>
+              <AsyncActionSlot busy={clearImportCache.isPending} feedback={clearCacheFeedback.feedback} label="Import cache cleanup in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button danger", clearCacheFeedback.feedback, clearImportCache.isPending)}
+                  data-disabled-reason={clearDisabledReason}
+                  data-tooltip="Remove hidden terminal import rows, stale project links, and managed cache files that no active Library or Queue list shows."
+                  disabled={busy || importCacheCount <= 0}
+                  onClick={() => clearImportCache.mutate()}
+                  type="button"
+                >
+                  <Trash2 className={clearImportCache.isPending ? "spin" : ""} size={16} />
+                  {clearImportCache.isPending ? "Clearing" : `Clear Import Cache (${cacheCountLabel})`}
+                </button>
+              </AsyncActionSlot>
+            </div>
+          </div>
+        </section>
+        <section className="utilities-section">
+          <div className="panel-title-row utility-section-title">
+            <div>
+              <h3>Container Footprint</h3>
+              <span>{containerStatus.isFetching ? "Refreshing runtime stats" : container?.containerized ? "Docker runtime" : "Local runtime"}</span>
+            </div>
+            <Server size={19} />
+          </div>
+          <div className="container-footprint-grid">
+            <div className="container-footprint-card">
+              <Activity size={16} />
+              <div>
+                <span>Memory</span>
+                <strong>{formatDatabaseSize(container?.memory_current_bytes)}</strong>
+                <em>{memoryDetail}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Cpu size={16} />
+              <div>
+                <span>CPU quota</span>
+                <strong>{formatCpuLimit(container?.cpu_limit_cores)}</strong>
+                <em>{cpuDetail}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <HardDrive size={16} />
+              <div>
+                <span>Data volume</span>
+                <strong>{formatDatabaseSize(container?.data_dir_size_bytes)}</strong>
+                <em>{dataFilesystemDetail}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Timer size={16} />
+              <div>
+                <span>Service uptime</span>
+                <strong>{formatDuration(container?.process_uptime_seconds) || "0s"}</strong>
+                <em>{container?.hostname || "Hostname unavailable"}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Server size={16} />
+              <div>
+                <span>Processes</span>
+                <strong>{container?.process_count !== undefined && container?.process_count !== null ? formatMetric(container.process_count) : "Unavailable"}</strong>
+                <em>{processDetail || "Runtime details unavailable"}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Database size={16} />
+              <div>
+                <span>Docker engine</span>
+                <strong>{container?.docker_socket_available ? "Socket mounted" : "Unavailable"}</strong>
+                <em>{container?.docker_engine_note || "Waiting for runtime status"}</em>
+              </div>
+            </div>
+          </div>
+          <div className="container-control-row">
+            <div>
+              <strong>Restart Backend Container</strong>
+              <span>{restartMessage || container?.restart_note || "Restart the backend and wait for health."}</span>
+            </div>
+            <AsyncActionSlot busy={restartBusy} feedback={restartFeedback.feedback} label="Backend container restart in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button", restartFeedback.feedback, restartBusy)}
+                data-disabled-reason={restartDisabledReason}
+                data-tooltip="Restart the backend container, keep this page open, and poll backend health until Medusa is responding again."
+                disabled={databaseBusy || restartBusy || !container?.restart_available}
+                onClick={() => restartContainer.mutate()}
+                type="button"
+              >
+                <RotateCcw className={restartBusy ? "spin" : ""} size={16} />
+                {restartBusy ? "Restarting" : restartPhase === "healthy" ? "Healthy" : "Restart Backend"}
+              </button>
+            </AsyncActionSlot>
+          </div>
+          <div className="container-version-list">
+            {runtimeVersionRows.length ? (
+              runtimeVersionRows.map((row) => <ContainerVersionRow key={`${row.name}-${row.source}`} row={row} />)
+            ) : (
+              <div className="container-path-empty">Loading runtime versions</div>
+            )}
+          </div>
+          <div className="container-path-list">
+            {container?.paths?.length ? (
+              container.paths.map((path) => (
+                <div className="container-path-row" key={`${path.label}-${path.path}`}>
+                  <div>
+                    <strong>{path.label}</strong>
+                    <span>{path.exists ? path.path : `${path.path} not present`}</span>
+                  </div>
+                  <div>
+                    <strong>{formatDatabaseSize(path.size_bytes)}</strong>
+                    <span>{`${formatMetric(path.file_count)} files, ${formatMetric(path.directory_count)} dirs`}</span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="container-path-empty">Loading footprint</div>
+            )}
+          </div>
+        </section>
+        <section className="utilities-section">
+          <div className="panel-title-row utility-section-title">
+            <div>
+              <h3>HAProxy Statistics</h3>
+              <span>{haproxyStatus.isFetching ? "Refreshing proxy stats" : haproxy?.message || "Waiting for proxy stats"}</span>
+            </div>
+            <Gauge size={19} />
+          </div>
+          <div className="container-footprint-grid">
+            <div className="container-footprint-card">
+              <Server size={16} />
+              <div>
+                <span>TLS endpoint</span>
+                <strong>{proxyStatusLabel}</strong>
+                <em>{haproxy?.public_url || "https://medusa.home.musial.io:3737"}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Activity size={16} />
+              <div>
+                <span>Sessions</span>
+                <strong>{formatMetric(haproxy?.total_current_sessions || tlsFrontend?.current_sessions || 0)}</strong>
+                <em>{`${formatMetric(haproxy?.total_sessions || tlsFrontend?.total_sessions || 0)} total`}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <HardDrive size={16} />
+              <div>
+                <span>Traffic</span>
+                <strong>{formatDatabaseSize(haproxy?.total_bytes_out)}</strong>
+                <em>{`${formatDatabaseSize(haproxy?.total_bytes_in)} in`}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Gauge size={16} />
+              <div>
+                <span>Frontend</span>
+                <strong>{tlsFrontend?.status || (haproxy?.available ? "OPEN" : "Unavailable")}</strong>
+                <em>{tlsFrontend ? `${tlsFrontend.proxy_name}/${tlsFrontend.service_name}` : "medusa_https"}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <Cpu size={16} />
+              <div>
+                <span>Backend</span>
+                <strong>{proxyServer?.status || proxyBackend?.status || "Unknown"}</strong>
+                <em>{proxyRouteDetail}</em>
+              </div>
+            </div>
+            <div className="container-footprint-card">
+              <AlertTriangle size={16} />
+              <div>
+                <span>Checks / errors</span>
+                <strong>{formatMetric(haproxy?.total_errors || 0)}</strong>
+                <em>{proxyCheckDetail}</em>
+              </div>
+            </div>
+          </div>
+          <div className="haproxy-stat-list">
+            {proxyVisibleRows.length ? (
+              proxyVisibleRows.map((row) => <HAProxyStatRow key={`${row.proxy_name}-${row.service_name}`} row={row} />)
+            ) : (
+              <div className="container-path-empty">Loading proxy statistics</div>
+            )}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function ContainerVersionRow({ row }: { row: ContainerRuntimeVersion }) {
+  return (
+    <div className={`container-version-row ${row.status === "unavailable" ? "unavailable" : ""}`}>
+      <div>
+        <strong>{row.name}</strong>
+        <span>{row.source}</span>
+      </div>
+      <div>
+        <strong>{row.version}</strong>
+        <span>{row.note || row.status}</span>
+      </div>
+    </div>
+  );
+}
+
+function HAProxyStatRow({ row }: { row: HAProxyServiceStat }) {
+  const errorCount =
+    row.denied_requests +
+    row.denied_responses +
+    row.error_requests +
+    row.error_connections +
+    row.error_responses +
+    row.retries +
+    row.redispatches;
+  return (
+    <div className="haproxy-stat-row">
+      <div>
+        <strong>{row.proxy_name}</strong>
+        <span>{`${row.service_name} / ${row.kind}`}</span>
+      </div>
+      <div>
+        <strong>{row.status || "n/a"}</strong>
+        <span>{`${formatMetric(row.current_sessions)} active, ${formatMetric(row.total_sessions)} total`}</span>
+      </div>
+      <div>
+        <strong>{formatDatabaseSize(row.bytes_out)}</strong>
+        <span>{`${formatDatabaseSize(row.bytes_in)} in`}</span>
+      </div>
+      <div>
+        <strong>{formatMetric(errorCount)}</strong>
+        <span>{row.check_status || "errors"}</span>
+      </div>
+    </div>
+  );
+}
+
+function concordanceEstimateItemModel(item: ConcordanceRunEstimate["items"][number]) {
+  const requirement = item.requirements.find((row) => typeof row.model === "string");
+  if (requirement && typeof requirement.model === "string") return requirement.model;
+  const costStep = item.cost_steps.find((row) => typeof row.model === "string");
+  if (costStep && typeof costStep.model === "string") return costStep.model;
+  return "local";
+}
+
+function concordanceEstimateStatusLabel(status: string) {
+  if (status === "planned") return "Will run";
+  if (status === "model_no_op") return "No-op";
+  if (status === "current_version") return "Current";
+  if (status === "already_queued") return "Already queued";
+  return status.replaceAll("_", " ");
+}
+
+function ConcordanceEstimatePanel({
+  estimate,
+  loading,
+}: {
+  estimate?: ConcordanceRunEstimate;
+  loading: boolean;
+}) {
+  const previewItems = (estimate?.items || []).slice(0, 6);
+  return (
+    <div className="concordance-estimate-panel">
+      <div className="concordance-estimate-summary">
+        <div>
+          <span>Estimated cloud cost</span>
+          <strong>{loading && !estimate ? "Estimating" : formatUsd(estimate?.estimated_cost_usd ?? 0)}</strong>
+        </div>
+        <div>
+          <span>Documents</span>
+          <strong>{formatMetric(estimate?.document_count)}</strong>
+        </div>
+        <div>
+          <span>Jobs to run</span>
+          <strong>{formatMetric(estimate?.planned_jobs)}</strong>
+        </div>
+        <div>
+          <span>No-op or skipped</span>
+          <strong>{formatMetric(estimate?.skipped_jobs)}</strong>
+        </div>
+      </div>
+      <div className="concordance-estimate-detail">
+        {estimate?.unpriced_call_count ? (
+          <span className="estimate-warning">{formatMetric(estimate.unpriced_call_count)} unpriced model routes</span>
+        ) : (
+          <span>{estimate ? `${formatMetric(estimate.priced_call_count)} priced model routes` : "Waiting for scope and capabilities"}</span>
+        )}
+        {loading && estimate ? <span>Refreshing estimate</span> : null}
+      </div>
+      {previewItems.length ? (
+        <div className="concordance-estimate-routes">
+          {previewItems.map((item) => (
+            <div className="concordance-estimate-route" key={`${item.document_id}-${item.capability_key}`}>
+              <span>{item.capability_label}</span>
+              <span>{concordanceEstimateStatusLabel(item.status)}</span>
+              <span>{concordanceEstimateItemModel(item)}</span>
+              <span>{formatUsd(item.estimated_cost_usd)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SettingsView({
   backupRuns,
   capabilities,
@@ -10380,14 +11126,14 @@ function SettingsView({
     }
   }, [backupRuns, queryClient]);
 
-  const scopeData = () => {
+  const concordanceScopeData = useMemo(() => {
     if (scopeType === "documents") return { document_ids: selectedDocument ? [selectedDocument.id] : [] };
     if (scopeType === "search") return { query };
     if (scopeType === "saved_search") return { saved_search_id: savedSearchId };
     if (scopeType === "domain") return { domain_id: domainId };
     if (scopeType === "project") return { project_id: projectId };
     return {};
-  };
+  }, [domainId, projectId, query, savedSearchId, scopeType, selectedDocument]);
   const scopeReady =
     scopeType === "library" ||
     (scopeType === "documents" && Boolean(selectedDocument)) ||
@@ -10395,6 +11141,24 @@ function SettingsView({
     (scopeType === "saved_search" && Boolean(savedSearchId)) ||
     (scopeType === "domain" && Boolean(domainId)) ||
     (scopeType === "project" && Boolean(projectId));
+  const concordanceEstimate = useQuery({
+    queryKey: [
+      "concordance-estimate",
+      scopeType,
+      JSON.stringify(concordanceScopeData),
+      [...selectedCapabilityKeys].sort().join("|"),
+      force,
+    ],
+    queryFn: () =>
+      api.estimateConcordanceRun({
+        scope_type: scopeType,
+        scope_data: concordanceScopeData,
+        capability_keys: selectedCapabilityKeys,
+        force,
+      }),
+    enabled: Boolean(preferences) && scopeReady && selectedCapabilityKeys.length > 0,
+    staleTime: 5000,
+  });
   const createRun = useMutation({
     mutationFn: () =>
       startConcordanceRun({
@@ -10402,7 +11166,7 @@ function SettingsView({
         backgroundLabel: `${scopeLabel(scopeType)} Concordance`,
         label: `${scopeType.replace("_", " ")} Concordance`,
         scope_type: scopeType,
-        scope_data: scopeData(),
+        scope_data: concordanceScopeData,
         capability_keys: selectedCapabilityKeys,
         force,
       }),
@@ -10411,6 +11175,7 @@ function SettingsView({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-estimate"] });
     },
     onError: (error) => {
       createRunFeedback.showError(actionFailureMessage("Could not start Concordance Run", error));
@@ -10633,13 +11398,21 @@ function SettingsView({
       : !preferenceDirty
         ? "there are no unsaved preference changes."
         : "";
+  const concordanceEstimateData = concordanceEstimate.data;
   const createRunDisabledReason = createRun.isPending
     ? "a Concordance Run request is already starting."
     : !scopeReady
       ? "the selected Concordance scope needs a document, search, saved search, domain, or project."
       : !selectedCapabilityKeys.length
         ? "at least one Concordance capability must be selected."
+        : concordanceEstimate.isLoading || concordanceEstimate.isFetching
+          ? "Concordance cost estimate is still refreshing."
+          : concordanceEstimate.isError
+            ? "Concordance cost estimate could not be loaded."
+            : concordanceEstimateData && concordanceEstimateData.planned_jobs <= 0
+              ? "the selected scope is already current or same-model no-op."
         : "";
+  const createRunDisabled = Boolean(createRunDisabledReason);
   const backupDisabledReason = startBackup.isPending
     ? "a database backup request is already starting."
     : activeBackupRun
@@ -11582,13 +12355,14 @@ function SettingsView({
             </article>
           ))}
         </div>
+        <ConcordanceEstimatePanel estimate={concordanceEstimateData} loading={concordanceEstimate.isLoading || concordanceEstimate.isFetching} />
         <div className="concordance-run-actions">
           <AsyncActionSlot busy={createRun.isPending} feedback={createRunFeedback.feedback} label="Concordance Run request in progress">
             <button
               className={asyncFeedbackClass("primary-button", createRunFeedback.feedback, createRun.isPending)}
               data-disabled-reason={createRunDisabledReason}
               data-tooltip="Start a durable Concordance Run for the selected scope and selected capabilities."
-              disabled={createRun.isPending || !scopeReady || !selectedCapabilityKeys.length}
+              disabled={createRunDisabled}
               onClick={() => createRun.mutate()}
               type="button"
             >
@@ -12143,6 +12917,7 @@ export default function App() {
           />
         ) : null}
         {activeView === "budget" ? <BudgetView /> : null}
+        {activeView === "utilities" ? <UtilitiesView /> : null}
         {activeView === "settings" ? (
           <SettingsView
             capabilities={concordanceCapabilities.data || []}

@@ -12,11 +12,11 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
-from app.database import get_db, init_db, session_scope
+from app.database import engine, get_db, init_db, is_postgres, session_scope
 from app.models import (
     Annotation,
     AttributeDefinition,
@@ -47,6 +47,7 @@ from app.models import (
     Tag,
     TagRelationship,
     User,
+    document_domains,
     document_tags,
     utc_now,
 )
@@ -68,10 +69,15 @@ from app.schemas import (
     CitationCandidatePatch,
     CitationCandidateOut,
     ConcordanceCapabilityOut,
+    ConcordanceRunEstimateOut,
     ConcordanceJobOut,
     ConcordanceRunCreate,
     ConcordanceRunOut,
+    ContainerFootprintStatusOut,
+    ContainerRestartOut,
     DashboardOut,
+    DatabaseMaintenanceResultOut,
+    DatabaseMaintenanceStatusOut,
     DocumentDetail,
     DocumentCompositionOut,
     DocumentCacheStatusOut,
@@ -96,6 +102,7 @@ from app.schemas import (
     ImportDuplicateFileOut,
     ImportJobOut,
     ImportQueueActionOut,
+    HAProxyStatsStatusOut,
     LoginRequest,
     NoteCreate,
     NoteOut,
@@ -147,6 +154,7 @@ from app.services.analysis_models import (
 from app.services.backups import (
     create_database_backup_run,
     create_restore_run,
+    current_database_size_bytes,
     estimate_backup_size,
     launch_database_backup,
     launch_database_restore,
@@ -154,16 +162,19 @@ from app.services.backups import (
     list_gcs_backup_artifacts,
     save_restore_upload,
 )
-from app.services.concordance import create_concordance_run, current_capabilities
+from app.services.concordance import create_concordance_run, current_capabilities, estimate_concordance_run
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
+from app.services.container_footprint import container_footprint_status, request_container_restart
 from app.services.document_cache import current_document_cache_usage, document_cache_root, metadata_cache_path, register_document_cache
 from app.services.document_visibility import (
+    LIBRARY_VISIBLE_DOCUMENT_STATUSES,
     document_is_library_visible,
     filter_library_visible_documents,
     library_visible_document_filter,
 )
 from app.services.exports import build_metadata_export, build_storage_manifest
+from app.services.haproxy_stats import haproxy_stats_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.import_sources import ImportSourceError, prepare_import_source, probe_import_source
 from app.services.ai import get_ai_service
@@ -225,6 +236,7 @@ DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 STAGED_IMPORT_STATUS = "staged"
 IMPORT_JOB_QUEUE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
 IMPORT_JOB_CLEARABLE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
+IMPORT_CACHE_TERMINAL_JOB_STATUSES = ("cleared", "complete")
 IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
     "ready",
     "complete",
@@ -1145,6 +1157,66 @@ def patch_preferences(
 @app.get("/api/document-cache/status", response_model=DocumentCacheStatusOut)
 def document_cache_status(_: Annotated[User, Depends(current_user)]) -> dict[str, int]:
     return current_document_cache_usage()
+
+
+@app.get("/api/utilities/database/status", response_model=DatabaseMaintenanceStatusOut)
+def database_maintenance_status(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DatabaseMaintenanceStatusOut:
+    return database_maintenance_status_out(db)
+
+
+@app.post("/api/utilities/database/compact", response_model=DatabaseMaintenanceResultOut)
+def compact_database(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DatabaseMaintenanceResultOut:
+    return run_database_sql_maintenance(
+        db,
+        operation="compact_database",
+        postgres_sql="VACUUM (FULL, ANALYZE)",
+        sqlite_sql="VACUUM",
+    )
+
+
+@app.post("/api/utilities/database/optimize", response_model=DatabaseMaintenanceResultOut)
+def optimize_database(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DatabaseMaintenanceResultOut:
+    return run_database_sql_maintenance(
+        db,
+        operation="optimize_database",
+        postgres_sql="ANALYZE",
+        sqlite_sql="ANALYZE",
+    )
+
+
+@app.post("/api/utilities/import-cache/clear", response_model=DatabaseMaintenanceResultOut)
+def clear_import_cache(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DatabaseMaintenanceResultOut:
+    return clear_hidden_import_cache(db)
+
+
+@app.get("/api/utilities/container/status", response_model=ContainerFootprintStatusOut)
+def container_status(_: Annotated[User, Depends(current_user)]) -> ContainerFootprintStatusOut:
+    return container_footprint_status()
+
+
+@app.post("/api/utilities/container/restart", response_model=ContainerRestartOut)
+def restart_container(_: Annotated[User, Depends(current_user)]) -> ContainerRestartOut:
+    try:
+        return request_container_restart()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/utilities/haproxy/status", response_model=HAProxyStatsStatusOut)
+def haproxy_status(_: Annotated[User, Depends(current_user)]) -> HAProxyStatsStatusOut:
+    return haproxy_stats_status()
 
 
 @app.post("/api/preferences/google-service-account", response_model=AppPreferencesOut)
@@ -4379,6 +4451,177 @@ def delete_staged_original(document: Document) -> int:
     return 1 if get_storage_service().delete_uri(document.gcs_uri) else 0
 
 
+def import_cache_document_ids(db: Session) -> set[str]:
+    active_document_ids = {
+        row[0]
+        for row in db.query(ImportJob.document_id)
+        .filter(ImportJob.document_id.isnot(None), ImportJob.status.in_(IMPORT_JOB_QUEUE_STATUSES))
+        .all()
+        if row[0]
+    }
+    terminal_document_ids = {
+        row[0]
+        for row in db.query(ImportJob.document_id)
+        .filter(ImportJob.document_id.isnot(None), ImportJob.status.in_(IMPORT_CACHE_TERMINAL_JOB_STATUSES))
+        .all()
+        if row[0]
+    }
+    candidate_ids = terminal_document_ids - active_document_ids
+    if not candidate_ids:
+        return set()
+    return {
+        row[0]
+        for row in db.query(Document.id)
+        .filter(
+            Document.id.in_(candidate_ids),
+            Document.processing_status.notin_(LIBRARY_VISIBLE_DOCUMENT_STATUSES),
+        )
+        .all()
+    }
+
+
+def terminal_orphan_import_jobs(db: Session) -> list[ImportJob]:
+    return (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.batch))
+        .filter(ImportJob.document_id.is_(None), ImportJob.status.in_(IMPORT_CACHE_TERMINAL_JOB_STATUSES))
+        .all()
+    )
+
+
+def database_maintenance_status_out(db: Session) -> DatabaseMaintenanceStatusOut:
+    document_ids = import_cache_document_ids(db)
+    hidden_project_item_count = (
+        db.query(ProjectItem).filter(ProjectItem.document_id.in_(document_ids)).count()
+        if document_ids
+        else 0
+    )
+    terminal_import_job_count = (
+        db.query(ImportJob).filter(ImportJob.document_id.in_(document_ids)).count()
+        if document_ids
+        else 0
+    )
+    orphan_import_job_count = len(terminal_orphan_import_jobs(db))
+    return DatabaseMaintenanceStatusOut(
+        import_cache_count=len(document_ids),
+        hidden_project_item_count=hidden_project_item_count,
+        terminal_import_job_count=terminal_import_job_count,
+        orphan_import_job_count=orphan_import_job_count,
+        database_size_bytes=current_database_size_bytes(db),
+    )
+
+
+def run_database_sql_maintenance(db: Session, *, operation: str, postgres_sql: str, sqlite_sql: str) -> DatabaseMaintenanceResultOut:
+    db.commit()
+    database_size_before = current_database_size_bytes(db)
+    sql = postgres_sql if is_postgres() else sqlite_sql
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        connection.execute(text(sql))
+    database_size_after = current_database_size_bytes(db)
+    status = database_maintenance_status_out(db)
+    return DatabaseMaintenanceResultOut(
+        **status.model_dump(),
+        operation=operation,
+        message=f"{operation.replace('_', ' ').title()} complete.",
+        database_size_before_bytes=database_size_before,
+        database_size_after_bytes=database_size_after,
+    )
+
+
+def clear_hidden_import_cache(db: Session) -> DatabaseMaintenanceResultOut:
+    status_before = database_maintenance_status_out(db)
+    document_ids = import_cache_document_ids(db)
+    if not document_ids and status_before.orphan_import_job_count == 0:
+        return DatabaseMaintenanceResultOut(
+            **status_before.model_dump(),
+            operation="clear_import_cache",
+            message="No hidden import cache rows to clear.",
+        )
+
+    documents = (
+        db.query(Document)
+        .options(selectinload(Document.domains), selectinload(Document.tags))
+        .filter(Document.id.in_(document_ids))
+        .all()
+        if document_ids
+        else []
+    )
+    import_jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.batch))
+        .filter(ImportJob.document_id.in_(document_ids))
+        .all()
+        if document_ids
+        else []
+    )
+    orphan_jobs = terminal_orphan_import_jobs(db)
+    batch_ids = {job.batch_id for job in [*import_jobs, *orphan_jobs] if job.batch_id}
+
+    deleted_cache_files = 0
+    deleted_original_objects = 0
+    for document in documents:
+        deleted_cache_files += delete_staged_document_cache(document)
+        deleted_original_objects += delete_staged_original(document)
+
+    removed_project_items = (
+        db.query(ProjectItem).filter(ProjectItem.document_id.in_(document_ids)).delete(synchronize_session=False)
+        if document_ids
+        else 0
+    )
+    if document_ids:
+        db.execute(document_domains.delete().where(document_domains.c.document_id.in_(document_ids)))
+        db.execute(document_tags.delete().where(document_tags.c.document_id.in_(document_ids)))
+        db.query(DocumentTagAssessment).filter(DocumentTagAssessment.document_id.in_(document_ids)).delete(synchronize_session=False)
+        db.query(CitationCandidate).filter(CitationCandidate.document_id.in_(document_ids)).delete(synchronize_session=False)
+        db.query(ProcessingEvent).filter(ProcessingEvent.document_id.in_(document_ids)).delete(synchronize_session=False)
+        db.query(OpenAIUsageRecord).filter(OpenAIUsageRecord.document_id.in_(document_ids)).update(
+            {"document_id": None},
+            synchronize_session=False,
+        )
+        db.query(DoiStash).filter(DoiStash.source_document_id.in_(document_ids)).update(
+            {"source_document_id": None},
+            synchronize_session=False,
+        )
+        db.query(DoiStash).filter(DoiStash.imported_document_id.in_(document_ids)).update(
+            {"imported_document_id": None},
+            synchronize_session=False,
+        )
+        db.query(DocumentRecommendation).filter(DocumentRecommendation.source_document_id.in_(document_ids)).delete(
+            synchronize_session=False,
+        )
+        db.query(DocumentRecommendation).filter(DocumentRecommendation.existing_document_id.in_(document_ids)).update(
+            {"existing_document_id": None},
+            synchronize_session=False,
+        )
+        db.query(DocumentRecommendation).filter(DocumentRecommendation.imported_document_id.in_(document_ids)).update(
+            {"imported_document_id": None},
+            synchronize_session=False,
+        )
+        db.query(Note).filter(Note.document_id.in_(document_ids)).update({"document_id": None}, synchronize_session=False)
+
+    removed_import_jobs = len(import_jobs)
+    removed_orphan_import_jobs = len(orphan_jobs)
+    for job in [*import_jobs, *orphan_jobs]:
+        db.delete(job)
+    for document in documents:
+        db.delete(document)
+
+    refresh_or_delete_import_batches(db, batch_ids)
+    db.commit()
+    status_after = database_maintenance_status_out(db)
+    return DatabaseMaintenanceResultOut(
+        **status_after.model_dump(),
+        operation="clear_import_cache",
+        message=f"Cleared {len(documents)} hidden import cache {('item' if len(documents) == 1 else 'items')}.",
+        removed_import_documents=len(documents),
+        removed_project_items=removed_project_items,
+        removed_import_jobs=removed_import_jobs,
+        removed_orphan_import_jobs=removed_orphan_import_jobs,
+        deleted_cache_files=deleted_cache_files,
+        deleted_original_objects=deleted_original_objects,
+    )
+
+
 def staged_document_has_other_import_history(db: Session, job: ImportJob, document: Document) -> bool:
     return (
         db.query(ImportJob)
@@ -4717,6 +4960,24 @@ async def start_database_restore_from_upload(
 @app.get("/api/concordance/capabilities", response_model=list[ConcordanceCapabilityOut])
 def list_concordance_capabilities(_: Annotated[User, Depends(current_user)]) -> list[dict[str, Any]]:
     return current_capabilities()
+
+
+@app.post("/api/concordance/runs/estimate", response_model=ConcordanceRunEstimateOut)
+def estimate_concordance_run_endpoint(
+    payload: ConcordanceRunCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    try:
+        return estimate_concordance_run(
+            db,
+            scope_type=payload.scope_type,
+            scope_data=payload.scope_data,
+            capability_keys=payload.capability_keys,
+            force=payload.force,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/concordance/runs", response_model=ConcordanceRunOut)

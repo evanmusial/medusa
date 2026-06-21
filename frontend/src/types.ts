@@ -143,6 +143,129 @@ export type BackupEstimate = {
   basis: "latest_backup_ratio" | "latest_backup" | "database_size_upper_bound" | "unavailable" | string;
 };
 
+export type DatabaseMaintenanceStatus = {
+  import_cache_count: number;
+  hidden_project_item_count: number;
+  terminal_import_job_count: number;
+  orphan_import_job_count: number;
+  database_size_bytes?: number | null;
+};
+
+export type DatabaseMaintenanceResult = DatabaseMaintenanceStatus & {
+  operation: string;
+  status: string;
+  message: string;
+  database_size_before_bytes?: number | null;
+  database_size_after_bytes?: number | null;
+  removed_import_documents: number;
+  removed_project_items: number;
+  removed_import_jobs: number;
+  removed_orphan_import_jobs: number;
+  deleted_cache_files: number;
+  deleted_original_objects: number;
+};
+
+export type ContainerFilesystem = {
+  path: string;
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+};
+
+export type ContainerPathFootprint = {
+  label: string;
+  path: string;
+  exists: boolean;
+  size_bytes: number;
+  file_count: number;
+  directory_count: number;
+};
+
+export type ContainerRuntimeVersion = {
+  name: string;
+  version: string;
+  source: string;
+  status: string;
+  note?: string | null;
+};
+
+export type ContainerFootprintStatus = {
+  checked_at: string;
+  hostname: string;
+  containerized: boolean;
+  docker_socket_available: boolean;
+  docker_engine_note: string;
+  restart_available: boolean;
+  restart_mode: string;
+  restart_note: string;
+  restart_requested_at?: string | null;
+  process_uptime_seconds: number;
+  memory_current_bytes?: number | null;
+  memory_limit_bytes?: number | null;
+  memory_peak_bytes?: number | null;
+  process_rss_bytes?: number | null;
+  cpu_limit_cores?: number | null;
+  cpu_usage_seconds?: number | null;
+  process_count?: number | null;
+  thread_count?: number | null;
+  platform: string;
+  python_version: string;
+  data_dir: string;
+  data_dir_size_bytes: number;
+  data_filesystem?: ContainerFilesystem | null;
+  root_filesystem?: ContainerFilesystem | null;
+  paths: ContainerPathFootprint[];
+  runtime_versions: ContainerRuntimeVersion[];
+};
+
+export type ContainerRestartResult = {
+  status: string;
+  message: string;
+  restart_mode: string;
+  poll_after_seconds: number;
+};
+
+export type HAProxyServiceStat = {
+  proxy_name: string;
+  service_name: string;
+  kind: string;
+  status?: string | null;
+  current_sessions: number;
+  max_sessions: number;
+  total_sessions: number;
+  session_rate: number;
+  bytes_in: number;
+  bytes_out: number;
+  denied_requests: number;
+  denied_responses: number;
+  error_requests: number;
+  error_connections: number;
+  error_responses: number;
+  retries: number;
+  redispatches: number;
+  active_servers?: number | null;
+  backup_servers?: number | null;
+  check_status?: string | null;
+  check_code?: number | null;
+  check_duration_ms?: number | null;
+  last_change_seconds?: number | null;
+  downtime_seconds?: number | null;
+};
+
+export type HAProxyStatsStatus = {
+  checked_at: string;
+  available: boolean;
+  message: string;
+  public_url: string;
+  stats_url: string;
+  total_current_sessions: number;
+  total_sessions: number;
+  total_bytes_in: number;
+  total_bytes_out: number;
+  total_errors: number;
+  services: HAProxyServiceStat[];
+};
+
 export type AnalysisModelTask = {
   key: string;
   label: string;
@@ -831,6 +954,37 @@ export type ConcordanceRun = {
   failed_jobs: number;
   created_at: string;
   updated_at: string;
+};
+
+export type ConcordanceEstimateItem = {
+  document_id: string;
+  document_title?: string | null;
+  capability_key: string;
+  capability_label: string;
+  target_version: number;
+  status: string;
+  reason?: string | null;
+  estimated_cost_usd: number;
+  estimate_basis: string;
+  requirements: Record<string, unknown>[];
+  cost_steps: Record<string, unknown>[];
+};
+
+export type ConcordanceRunEstimate = {
+  scope_type: string;
+  scope_data: Record<string, unknown>;
+  capability_keys: string[];
+  document_count: number;
+  planned_jobs: number;
+  skipped_jobs: number;
+  model_no_op_jobs: number;
+  already_queued_jobs: number;
+  current_version_jobs: number;
+  estimated_cost_usd: number;
+  priced_call_count: number;
+  unpriced_call_count: number;
+  local_job_count: number;
+  items: ConcordanceEstimateItem[];
 };
 
 export type ConcordanceJob = {

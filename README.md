@@ -4,7 +4,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 
 ## What Is Implemented
 
-- Password-protected LAN web app on port `3737`
+- Password-protected LAN web app behind HAProxy TLS on port `3737`
 - React research cockpit UI with day/night modes, darker light-theme contrast grays, and restrained icon-left action buttons
 - Lowercase browser title that identifies whether the running app was opened locally, on the LAN, or remotely
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected
@@ -18,6 +18,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, and page geometry
 - OpenAI adapter for structured metadata, visible author contact emails, summaries, tag suggestions, page text normalization, and embeddings
 - OpenAI usage ledger with Budget & Costs rollups for last day/month/3 months/all time, calls, tokens, estimated known-model costs, cached input tokens, PDF/file context bytes, recent errors, trend lines, pie charts, and task/model breakdowns
+- Utilities workspace with Database maintenance actions for compaction, table-statistics optimization, hidden import-cache cleanup with a live cleanup count, Docker/container footprint stats, runtime binary/package versions, HAProxy TLS/proxy stats, and backend-container restart with health polling
 - Per-document Cost Composition tracking for imports, including persisted pre-processing estimates, estimate-vs-actual comparison, stage timings, provider/model spend, local processing duration, processing issues, and the exact pipeline/method/model path used to generate the document
 - Citation generation in Markdown APA 7 reference-list and in-text forms, with model/provenance tracking, plus BibTeX, RIS, and CSL JSON
 - Live document-level DOI, citation, and summary refresh controls backed by durable Concordance jobs
@@ -30,7 +31,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Domains management with searchable nested trees, top-level/child creation, rename, move, color, sibling reorder, soft delete, document-count visibility, and affected-document search/history updates
 - Tags management with sortable counts and governance status, scoped tag search, shift-click range selection for visible sorted/filtered rows, audited rename, confirmed merge into an existing or newly named tag, remembered merge aliases for future tag suggestions, flattened keyword/topic distinctions, and a right-side Optimize workbench using the same Tag Suggestions model as import tag creation that keeps the user in the loop for merge suggestions, orphaned-tag merge/prune cleanup, semantic relationships, candidate promotion/retirement, and weak document-tag pruning, with individual approvals or one-click approval of the current plan plus top progress feedback while the plan is building or bulk apply runs
 - Saved searches, smart filters, searchable filter/bulk dropdowns with Enter-to-select behavior, visible priority flags in Library rows and saved-search summaries, audited title cleanup, and bulk-edit controls with custom tag nomination
-- Concordance Runs for retroactively updating already-imported documents to current capability versions
+- Concordance Runs for retroactively updating already-imported documents to current capability versions, with pre-run cost estimates and same-model no-op planning
 - Document correction pane for metadata, inline alphabetical tag add/remove chips, DOI Copy/Edit/Refresh, domains, custom attributes, rendered Markdown summaries/citations, rich Markdown summary editing, inline citation edits, extracted-text cleanup, duplicate visibility, and complete correction history with Restore as Current
 - Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
 - Stored document annotations/highlights with page, color, note body, soft delete, and search indexing; Library creation controls are deferred for a quieter redesign
@@ -52,6 +53,15 @@ MEDUSA_PASSWORD=your-local-password
 MEDUSA_ALLOW_DEFAULT_PASSWORD=false
 ```
 
+Install the HAProxy TLS certificate material under ignored local data storage:
+
+```bash
+mkdir -p data/haproxy
+cp /path/to/fullchain.pem data/haproxy/fullchain.pem
+cp /path/to/privatekey.pem data/haproxy/privatekey.pem
+chmod 600 data/haproxy/*.pem
+```
+
 Then run:
 
 ```bash
@@ -63,10 +73,26 @@ Backend startup runs Alembic migrations for PostgreSQL automatically before serv
 Open:
 
 ```text
-http://localhost:3737
+https://medusa.home.musial.io:3737
 ```
 
+Plain HTTP requests on port `3737` redirect to `https://medusa.home.musial.io:3737` on the same port. The bundled deployment expects a certificate that covers `*.home.musial.io`; change `MEDUSA_PUBLIC_HOST`, the HAProxy redirect/check host, and the certificate files together for another local domain.
+
 The default email is `admin@medusa.local` unless changed in `.env`.
+
+## TLS And HAProxy
+
+Docker Compose runs HAProxy as the only host-exposed service on port `3737`. HAProxy terminates TLS, redirects plain HTTP on the same port to HTTPS, and proxies Medusa to the internal frontend service. Backend, worker, database, and frontend ports stay on the Compose network.
+
+Certificate files belong in ignored `data/haproxy/fullchain.pem` and `data/haproxy/privatekey.pem`. Compose combines them into HAProxy's runtime PEM inside the container; do not commit certificate private keys.
+
+```bash
+MEDUSA_PUBLIC_HOST=medusa.home.musial.io
+MEDUSA_HAPROXY_STATS_URL=http://haproxy:8404/stats;csv
+MEDUSA_ALLOWED_HOSTS=medusa.home.musial.io
+```
+
+HAProxy's stats listener is internal-only. Utilities reads the authenticated backend endpoint `/api/utilities/haproxy/status`, which summarizes the internal CSV stats feed.
 
 ## Credentials
 
@@ -148,7 +174,9 @@ Raw text extraction is controlled separately in Settings. The Raw Text Extractio
 
 Budget & Costs records and displays AI usage from completed and failed OpenAI Responses/embeddings calls and Gemini `generateContent` calls: provider, task, model, document/job context, token counts, cached input tokens where reported, output tokens, PDF/file context bytes, and recent errors. Dollar totals are estimates from Medusa's tracked model-pricing history for enabled OpenAI GPT model families, OpenAI embedding models, and Google Gemini text models; unknown or unavailable models are counted as unpriced because model pricing and project access can change independently of the local app. Settings > Import Processing > Shared Model Defaults shows when pricing was last refreshed, provides a Refresh Models & Pricing action, and warns when local pricing information is more than two days old. Refreshes update the existing active history row when prices are unchanged and add a new historical row only when a model's price changes, so usage can be costed against the price that applied when the call was recorded. Budget & Costs can group usage by model, task, document, calendar day, or calendar hour, with a cost trend line plus cost-by-model and token-by-task pie charts for the selected period.
 
-Document Composition is available from the Library detail actions when a document is selected. Imports now write granular `DocumentCompositionRecord` rows for the staged cost estimate, local stages, synced model usage, processing warnings/errors, and manual edits. The Composition dialog shows the persisted estimate versus actual recorded model spend, a Cost Composition pie chart with dollar values, provider spend, local processing time, a React Flow pipeline chart with connected steps in import execution order, and a Processing Issues section when warnings or errors occurred. Older documents without composition rows show "not available." While imports are active, the reserved header progress control includes current known dollar spend so far.
+Document Composition is available from the Library detail actions when a document is selected. Imports now write granular `DocumentCompositionRecord` rows for the staged cost estimate, second-pass local stages, synced model usage, processing warnings/errors, and manual edits. The Composition dialog shows the persisted estimate versus actual recorded model spend, a Cost Composition pie chart with dollar values, provider spend, local processing time, a React Flow pipeline chart with connected steps in import execution order, and a Processing Issues section when warnings or errors occurred. The pipeline chart includes OCR audit, page normalization, structured-table evidence, visual extraction/context, bibliography extraction, and the specific models active for downstream processing; later Concordance Runs append their capability/model-call nodes with Concordance labels. Older documents without composition rows show "not available." While imports are active, the reserved header progress control includes current known dollar spend so far.
+
+Before broad Concordance starts, Settings estimates the selected scope and capabilities, including planned jobs, same-model no-ops, already queued work, current-version skips, unpriced routes, and estimated cloud spend. The document-level Concord button fetches the same estimate before confirmation. Concordance skips model-backed fields when document evidence or usage history shows the field already used the currently selected model, while changed model routes can still queue even if the capability version is otherwise current.
 
 Async document work is started from the app shell, not only from the page-level component that owns the button. DOI, citation, summary, and Concordance refresh actions immediately turn soft blue with their own icon spinning and a slim in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green success blend or red result flash; failures also surface a concise error message.
 
@@ -233,6 +261,8 @@ Staged and queued upload rows show rough dollar estimates from stored page count
 If the worker/container stops while a job is already marked `running`, the next worker requeues it on startup and continues from the last durable checkpoint. In-flight documents may repeat the current step, and page normalization resumes from persisted page checkpoints when possible.
 
 The Import page can release staged uploads with Process Uploads or discard all staged uploads with Clear Staged, which removes their queue-only document/job rows, managed processing-cache files, and staged original storage objects. The Import Queue can release staged uploads, retry failed imports in bulk, retry individual queued/failed/restored jobs, cancel individual staged/queued/failed/restored rows, and clear staged/queued/failed/restored rows into a terminal `cleared` state. Fresh running jobs are protected from manual retry, cancel, or clear to avoid racing an active worker.
+
+Utilities > Database provides manual maintenance controls. Compact Database runs PostgreSQL `VACUUM (FULL, ANALYZE)` where available, Optimize Database refreshes database table statistics with `ANALYZE`, and Clear Import Cache removes terminal hidden import records, stale project-resource links, managed processing-cache files, and staged original objects that are already excluded from active Library and Queue surfaces. It does not clear Library-visible documents or staged/queued/running/failed/restored-paused import rows. Utilities also shows container footprint stats from inside the backend runtime, including cgroup memory/CPU, process uptime, data-volume usage, path-level storage footprints, and whether Docker engine/image sizing is unavailable because the Docker socket is not mounted. The same Container Footprint section lists runtime versions for HAProxy, Python, key backend packages, PostgreSQL client, zstd, curl, frontend Node.js, Vite, and the frontend build stamp so base-image and binary freshness are visible from the app. Below that, HAProxy Statistics reports the TLS endpoint, frontend/backend health, session totals, traffic, checks, and proxy errors from the internal HAProxy stats feed. Restart Backend terminates the backend process after the API response returns; the Compose backend service uses `restart: unless-stopped`, so Docker brings it back and the frontend polls `/api/health` until the backend is healthy again.
 
 After a released import queue drains and no queued/running import jobs remain, the worker runs PostgreSQL `VACUUM (ANALYZE)` across the database when Medusa is using Postgres.
 

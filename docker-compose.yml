@@ -16,6 +16,7 @@ services:
   backend:
     build:
       context: ./backend
+    restart: unless-stopped
     env_file:
       - path: .env
         required: false
@@ -65,11 +66,37 @@ services:
     environment:
       MEDUSA_API_PROXY: http://backend:8000
       MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
-    ports:
-      - "3737:3737"
+      MEDUSA_ALLOWED_HOSTS: ${MEDUSA_ALLOWED_HOSTS:-medusa.home.musial.io}
+    expose:
+      - "3737"
     depends_on:
       - backend
     command: npm run dev
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    ports:
+      - "3737:3737"
+    volumes:
+      - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./data/haproxy:/usr/local/etc/haproxy/certs:ro
+    depends_on:
+      - frontend
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        cat /usr/local/etc/haproxy/certs/fullchain.pem > /tmp/medusa.pem
+        printf '\n' >> /tmp/medusa.pem
+        cat /usr/local/etc/haproxy/certs/privatekey.pem >> /tmp/medusa.pem
+        chmod 600 /tmp/medusa.pem
+        exec haproxy -f /usr/local/etc/haproxy/haproxy.cfg
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/medusa.pem && haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
 volumes:
   medusa-postgres:

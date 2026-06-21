@@ -24,14 +24,20 @@ STAGE_SEQUENCE = {
     "import_cost_estimate": 1,
     "raw_text_extraction": 10,
     "document_structure_cleanup": 12,
+    "ocr_fallback": 13,
     "structured_tables": 14,
-    "bibliography_extraction": 16,
+    "page_text_normalization": 16,
+    "bibliography_extraction": 18,
     "visual_asset_extraction": 20,
     "figure_assets": 20,
+    "visual_asset_context": 22,
     "summary_topics": 30,
+    "summary_refresh": 32,
     "citation_refresh": 34,
     "text_chunk_encoding": 40,
+    "search_index": 42,
     "cache_cleanup": 50,
+    "recommendations": 60,
     "manual_correction": 90,
 }
 
@@ -39,14 +45,20 @@ STAGE_LABELS = {
     "import_cost_estimate": "Import cost estimate",
     "raw_text_extraction": "Text extraction",
     "document_structure_cleanup": "Document structure cleanup",
+    "ocr_fallback": "OCR fallback",
     "structured_tables": "Structured tables",
+    "page_text_normalization": "Page text normalization",
     "bibliography_extraction": "Bibliography extraction",
     "visual_asset_extraction": "Visual asset extraction",
     "figure_assets": "Figure extraction",
+    "visual_asset_context": "Visual asset context",
     "summary_topics": "Metadata, summary, and topics",
+    "summary_refresh": "Summary refresh",
     "citation_refresh": "APA citation matching",
     "text_chunk_encoding": "Text chunk encoding",
+    "search_index": "Search index",
     "cache_cleanup": "Cache cleanup",
+    "recommendations": "Related paper recommendations",
     "manual_correction": "Manual correction",
 }
 
@@ -55,14 +67,17 @@ IMPORT_COST_ESTIMATE_STAGE = "import_cost_estimate"
 CAPABILITY_STAGE = {
     "document_structure_cleanup": "document_structure_cleanup",
     "structured_tables": "structured_tables",
-    "page_text_normalization": "raw_text_extraction",
+    "page_text_normalization": "page_text_normalization",
     "bibliography_extraction": "bibliography_extraction",
     "visual_asset_extraction": "visual_asset_extraction",
-    "visual_asset_context": "visual_asset_extraction",
+    "visual_asset_context": "visual_asset_context",
     "figure_assets": "visual_asset_extraction",
+    "search_index": "search_index",
     "summary_topics": "summary_topics",
+    "summary_refresh": "summary_refresh",
     "citation_refresh": "citation_refresh",
     "text_chunk_encoding": "text_chunk_encoding",
+    "recommendations": "recommendations",
 }
 
 PIPELINE_TASK_OFFSETS = {
@@ -78,13 +93,31 @@ PIPELINE_TASK_OFFSETS = {
 PIPELINE_LOCAL_OFFSETS = {
     "raw_text_extraction": 0.0,
     "document_structure_cleanup": 0.0,
+    "ocr_fallback": 0.0,
     "structured_tables": 0.0,
+    "page_text_normalization": 0.0,
     "bibliography_extraction": 0.0,
     "visual_asset_extraction": 0.0,
     "figure_assets": 0.0,
+    "visual_asset_context": 0.0,
     "summary_topics": 0.9,
+    "summary_refresh": 0.0,
     "text_chunk_encoding": 0.9,
+    "search_index": 0.0,
     "cache_cleanup": 0.0,
+    "recommendations": 0.0,
+}
+
+PIPELINE_RECORD_KINDS = {"local", "llm", "embedding", "concordance", "estimate_step"}
+ESTIMATE_FALLBACK_TASK_KEYS = {
+    "raw_text_extraction",
+    "document_structure_cleanup",
+    "ocr_fallback",
+    "structured_tables",
+    MODEL_PAGE_TEXT_NORMALIZATION,
+    "bibliography_extraction",
+    "visual_asset_extraction",
+    "visual_asset_context",
 }
 
 
@@ -138,6 +171,7 @@ def record_import_stage(
     metadata: dict[str, Any] | None = None,
 ) -> DocumentCompositionRecord:
     completed_at = utc_now()
+    record_metadata = {"source": "import" if job else "local", **(metadata or {})}
     record = DocumentCompositionRecord(
         document_id=document.id,
         import_job_id=job.id if job else None,
@@ -154,7 +188,58 @@ def record_import_stage(
         started_at=started_at,
         completed_at=completed_at,
         message=message,
-        record_metadata=metadata or {},
+        record_metadata=record_metadata,
+    )
+    db.add(record)
+    return record
+
+
+def record_concordance_stage(
+    db: Session,
+    *,
+    document: Document,
+    concordance_job: Any,
+    stage_key: str,
+    label: str | None = None,
+    method: str | None = None,
+    model: str | None = None,
+    status: str = "complete",
+    started_at: datetime | None = None,
+    duration_ms: int | None = None,
+    message: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DocumentCompositionRecord:
+    completed_at = utc_now()
+    run_id = getattr(concordance_job, "run_id", None)
+    job_id = getattr(concordance_job, "id", None)
+    capability_key = getattr(concordance_job, "capability_key", stage_key)
+    target_version = getattr(concordance_job, "target_version", None)
+    stage = CAPABILITY_STAGE.get(stage_key, stage_key)
+    base_label = label or stage_label(stage)
+    record_metadata = {
+        "source": "concordance",
+        "concordance_run_id": run_id,
+        "concordance_job_id": job_id,
+        "capability_key": capability_key,
+        "target_version": target_version,
+        **(metadata or {}),
+    }
+    record = DocumentCompositionRecord(
+        document_id=document.id,
+        sequence=STAGE_SEQUENCE.get(stage, 80),
+        record_kind="concordance",
+        stage_key=stage,
+        stage_label=f"Concordance: {base_label}",
+        provider="local",
+        method=method or capability_key or "concordance",
+        model=model,
+        status=status,
+        amount_usd=0.0,
+        duration_ms=duration_ms,
+        started_at=started_at,
+        completed_at=completed_at,
+        message=message,
+        record_metadata=record_metadata,
     )
     db.add(record)
     return record
@@ -172,6 +257,7 @@ def record_import_cost_estimate(
     metadata: dict[str, Any] | None = None,
 ) -> DocumentCompositionRecord:
     record_metadata = {
+        "source": "import" if job else "estimate",
         "estimate_basis": estimate_basis,
         "estimated_page_count": estimated_page_count,
         "model_preferences": model_preferences or {},
@@ -291,6 +377,10 @@ def sync_import_usage_composition(db: Session, *, document: Document, job: Impor
         stage_key = stage_key_for_usage(usage)
         endpoint = usage.endpoint or usage.operation
         record_kind = "embedding" if "embedding" in endpoint or "embedding" in usage.model else "llm"
+        usage_source = usage.source or "unknown"
+        usage_stage_label = stage_label(stage_key)
+        if usage_source == "concordance":
+            usage_stage_label = f"Concordance: {usage_stage_label}"
         db.add(
             DocumentCompositionRecord(
                 document_id=document.id,
@@ -299,7 +389,7 @@ def sync_import_usage_composition(db: Session, *, document: Document, job: Impor
                 sequence=STAGE_SEQUENCE.get(stage_key, 80),
                 record_kind=record_kind,
                 stage_key=stage_key,
-                stage_label=stage_label(stage_key),
+                stage_label=usage_stage_label,
                 provider=usage.provider,
                 method=usage.operation or usage.endpoint,
                 model=usage.model,
@@ -312,9 +402,13 @@ def sync_import_usage_composition(db: Session, *, document: Document, job: Impor
                 completed_at=usage.created_at,
                 message=usage.error_message,
                 record_metadata={
+                    "source": usage_source,
                     "endpoint": usage.endpoint,
                     "task_key": usage.task_key,
                     "capability_key": usage.capability_key,
+                    "concordance_run_id": usage.concordance_run_id,
+                    "concordance_job_id": usage.concordance_job_id,
+                    "import_job_id": usage.import_job_id,
                     "cached_input_tokens": usage.cached_input_tokens,
                     "reasoning_output_tokens": usage.reasoning_output_tokens,
                     "used_pdf_file": usage.used_pdf_file,
@@ -352,36 +446,154 @@ def _timestamp_sort_value(value: datetime | None) -> float:
     return value.timestamp() if value else float("inf")
 
 
+def _record_source(record: DocumentCompositionRecord) -> str:
+    metadata = _record_metadata(record)
+    value = metadata.get("source")
+    if isinstance(value, str) and value:
+        return value
+    if record.import_job_id:
+        return "import"
+    if record.record_kind == "concordance":
+        return "concordance"
+    return record.record_kind or "unknown"
+
+
+def _record_task_identity(record: DocumentCompositionRecord) -> str:
+    metadata = _record_metadata(record)
+    task_key = metadata.get("task_key")
+    if isinstance(task_key, str) and task_key:
+        return task_key
+    capability_key = metadata.get("capability_key")
+    if isinstance(capability_key, str) and capability_key:
+        return capability_key
+    return record.stage_key
+
+
 def _pipeline_record_order(record: DocumentCompositionRecord, fallback_index: int) -> tuple[float, float, int]:
-    task_key = _record_metadata(record).get("task_key")
+    metadata = _record_metadata(record)
+    task_key = metadata.get("task_key")
     base = float(record.sequence if record.sequence is not None else STAGE_SEQUENCE.get(record.stage_key, 80))
     if isinstance(task_key, str) and task_key in PIPELINE_TASK_OFFSETS:
         offset = PIPELINE_TASK_OFFSETS[task_key]
     elif record.record_kind == "local":
         offset = PIPELINE_LOCAL_OFFSETS.get(record.stage_key, 0.5)
+    elif record.record_kind == "concordance":
+        offset = PIPELINE_LOCAL_OFFSETS.get(record.stage_key, 0.05)
     else:
         offset = 0.4
+    source = _record_source(record)
+    if source == "concordance":
+        occurred_at = record.started_at or record.completed_at or record.created_at
+        return (1000.0, _timestamp_sort_value(occurred_at), int((base + offset) * 1000) + fallback_index)
     occurred_at = record.completed_at or record.started_at or record.created_at
     return (base + offset, _timestamp_sort_value(occurred_at), fallback_index)
 
 
 def _sum_duration(records: list[DocumentCompositionRecord]) -> int:
-    return sum(max(0, int(record.duration_ms or 0)) for record in records if record.record_kind == "local")
+    return sum(max(0, int(record.duration_ms or 0)) for record in records if record.record_kind in {"local", "concordance"})
 
 
 def _group_key(record: DocumentCompositionRecord, *fields: str) -> tuple[Any, ...]:
     return tuple(getattr(record, field) for field in fields)
 
 
-def _estimate_comparison(records: list[DocumentCompositionRecord]) -> dict[str, Any] | None:
+def _pipeline_group_key(record: DocumentCompositionRecord) -> tuple[Any, ...]:
+    metadata = _record_metadata(record)
+    return (
+        record.stage_key,
+        record.provider,
+        record.method,
+        record.model,
+        record.record_kind,
+        _record_source(record),
+        metadata.get("concordance_run_id"),
+        metadata.get("concordance_job_id"),
+        metadata.get("task_key"),
+    )
+
+
+def _estimate_stage_key(task_key: str) -> str:
+    if task_key in CAPABILITY_STAGE:
+        return CAPABILITY_STAGE[task_key]
+    if task_key in {MODEL_METADATA, MODEL_SUMMARY, MODEL_KEYWORDS_TOPICS, MODEL_CORE_DOCUMENT_INTELLIGENCE}:
+        return "summary_topics"
+    if task_key == MODEL_APA_CITATION:
+        return "citation_refresh"
+    if task_key == MODEL_TEXT_CHUNK_ENCODING:
+        return "text_chunk_encoding"
+    return task_key
+
+
+def _latest_import_estimate(records: list[DocumentCompositionRecord]) -> DocumentCompositionRecord | None:
     estimate_records = [
         record
         for record in records
-        if record.record_kind == "estimate" and record.stage_key == IMPORT_COST_ESTIMATE_STAGE and _float(record.amount_usd) > 0
+        if record.record_kind == "estimate" and record.stage_key == IMPORT_COST_ESTIMATE_STAGE
     ]
     if not estimate_records:
         return None
-    estimate = max(estimate_records, key=lambda record: record.completed_at or record.created_at)
+    return max(estimate_records, key=lambda record: record.completed_at or record.created_at)
+
+
+def _estimate_step_rows(
+    records: list[DocumentCompositionRecord],
+    represented_task_keys: set[str],
+) -> list[dict[str, Any]]:
+    estimate = _latest_import_estimate(records)
+    if not estimate:
+        return []
+    metadata = _record_metadata(estimate)
+    raw_steps = metadata.get("step_estimates")
+    if not isinstance(raw_steps, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    created_at = estimate.completed_at or estimate.created_at
+    for index, raw_step in enumerate(raw_steps):
+        if not isinstance(raw_step, dict):
+            continue
+        task_key = str(raw_step.get("task_key") or "").strip()
+        if not task_key or task_key in represented_task_keys:
+            continue
+        if task_key not in ESTIMATE_FALLBACK_TASK_KEYS:
+            continue
+        status = str(raw_step.get("status") or raw_step.get("basis") or "estimated")
+        if status in {"disabled_by_preset", "not_expected"}:
+            continue
+        stage_key = _estimate_stage_key(task_key)
+        stage_sequence = STAGE_SEQUENCE.get(stage_key, 80)
+        rows.append(
+            {
+                "label": raw_step.get("label") or stage_label(stage_key),
+                "stage_key": stage_key,
+                "stage_label": raw_step.get("label") or stage_label(stage_key),
+                "provider": "Medusa estimate",
+                "method": raw_step.get("basis") or "estimate",
+                "model": raw_step.get("model"),
+                "record_kind": "estimate_step",
+                "status": status,
+                "amount_usd": _float(raw_step.get("estimated_cost_usd")),
+                "duration_ms": 0,
+                "input_tokens": int(raw_step.get("estimated_input_tokens") or 0),
+                "output_tokens": int(raw_step.get("estimated_output_tokens") or 0),
+                "total_tokens": int(raw_step.get("estimated_input_tokens") or 0) + int(raw_step.get("estimated_output_tokens") or 0),
+                "call_count": 0,
+                "sequence": stage_sequence,
+                "created_at": created_at,
+                "_sort_order": (
+                    float(stage_sequence) + (index / 100.0),
+                    _timestamp_sort_value(created_at),
+                    -1,
+                ),
+            }
+        )
+        represented_task_keys.add(task_key)
+    return rows
+
+
+def _estimate_comparison(records: list[DocumentCompositionRecord]) -> dict[str, Any] | None:
+    estimate = _latest_import_estimate(records)
+    if not estimate or _float(estimate.amount_usd) <= 0:
+        return None
     metadata = _record_metadata(estimate)
     estimated_cost = round(_float(estimate.amount_usd), 6)
     actual_cost = round(
@@ -444,6 +656,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
     provider_groups: dict[str, dict[str, Any]] = {}
     local_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     pipeline_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    represented_task_keys: set[str] = set()
     errata: list[dict[str, Any]] = []
 
     for record_index, record in enumerate(records):
@@ -461,6 +674,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
                     "method": record.method,
                     "model": record.model,
                     "record_kind": record.record_kind,
+                    "status": record.status,
                     "amount_usd": 0.0,
                     "duration_ms": 0,
                     "input_tokens": 0,
@@ -478,8 +692,16 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             provider_group["amount_usd"] += amount
             provider_group["call_count"] += 1
 
-        if record.record_kind == "local" and record.duration_ms:
-            key = _group_key(record, "stage_key", "method", "model")
+        if record.record_kind in {"local", "concordance"} and record.duration_ms:
+            metadata = _record_metadata(record)
+            key = (
+                record.stage_key,
+                record.method,
+                record.model,
+                _record_source(record),
+                metadata.get("concordance_run_id"),
+                metadata.get("concordance_job_id"),
+            )
             group = local_groups.setdefault(
                 key,
                 {
@@ -490,6 +712,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
                     "method": record.method,
                     "model": record.model,
                     "record_kind": record.record_kind,
+                    "status": record.status,
                     "amount_usd": 0.0,
                     "duration_ms": 0,
                     "input_tokens": 0,
@@ -501,8 +724,9 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             group["duration_ms"] += record.duration_ms or 0
             group["call_count"] += 1
 
-        if record.record_kind in {"local", "llm", "embedding"}:
-            key = _group_key(record, "stage_key", "provider", "method", "model", "record_kind")
+        if record.record_kind in PIPELINE_RECORD_KINDS:
+            represented_task_keys.add(_record_task_identity(record))
+            key = _pipeline_group_key(record)
             pipeline_order = _pipeline_record_order(record, record_index)
             group = pipeline_groups.setdefault(
                 key,
@@ -514,6 +738,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
                     "method": record.method,
                     "model": record.model,
                     "record_kind": record.record_kind,
+                    "status": record.status,
                     "amount_usd": 0.0,
                     "duration_ms": 0,
                     "input_tokens": 0,
@@ -528,6 +753,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             if pipeline_order < group["_sort_order"]:
                 group["_sort_order"] = pipeline_order
                 group["created_at"] = record.completed_at or record.started_at or record.created_at
+                group["status"] = record.status
             group["amount_usd"] += amount
             group["duration_ms"] += record.duration_ms or 0
             group["input_tokens"] += record.input_tokens
@@ -574,7 +800,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
         reverse=True,
     )
     pipeline = sorted(
-        rounded_groups(list(pipeline_groups.values())),
+        rounded_groups([*pipeline_groups.values(), *_estimate_step_rows(records, represented_task_keys)]),
         key=lambda row: row.get("_sort_order") or (row.get("sequence") or 0, float("inf"), 0),
     )
     for row in pipeline:

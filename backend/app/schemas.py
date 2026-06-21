@@ -877,6 +877,129 @@ class BackupArtifactOut(BaseModel):
     manifest: dict[str, Any] = Field(default_factory=dict)
 
 
+class DatabaseMaintenanceStatusOut(BaseModel):
+    import_cache_count: int = 0
+    hidden_project_item_count: int = 0
+    terminal_import_job_count: int = 0
+    orphan_import_job_count: int = 0
+    database_size_bytes: int | None = None
+
+
+class DatabaseMaintenanceResultOut(DatabaseMaintenanceStatusOut):
+    operation: str
+    status: str = "complete"
+    message: str
+    database_size_before_bytes: int | None = None
+    database_size_after_bytes: int | None = None
+    removed_import_documents: int = 0
+    removed_project_items: int = 0
+    removed_import_jobs: int = 0
+    removed_orphan_import_jobs: int = 0
+    deleted_cache_files: int = 0
+    deleted_original_objects: int = 0
+
+
+class ContainerFilesystemOut(BaseModel):
+    path: str
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+
+
+class ContainerPathFootprintOut(BaseModel):
+    label: str
+    path: str
+    exists: bool
+    size_bytes: int = 0
+    file_count: int = 0
+    directory_count: int = 0
+
+
+class ContainerRuntimeVersionOut(BaseModel):
+    name: str
+    version: str
+    source: str
+    status: str = "reported"
+    note: str | None = None
+
+
+class ContainerFootprintStatusOut(BaseModel):
+    checked_at: datetime
+    hostname: str
+    containerized: bool
+    docker_socket_available: bool
+    docker_engine_note: str
+    restart_available: bool
+    restart_mode: str
+    restart_note: str
+    restart_requested_at: datetime | None = None
+    process_uptime_seconds: int
+    memory_current_bytes: int | None = None
+    memory_limit_bytes: int | None = None
+    memory_peak_bytes: int | None = None
+    process_rss_bytes: int | None = None
+    cpu_limit_cores: float | None = None
+    cpu_usage_seconds: float | None = None
+    process_count: int | None = None
+    thread_count: int | None = None
+    platform: str
+    python_version: str
+    data_dir: str
+    data_dir_size_bytes: int
+    data_filesystem: ContainerFilesystemOut | None = None
+    root_filesystem: ContainerFilesystemOut | None = None
+    paths: list[ContainerPathFootprintOut] = Field(default_factory=list)
+    runtime_versions: list[ContainerRuntimeVersionOut] = Field(default_factory=list)
+
+
+class ContainerRestartOut(BaseModel):
+    status: str
+    message: str
+    restart_mode: str
+    poll_after_seconds: float = 2.0
+
+
+class HAProxyServiceStatOut(BaseModel):
+    proxy_name: str
+    service_name: str
+    kind: str
+    status: str | None = None
+    current_sessions: int = 0
+    max_sessions: int = 0
+    total_sessions: int = 0
+    session_rate: int = 0
+    bytes_in: int = 0
+    bytes_out: int = 0
+    denied_requests: int = 0
+    denied_responses: int = 0
+    error_requests: int = 0
+    error_connections: int = 0
+    error_responses: int = 0
+    retries: int = 0
+    redispatches: int = 0
+    active_servers: int | None = None
+    backup_servers: int | None = None
+    check_status: str | None = None
+    check_code: int | None = None
+    check_duration_ms: int | None = None
+    last_change_seconds: int | None = None
+    downtime_seconds: int | None = None
+
+
+class HAProxyStatsStatusOut(BaseModel):
+    checked_at: datetime
+    available: bool
+    message: str
+    public_url: str
+    stats_url: str
+    total_current_sessions: int = 0
+    total_sessions: int = 0
+    total_bytes_in: int = 0
+    total_bytes_out: int = 0
+    total_errors: int = 0
+    services: list[HAProxyServiceStatOut] = Field(default_factory=list)
+
+
 class RestoreDatabaseCreate(BaseModel):
     gcs_uri: str
 
@@ -1076,6 +1199,37 @@ class ConcordanceRunCreate(BaseModel):
     scope_data: dict[str, Any] = Field(default_factory=dict)
     capability_keys: list[str] | None = None
     force: bool = False
+
+
+class ConcordanceEstimateItemOut(BaseModel):
+    document_id: str
+    document_title: str | None = None
+    capability_key: str
+    capability_label: str
+    target_version: int
+    status: str
+    reason: str | None = None
+    estimated_cost_usd: float = 0.0
+    estimate_basis: str = "none"
+    requirements: list[dict[str, Any]] = Field(default_factory=list)
+    cost_steps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ConcordanceRunEstimateOut(BaseModel):
+    scope_type: str
+    scope_data: dict[str, Any]
+    capability_keys: list[str]
+    document_count: int
+    planned_jobs: int
+    skipped_jobs: int
+    model_no_op_jobs: int
+    already_queued_jobs: int
+    current_version_jobs: int
+    estimated_cost_usd: float
+    priced_call_count: int
+    unpriced_call_count: int
+    local_job_count: int
+    items: list[ConcordanceEstimateItemOut]
 
 
 class ConcordanceRunOut(ApiModel):

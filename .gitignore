@@ -21,5 +21,8 @@ data/extracted/*
 !data/secrets/
 data/secrets/*
 !data/secrets/.gitkeep
+!data/haproxy/
+data/haproxy/*
+!data/haproxy/.gitkeep
 
 .DS_Store

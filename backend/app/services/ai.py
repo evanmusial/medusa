@@ -530,6 +530,95 @@ class AiService:
             existing_tags=existing_tags,
         )
 
+    def extract_document_identity(
+        self,
+        filename: str,
+        text: str,
+        pdf_bytes: bytes | None = None,
+        *,
+        model: str | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, Any]:
+        selected_model = model or default_analysis_models()[MODEL_METADATA]
+        if not self._can_call_text_model(selected_model):
+            fallback = self._metadata_unconfigured_fallback(filename)
+            return {**fallback, "_openai": {"model": selected_model, "configured": False}}
+        input_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
+            filename,
+            text,
+            pdf_bytes,
+        )
+        identity = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_document_metadata",
+            schema=METADATA_IDENTITY_SCHEMA,
+            prompt=METADATA_EXTRACTION_PROMPT,
+            input_content=input_content,
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_METADATA,
+            input_text_characters=input_text_characters,
+            input_file_bytes=input_file_bytes,
+            used_pdf_file=used_pdf_file,
+            prompt_cache_key=prompt_cache_key,
+        )
+        identity["authors"] = normalize_author_contact_details(identity.get("authors"))
+        identity["_openai"] = {
+            "model": selected_model,
+            "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+            "used_pdf_file": used_pdf_file,
+            "pdf_file_bytes": input_file_bytes,
+        }
+        return identity
+
+    def extract_keywords_topics(
+        self,
+        filename: str,
+        text: str,
+        *,
+        model: str | None = None,
+        existing_tags: list[str] | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, Any]:
+        selected_model = model or default_analysis_models()[MODEL_KEYWORDS_TOPICS]
+        if not self._can_call_text_model(selected_model):
+            return {
+                "topics": [],
+                "keywords": [],
+                "confidence": 0.0,
+                "needs_review_reasons": ["AI tag suggestion extraction is not configured for the selected model."],
+                "_openai": {"model": selected_model, "configured": False},
+            }
+        keywords_input, _, keywords_input_text_characters, _ = self._document_input_content(
+            filename,
+            text,
+            None,
+            max_text_chars=60_000,
+        )
+        keywords = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_keywords_topics",
+            schema=KEYWORDS_TOPICS_SCHEMA,
+            prompt=_tag_generation_prompt(existing_tags),
+            input_content=keywords_input,
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_KEYWORDS_TOPICS,
+            input_text_characters=keywords_input_text_characters,
+            input_file_bytes=0,
+            used_pdf_file=False,
+            prompt_cache_key=prompt_cache_key,
+        )
+        keywords["_openai"] = {
+            "model": selected_model,
+            "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+            "used_pdf_file": False,
+            "pdf_file_bytes": 0,
+        }
+        return keywords
+
     def _extract_metadata_routed(
         self,
         *,

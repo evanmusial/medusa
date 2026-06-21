@@ -634,6 +634,36 @@ class DocumentProcessor:
                 payload=cleanup_evidence,
             )
             db.commit()
+            structured_tables_evidence = cleanup_evidence.get("structured_tables", {}) if cleanup_evidence else {}
+            record_import_stage(
+                db,
+                document=document,
+                job=job,
+                stage_key="structured_tables",
+                label="Structured tables",
+                method="evidence_only",
+                status="evidence_only",
+                metadata=structured_tables_evidence if isinstance(structured_tables_evidence, dict) else {},
+            )
+        ocr_config = preset_snapshot.get("ocr") if isinstance(preset_snapshot.get("ocr"), dict) else {}
+        low_text_pages = [page.page_number for page in document.pages if page.low_text]
+        ocr_enabled = second_pass_enabled and bool(ocr_config.get("enabled", True))
+        ocr_evidence = {
+            "low_text_pages": low_text_pages,
+            "eligible_pages": low_text_pages if ocr_enabled else [],
+            "provider": str(ocr_config.get("provider") or "google_vision") if ocr_enabled else "none",
+            "status": "pending_provider_integration" if ocr_enabled and low_text_pages else ("not_needed" if ocr_enabled else "disabled_by_preset"),
+        }
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="ocr_fallback",
+            label="OCR fallback",
+            method="eligibility_audit",
+            status=str(ocr_evidence["status"]),
+            metadata=ocr_evidence,
+        )
         ai = get_ai_service()
         pdf_path = metadata_cache_path(document)
         pdf_bytes = pdf_path.read_bytes() if pdf_path and pdf_path.exists() else None
@@ -646,6 +676,7 @@ class DocumentProcessor:
             if isinstance(cleanup_config.get("model"), str) and cleanup_config.get("model") != "local":
                 normalization_model = str(cleanup_config["model"])
             checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing cleaned page text.")
+        normalization_started_at, normalization_started_perf = stage_timer()
         normalization_summary = normalize_document_pages(
             document,
             ai=ai,
@@ -663,6 +694,18 @@ class DocumentProcessor:
             normalization_text_by_page_id=cleanup_text_by_page_id,
             cloud_enabled=cloud_enabled,
             auto_max_pages_override=auto_max_pages_override,
+        )
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="page_text_normalization",
+            label="Page text normalization",
+            method="local_first_auto" if cloud_enabled else "local_only",
+            model=normalization_model if cloud_enabled else "local",
+            started_at=normalization_started_at,
+            duration_ms=elapsed_ms(normalization_started_perf),
+            metadata=normalization_summary,
         )
         reading_text = rebuild_document_text_chunks(db, document)
         bibliography_config = preset_snapshot.get("bibliography") if isinstance(preset_snapshot.get("bibliography"), dict) else {}
@@ -707,6 +750,7 @@ class DocumentProcessor:
             **({"document_structure_cleanup": cleanup_evidence} if cleanup_evidence else {}),
             **({"structured_tables": cleanup_evidence.get("structured_tables")} if cleanup_evidence else {}),
             "page_text_normalization": normalization_summary,
+            "ocr_fallback": ocr_evidence,
             "bibliography_extraction": bibliography_evidence,
         }
         record_import_stage(
@@ -714,9 +758,8 @@ class DocumentProcessor:
             document=document,
             job=job,
             stage_key="raw_text_extraction",
-            label="Text extraction and page normalization",
+            label="Text extraction",
             method=actual_extractor,
-            model=normalization_model if cloud_enabled else "local",
             started_at=started_at,
             duration_ms=elapsed_ms(started_perf),
             metadata={
@@ -730,6 +773,7 @@ class DocumentProcessor:
                     "second_pass_enabled": second_pass_enabled,
                 },
                 "document_structure_cleanup": cleanup_evidence,
+                "ocr_fallback": ocr_evidence,
                 "page_text_normalization": normalization_summary,
                 "bibliography_extraction": bibliography_evidence,
             },
@@ -774,6 +818,18 @@ class DocumentProcessor:
             started_at=started_at,
             duration_ms=elapsed_ms(started_perf),
             metadata=result,
+        )
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="visual_asset_context",
+            label="Visual asset context",
+            method="local_page_context",
+            metadata={
+                "figures_with_context": result.get("figures_with_context", 0),
+                "explicit_mentions": result.get("explicit_mentions", 0),
+            },
         )
         job.current_step = "figures"
         log_event(

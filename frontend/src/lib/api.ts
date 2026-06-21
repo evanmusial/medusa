@@ -12,7 +12,12 @@ import type {
   ConcordanceCapability,
   ConcordanceJob,
   ConcordanceRun,
+  ConcordanceRunEstimate,
+  ContainerFootprintStatus,
+  ContainerRestartResult,
   Dashboard,
+  DatabaseMaintenanceResult,
+  DatabaseMaintenanceStatus,
   DocumentDetail,
   DocumentCacheStatus,
   DocumentComposition,
@@ -31,6 +36,7 @@ import type {
   DomainReorderItem,
   DomainUpdatePayload,
   DuplicateImportStrategy,
+  HAProxyStatsStatus,
   ImportDuplicateCheck,
   ImportJob,
   ImportQueueActionResult,
@@ -77,6 +83,16 @@ export const api = {
   documentCacheStatus: () => request<DocumentCacheStatus>("/api/document-cache/status"),
   backupRuns: () => request<BackupRun[]>("/api/backups/runs"),
   backupEstimate: () => request<BackupEstimate>("/api/backups/estimate"),
+  databaseMaintenanceStatus: () => request<DatabaseMaintenanceStatus>("/api/utilities/database/status"),
+  compactDatabase: () =>
+    request<DatabaseMaintenanceResult>("/api/utilities/database/compact", { method: "POST" }),
+  optimizeDatabase: () =>
+    request<DatabaseMaintenanceResult>("/api/utilities/database/optimize", { method: "POST" }),
+  clearImportCache: () =>
+    request<DatabaseMaintenanceResult>("/api/utilities/import-cache/clear", { method: "POST" }),
+  containerFootprintStatus: () => request<ContainerFootprintStatus>("/api/utilities/container/status"),
+  restartContainer: () => request<ContainerRestartResult>("/api/utilities/container/restart", { method: "POST" }),
+  haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
   gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
   startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),
   startDatabaseRestore: (gcsUri: string) =>
@@ -247,6 +263,12 @@ export const api = {
   concordanceCapabilities: () => request<ConcordanceCapability[]>("/api/concordance/capabilities"),
   concordanceRuns: () => request<ConcordanceRun[]>("/api/concordance/runs"),
   concordanceJobs: () => request<ConcordanceJob[]>("/api/concordance/jobs"),
+  estimateConcordanceRun: (body: {
+    scope_type?: string;
+    scope_data?: Record<string, unknown>;
+    capability_keys?: string[];
+    force?: boolean;
+  }) => request<ConcordanceRunEstimate>("/api/concordance/runs/estimate", { method: "POST", body: JSON.stringify(body) }),
   createConcordanceRun: (body: {
     label?: string;
     scope_type?: string;

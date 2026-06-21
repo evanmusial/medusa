@@ -181,7 +181,7 @@ def test_composition_pipeline_preserves_import_execution_order(monkeypatch, tmp_
     pipeline_order = [(item["stage_key"], item["record_kind"], item.get("model"), item.get("method")) for item in summary["pipeline"]]
     assert pipeline_order == [
         ("raw_text_extraction", "local", "gpt-5.5", "pymupdf"),
-        ("raw_text_extraction", "llm", "gpt-5.5", "medusa_page_text_normalization"),
+        ("page_text_normalization", "llm", "gpt-5.5", "medusa_page_text_normalization"),
         ("visual_asset_extraction", "local", None, "pymupdf"),
         ("summary_topics", "llm", "gpt-5.5", "medusa_document_metadata"),
         ("summary_topics", "llm", "gpt-5.4", "medusa_document_summary"),
@@ -217,3 +217,95 @@ def test_composition_issues_exclude_completed_manual_edits(monkeypatch, tmp_path
 
     assert [item["message"] for item in summary["errata"]] == ["Embedding request timed out."]
     assert summary["errata"][0]["status"] == "warning"
+
+
+def test_composition_pipeline_uses_estimate_steps_for_unrecorded_import_steps(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import Document, ImportBatch, ImportJob
+    from app.services.composition import document_composition_summary, record_import_cost_estimate, record_import_stage
+
+    with Session() as db:
+        document = Document(title="Estimated", original_filename="estimated.pdf", checksum_sha256="e" * 64)
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        job = ImportJob(batch=batch, document=document, status="staged", current_step="staged")
+        db.add_all([document, batch, job])
+        db.flush()
+        record_import_cost_estimate(
+            db,
+            document=document,
+            job=job,
+            estimated_cost_usd=0.25,
+            estimate_basis="preset_steps",
+            estimated_page_count=12,
+            metadata={
+                "step_estimates": [
+                    {"task_key": "raw_text_extraction", "label": "Raw text extraction", "model": "marker", "status": "local"},
+                    {"task_key": "ocr_fallback", "label": "OCR fallback", "model": "google_vision", "status": "pending_provider_integration"},
+                    {"task_key": "visual_asset_context", "label": "Visual context", "model": "gemini-3.1-flash-lite", "status": "pending_provider_integration"},
+                ]
+            },
+        )
+        record_import_stage(db, document=document, job=job, stage_key="raw_text_extraction", method="marker")
+        db.commit()
+
+        summary = document_composition_summary(db, document)
+
+    pipeline = [(item["stage_key"], item["record_kind"], item.get("model"), item["status"]) for item in summary["pipeline"]]
+    assert ("raw_text_extraction", "local", None, "complete") in pipeline
+    assert ("raw_text_extraction", "estimate_step", "marker", "local") not in pipeline
+    assert ("ocr_fallback", "estimate_step", "google_vision", "pending_provider_integration") in pipeline
+    assert ("visual_asset_context", "estimate_step", "gemini-3.1-flash-lite", "pending_provider_integration") in pipeline
+
+
+def test_composition_pipeline_appends_concordance_runs(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import ConcordanceJob, ConcordanceRun, Document, OpenAIUsageRecord
+    from app.services.composition import document_composition_summary, record_concordance_stage, record_import_stage, sync_import_usage_composition
+
+    with Session() as db:
+        document = Document(title="Concorded", original_filename="concorded.pdf", checksum_sha256="f" * 64)
+        run = ConcordanceRun(scope_type="documents", scope_data={"document_ids": []}, capability_keys=["summary_refresh"], total_jobs=1)
+        job = ConcordanceJob(run=run, document=document, capability_key="summary_refresh", target_version=1, status="complete")
+        db.add_all([document, run, job])
+        db.flush()
+        record_import_stage(db, document=document, job=None, stage_key="raw_text_extraction", method="marker")
+        record_concordance_stage(
+            db,
+            document=document,
+            concordance_job=job,
+            stage_key="summary_refresh",
+            label="Summary refresh",
+            method="summary_refresh",
+            model="gpt-5.4",
+            duration_ms=1_500,
+        )
+        db.add(
+            OpenAIUsageRecord(
+                document_id=document.id,
+                concordance_run_id=run.id,
+                concordance_job_id=job.id,
+                source="concordance",
+                capability_key="summary_refresh",
+                task_key="summary",
+                operation="medusa_document_summary",
+                provider="openai",
+                endpoint="responses",
+                model="gpt-5.4",
+                status="success",
+                input_tokens=100,
+                output_tokens=10,
+                total_tokens=110,
+                usage_metadata={},
+            )
+        )
+        db.commit()
+
+        sync_import_usage_composition(db, document=document, job=None)
+        summary = document_composition_summary(db, document)
+
+    pipeline_order = [(item["stage_label"], item["record_kind"], item.get("model"), item.get("method")) for item in summary["pipeline"]]
+    assert pipeline_order[0] == ("Text extraction", "local", None, "marker")
+    assert pipeline_order[-2:] == [
+        ("Concordance: Summary refresh", "concordance", "gpt-5.4", "summary_refresh"),
+        ("Concordance: Summary refresh", "llm", "gpt-5.4", "medusa_document_summary"),
+    ]

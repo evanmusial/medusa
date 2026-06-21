@@ -43,6 +43,189 @@ def test_create_concordance_run_skips_current_capability(monkeypatch, tmp_path):
         assert run.status == "complete"
 
 
+def test_concordance_estimate_marks_same_model_summary_noop(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, OpenAIUsageRecord
+    from app.services.analysis_models import MODEL_SUMMARY
+    from app.services.concordance import create_concordance_run, estimate_concordance_run
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Already Summarized",
+            original_filename="already-summarized.pdf",
+            checksum_sha256="m" * 64,
+            processing_status="ready",
+            rich_summary="This paper already has a summary.",
+            page_count=12,
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            OpenAIUsageRecord(
+                document_id=document.id,
+                source="import",
+                capability_key="summary_topics",
+                task_key=MODEL_SUMMARY,
+                operation="medusa_document_summary",
+                endpoint="responses",
+                model="gpt-5.4",
+                status="success",
+            )
+        )
+        db.commit()
+
+        estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["summary_refresh"],
+        )
+        run = create_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["summary_refresh"],
+        )
+
+        assert estimate["planned_jobs"] == 0
+        assert estimate["model_no_op_jobs"] == 1
+        assert estimate["estimated_cost_usd"] == 0
+        assert estimate["items"][0]["status"] == "model_no_op"
+        assert run.total_jobs == 0
+        assert run.status == "complete"
+
+
+def test_concordance_estimate_queues_current_capability_when_model_changed(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentCapability, OpenAIUsageRecord
+    from app.services.analysis_models import MODEL_SUMMARY
+    from app.services.concordance import CAPABILITY_BY_KEY, create_concordance_run, estimate_concordance_run
+    from app.services.preferences import update_app_preferences
+
+    Session = make_session()
+    with Session() as db:
+        update_app_preferences(db, analysis_models={MODEL_SUMMARY: "gpt-5.5"})
+        document = Document(
+            title="Model Changed",
+            original_filename="model-changed.pdf",
+            checksum_sha256="n" * 64,
+            processing_status="ready",
+            rich_summary="This summary used the old model.",
+            page_count=10,
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            DocumentCapability(
+                document_id=document.id,
+                capability_key="summary_refresh",
+                version=CAPABILITY_BY_KEY["summary_refresh"].version,
+                status="complete",
+            )
+        )
+        db.add(
+            OpenAIUsageRecord(
+                document_id=document.id,
+                source="concordance",
+                capability_key="summary_refresh",
+                task_key=MODEL_SUMMARY,
+                operation="medusa_document_summary",
+                endpoint="responses",
+                model="gpt-5.4",
+                status="success",
+            )
+        )
+        db.commit()
+
+        estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["summary_refresh"],
+        )
+        run = create_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["summary_refresh"],
+        )
+
+        assert estimate["planned_jobs"] == 1
+        assert estimate["items"][0]["status"] == "planned"
+        assert estimate["items"][0]["estimated_cost_usd"] > 0
+        assert run.total_jobs == 1
+
+
+def test_concordance_worker_completes_same_model_noop_without_model_call(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCompositionRecord, OpenAIUsageRecord
+    from app.services.analysis_models import MODEL_SUMMARY
+    from app.services.concordance import ConcordanceProcessor
+
+    class ExplodingAiService:
+        def generate_document_summary(self, *_args, **_kwargs):
+            raise AssertionError("same-model summary should not be regenerated")
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: ExplodingAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Worker No-op",
+            original_filename="worker-noop.pdf",
+            checksum_sha256="o" * 64,
+            processing_status="ready",
+            rich_summary="This summary is already current.",
+            page_count=8,
+        )
+        db.add(document)
+        run = ConcordanceRun(scope_type="documents", scope_data={"document_ids": []}, capability_keys=["summary_refresh"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run_id=run.id,
+            document_id=document.id,
+            capability_key="summary_refresh",
+            target_version=1,
+        )
+        db.add(job)
+        db.add(
+            OpenAIUsageRecord(
+                document_id=document.id,
+                source="import",
+                capability_key="summary_topics",
+                task_key=MODEL_SUMMARY,
+                operation="medusa_document_summary",
+                endpoint="responses",
+                model="gpt-5.4",
+                status="success",
+            )
+        )
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        record = (
+            db.query(DocumentCompositionRecord)
+            .filter(
+                DocumentCompositionRecord.document_id == document.id,
+                DocumentCompositionRecord.record_kind == "concordance",
+            )
+            .one()
+        )
+        assert job.status == "complete"
+        assert run.status == "complete"
+        assert record.stage_key == "summary_refresh"
+        assert record.status == "model_no_op"
+
+
 def test_concordance_search_index_job_marks_capability(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -336,12 +519,13 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
     calls: list[dict[str, object]] = []
 
     class FakeAiService:
-        def extract_metadata(self, filename, text, *, pdf_bytes=None, models=None, existing_tags=None, usage_context=None, prompt_cache_key=None):
+        def extract_document_identity(self, filename, text, *, pdf_bytes=None, model=None, usage_context=None, prompt_cache_key=None):
             calls.append(
                 {
+                    "task": "metadata",
                     "filename": filename,
                     "text": text,
-                    "existing_tags": existing_tags,
+                    "model": model,
                     "capability_key": usage_context.capability_key if usage_context else None,
                     "prompt_cache_key": prompt_cache_key,
                 }
@@ -356,14 +540,47 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
                 "publisher": None,
                 "doi": None,
                 "abstract": None,
+                "confidence": 0.88,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "used_pdf_file": False},
+            }
+
+        def generate_document_summary(self, filename, text, *, model=None, usage_context=None, prompt_cache_key=None):
+            calls.append(
+                {
+                    "task": "summary",
+                    "filename": filename,
+                    "text": text,
+                    "model": model,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
                 "rich_summary": "Fresh summary.",
-                "apa_citation": None,
+                "confidence": 0.9,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "used_pdf_file": False},
+            }
+
+        def extract_keywords_topics(self, filename, text, *, model=None, existing_tags=None, usage_context=None, prompt_cache_key=None):
+            calls.append(
+                {
+                    "task": "tags",
+                    "filename": filename,
+                    "text": text,
+                    "model": model,
+                    "existing_tags": existing_tags,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
                 "topics": ["shared concept"],
                 "keywords": ["new concept"],
                 "confidence": 0.88,
                 "needs_review_reasons": [],
-                "citation_warnings": [],
-                "_openai": {"model": "gpt-5.4-mini", "used_pdf_file": False},
+                "_openai": {"model": model, "used_pdf_file": False},
             }
 
     monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
@@ -396,16 +613,120 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
         db.refresh(document)
 
         assert job.status == "complete"
+        assert document.rich_summary == "Fresh summary."
         assert sorted(tag.name for tag in document.tags) == ["manual keep", "shared concept"]
         assert document.metadata_evidence["concordance_tag_governance"]["new_candidate_count"] == 0
         assert document.metadata_evidence["concordance_tag_governance"]["decisions"][1]["candidate_name"] == "new concept"
         assert document.metadata_evidence["concordance_tag_governance"]["decisions"][1]["status"] == "not_attached"
         assert calls == [
             {
+                "task": "metadata",
                 "filename": "tagged-target.pdf",
                 "text": "Original searchable document text about a new concept.",
+                "model": "gpt-5.5",
+                "capability_key": "summary_topics",
+                "prompt_cache_key": f"medusa-doc:{'8' * 64}:metadata",
+            },
+            {
+                "task": "summary",
+                "filename": "tagged-target.pdf",
+                "text": "Original searchable document text about a new concept.",
+                "model": "gpt-5.4",
+                "capability_key": "summary_topics",
+                "prompt_cache_key": f"medusa-doc:{'8' * 64}:summary",
+            },
+            {
+                "task": "tags",
+                "filename": "tagged-target.pdf",
+                "text": "Original searchable document text about a new concept.",
+                "model": "gpt-5.4-mini",
                 "existing_tags": ["manual keep", "shared concept"],
                 "capability_key": "summary_topics",
-                "prompt_cache_key": f"medusa-doc:{'8' * 64}",
-            }
+                "prompt_cache_key": f"medusa-doc:{'8' * 64}:tags",
+            },
         ]
+
+
+def test_concordance_summary_topics_skips_same_model_subtasks(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, OpenAIUsageRecord
+    from app.services.analysis_models import MODEL_KEYWORDS_TOPICS, MODEL_METADATA, MODEL_SUMMARY
+    from app.services.concordance import ConcordanceProcessor, estimate_concordance_run
+
+    calls: list[str] = []
+
+    class FakeAiService:
+        def extract_document_identity(self, *_args, **_kwargs):
+            raise AssertionError("metadata should be same-model no-op")
+
+        def generate_document_summary(self, *_args, **_kwargs):
+            raise AssertionError("summary should be same-model no-op")
+
+        def extract_keywords_topics(self, *_args, **_kwargs):
+            calls.append("tags")
+            return {
+                "topics": [],
+                "keywords": [],
+                "confidence": 0.8,
+                "needs_review_reasons": [],
+                "_openai": {"model": "gpt-5.4-mini", "used_pdf_file": False},
+            }
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Partial No-op",
+            original_filename="partial-noop.pdf",
+            checksum_sha256="7" * 64,
+            processing_status="ready",
+            authors=[{"family": "Researcher"}],
+            publication_year=2025,
+            rich_summary="Already current summary.",
+            search_text="Document text.",
+            page_count=4,
+        )
+        db.add(document)
+        db.flush()
+        for task_key, model in [(MODEL_METADATA, "gpt-5.5"), (MODEL_SUMMARY, "gpt-5.4")]:
+            db.add(
+                OpenAIUsageRecord(
+                    document_id=document.id,
+                    source="import",
+                    capability_key="summary_topics",
+                    task_key=task_key,
+                    operation=f"medusa_{task_key}",
+                    endpoint="responses",
+                    model=model,
+                    status="success",
+                )
+            )
+        db.commit()
+        estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["summary_topics"],
+        )
+        run = ConcordanceRun(scope_type="documents", scope_data={"document_ids": [document.id]}, capability_keys=["summary_topics"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run_id=run.id,
+            document_id=document.id,
+            capability_key="summary_topics",
+            target_version=8,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        planned = estimate["items"][0]
+        assert estimate["planned_jobs"] == 1
+        assert [step["task_key"] for step in planned["cost_steps"]] == [MODEL_KEYWORDS_TOPICS]
+        assert calls == ["tags"]
+        assert document.metadata_evidence["concordance_ai"]["skipped_fields"] == ["metadata", "rich_summary"]
