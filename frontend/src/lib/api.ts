@@ -36,6 +36,7 @@ import type {
   ImportQueueActionResult,
   Note,
   NotePayload,
+  ModelPricingStatus,
   OpenAIUsage,
   OpenAIUsagePeriod,
   Project,
@@ -86,6 +87,7 @@ export const api = {
     return request<BackupRun>("/api/restores/database/upload", { method: "POST", body: form });
   },
   openaiUsage: (period: OpenAIUsagePeriod = "all_time") => request<OpenAIUsage>(`/api/openai/usage?period=${period}`),
+  refreshModelsAndPricing: () => request<ModelPricingStatus>("/api/model-pricing/refresh", { method: "POST" }),
   updatePreferences: (
     body: Partial<
       Pick<

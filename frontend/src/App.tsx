@@ -22,6 +22,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   Archive,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -104,6 +105,7 @@ import type {
   DomainUpdatePayload,
   DuplicateImportStrategy,
   ImportDuplicateCheck,
+  ImportDuplicateFile,
   ImportJob,
   ModelOptionGroup,
   Note,
@@ -226,6 +228,7 @@ const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local
 const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
+const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
@@ -290,18 +293,21 @@ type AppRoute = { view: View; documentId?: string };
 
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
 
-const navItems: Array<{ id: View; label: string; icon: typeof Library; shortcut?: string; align?: "end" }> = [
-  { id: "library", label: "Library", icon: Library },
-  { id: "domains", label: "Domains", icon: FolderTree },
-  { id: "projects", label: "Projects", icon: ListChecks },
-  { id: "tags", label: "Tags", icon: Tags },
-  { id: "queue", label: "Queue", icon: Inbox },
-  { id: "notes", label: "Notes", icon: BookOpen },
-  { id: "import", label: "Import", icon: Upload },
-  { id: "stashes", label: "Stashes", icon: Bookmark },
+type WorkspaceNavItem = { id: View; label: string; icon: typeof Library; shortcut: string; align?: "end" };
+
+const navItems: WorkspaceNavItem[] = [
+  { id: "library", label: "Library", icon: Library, shortcut: "L" },
+  { id: "domains", label: "Domains", icon: FolderTree, shortcut: "D" },
+  { id: "projects", label: "Projects", icon: ListChecks, shortcut: "P" },
+  { id: "tags", label: "Tags", icon: Tags, shortcut: "T" },
+  { id: "queue", label: "Queue", icon: Inbox, shortcut: "Q" },
+  { id: "notes", label: "Notes", icon: BookOpen, shortcut: "N" },
+  { id: "import", label: "Import", icon: Upload, shortcut: "I" },
+  { id: "stashes", label: "Stashes", icon: Bookmark, shortcut: "A" },
   { id: "budget", label: "Budget & Costs", icon: CircleDollarSign, shortcut: "B" },
-  { id: "settings", label: "Settings", icon: Settings, align: "end" },
+  { id: "settings", label: "Settings", icon: Settings, shortcut: "S", align: "end" },
 ];
+const navShortcutByKey = new Map(navItems.map((item) => [item.shortcut.toLowerCase(), item.id]));
 const DEFAULT_VIEW: View = "library";
 const VIEW_PATHS: Record<View, string> = {
   library: "/library",
@@ -315,6 +321,10 @@ const VIEW_PATHS: Record<View, string> = {
   budget: "/budget",
   settings: "/settings",
 };
+
+function workspaceNavTooltip(item: WorkspaceNavItem) {
+  return `Open the ${item.label} workspace.\nShortcut: ${item.shortcut}`;
+}
 const VIEW_BY_PATH = new Map<string, View>(
   Object.entries(VIEW_PATHS).map(([view, path]) => [path, view as View]),
 );
@@ -465,13 +475,25 @@ function isQueueImportJob(job: ImportJob) {
   return QUEUE_IMPORT_JOB_STATUSES.has(job.status);
 }
 
+function importDuplicateSourceLabel(file: ImportDuplicateFile) {
+  if (file.existing_documents.some((document) => LIBRARY_DOCUMENT_STATUSES.has(document.processing_status))) return "In library";
+  if (file.existing_documents.length) return "In queue";
+  return "In batch";
+}
+
 function actionFailureMessage(action: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return detail ? `${action}: ${detail}` : action;
 }
 
-function cleanTooltipText(value?: string | null) {
-  return (value || "").replace(/\s+/g, " ").trim();
+function cleanTooltipText(value?: string | null, options: { preserveLineBreaks?: boolean } = {}) {
+  const text = value || "";
+  if (!options.preserveLineBreaks) return text.replace(/\s+/g, " ").trim();
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^\S\r\n]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function capitalizeSentence(value: string) {
@@ -575,7 +597,7 @@ function tooltipTextForElement(element: HTMLElement) {
   const disabledText = disabled ? cleanTooltipText(element.dataset.tooltipDisabled) : "";
   if (disabledText) return disabledText;
 
-  const actionText = cleanTooltipText(element.dataset.tooltip) || defaultTooltipForElement(element);
+  const actionText = cleanTooltipText(element.dataset.tooltip, { preserveLineBreaks: true }) || defaultTooltipForElement(element);
   if (!actionText) return "";
   if (!disabled) return actionText;
 
@@ -890,6 +912,15 @@ function backupDateLabel(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "";
   return date.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+}
+
+function modelPricingDateLabel(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value.includes("T") ? value : `${value}T00:00:00`);
+  if (Number.isNaN(date.valueOf())) return value;
+  return value.includes("T")
+    ? date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+    : date.toLocaleDateString([], { dateStyle: "medium" });
 }
 
 function backupArtifactLabel(artifact: BackupArtifact) {
@@ -2185,7 +2216,7 @@ function WorkspaceNav({
             aria-current={activeView === item.id ? "page" : undefined}
             aria-keyshortcuts={item.shortcut}
             className={`workspace-nav-item${activeView === item.id ? " active" : ""}${item.align === "end" ? " settings" : ""}`}
-            data-tooltip={`Open the ${item.label} workspace${item.shortcut ? `; keyboard shortcut ${item.shortcut}.` : "."}`}
+            data-tooltip={workspaceNavTooltip(item)}
             href={pathForView(item.id)}
             onClick={(event) => handleNavClick(event, item.id)}
           >
@@ -2213,6 +2244,24 @@ function domainChildrenByParent(domains: Domain[]) {
     acc[parentKey] = [...(acc[parentKey] || []), domain];
     return acc;
   }, {});
+}
+
+function domainSubtreeDocumentCounts(domains: Domain[], children: Record<string, Domain[]>) {
+  const counts: Record<string, number> = {};
+  const visiting = new Set<string>();
+  const visit = (domain: Domain): number => {
+    if (counts[domain.id] !== undefined) return counts[domain.id];
+    if (visiting.has(domain.id)) return domain.document_count || 0;
+    visiting.add(domain.id);
+    const total =
+      (domain.document_count || 0) +
+      (children[domain.id] || []).reduce((sum, child) => sum + visit(child), 0);
+    visiting.delete(domain.id);
+    counts[domain.id] = total;
+    return total;
+  };
+  domains.forEach((domain) => visit(domain));
+  return counts;
 }
 
 function domainPathLabel(domain: Domain, domains: Domain[]) {
@@ -2244,17 +2293,33 @@ function descendantDomainIds(domainId: string, domains: Domain[]) {
 
 function DomainTree({ domains }: { domains: Domain[] }) {
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
+  const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const roots = children.root || [];
   const domainIds = useMemo(() => new Set(domains.map((domain) => domain.id)), [domains]);
 
-  const render = (domain: Domain, depth = 0) => (
-    <div key={domain.id} className="domain-row" style={{ paddingLeft: 10 + depth * 16 }}>
-      <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
-      <span>{domain.name}</span>
-      <small>{domain.document_count}</small>
-      {(children[domain.id] || []).map((child) => render(child, depth + 1))}
-    </div>
-  );
+  const render = (domain: Domain, depth = 0) => {
+    const count = subtreeCounts[domain.id] ?? domain.document_count ?? 0;
+    const label = `${domain.name} (${count})`;
+    const depthStep = 14;
+    const baseOffset = 4;
+    const style = {
+      "--domain-depth-offset": `${baseOffset + depth * depthStep}px`,
+      "--domain-connector-left": `${baseOffset + Math.max(depth - 1, 0) * depthStep + 4}px`,
+      "--domain-connector-width": `${depth > 0 ? depthStep : 0}px`,
+    } as CSSProperties;
+    return (
+      <div key={domain.id} className="domain-tree-node" data-depth={depth} style={style}>
+        <div className="domain-row" title={label}>
+          <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
+          <span className="domain-label">
+            <span className="domain-name">{domain.name}</span>
+            <span className="domain-count">({count})</span>
+          </span>
+        </div>
+        {(children[domain.id] || []).map((child) => render(child, depth + 1))}
+      </div>
+    );
+  };
 
   return (
     <div className="domain-tree">
@@ -6859,7 +6924,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
                     {file.existing_documents.length ? ` / matches ${file.existing_documents[0].title}` : ""}
                   </small>
                 </span>
-                <StatusPill value={file.existing_documents.length ? "In library" : "In batch"} tone="warn" />
+                <StatusPill value={importDuplicateSourceLabel(file)} tone="warn" />
               </div>
             ))}
           </div>
@@ -7003,7 +7068,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
             </AsyncActionSlot>
             <AsyncActionSlot busy={clearStagedBusy} feedback={clearStagedFeedback.feedback} label="Clear staged uploads in progress">
               <button
-                className={asyncFeedbackClass("secondary-button compact", clearStagedFeedback.feedback, clearStagedBusy)}
+                className={asyncFeedbackClass("secondary-button", clearStagedFeedback.feedback, clearStagedBusy)}
                 data-disabled-reason={
                   clearStagedBusy
                     ? "staged uploads are already being cleared."
@@ -9957,6 +10022,7 @@ function SettingsView({
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
+  const modelPricingFeedback = useAsyncActionFeedback();
   const serviceAccountUploadFeedback = useAsyncActionFeedback();
   const backupFeedback = useAsyncActionFeedback();
   const restoreFeedback = useAsyncActionFeedback({ errorMs: 9000 });
@@ -10105,6 +10171,20 @@ function SettingsView({
       if (serviceAccountInputRef.current) serviceAccountInputRef.current.value = "";
     },
   });
+  const refreshModelsAndPricing = useMutation({
+    mutationFn: api.refreshModelsAndPricing,
+    onSuccess: (status) => {
+      modelPricingFeedback.showSuccess();
+      queryClient.setQueryData<AppPreferences | undefined>(["preferences"], (current) =>
+        current ? { ...current, model_pricing: status } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+    },
+    onError: (error) => {
+      modelPricingFeedback.showError(actionFailureMessage("Could not refresh models and pricing", error));
+    },
+  });
   const startBackup = useMutation({
     mutationFn: api.startDatabaseBackup,
     onSuccess: () => {
@@ -10137,6 +10217,13 @@ function SettingsView({
   const usageSummary = openaiUsage?.summary;
   const usageTaskRows = openaiUsage?.by_task || [];
   const recentUsageRows = openaiUsage?.recent || [];
+  const modelPricing = preferences?.model_pricing || openaiUsage?.pricing;
+  const modelPricingLastUpdated = modelPricingDateLabel(modelPricing?.last_refreshed_at);
+  const modelPricingSourceUpdated = modelPricingDateLabel(modelPricing?.updated_at);
+  const modelPricingTrackedCount = modelPricing?.model_count || modelPricing?.current_model_count || 0;
+  const modelPricingRefreshDisabledReason = refreshModelsAndPricing.isPending
+    ? "model and pricing refresh is already running."
+    : "";
   const preferenceDirty = Boolean(
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
@@ -10440,6 +10527,41 @@ function SettingsView({
             </div>
           ))}
         </div>
+        <div className="model-pricing-status">
+          <div>
+            <span>Pricing information last updated</span>
+            <strong>{modelPricingLastUpdated || "Never refreshed"}</strong>
+            <p>
+              {modelPricingTrackedCount
+                ? `${formatMetric(modelPricingTrackedCount)} current model prices tracked`
+                : "No current model prices have been stored yet"}
+              {modelPricingSourceUpdated ? `; source snapshot ${modelPricingSourceUpdated}` : ""}.
+            </p>
+          </div>
+          <AsyncActionSlot
+            busy={refreshModelsAndPricing.isPending}
+            feedback={modelPricingFeedback.feedback}
+            label="Model and pricing refresh in progress"
+          >
+            <button
+              className={asyncFeedbackClass("secondary-button model-pricing-refresh", modelPricingFeedback.feedback, refreshModelsAndPricing.isPending)}
+              data-disabled-reason={modelPricingRefreshDisabledReason}
+              data-tooltip="Refresh Medusa's enabled OpenAI and Google model pricing history from the current pricing snapshot."
+              disabled={refreshModelsAndPricing.isPending}
+              onClick={() => refreshModelsAndPricing.mutate()}
+              type="button"
+            >
+              <RefreshCw className={refreshModelsAndPricing.isPending ? "spin" : ""} size={16} />
+              {refreshModelsAndPricing.isPending ? "Refreshing" : "Refresh Models & Pricing"}
+            </button>
+          </AsyncActionSlot>
+        </div>
+        {modelPricing?.stale ? (
+          <p className="preference-warning model-pricing-warning">
+            <AlertTriangle size={15} />
+            Model pricing is more than {modelPricing.stale_after_days} days old. Refresh before cost-sensitive imports or Concordance runs.
+          </p>
+        ) : null}
       </div>
       <div className="openai-usage-panel">
         <div className="panel-title-row">
@@ -11060,10 +11182,12 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-      if (event.key.toLowerCase() !== "b") return;
+      const targetView = navShortcutByKey.get(event.key.toLowerCase());
+      if (!targetView) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
-      void requestActiveViewChange("budget");
+      event.preventDefault();
+      void requestActiveViewChange(targetView);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);

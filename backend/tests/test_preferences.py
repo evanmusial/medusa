@@ -152,6 +152,8 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
 
         payload = get_app_preferences(db)
         assert len(payload["analysis_model_tasks"]) == 8
+        assert payload["model_pricing"]["updated_at"] == "2026-06-21"
+        assert payload["model_pricing"]["stale"] is True
         raw_text_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_RAW_TEXT_EXTRACTION)
         assert raw_text_task["default_model"] == "marker"
         assert raw_text_task["option_groups"][0] == {"label": "Local", "options": ["docling", "marker", "pymupdf"]}
@@ -160,13 +162,20 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         metadata_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_METADATA)
         assert metadata_task["option_groups"][0]["label"] == "OpenAI"
         assert metadata_task["option_groups"][1]["label"] == "Google"
+        assert "gemini-3.1-flash-lite" in payload["model_options"]["google"]
         assert "gemini-2.5-flash" in payload["model_options"]["google"]
+        assert "gemini-3.5-flash" not in payload["model_options"]["google"]
         assert all("preview" not in model for model in payload["model_options"]["google"])
         assert all(not model.startswith("gemini-2.0-") for model in payload["model_options"]["google"])
         assert "gpt-4o" in payload["model_options"]["gpt"]
         assert "gpt-5.1" in payload["model_options"]["gpt"]
         assert "gpt-5.2-pro" in payload["model_options"]["gpt"]
         assert "gpt-5.5" in payload["model_options"]["gpt"]
+        assert payload["model_options"]["embedding"] == [
+            "text-embedding-3-small",
+            "text-embedding-3-large",
+            "text-embedding-ada-002",
+        ]
         assert payload["model_options"]["raw_text_extraction"][:3] == ["docling", "marker", "pymupdf"]
         tag_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_KEYWORDS_TOPICS)
         assert tag_task["selected_model"] == "gpt-5.4"

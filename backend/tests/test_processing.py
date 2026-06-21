@@ -696,6 +696,66 @@ def test_duplicate_preflight_and_skip_strategy(monkeypatch, tmp_path):
         assert job.current_step == "duplicate_skipped"
 
 
+def test_duplicate_preflight_ignores_cleared_queue_documents(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+    monkeypatch.setenv("GCS_BUCKET", "")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+
+    from app.database import Base
+    from app import main
+    from app.models import Document, ImportJob
+
+    class FakeStorage:
+        def put_bytes(self, key, data, content_type):
+            return SimpleNamespace(uri=f"memory://{key}", backend="fake")
+
+    monkeypatch.setattr(main, "get_storage_service", lambda: FakeStorage())
+    main.settings.data_dir = tmp_path / "data"
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    data = b"%PDF-1.4 cleared duplicate source"
+    checksum = hashlib.sha256(data).hexdigest()
+
+    with Session() as db:
+        stale = Document(
+            title="Chapter stale",
+            original_filename="Chapter stale.pdf",
+            checksum_sha256=checksum,
+            processing_status="cleared",
+        )
+        db.add(stale)
+        db.commit()
+
+        check = asyncio.run(
+            main.check_import_duplicates(
+                object(),
+                db,
+                [UploadFile(filename="Chapter fresh.pdf", file=BytesIO(data))],
+            )
+        )
+        assert check.duplicate_file_count == 0
+        assert check.files[0].existing_documents == []
+
+        batch = asyncio.run(
+            main.create_import_batch(
+                object(),
+                db,
+                files=[UploadFile(filename="Chapter fresh.pdf", file=BytesIO(data))],
+                duplicate_strategy="skip",
+            )
+        )
+
+        jobs = db.query(ImportJob).filter(ImportJob.batch_id == batch.id).all()
+        assert len(jobs) == 1
+        assert jobs[0].status == "staged"
+        assert jobs[0].current_step == "staged"
+        assert db.query(Document).count() == 2
+
+
 def test_import_anyway_allows_same_checksum_document(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -48,9 +48,9 @@ GPT_MODEL_OPTIONS = (
 EMBEDDING_MODEL_OPTIONS = (
     "text-embedding-3-small",
     "text-embedding-3-large",
+    "text-embedding-ada-002",
 )
 GOOGLE_TEXT_MODEL_OPTIONS = (
-    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
     "gemini-2.5-pro",
     "gemini-2.5-flash",

@@ -269,7 +269,7 @@ def sync_import_usage_composition(db: Session, *, document: Document, job: Impor
     for usage in query.order_by(OpenAIUsageRecord.created_at, OpenAIUsageRecord.id).all():
         if usage.id in existing_usage_ids:
             continue
-        cost = estimated_cost_usd_for_record(usage)
+        cost = estimated_cost_usd_for_record(usage, db)
         stage_key = stage_key_for_usage(usage)
         endpoint = usage.endpoint or usage.operation
         record_kind = "embedding" if "embedding" in endpoint or "embedding" in usage.model else "llm"
@@ -315,7 +315,7 @@ def active_import_cost_usd(db: Session, import_job_ids: list[str]) -> float:
         return 0.0
     total = 0.0
     for usage in db.query(OpenAIUsageRecord).filter(OpenAIUsageRecord.import_job_id.in_(import_job_ids)).all():
-        total += estimated_cost_usd_for_record(usage) or 0.0
+        total += estimated_cost_usd_for_record(usage, db) or 0.0
     return round(total, 6)
 
 

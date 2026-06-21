@@ -172,6 +172,31 @@ class OpenAIUsageRecord(Base, TimestampMixin):
     usage_metadata: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
 
 
+class ModelPricingRecord(Base, TimestampMixin):
+    __tablename__ = "model_pricing_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    price_basis: Mapped[str] = mapped_column(String(80), default="standard", nullable=False, index=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
+    input_usd_per_million: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    cached_input_usd_per_million: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    output_usd_per_million: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    input_over_200k_usd_per_million: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    cached_input_over_200k_usd_per_million: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    output_over_200k_usd_per_million: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    pricing_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "model", "price_basis", "observed_at", name="uq_model_pricing_observation"),
+    )
+
+
 class DocumentCompositionRecord(Base, TimestampMixin):
     __tablename__ = "document_composition_records"
 

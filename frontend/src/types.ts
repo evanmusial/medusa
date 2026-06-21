@@ -55,6 +55,7 @@ export type AppPreferences = {
   analysis_models: Record<string, string>;
   analysis_model_tasks: AnalysisModelTask[];
   model_options: Record<string, string[]>;
+  model_pricing: ModelPricingStatus;
 };
 
 export type DocumentCacheStatus = {
@@ -236,6 +237,23 @@ export type OpenAIUsageRecent = {
 
 export type OpenAIUsagePeriod = "last_day" | "last_month" | "last_3_months" | "all_time";
 
+export type ModelPricingStatus = {
+  basis: string;
+  source_url: string;
+  source_urls?: Record<string, string>;
+  updated_at: string;
+  last_refreshed_at?: string | null;
+  stale: boolean;
+  stale_after_days: number;
+  model_count: number;
+  current_model_count: number;
+  provider_counts: Record<string, number>;
+  checked_count?: number;
+  inserted_count?: number;
+  changed_count?: number;
+  unchanged_count?: number;
+};
+
 export type OpenAIUsage = {
   period: OpenAIUsagePeriod;
   summary: OpenAIUsageTotals;
@@ -245,12 +263,7 @@ export type OpenAIUsage = {
   by_calendar_day: OpenAIUsageGroup[];
   by_calendar_hour: OpenAIUsageGroup[];
   recent: OpenAIUsageRecent[];
-  pricing: {
-    basis: string;
-    source_url: string;
-    source_urls?: Record<string, string>;
-    updated_at: string;
-  };
+  pricing: ModelPricingStatus;
 };
 
 export type Domain = {

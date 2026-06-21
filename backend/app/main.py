@@ -100,6 +100,7 @@ from app.schemas import (
     NoteCreate,
     NoteOut,
     NotePatch,
+    ModelPricingStatusOut,
     OpenAIUsageOut,
     ProcessingEventOut,
     ProjectCreate,
@@ -180,7 +181,7 @@ from app.services.preferences import (
     store_google_service_account,
     update_app_preferences,
 )
-from app.services.openai_usage import OpenAIUsageContext, estimated_cost_usd_for_record, openai_usage_summary
+from app.services.openai_usage import OpenAIUsageContext, estimated_cost_usd_for_record, openai_usage_summary, refresh_model_pricing
 from app.services.recommendations import (
     doi_url,
     list_document_recommendations,
@@ -216,6 +217,17 @@ DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 STAGED_IMPORT_STATUS = "staged"
 IMPORT_JOB_QUEUE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
 IMPORT_JOB_CLEARABLE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
+IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
+    "ready",
+    "complete",
+    "completed",
+    "restored",
+    "staged",
+    "queued",
+    "running",
+    "failed",
+    "restored_paused",
+)
 IMPORT_ESTIMATE_TASK_KEYS = (
     MODEL_METADATA,
     MODEL_SUMMARY,
@@ -430,7 +442,11 @@ def duplicate_count_by_checksum(db: Session, checksums: list[str]) -> dict[str, 
 def active_documents_for_checksum(db: Session, checksum: str) -> list[Document]:
     return (
         db.query(Document)
-        .filter(Document.deleted_at.is_(None), Document.checksum_sha256 == checksum)
+        .filter(
+            Document.deleted_at.is_(None),
+            Document.processing_status.in_(IMPORT_DUPLICATE_DOCUMENT_STATUSES),
+            Document.checksum_sha256 == checksum,
+        )
         .order_by(Document.created_at.desc(), Document.id)
         .all()
     )
@@ -1134,6 +1150,16 @@ async def upload_google_service_account(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     return preferences
+
+
+@app.post("/api/model-pricing/refresh", response_model=ModelPricingStatusOut)
+def refresh_models_and_pricing(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    status = refresh_model_pricing(db)
+    db.commit()
+    return status
 
 
 @app.get("/api/openai/usage", response_model=OpenAIUsageOut)
@@ -3534,7 +3560,7 @@ def import_job_costs_usd(db: Session, import_job_ids: list[str]) -> dict[str, fl
     usage_rows = db.query(OpenAIUsageRecord).filter(OpenAIUsageRecord.import_job_id.in_(import_job_ids)).all()
     for usage in usage_rows:
         if usage.import_job_id:
-            costs[usage.import_job_id] = costs.get(usage.import_job_id, 0.0) + (estimated_cost_usd_for_record(usage) or 0.0)
+            costs[usage.import_job_id] = costs.get(usage.import_job_id, 0.0) + (estimated_cost_usd_for_record(usage, db) or 0.0)
     return {job_id: round(cost, 6) for job_id, cost in costs.items()}
 
 
@@ -3682,7 +3708,7 @@ def import_cost_exemplar_rates(db: Session) -> dict[str, Any]:
     for record, page_count in records:
         if not record.document_id or not page_count:
             continue
-        cost = estimated_cost_usd_for_record(record) or 0.0
+        cost = estimated_cost_usd_for_record(record, db) or 0.0
         if cost <= 0:
             continue
         pages = max(1, int(page_count))

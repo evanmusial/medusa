@@ -891,6 +891,23 @@ class AnalysisModelTaskOut(BaseModel):
     option_groups: list[ModelOptionGroupOut] = Field(default_factory=list)
 
 
+class ModelPricingStatusOut(BaseModel):
+    basis: str
+    source_url: str
+    source_urls: dict[str, str] = Field(default_factory=dict)
+    updated_at: str
+    last_refreshed_at: datetime | None = None
+    stale: bool = True
+    stale_after_days: int = 2
+    model_count: int = 0
+    current_model_count: int = 0
+    provider_counts: dict[str, int] = Field(default_factory=dict)
+    checked_count: int = 0
+    inserted_count: int = 0
+    changed_count: int = 0
+    unchanged_count: int = 0
+
+
 class AppPreferencesOut(BaseModel):
     import_worker_concurrency: int
     recommended_import_worker_concurrency: int
@@ -911,6 +928,7 @@ class AppPreferencesOut(BaseModel):
     analysis_models: dict[str, str]
     analysis_model_tasks: list[AnalysisModelTaskOut]
     model_options: dict[str, list[str]]
+    model_pricing: ModelPricingStatusOut
 
 
 class AppPreferencesPatch(BaseModel):
@@ -994,11 +1012,8 @@ class OpenAIUsageRecentOut(BaseModel):
     error_message: str | None = None
 
 
-class OpenAIUsagePricingOut(BaseModel):
-    basis: str
-    source_url: str
-    source_urls: dict[str, str] = Field(default_factory=dict)
-    updated_at: str
+class OpenAIUsagePricingOut(ModelPricingStatusOut):
+    pass
 
 
 class OpenAIUsageOut(BaseModel):

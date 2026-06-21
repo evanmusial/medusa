@@ -16,6 +16,7 @@ from app.services.analysis_models import (
     normalize_model_id,
     task_payloads,
 )
+from app.services.openai_usage import model_pricing_status
 from app.services.google_credentials import (
     SERVICE_ACCOUNT_NONE_LABEL,
     managed_google_service_account_path,
@@ -395,6 +396,7 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "analysis_models": analysis_models,
         "analysis_model_tasks": task_payloads(analysis_models),
         "model_options": model_options(analysis_models),
+        "model_pricing": model_pricing_status(db),
         **get_google_service_account_status(db),
     }
 
