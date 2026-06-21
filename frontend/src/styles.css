@@ -4935,7 +4935,6 @@ pre {
 .import-processing-step-row.header {
   background: var(--panel);
   color: var(--muted);
-  border-bottom: 1px solid var(--line);
   font-size: 12px;
   font-weight: 800;
   padding-block: 8px;
@@ -4966,9 +4965,7 @@ pre {
   align-items: center;
   height: 22px;
   padding-left: 70px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  background: var(--surface);
 }
 
 .import-processing-flow-arrow svg {
