@@ -1133,6 +1133,13 @@ function presetBoolean(preset: ImportProcessingPreset, section: keyof ImportProc
   return typeof value === "boolean" ? value : fallback;
 }
 
+function presetString(preset: ImportProcessingPreset, section: keyof ImportProcessingPreset, key: string, fallback: string) {
+  const sectionValue = preset[section];
+  if (!sectionValue || typeof sectionValue !== "object" || Array.isArray(sectionValue)) return fallback;
+  const value = (sectionValue as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
 function updatePresetSection(
   preset: ImportProcessingPreset,
   section: "cleanup" | "ocr" | "structured_tables" | "bibliography" | "visuals" | "cost",
@@ -10868,6 +10875,22 @@ function SettingsView({
                     ))}
                   </select>
                 </label>
+                <label>
+                  Cleanup fallback
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={presetString(selectedImportProcessingPreset, "cleanup", "fallback_model", "gemini-3.1-flash-lite")}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "cleanup", { fallback_model: event.target.value }))
+                    }
+                  >
+                    {importProcessingModelOptions.map((model) => (
+                      <option key={model} value={model}>
+                        {modelDisplayName(model)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <div className="import-preset-number-row">
                   <label>
                     Min pages
@@ -10899,6 +10922,29 @@ function SettingsView({
                     />
                   </label>
                 </div>
+                <div className="import-toggle-list">
+                  {[
+                    ["deterministic", "Deterministic cleanup"],
+                    ["remove_headers_footers", "Remove headers/footers"],
+                    ["remove_page_numbers", "Remove page numbers"],
+                    ["normalize_whitespace", "Normalize whitespace"],
+                    ["repair_line_wraps", "Repair line wraps"],
+                    ["repair_bullets", "Repair bullets"],
+                    ["repair_drop_caps", "Repair drop caps"],
+                    ["remove_text_art", "Remove text art"],
+                    ["front_matter_noise", "Trim front matter noise"],
+                  ].map(([key, label]) => (
+                    <label className="checkbox-row" key={key}>
+                      <input
+                        checked={presetBoolean(selectedImportProcessingPreset, "cleanup", key, true)}
+                        disabled={selectedImportPresetIsBuiltIn}
+                        onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "cleanup", { [key]: event.target.checked }))}
+                        type="checkbox"
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
               </fieldset>
               <fieldset>
                 <legend>Assets and structure</legend>
@@ -10913,6 +10959,40 @@ function SettingsView({
                 </label>
                 <label className="checkbox-row">
                   <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "ocr", "low_text_only", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "ocr", { low_text_only: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  <span>Low-text pages only</span>
+                </label>
+                <label>
+                  OCR provider
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={presetString(selectedImportProcessingPreset, "ocr", "provider", "google_vision")}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "ocr", { provider: event.target.value }))}
+                  >
+                    <option value="google_vision">Google Vision</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+                <label>
+                  Low-text threshold
+                  <input
+                    disabled={selectedImportPresetIsBuiltIn}
+                    min={0}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) =>
+                        updatePresetSection(preset, "ocr", { min_text_characters: Math.max(0, Number(event.target.value) || 0) }),
+                      )
+                    }
+                    type="number"
+                    value={presetNumber(selectedImportProcessingPreset, "ocr", "min_text_characters", 120)}
+                  />
+                </label>
+                <label className="checkbox-row">
+                  <input
                     checked={presetBoolean(selectedImportProcessingPreset, "structured_tables", "enabled", true)}
                     disabled={selectedImportPresetIsBuiltIn}
                     onChange={(event) =>
@@ -10921,6 +11001,17 @@ function SettingsView({
                     type="checkbox"
                   />
                   <span>Structured tables</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "structured_tables", "local_detection", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "structured_tables", { local_detection: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Local table detection</span>
                 </label>
                 <label className="checkbox-row">
                   <input
@@ -10958,6 +11049,17 @@ function SettingsView({
                 </label>
                 <label className="checkbox-row">
                   <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "visuals", "local_multi_pass", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { local_multi_pass: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Local multi-pass extraction</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
                     checked={presetBoolean(selectedImportProcessingPreset, "visuals", "audit_enabled", true)}
                     disabled={selectedImportPresetIsBuiltIn}
                     onChange={(event) =>
@@ -10990,6 +11092,65 @@ function SettingsView({
                         {modelDisplayName(model)}
                       </option>
                     ))}
+                  </select>
+                </label>
+                <label>
+                  Visual fallback
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={presetString(selectedImportProcessingPreset, "visuals", "fallback_model", "gpt-5.4-mini")}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { fallback_model: event.target.value }))}
+                  >
+                    {importProcessingModelOptions.map((model) => (
+                      <option key={model} value={model}>
+                        {modelDisplayName(model)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "visuals", "crop_only", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { crop_only: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  <span>Cropped regions only</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "visuals", "premium_model_allowed", false)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { premium_model_allowed: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Allow premium visual model</span>
+                </label>
+                <label>
+                  Premium visual model
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={presetString(selectedImportProcessingPreset, "visuals", "premium_model", "gpt-5.5")}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { premium_model: event.target.value }))}
+                  >
+                    {importProcessingModelOptions.map((model) => (
+                      <option key={model} value={model}>
+                        {modelDisplayName(model)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Visual calls
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={presetString(selectedImportProcessingPreset, "cost", "visual_model_calls", "cropped_regions_only")}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "cost", { visual_model_calls: event.target.value }))}
+                  >
+                    <option value="cropped_regions_only">Cropped regions only</option>
+                    <option value="none">None</option>
                   </select>
                 </label>
               </fieldset>
