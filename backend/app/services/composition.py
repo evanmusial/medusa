@@ -23,6 +23,10 @@ from app.services.openai_usage import estimated_cost_usd_for_record
 STAGE_SEQUENCE = {
     "import_cost_estimate": 1,
     "raw_text_extraction": 10,
+    "document_structure_cleanup": 12,
+    "structured_tables": 14,
+    "bibliography_extraction": 16,
+    "visual_asset_extraction": 20,
     "figure_assets": 20,
     "summary_topics": 30,
     "citation_refresh": 34,
@@ -34,6 +38,10 @@ STAGE_SEQUENCE = {
 STAGE_LABELS = {
     "import_cost_estimate": "Import cost estimate",
     "raw_text_extraction": "Text extraction",
+    "document_structure_cleanup": "Document structure cleanup",
+    "structured_tables": "Structured tables",
+    "bibliography_extraction": "Bibliography extraction",
+    "visual_asset_extraction": "Visual asset extraction",
     "figure_assets": "Figure extraction",
     "summary_topics": "Metadata, summary, and topics",
     "citation_refresh": "APA citation matching",
@@ -45,7 +53,13 @@ STAGE_LABELS = {
 IMPORT_COST_ESTIMATE_STAGE = "import_cost_estimate"
 
 CAPABILITY_STAGE = {
+    "document_structure_cleanup": "document_structure_cleanup",
+    "structured_tables": "structured_tables",
     "page_text_normalization": "raw_text_extraction",
+    "bibliography_extraction": "bibliography_extraction",
+    "visual_asset_extraction": "visual_asset_extraction",
+    "visual_asset_context": "visual_asset_extraction",
+    "figure_assets": "visual_asset_extraction",
     "summary_topics": "summary_topics",
     "citation_refresh": "citation_refresh",
     "text_chunk_encoding": "text_chunk_encoding",
@@ -63,6 +77,10 @@ PIPELINE_TASK_OFFSETS = {
 
 PIPELINE_LOCAL_OFFSETS = {
     "raw_text_extraction": 0.0,
+    "document_structure_cleanup": 0.0,
+    "structured_tables": 0.0,
+    "bibliography_extraction": 0.0,
+    "visual_asset_extraction": 0.0,
     "figure_assets": 0.0,
     "summary_topics": 0.9,
     "text_chunk_encoding": 0.9,

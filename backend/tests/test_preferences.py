@@ -181,6 +181,56 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert tag_task["selected_model"] == "gpt-5.4"
 
 
+def test_import_processing_presets_and_steps_are_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.preferences import get_app_preferences, update_app_preferences
+
+    Session = make_session()
+    with Session() as db:
+        preferences = get_app_preferences(db)
+
+        assert preferences["default_import_processing_preset_id"] == "balanced"
+        assert preferences["second_pass_processing_enabled"] is True
+        assert [preset["id"] for preset in preferences["import_processing_presets"][:3]] == [
+            "balanced",
+            "strict_local",
+            "deep_review",
+        ]
+        assert all(preset["built_in"] for preset in preferences["import_processing_presets"][:3])
+        assert "bibliography_extraction" in {step["key"] for step in preferences["import_processing_steps"]}
+        assert all("Accomplishes:" in step["tooltip"] for step in preferences["import_processing_steps"])
+
+        custom = {
+            "id": "My Balanced",
+            "name": "My Balanced",
+            "mode": "custom",
+            "built_in": False,
+            "cleanup": {"model": "gemini-3.1-flash-lite", "page_cap_min": 4, "page_cap_percent": 10},
+            "bibliography": {"enabled": True, "preserve_italics": False},
+            "visuals": {"enabled": False},
+        }
+        updated = update_app_preferences(
+            db,
+            import_processing_presets=[custom, {"id": "balanced", "name": "Tampered Balanced", "built_in": False}],
+            default_import_processing_preset_id="custom_my_balanced",
+            second_pass_processing_enabled=False,
+        )
+
+        assert updated["default_import_processing_preset_id"] == "custom_my_balanced"
+        assert updated["second_pass_processing_enabled"] is False
+        assert updated["import_processing_presets"][0]["name"] == "Balanced"
+        saved_custom = next(preset for preset in updated["import_processing_presets"] if preset["id"] == "custom_my_balanced")
+        assert saved_custom["name"] == "My Balanced"
+        assert saved_custom["cleanup"]["model"] == "gemini-3.1-flash-lite"
+        assert saved_custom["cleanup"]["page_cap_min"] == 4
+        assert saved_custom["cleanup"]["page_cap_percent"] == 10
+        assert saved_custom["bibliography"]["preserve_italics"] is False
+        assert saved_custom["visuals"]["enabled"] is False
+        assert not any(preset["name"] == "Tampered Balanced" for preset in updated["import_processing_presets"])
+
+
 def test_gcs_bucket_preference_falls_back_to_env_and_can_be_saved(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -27,6 +27,7 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
+from app.services.bibliography import extract_document_bibliography
 from app.services.citations import decode_html_entities, format_apa_citation, format_apa_in_text_citation, merge_citation_metadata
 from app.services.composition import (
     elapsed_ms,
@@ -46,6 +47,8 @@ from app.services.figures import process_document_figures
 from app.services.history import document_correction_snapshot, record_document_version
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
+from app.services.preferences import import_processing_cloud_page_cap, import_processing_snapshot
+from app.services.second_pass import clean_document_structure
 from app.services.tag_governance import apply_import_tag_governance
 from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
@@ -59,7 +62,9 @@ from app.services.verifier import (
 IMPORT_STEP_ORDER = {
     "stored": 0,
     "extracting": 0,
+    "cleaning_structure": 0,
     "normalizing_pages": 0,
+    "extracting_bibliography": 0,
     "extracted": 1,
     "extracting_figures": 1,
     "figures": 2,
@@ -75,10 +80,14 @@ IMPORT_STEP_ORDER = {
 def composition_stage_key_for_job_step(step: str | None) -> str:
     if not step:
         return "raw_text_extraction"
+    if step == "cleaning_structure":
+        return "document_structure_cleanup"
+    if step == "extracting_bibliography":
+        return "bibliography_extraction"
     if step.startswith("normalizing_page_") or step in {"stored", "extracting", "normalizing_pages", "extracted"}:
         return "raw_text_extraction"
     if step in {"extracting_figures", "figures"}:
-        return "figure_assets"
+        return "visual_asset_extraction"
     if step in {"enriching", "enriched"}:
         return "summary_topics"
     if step in {"indexing", "indexed"}:
@@ -213,8 +222,8 @@ def _page_text_source(page: DocumentPage) -> str:
     return (page.text_source or "").replace("_low_text", "").strip().lower() or "pdf"
 
 
-def _page_cloud_normalization_reason(page: DocumentPage) -> str | None:
-    text = sanitize_extracted_text(page.text)
+def _page_cloud_normalization_reason(page: DocumentPage, text_override: str | None = None) -> str | None:
+    text = sanitize_extracted_text(text_override if text_override is not None else page.text)
     if not text.strip():
         return None
     if page.low_text:
@@ -257,11 +266,18 @@ def normalize_document_pages(
     model: str | None = None,
     pdf_bytes: bytes | None = None,
     usage_context: OpenAIUsageContext | None = None,
+    normalization_text_by_page_id: dict[str, str] | None = None,
+    cloud_enabled: bool = True,
+    auto_max_pages_override: int | None = None,
+    protect_manual: bool = False,
 ) -> dict[str, Any]:
     ai = ai or get_ai_service()
     settings = get_settings()
     mode = _page_normalization_mode()
-    auto_max_pages = max(0, settings.openai_page_normalization_auto_max_pages)
+    auto_max_pages = max(
+        0,
+        settings.openai_page_normalization_auto_max_pages if auto_max_pages_override is None else auto_max_pages_override,
+    )
     auto_cloud_pages = 0
     auto_reasons: dict[str, int] = {}
     auto_skipped_by_cap = 0
@@ -274,6 +290,9 @@ def normalize_document_pages(
     for index, page in enumerate(pages, start=1):
         page.text = sanitize_extracted_text(page.text)
         page.normalized_text = sanitize_extracted_text(page.normalized_text) or None
+        if protect_manual and page.text_source == "manual":
+            source_counts["manual_protected"] = source_counts.get("manual_protected", 0) + 1
+            continue
         if resume_existing and page.normalized_text:
             source_counts["existing"] = source_counts.get("existing", 0) + 1
             continue
@@ -290,17 +309,24 @@ def normalize_document_pages(
             )
             db.commit()
         before = sanitize_extracted_text(page.normalized_text)
-        auto_reason = _page_cloud_normalization_reason(page)
+        normalization_input = (
+            sanitize_extracted_text(normalization_text_by_page_id.get(page.id))
+            if normalization_text_by_page_id and page.id in normalization_text_by_page_id
+            else sanitize_extracted_text(page.text)
+        )
+        auto_reason = _page_cloud_normalization_reason(page, normalization_input)
         if auto_reason:
             auto_reasons[auto_reason] = auto_reasons.get(auto_reason, 0) + 1
-        if mode == "never" or not settings.openai_normalize_page_text:
-            result = _local_page_normalization(page.text, source="local")
+        if not cloud_enabled:
+            result = _local_page_normalization(normalization_input, source="local_preset")
+        elif mode == "never" or not settings.openai_normalize_page_text:
+            result = _local_page_normalization(normalization_input, source="local")
         elif mode == "auto" and not auto_reason:
-            result = _local_page_normalization(page.text, source="local_auto")
+            result = _local_page_normalization(normalization_input, source="local_auto")
         elif mode == "auto" and auto_cloud_pages >= auto_max_pages:
             auto_skipped_by_cap += 1
             result = _local_page_normalization(
-                page.text,
+                normalization_input,
                 source="local_auto_cap",
                 notes=[f"OpenAI page normalization auto cap reached before page {page.page_number}."],
             )
@@ -309,7 +335,7 @@ def normalize_document_pages(
             result = ai.normalize_page_text(
                 document.original_filename,
                 page.page_number,
-                page.text,
+                normalization_input,
                 model=model,
                 pdf_bytes=pdf_bytes if mode == "always" else None,
                 usage_context=usage_context,
@@ -332,6 +358,7 @@ def normalize_document_pages(
         "changed_pages": changed_pages,
         "mode": mode,
         "sources": source_counts,
+        "cloud_enabled": cloud_enabled,
     }
     if mode == "auto":
         summary["auto_cloud_pages"] = auto_cloud_pages
@@ -378,6 +405,22 @@ def _compact_source_import_evidence(evidence: dict[str, Any], page_count: int) -
     compacted.pop("extracted_pages", None)
     compacted["extracted_page_count"] = page_count
     return {**evidence, "source_import": compacted}
+
+
+def import_processing_preset_for_job(db: Session, job: ImportJob, document: Document) -> dict[str, Any]:
+    evidence = document.metadata_evidence or {}
+    preset = evidence.get("import_processing_preset")
+    if isinstance(preset, dict):
+        return preset
+    shared_defaults = job.batch.shared_defaults if job.batch else {}
+    if isinstance(shared_defaults, dict):
+        preset = shared_defaults.get("processing_preset_snapshot")
+        if isinstance(preset, dict):
+            return preset
+        preset_id = shared_defaults.get("processing_preset_id")
+        if isinstance(preset_id, str) and preset_id.strip():
+            return import_processing_snapshot(db, preset_id)
+    return import_processing_snapshot(db)
 
 
 def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
@@ -559,16 +602,57 @@ class DocumentProcessor:
                 message="Resuming page text normalization from persisted page checkpoints.",
             )
             db.commit()
+        preset_snapshot = import_processing_preset_for_job(db, job, document)
+        second_pass_enabled = bool(preset_snapshot.get("second_pass_enabled", True))
+        cleanup_text_by_page_id: dict[str, str] | None = None
+        cleanup_evidence: dict[str, Any] | None = None
+        cleanup_config = preset_snapshot.get("cleanup") if isinstance(preset_snapshot.get("cleanup"), dict) else {}
+        if second_pass_enabled:
+            cleanup_started_at, cleanup_started_perf = stage_timer()
+            checkpoint_job_step(db, job, document, "cleaning_structure", "Cleaning document structure and boilerplate.")
+            cleanup_result = clean_document_structure(document, preset_snapshot)
+            raw_cleanup_text = cleanup_result.pop("cleaned_text_by_page_id", {})
+            cleanup_text_by_page_id = raw_cleanup_text if isinstance(raw_cleanup_text, dict) else None
+            cleanup_evidence = cleanup_result
+            record_import_stage(
+                db,
+                document=document,
+                job=job,
+                stage_key="document_structure_cleanup",
+                label="Document structure cleanup",
+                method="deterministic",
+                started_at=cleanup_started_at,
+                duration_ms=elapsed_ms(cleanup_started_perf),
+                metadata=cleanup_evidence,
+            )
+            log_event(
+                db,
+                job=job,
+                document=document,
+                event_type="document_structure_cleanup",
+                message=f"Removed {cleanup_evidence.get('removed_boilerplate_count', 0)} boilerplate lines.",
+                payload=cleanup_evidence,
+            )
+            db.commit()
         ai = get_ai_service()
         pdf_path = metadata_cache_path(document)
         pdf_bytes = pdf_path.read_bytes() if pdf_path and pdf_path.exists() else None
+        cloud_enabled = True
+        auto_max_pages_override: int | None = None
+        normalization_model = get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION)
+        if second_pass_enabled:
+            cloud_enabled = bool(cleanup_config.get("cloud_escalation", True))
+            auto_max_pages_override = import_processing_cloud_page_cap(preset_snapshot, len(document.pages))
+            if isinstance(cleanup_config.get("model"), str) and cleanup_config.get("model") != "local":
+                normalization_model = str(cleanup_config["model"])
+            checkpoint_job_step(db, job, document, "normalizing_pages", "Normalizing cleaned page text.")
         normalization_summary = normalize_document_pages(
             document,
             ai=ai,
             db=db,
             job=job,
             resume_existing=resume_normalization,
-            model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
+            model=normalization_model,
             pdf_bytes=pdf_bytes,
             usage_context=OpenAIUsageContext(
                 document_id=document.id,
@@ -576,17 +660,54 @@ class DocumentProcessor:
                 source="import",
                 capability_key="page_text_normalization",
             ),
+            normalization_text_by_page_id=cleanup_text_by_page_id,
+            cloud_enabled=cloud_enabled,
+            auto_max_pages_override=auto_max_pages_override,
         )
         reading_text = rebuild_document_text_chunks(db, document)
+        bibliography_config = preset_snapshot.get("bibliography") if isinstance(preset_snapshot.get("bibliography"), dict) else {}
+        bibliography_evidence: dict[str, Any] = {"status": "disabled_by_preset"}
+        if bool(bibliography_config.get("enabled", True)):
+            bibliography_started_at, bibliography_started_perf = stage_timer()
+            checkpoint_job_step(db, job, document, "extracting_bibliography", "Extracting source bibliography.")
+            bibliography_result = extract_document_bibliography(
+                document,
+                pdf_path if bool(bibliography_config.get("preserve_italics", True)) else None,
+            )
+            bibliography_evidence = bibliography_result.get("evidence") or {}
+            document.bibliography = bibliography_result.get("bibliography") or None
+            record_import_stage(
+                db,
+                document=document,
+                job=job,
+                stage_key="bibliography_extraction",
+                label="Bibliography extraction",
+                method=str(bibliography_evidence.get("source") or "local"),
+                started_at=bibliography_started_at,
+                duration_ms=elapsed_ms(bibliography_started_perf),
+                metadata=bibliography_evidence,
+            )
+            log_event(
+                db,
+                job=job,
+                document=document,
+                event_type="bibliography_extraction",
+                message="Extracted source bibliography." if document.bibliography else "No source bibliography section found.",
+                payload=bibliography_evidence,
+            )
         evidence = _compact_source_import_evidence(dict(document.metadata_evidence or {}), document.page_count)
         document.metadata_evidence = {
             **evidence,
+            "import_processing_preset": preset_snapshot,
             "raw_text_extraction": {
                 "selected_extractor": raw_text_extractor,
                 "actual_extractor": actual_extractor,
                 "fallback_reason": fallback_reason,
             },
+            **({"document_structure_cleanup": cleanup_evidence} if cleanup_evidence else {}),
+            **({"structured_tables": cleanup_evidence.get("structured_tables")} if cleanup_evidence else {}),
             "page_text_normalization": normalization_summary,
+            "bibliography_extraction": bibliography_evidence,
         }
         record_import_stage(
             db,
@@ -595,14 +716,22 @@ class DocumentProcessor:
             stage_key="raw_text_extraction",
             label="Text extraction and page normalization",
             method=actual_extractor,
-            model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
+            model=normalization_model if cloud_enabled else "local",
             started_at=started_at,
             duration_ms=elapsed_ms(started_perf),
             metadata={
                 "selected_extractor": raw_text_extractor,
                 "actual_extractor": actual_extractor,
                 "fallback_reason": fallback_reason,
+                "import_processing_preset": {
+                    "id": preset_snapshot.get("id"),
+                    "name": preset_snapshot.get("name"),
+                    "mode": preset_snapshot.get("mode"),
+                    "second_pass_enabled": second_pass_enabled,
+                },
+                "document_structure_cleanup": cleanup_evidence,
                 "page_text_normalization": normalization_summary,
+                "bibliography_extraction": bibliography_evidence,
             },
         )
         sync_import_usage_composition(db, document=document, job=job)
@@ -616,6 +745,11 @@ class DocumentProcessor:
             payload={
                 "low_text_pages": [page.page_number for page in document.pages if page.low_text],
                 "readable_characters": len(reading_text),
+                "import_processing_preset": {
+                    "id": preset_snapshot.get("id"),
+                    "name": preset_snapshot.get("name"),
+                    "mode": preset_snapshot.get("mode"),
+                },
                 "page_text_normalization": normalization_summary,
             },
         )
@@ -634,8 +768,8 @@ class DocumentProcessor:
             db,
             document=document,
             job=job,
-            stage_key="figure_assets",
-            label="Figure extraction",
+            stage_key="visual_asset_extraction",
+            label="Visual asset extraction",
             method="pymupdf",
             started_at=started_at,
             duration_ms=elapsed_ms(started_perf),
@@ -793,6 +927,7 @@ class DocumentProcessor:
                 "source_url",
                 "abstract",
                 "rich_summary",
+                "bibliography",
                 "apa_citation",
                 "apa_in_text_citation",
                 "citation_status",
@@ -863,6 +998,7 @@ class DocumentProcessor:
                     author_search_text(document.authors),
                     document.abstract,
                     document.rich_summary,
+                    document.bibliography,
                     document.search_text,
                     figure_search_text(document.figures),
                     " ".join(tag.name for tag in document.tags),

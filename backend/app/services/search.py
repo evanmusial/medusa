@@ -39,6 +39,7 @@ def rebuild_document_search_text(document: Document) -> str:
                 author_search_text(document.authors),
                 document.abstract,
                 document.rich_summary,
+                document.bibliography,
                 document.apa_citation,
                 document.apa_in_text_citation,
                 page_text,

@@ -458,6 +458,7 @@ def _document_export(document: Document) -> dict[str, Any]:
         "source_url": document.source_url,
         "abstract": document.abstract,
         "rich_summary": document.rich_summary,
+        "bibliography": document.bibliography,
         "apa_citation": document.apa_citation,
         "apa_citation_model": document.apa_citation_model,
         "apa_citation_source": document.apa_citation_source,

@@ -20,6 +20,39 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Document Processing And Intelligence
 
+- [ ] Implement second-pass import processing on `codex/second-pass-document-processing`.
+  - Acceptance: `docs/SECOND_PASS_DOCUMENT_PROCESSING.md`, `docs/ARCHITECTURE.md`, and this TODO ledger are committed before runtime code begins; the branch keeps second-pass work isolated; built-in Balanced/Strict Local/Deep Review presets exist; an emergency disable path can return imports to the current pipeline; final verification includes backend tests, frontend build, and app health.
+
+- [x] Add Settings Import Processing presets and step controls.
+  - Acceptance: Settings has an Import Processing section with every import step, enabled state where applicable, model/provider controls where applicable, core parameters, sensible defaults, and tooltips explaining exactly what happens and what each step accomplishes; built-in presets are read-only but duplicable; user presets can be created, renamed, duplicated, edited, deleted, and set as default; Save All persists presets, default preset, caps, thresholds, OCR settings, cleanup toggles, and visual settings.
+
+- [ ] Add Import preset selection and durable preset snapshotting.
+  - Acceptance: Import has a compact Processing preset selector in batch defaults; Balanced is selected by default from Settings; staged batches/jobs store the selected preset id and preset snapshot; later Settings edits do not affect already-staged work; staged/processing rows and Composition show which preset was used.
+  - Partial: Import has the Processing preset selector, uses the Settings default, snapshots the selected preset onto batch/job/document evidence, shows preset names in staged/processing rows, and persists preset-aware step-level cost estimate metadata for staged jobs. Remaining work is an explicit Composition display for the preset snapshot and stronger tests around later Settings edits not changing already-staged jobs.
+
+- [ ] Add deterministic document structure cleanup.
+  - Acceptance: imports and Concordance can remove or normalize repeated headers/footers, page numbers, watermarks, decorative text art, front matter noise, excess whitespace, broken line wraps, hyphenation, bullets, and drop-cap styling artifacts while preserving headings, captions, citations, equations, lists, tables, and body text; removed text is kept as evidence but excluded from reader/search/enrichment body text; manual page edits are not silently overwritten.
+  - Partial: import and Concordance run deterministic cleanup, preserve removed boilerplate evidence, protect manual page text during Concordance, and feed cleaned text into normalization/search. Remaining work is broader fixture coverage and stronger handling for body-boundary detection, hyphenation, watermarks, and edge-case scholarly layouts.
+
+- [x] Extract source-document bibliographies into a dedicated field.
+  - Acceptance: imports and Concordance detect references, bibliography, or works-cited sections; `Document.bibliography` stores the extracted reference list separately from generated APA citation text and project bibliographies; Markdown-compatible italics are preserved when PDF span metadata exposes emphasis; document detail displays and allows editing the Bibliography field; search, export, restore, and history include it.
+
+- [ ] Add structured table extraction and persistence.
+  - Acceptance: table rows/cells/captions/page regions are stored as structured data; Markdown table text remains searchable; tables can link to nearby headings, captions, and explicit `Table N` mentions; imports and Concordance are idempotent and retry-safe.
+  - Partial: cleanup records table-like blocks in metadata evidence and the Settings flow reflects that this is evidence-only today. Remaining work is first-class table rows/cells/captions/page-region persistence and table-context linking.
+
+- [ ] Add multi-pass visual asset extraction and coverage audit.
+  - Acceptance: embedded images, displayed image regions, vector charts/plots/diagrams, photos, maps, full-page scans, and table regions are detected; crops include complete axes, legends, labels, and visual bounds when possible; duplicate/overlapping crops are reconciled; page rotation/orientation is preserved or corrected; every meaningful visual region is either extracted or flagged with an audit warning.
+  - Partial: local extraction covers embedded images, page image regions, and vector drawing clusters with captions, orientation metadata, durable assets, and a basic no-assets-found warning. Remaining work is robust full-page scan/table-region coverage, duplicate/incomplete crop audit, complete axes/legend expansion, and missed-region warnings.
+
+- [ ] Add visual asset context and affordable visual model routing.
+  - Acceptance: figures/tables link to captions, nearby headings, surrounding paragraphs, and explicit mentions such as `Figure 2`; searchable gists come from captions/local context first; cropped-region model calls use cheaper OpenAI/Google models when local context is insufficient; premium visual/document analysis requires Deep Review or explicit Concordance scope; every cloud call records provider/model/task/tokens/file bytes/status/duration/cost.
+  - Partial: local figure context links captions, nearby text, and explicit figure mentions; Settings stores visual model-routing preferences; staged import estimates mark visual model routes as pending rather than charging for calls that do not yet run. Remaining work is cropped-region model calls, visual gists beyond local context, premium gating enforcement, and usage/cost records for visual model calls.
+
+- [ ] Wire second-pass capabilities into Concordance.
+  - Acceptance: `document_structure_cleanup`, `bibliography_extraction`, `visual_asset_extraction`, `visual_asset_context`, `structured_tables`, and `ocr_fallback` are versioned Concordance capabilities; old documents can be upgraded without re-upload; jobs are durable, resumable, idempotent, and visible through events/progress; manual page text is skipped or turned into reviewable candidates unless explicit replacement is requested.
+  - Partial: the listed capabilities exist and route to current cleanup, bibliography, visual extraction, visual context, structured-table evidence, and OCR eligibility audit handlers. Remaining work is real OCR execution, first-class structured-table persistence, stronger idempotency tests for visual/table runs, and broader progress/evidence UI for each capability.
+
 - [ ] Design and implement Recon for corpus-grounded research inquiries.
   - Acceptance: add a Recon workspace between Projects and Tags; inquiries store scope, question/instructions, selected model, run mode, run history, answers, evidence, usage, and cost; scopes support whole library, domains, projects, saved searches/views, and eventually selected documents; the Start Research action uses Medusa's durable async progress convention with cost/time preview; Quick Answer uses retrieval over the selected corpus, Broad Sweep inspects every scoped document at least lightly, and Exhaustive is an explicit deep mode rather than the default; answers cite exact document/page/chunk evidence and can be re-run when the question, model, scope, or corpus changes. Planning notes live in `docs/RECON.md`.
 

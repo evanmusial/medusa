@@ -56,6 +56,37 @@ export type AppPreferences = {
   analysis_model_tasks: AnalysisModelTask[];
   model_options: Record<string, string[]>;
   model_pricing: ModelPricingStatus;
+  import_processing_presets: ImportProcessingPreset[];
+  default_import_processing_preset_id: string;
+  import_processing_steps: ImportProcessingStep[];
+  second_pass_processing_enabled: boolean;
+};
+
+export type ImportProcessingPreset = {
+  id: string;
+  name: string;
+  mode: string;
+  built_in: boolean;
+  description?: string;
+  cleanup: Record<string, unknown>;
+  ocr: Record<string, unknown>;
+  structured_tables: Record<string, unknown>;
+  bibliography: Record<string, unknown>;
+  visuals: Record<string, unknown>;
+  cost: Record<string, unknown>;
+  snapshot_version?: number;
+  snapshot_at?: string;
+  second_pass_enabled?: boolean;
+};
+
+export type ImportProcessingStep = {
+  key: string;
+  label: string;
+  description: string;
+  accomplishes: string;
+  tooltip: string;
+  default_enabled: boolean;
+  configurable: boolean;
 };
 
 export type DocumentCacheStatus = {
@@ -563,6 +594,7 @@ export type DocumentDetail = DocumentSummary & {
   publisher?: string | null;
   source_url?: string | null;
   abstract?: string | null;
+  bibliography?: string | null;
   metadata_evidence: Record<string, unknown>;
   gcs_uri?: string | null;
   storage_status: string;
@@ -715,6 +747,9 @@ export type ImportJob = {
   estimated_cost_usd: number;
   estimated_cost_basis: string;
   estimated_cost_page_count?: number | null;
+  processing_preset_id?: string | null;
+  processing_preset_name?: string | null;
+  processing_preset_mode?: string | null;
   attempts: number;
   last_error?: string | null;
   locked_at?: string | null;
