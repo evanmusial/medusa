@@ -383,6 +383,37 @@ def test_doi_stash_status_tracks_import_job(monkeypatch, tmp_path):
         assert rendered.imported_document_title == "Queued Paper"
 
 
+def test_doi_stash_library_match_marks_imported_for_removal(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import doi_stash_out, sync_doi_stash_library_matches
+    from app.models import Document, DoiStash
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Imported Elsewhere",
+            doi="https://doi.org/10.1000/stashed",
+            original_filename="imported.pdf",
+            checksum_sha256="e" * 64,
+            processing_status="ready",
+        )
+        stash = DoiStash(doi="10.1000/stashed", title="Stashed Paper", status="active", stash_metadata={})
+        db.add_all([document, stash])
+        db.commit()
+
+        assert sync_doi_stash_library_matches(db, [stash]) is True
+        db.commit()
+        rendered = doi_stash_out(stash)
+
+        assert stash.status == "imported"
+        assert stash.imported_document_id == document.id
+        assert stash.imported_at is not None
+        assert stash.stash_metadata["matched_import"]["source"] == "library_doi_match"
+        assert rendered.imported_document_title == "Imported Elsewhere"
+
+
 def test_queue_doi_stash_open_pdf_import_queues_normal_import(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

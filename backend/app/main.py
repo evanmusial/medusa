@@ -2539,6 +2539,45 @@ def sync_doi_stash_import_status(stash: DoiStash) -> bool:
     return stash.status != previous_status
 
 
+def sync_doi_stash_library_matches(db: Session, stashes: list[DoiStash]) -> bool:
+    matchable: dict[str, DoiStash] = {}
+    for stash in stashes:
+        if stash.status == "import_queued":
+            continue
+        normalized = normalize_doi(stash.doi)
+        if normalized and not (stash.status == "imported" and stash.imported_document_id):
+            matchable.setdefault(normalized, stash)
+    if not matchable:
+        return False
+
+    changed = False
+    documents = (
+        filter_library_visible_documents(db.query(Document))
+        .filter(Document.doi.isnot(None))
+        .order_by(Document.updated_at.desc(), Document.created_at.desc(), Document.id)
+        .all()
+    )
+    for document in documents:
+        normalized = normalize_doi(document.doi)
+        stash = matchable.get(normalized or "")
+        if not stash:
+            continue
+        stash.imported_document_id = document.id
+        stash.status = "imported"
+        stash.imported_at = stash.imported_at or document.updated_at or document.created_at or utc_now()
+        metadata = dict(stash.stash_metadata or {})
+        metadata["matched_import"] = {
+            "document_id": document.id,
+            "document_title": document.title,
+            "doi": normalized,
+            "matched_at": utc_now().isoformat(),
+            "source": "library_doi_match",
+        }
+        stash.stash_metadata = metadata
+        changed = True
+    return changed
+
+
 def doi_stash_query(db: Session):
     return (
         db.query(DoiStash)
@@ -2578,6 +2617,7 @@ def list_doi_stashes(
     changed = False
     for stash in stashes:
         changed = sync_doi_stash_import_status(stash) or changed
+    changed = sync_doi_stash_library_matches(db, stashes) or changed
     if changed:
         db.commit()
     return [doi_stash_out(stash) for stash in stashes]
