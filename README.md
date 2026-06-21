@@ -6,7 +6,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 
 - Password-protected LAN web app behind HAProxy TLS on port `3737`
 - React research cockpit UI with day/night modes, darker light-theme contrast grays, and restrained icon-left action buttons
-- Lowercase browser title that identifies whether the running app was opened locally, on the LAN, or remotely
+- Lowercase contextual browser titles such as `medusa | DOCUMENT_TITLE`, `medusa | PROJECT_TITLE`, or the current workspace name
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs
@@ -262,7 +262,18 @@ If the worker/container stops while a job is already marked `running`, the next 
 
 The Import page can release staged uploads with Process Uploads or discard all staged uploads with Clear Staged, which removes their queue-only document/job rows, managed processing-cache files, and staged original storage objects. The Import Queue can release staged uploads, retry failed imports in bulk, retry individual queued/failed/restored jobs, cancel individual staged/queued/failed/restored rows, and clear staged/queued/failed/restored rows into a terminal `cleared` state. Fresh running jobs are protected from manual retry, cancel, or clear to avoid racing an active worker.
 
-Utilities > Database provides manual maintenance controls. Compact Database runs PostgreSQL `VACUUM (FULL, ANALYZE)` where available, Optimize Database refreshes database table statistics with `ANALYZE`, and Clear Import Cache removes terminal hidden import records, stale project-resource links, managed processing-cache files, and staged original objects that are already excluded from active Library and Queue surfaces. It does not clear Library-visible documents or staged/queued/running/failed/restored-paused import rows. Utilities also shows container footprint stats from inside the backend runtime, including cgroup memory/CPU, process uptime, data-volume usage, path-level storage footprints, and whether Docker engine/image sizing is unavailable because the Docker socket is not mounted. The same Container Footprint section lists runtime versions for HAProxy, Python, key backend packages, PostgreSQL client, zstd, curl, frontend Node.js, Vite, and the frontend build stamp so base-image and binary freshness are visible from the app. Below that, HAProxy Statistics reports the TLS endpoint, frontend/backend health, session totals, traffic, checks, and proxy errors from the internal HAProxy stats feed. Restart Backend terminates the backend process after the API response returns; the Compose backend service uses `restart: unless-stopped`, so Docker brings it back and the frontend polls `/api/health` until the backend is healthy again.
+Utilities > Database provides manual maintenance controls. Compact Database runs PostgreSQL `VACUUM (FULL, ANALYZE)` where available, Optimize Database refreshes database table statistics with `ANALYZE`, and Clear Import Cache removes terminal hidden import records, stale project-resource links, managed processing-cache files, and staged original objects that are already excluded from active Library and Queue surfaces. It does not clear Library-visible documents or staged/queued/running/failed/restored-paused import rows. Utilities also shows container footprint stats from inside the backend runtime, including cgroup memory/CPU, process uptime, data-volume usage, path-level storage footprints, and Docker image/layer sizes when the Docker Engine socket has been deliberately mounted into the backend container. The same Container Footprint section lists runtime versions for HAProxy, Python, key backend packages, PostgreSQL client, zstd, curl, frontend Node.js, Vite, and the frontend build stamp so base-image and binary freshness are visible from the app. Below that, HAProxy Statistics reports the TLS endpoint, frontend/backend health, session totals, traffic, checks, and proxy errors from the internal HAProxy stats feed. Restart Backend terminates the backend process after the API response returns; the Compose backend service uses `restart: unless-stopped`, so Docker brings it back and the frontend polls `/api/health` until the backend is healthy again.
+
+Docker image and layer sizing is not available from inside an ordinary container unless the Docker Engine API is exposed. To enable it, add a local Compose override such as:
+
+```yaml
+services:
+  backend:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+Even as a read-only bind mount, the Docker socket grants the backend process broad control over the host Docker daemon. Leave it unmounted unless you explicitly want Utilities to query image/layer sizes.
 
 After a released import queue drains and no queued/running import jobs remain, the worker runs PostgreSQL `VACUUM (ANALYZE)` across the database when Medusa is using Postgres.
 

@@ -346,6 +346,19 @@ const VIEW_PATHS: Record<View, string> = {
   utilities: "/utilities",
   settings: "/settings",
 };
+const VIEW_TITLE_LABELS: Record<View, string> = {
+  library: "Library",
+  domains: "Domains",
+  projects: "Projects",
+  tags: "Tags",
+  queue: "Import Queue",
+  notes: "Notes",
+  import: "Import",
+  stashes: "DOI Stashes",
+  budget: "Budget & Costs",
+  utilities: "Utilities",
+  settings: "Settings",
+};
 
 function workspaceNavTooltip(item: WorkspaceNavItem) {
   return `Open the ${item.label} workspace.\nShortcut: ${item.shortcut}`;
@@ -399,6 +412,15 @@ function pathForDocument(documentId: string) {
 
 function documentLinkUrl(documentId: string) {
   return `${window.location.origin}${pathForDocument(documentId)}`;
+}
+
+function cleanBrowserTitleSegment(value?: string | null) {
+  return (value || "").replace(/\s+/g, " ").trim();
+}
+
+function medusaBrowserTitle(segment?: string | null) {
+  const cleaned = cleanBrowserTitleSegment(segment);
+  return cleaned ? `${MEDUSA_APP_NAME} | ${cleaned}` : MEDUSA_APP_NAME;
 }
 
 function syncBrowserUrl(path: string, state: Record<string, string | undefined>, mode: Exclude<BrowserHistoryMode, "none">) {
@@ -2577,7 +2599,15 @@ function DomainTree({ domains }: { domains: Domain[] }) {
   );
 }
 
-function DomainsView({ domains, documents }: { domains: Domain[]; documents: DocumentSummary[] }) {
+function DomainsView({
+  domains,
+  documents,
+  onTitleSubjectChange,
+}: {
+  domains: Domain[];
+  documents: DocumentSummary[];
+  onTitleSubjectChange?: (subject: string | null) => void;
+}) {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState("");
   const [searchText, setSearchText] = useState("");
@@ -2674,6 +2704,10 @@ function DomainsView({ domains, documents }: { domains: Domain[]; documents: Doc
     });
     setConfirmingDeleteId(null);
   }, [selected]);
+
+  useEffect(() => {
+    onTitleSubjectChange?.(selectedPath || null);
+  }, [onTitleSubjectChange, selectedPath]);
 
   const saveSelected = () => {
     if (!selected || !canSave) return;
@@ -7884,7 +7918,15 @@ function TagSuggestionMergeIntoDialog({
   );
 }
 
-function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPreferences }) {
+function TagsView({
+  tags,
+  preferences,
+  onTitleSubjectChange,
+}: {
+  tags: Tag[];
+  preferences?: AppPreferences;
+  onTitleSubjectChange?: (subject: string | null) => void;
+}) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -8309,6 +8351,13 @@ function TagsView({ tags, preferences }: { tags: Tag[]; preferences?: AppPrefere
     optimizeTags.mutate();
   };
   const selectedTag = selectedTags.length === 1 ? selectedTags[0] : undefined;
+  useEffect(() => {
+    if (selectedTag) {
+      onTitleSubjectChange?.(selectedTag.name);
+      return;
+    }
+    onTitleSubjectChange?.(selectedIds.length ? `${selectedIds.length} selected tags` : null);
+  }, [onTitleSubjectChange, selectedIds.length, selectedTag]);
   const renderOptimizationSuggestion = (suggestion: TagOptimizationSuggestion) => {
     const sortedSourceTags = sortByName(suggestion.source_tags);
     return (
@@ -8893,7 +8942,15 @@ function refreshTagManagementData(queryClient: ReturnType<typeof useQueryClient>
   void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 }
 
-function ProjectsView({ projects, documents }: { projects: Project[]; documents: DocumentSummary[] }) {
+function ProjectsView({
+  projects,
+  documents,
+  onTitleSubjectChange,
+}: {
+  projects: Project[];
+  documents: DocumentSummary[];
+  onTitleSubjectChange?: (subject: string | null) => void;
+}) {
   const [name, setName] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [addDocumentId, setAddDocumentId] = useState("");
@@ -8931,6 +8988,10 @@ function ProjectsView({ projects, documents }: { projects: Project[]; documents:
     setBibliographyStyle("apa");
   };
   const current = selectedProject.data;
+  useEffect(() => {
+    const selectedProjectName = current?.name || projects.find((project) => project.id === selectedProjectId)?.name || null;
+    onTitleSubjectChange?.(selectedProjectName);
+  }, [current?.name, onTitleSubjectChange, projects, selectedProjectId]);
   const currentDocumentIds = new Set((current?.items || []).map((item) => item.document_id));
   const availableDocuments = documents.filter((document) => !currentDocumentIds.has(document.id));
   const bibliographyText =
@@ -10535,6 +10596,24 @@ function UtilitiesView() {
   ]
     .filter(Boolean)
     .join(" / ");
+  const dockerImage = container?.docker_image;
+  const dockerImageName =
+    dockerImage?.repo_tags?.[0] ||
+    (dockerImage?.id ? dockerImage.id.replace(/^sha256:/, "").slice(0, 12) : "") ||
+    "Image unavailable";
+  const dockerImageSize = dockerImage
+    ? formatDatabaseSize(dockerImage.unique_size_bytes ?? dockerImage.size_bytes ?? dockerImage.virtual_size_bytes)
+    : "Unavailable";
+  const dockerImageDetail = dockerImage
+    ? [
+        dockerImageName,
+        dockerImage.layer_count ? `${formatMetric(dockerImage.layer_count)} layers` : "",
+        dockerImage.containers !== undefined && dockerImage.containers !== null ? `${formatMetric(dockerImage.containers)} containers` : "",
+      ]
+        .filter(Boolean)
+        .join(" / ")
+    : container?.docker_engine_note || "Docker Engine data unavailable";
+  const dockerLayerRows = (dockerImage?.layers || []).slice(0, 10);
   const runtimeVersionRows: ContainerRuntimeVersion[] = [
     ...(container?.runtime_versions || []),
     {
@@ -10752,6 +10831,14 @@ function UtilitiesView() {
                 <em>{container?.docker_engine_note || "Waiting for runtime status"}</em>
               </div>
             </div>
+            <div className="container-footprint-card">
+              <Archive size={16} />
+              <div>
+                <span>Backend image</span>
+                <strong>{dockerImageSize}</strong>
+                <em>{dockerImageDetail}</em>
+              </div>
+            </div>
           </div>
           <div className="container-control-row">
             <div>
@@ -10772,6 +10859,43 @@ function UtilitiesView() {
               </button>
             </AsyncActionSlot>
           </div>
+          {dockerImage ? (
+            <div className="container-path-list">
+              <div className="container-path-row">
+                <div>
+                  <strong>{dockerImageName}</strong>
+                  <span>{dockerImage.id}</span>
+                </div>
+                <div>
+                  <strong>{dockerImageSize}</strong>
+                  <span>
+                    {[
+                      dockerImage.shared_size_bytes !== undefined && dockerImage.shared_size_bytes !== null
+                        ? `${formatDatabaseSize(dockerImage.shared_size_bytes)} shared`
+                        : "",
+                      dockerImage.virtual_size_bytes !== undefined && dockerImage.virtual_size_bytes !== null
+                        ? `${formatDatabaseSize(dockerImage.virtual_size_bytes)} virtual`
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(", ") || "Docker image size"}
+                  </span>
+                </div>
+              </div>
+              {dockerLayerRows.map((layer, index) => (
+                <div className="container-path-row" key={`${layer.id}-${index}`}>
+                  <div>
+                    <strong>{layer.created_by || layer.id}</strong>
+                    <span>{layer.id}</span>
+                  </div>
+                  <div>
+                    <strong>{formatDatabaseSize(layer.size_bytes)}</strong>
+                    <span>{layer.tags.length ? layer.tags.join(", ") : layer.comment || `Layer ${index + 1}`}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="container-version-list">
             {runtimeVersionRows.length ? (
               runtimeVersionRows.map((row) => <ContainerVersionRow key={`${row.name}-${row.source}`} row={row} />)
@@ -12557,21 +12681,15 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
+  const [viewTitleSubjects, setViewTitleSubjects] = useState<Partial<Record<View, string>>>({});
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
   const queryClient = useQueryClient();
-  const browserHost = window.location.hostname || "";
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("medusa-theme", theme);
   }, [theme]);
 
-  const runtimeLocation = useQuery({
-    queryKey: ["runtime-location", browserHost],
-    queryFn: () => api.runtimeLocation(browserHost),
-    retry: 1,
-    staleTime: Infinity,
-  });
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
@@ -12624,9 +12742,37 @@ export default function App() {
     onSuccess: () => queryClient.clear(),
   });
 
+  const updateViewTitleSubject = useCallback((view: View, subject: string | null) => {
+    const cleaned = cleanBrowserTitleSegment(subject);
+    setViewTitleSubjects((current) => {
+      if (cleaned) {
+        if (current[view] === cleaned) return current;
+        return { ...current, [view]: cleaned };
+      }
+      if (!current[view]) return current;
+      const next = { ...current };
+      delete next[view];
+      return next;
+    });
+  }, []);
+
+  const activeTitleSubject = useMemo(() => {
+    if (activeView === "library") {
+      const summaryTitle = selectedId ? documents.data?.find((item) => item.id === selectedId)?.title : "";
+      return selectedDocument.data?.title || summaryTitle || (selectedId ? "Document" : VIEW_TITLE_LABELS.library);
+    }
+    return viewTitleSubjects[activeView] || VIEW_TITLE_LABELS[activeView];
+  }, [activeView, documents.data, selectedDocument.data?.title, selectedId, viewTitleSubjects]);
+
+  const browserTitle = me.data
+    ? medusaBrowserTitle(activeTitleSubject)
+    : me.isLoading
+      ? MEDUSA_APP_NAME
+      : medusaBrowserTitle("Sign in");
+
   useEffect(() => {
-    document.title = runtimeLocation.data?.title || MEDUSA_APP_NAME;
-  }, [runtimeLocation.data?.title]);
+    document.title = browserTitle;
+  }, [browserTitle]);
 
   useEffect(() => {
     const route = routeFromCurrentLocation();
@@ -12894,7 +13040,13 @@ export default function App() {
             preferences={preferences.data}
           />
         ) : null}
-        {activeView === "domains" ? <DomainsView documents={documents.data || []} domains={domains.data || []} /> : null}
+        {activeView === "domains" ? (
+          <DomainsView
+            documents={documents.data || []}
+            domains={domains.data || []}
+            onTitleSubjectChange={(subject) => updateViewTitleSubject("domains", subject)}
+          />
+        ) : null}
         {activeView === "import" ? (
           <ImportView
             domains={domains.data || []}
@@ -12904,8 +13056,20 @@ export default function App() {
             tags={tags.data || []}
           />
         ) : null}
-        {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
-        {activeView === "tags" ? <TagsView tags={tags.data || []} preferences={preferences.data} /> : null}
+        {activeView === "projects" ? (
+          <ProjectsView
+            documents={documents.data || []}
+            projects={projects.data || []}
+            onTitleSubjectChange={(subject) => updateViewTitleSubject("projects", subject)}
+          />
+        ) : null}
+        {activeView === "tags" ? (
+          <TagsView
+            tags={tags.data || []}
+            preferences={preferences.data}
+            onTitleSubjectChange={(subject) => updateViewTitleSubject("tags", subject)}
+          />
+        ) : null}
         {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
         {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
         {activeView === "notes" ? (

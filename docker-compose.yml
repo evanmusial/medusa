@@ -29,6 +29,7 @@ services:
       HF_HOME: /app/data/model-cache/huggingface
       TORCH_HOME: /app/data/model-cache/torch
       MPLCONFIGDIR: /app/data/model-cache/matplotlib
+      MEDUSA_DOCKER_SOCKET_PATH: ${MEDUSA_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
@@ -66,6 +67,7 @@ services:
     environment:
       MEDUSA_API_PROXY: http://backend:8000
       MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
+      MEDUSA_BUILD_NUMBER: ${MEDUSA_BUILD_NUMBER:-}
       MEDUSA_ALLOWED_HOSTS: ${MEDUSA_ALLOWED_HOSTS:-medusa.home.musial.io}
     expose:
       - "3737"

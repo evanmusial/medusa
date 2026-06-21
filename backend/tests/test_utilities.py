@@ -120,6 +120,7 @@ def test_container_footprint_status_reports_medusa_storage_paths(monkeypatch, tm
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(data_dir))
     monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(originals))
     monkeypatch.setenv("XDG_CACHE_HOME", str(model_cache))
+    monkeypatch.setenv("MEDUSA_DOCKER_SOCKET_PATH", str(tmp_path / "missing-docker.sock"))
 
     from app.config import get_settings
     from app.schemas import ContainerRuntimeVersionOut
@@ -149,6 +150,7 @@ def test_container_footprint_status_reports_medusa_storage_paths(monkeypatch, tm
     assert status.data_filesystem is not None
     assert status.runtime_versions[0].name == "Python"
     assert status.runtime_versions[0].version == "3.12.test"
+    assert status.docker_image is None
 
 
 def test_haproxy_stats_html_parses_runtime_version():
@@ -162,10 +164,34 @@ def test_haproxy_stats_html_parses_runtime_version():
     assert release_date == "2026/05/11"
 
 
+def test_docker_image_status_reports_image_when_socket_is_available(monkeypatch, tmp_path):
+    from app.schemas import ContainerDockerImageOut
+    from app.services import container_footprint
+
+    socket_path = tmp_path / "docker.sock"
+    docker_image = ContainerDockerImageOut(
+        id="sha256:backend",
+        repo_tags=["medusa-backend:latest"],
+        size_bytes=100,
+        unique_size_bytes=40,
+        shared_size_bytes=60,
+        layer_count=2,
+    )
+    monkeypatch.setattr(container_footprint, "_docker_socket_available", lambda path: path == socket_path)
+    monkeypatch.setattr(container_footprint, "_docker_current_image", lambda path: docker_image)
+
+    available, note, image = container_footprint.docker_image_status(socket_path)
+
+    assert available is True
+    assert "showing image and layer sizes" in note
+    assert image == docker_image
+
+
 def test_container_restart_is_disabled_outside_container(monkeypatch):
     from app.services import container_footprint
 
     monkeypatch.setattr(container_footprint, "_is_containerized", lambda: False)
+    monkeypatch.setenv("MEDUSA_DOCKER_SOCKET_PATH", "/tmp/medusa-missing-docker.sock")
 
     status = container_footprint.container_footprint_status()
     assert status.restart_available is False

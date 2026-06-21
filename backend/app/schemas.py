@@ -923,12 +923,33 @@ class ContainerRuntimeVersionOut(BaseModel):
     note: str | None = None
 
 
+class ContainerDockerLayerOut(BaseModel):
+    id: str
+    created_by: str | None = None
+    size_bytes: int = 0
+    tags: list[str] = Field(default_factory=list)
+    comment: str | None = None
+
+
+class ContainerDockerImageOut(BaseModel):
+    id: str
+    repo_tags: list[str] = Field(default_factory=list)
+    size_bytes: int | None = None
+    virtual_size_bytes: int | None = None
+    shared_size_bytes: int | None = None
+    unique_size_bytes: int | None = None
+    containers: int | None = None
+    layer_count: int = 0
+    layers: list[ContainerDockerLayerOut] = Field(default_factory=list)
+
+
 class ContainerFootprintStatusOut(BaseModel):
     checked_at: datetime
     hostname: str
     containerized: bool
     docker_socket_available: bool
     docker_engine_note: str
+    docker_image: ContainerDockerImageOut | None = None
     restart_available: bool
     restart_mode: str
     restart_note: str

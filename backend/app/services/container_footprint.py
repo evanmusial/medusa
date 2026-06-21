@@ -13,11 +13,14 @@ from datetime import datetime, timezone
 from html import unescape
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 from app.config import get_settings
 from app.schemas import (
+    ContainerDockerImageOut,
+    ContainerDockerLayerOut,
     ContainerFilesystemOut,
     ContainerFootprintStatusOut,
     ContainerPathFootprintOut,
@@ -307,6 +310,174 @@ def _run_version_command(
     return ContainerRuntimeVersionOut(name=name, version=output, source=source, note=note)
 
 
+def _docker_socket_path() -> Path:
+    return Path(os.environ.get("MEDUSA_DOCKER_SOCKET_PATH") or "/var/run/docker.sock")
+
+
+def _docker_socket_available(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_socket()
+    except OSError:
+        return False
+
+
+def _docker_api_get(client: httpx.Client, path: str) -> dict[str, Any] | list[dict[str, Any]]:
+    response = client.get(path)
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, (dict, list)) else {}
+
+
+def _current_container_identifiers() -> list[str]:
+    candidates: list[str] = []
+    hostname = socket.gethostname().strip()
+    if hostname:
+        candidates.append(hostname)
+    cgroup = _read_text(Path("/proc/self/cgroup")) or ""
+    for match in re.findall(r"([0-9a-f]{12,64})", cgroup):
+        if match not in candidates:
+            candidates.append(match)
+    return candidates
+
+
+def _docker_container_detail(client: httpx.Client) -> dict[str, Any] | None:
+    for identifier in _current_container_identifiers():
+        try:
+            payload = _docker_api_get(client, f"/containers/{identifier}/json")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                continue
+            raise
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _docker_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _docker_id_key(value: str | None) -> str:
+    return (value or "").removeprefix("sha256:").strip()
+
+
+def _docker_image_matches(candidate: dict[str, Any], image_id: str, repo_tags: list[str]) -> bool:
+    candidate_id = _docker_id_key(str(candidate.get("Id") or ""))
+    target_id = _docker_id_key(image_id)
+    if candidate_id and target_id and (candidate_id == target_id or candidate_id.startswith(target_id) or target_id.startswith(candidate_id)):
+        return True
+    candidate_tags = {str(tag) for tag in candidate.get("RepoTags") or []}
+    return bool(candidate_tags.intersection(repo_tags))
+
+
+def _docker_image_df(images: list[dict[str, Any]], image_id: str, repo_tags: list[str]) -> dict[str, Any] | None:
+    for image in images:
+        if _docker_image_matches(image, image_id, repo_tags):
+            return image
+    return None
+
+
+def _clean_docker_created_by(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("/bin/sh -c #(nop) ", "").replace("/bin/sh -c ", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:240]
+
+
+def _docker_layers(history: list[dict[str, Any]]) -> list[ContainerDockerLayerOut]:
+    layers: list[ContainerDockerLayerOut] = []
+    for row in history[:40]:
+        raw_tags = row.get("Tags") or []
+        tags = [str(tag) for tag in raw_tags if tag]
+        layers.append(
+            ContainerDockerLayerOut(
+                id=str(row.get("Id") or "<missing>"),
+                created_by=_clean_docker_created_by(row.get("CreatedBy")),
+                size_bytes=max(0, _docker_int(row.get("Size")) or 0),
+                tags=tags,
+                comment=str(row.get("Comment") or "").strip() or None,
+            )
+        )
+    return layers
+
+
+def _docker_current_image(socket_path: Path) -> ContainerDockerImageOut | None:
+    transport = httpx.HTTPTransport(uds=str(socket_path))
+    with httpx.Client(transport=transport, base_url="http://docker", timeout=2.5) as client:
+        container = _docker_container_detail(client)
+        if not container:
+            return None
+        image_ref = str(container.get("Image") or (container.get("Config") or {}).get("Image") or "").strip()
+        if not image_ref:
+            return None
+        image_detail_payload = _docker_api_get(client, f"/images/{image_ref}/json")
+        image_detail = image_detail_payload if isinstance(image_detail_payload, dict) else {}
+        image_id = str(image_detail.get("Id") or image_ref)
+        repo_tags = [str(tag) for tag in image_detail.get("RepoTags") or [] if tag and tag != "<none>:<none>"]
+        if not repo_tags:
+            config_image = str((container.get("Config") or {}).get("Image") or "").strip()
+            repo_tags = [config_image] if config_image else []
+
+        df_payload = _docker_api_get(client, "/system/df")
+        df_images = df_payload.get("Images") if isinstance(df_payload, dict) else []
+        df_image = _docker_image_df(df_images if isinstance(df_images, list) else [], image_id, repo_tags)
+        history_payload = _docker_api_get(client, f"/images/{image_id}/history")
+        history = history_payload if isinstance(history_payload, list) else []
+        layers = _docker_layers(history)
+        rootfs_layers = (image_detail.get("RootFS") or {}).get("Layers") or []
+        layer_count = len(rootfs_layers) or sum(1 for layer in layers if layer.size_bytes > 0) or len(layers)
+        shared_size = _docker_int((df_image or {}).get("SharedSize"))
+        unique_size = _docker_int((df_image or {}).get("UniqueSize"))
+        if unique_size is None:
+            image_size = _docker_int((df_image or {}).get("Size")) or _docker_int(image_detail.get("Size"))
+            unique_size = image_size - shared_size if image_size is not None and shared_size is not None else None
+        return ContainerDockerImageOut(
+            id=image_id,
+            repo_tags=repo_tags,
+            size_bytes=_docker_int((df_image or {}).get("Size")) or _docker_int(image_detail.get("Size")),
+            virtual_size_bytes=_docker_int((df_image or {}).get("VirtualSize")) or _docker_int(image_detail.get("VirtualSize")),
+            shared_size_bytes=shared_size,
+            unique_size_bytes=unique_size,
+            containers=_docker_int((df_image or {}).get("Containers")),
+            layer_count=layer_count,
+            layers=layers,
+        )
+
+
+def docker_image_status(socket_path: Path) -> tuple[bool, str, ContainerDockerImageOut | None]:
+    if not _docker_socket_available(socket_path):
+        return (
+            False,
+            "Docker socket is not mounted; image and layer sizes are unavailable from inside this container. "
+            "Mount the Docker socket only if you accept that it grants the backend broad host Docker control.",
+            None,
+        )
+    try:
+        docker_image = _docker_current_image(socket_path)
+    except Exception as exc:
+        return (
+            True,
+            f"Docker socket is mounted, but Medusa could not query Docker Engine: {exc}",
+            None,
+        )
+    if not docker_image:
+        return (
+            True,
+            "Docker socket is mounted, but Medusa could not match this backend process to a Docker container image.",
+            None,
+        )
+    return (
+        True,
+        "Docker socket is mounted; showing image and layer sizes for the current backend image. "
+        "Mounting the socket grants the backend broad host Docker control even though Medusa only performs read-only queries.",
+        docker_image,
+    )
+
+
 def _python_package_version(name: str, package: str) -> ContainerRuntimeVersionOut:
     try:
         version = metadata.version(package)
@@ -397,12 +568,7 @@ def container_footprint_status() -> ContainerFootprintStatusOut:
         _path_footprint("Mounted secrets", data_dir / "secrets"),
     ]
     data_footprint = paths[0]
-    docker_socket_available = Path("/var/run/docker.sock").exists()
-    docker_engine_note = (
-        "Docker socket is mounted; image and layer sizes are intentionally not queried by Medusa."
-        if docker_socket_available
-        else "Docker socket is not mounted; image and layer sizes are unavailable from inside this container."
-    )
+    docker_socket_available, docker_engine_note, docker_image = docker_image_status(_docker_socket_path())
     restart_available, restart_mode, restart_note = _container_restart_capability()
     return ContainerFootprintStatusOut(
         checked_at=datetime.now(timezone.utc),
@@ -410,6 +576,7 @@ def container_footprint_status() -> ContainerFootprintStatusOut:
         containerized=_is_containerized(),
         docker_socket_available=docker_socket_available,
         docker_engine_note=docker_engine_note,
+        docker_image=docker_image,
         restart_available=restart_available,
         restart_mode=restart_mode,
         restart_note=restart_note,

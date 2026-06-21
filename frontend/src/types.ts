@@ -189,12 +189,33 @@ export type ContainerRuntimeVersion = {
   note?: string | null;
 };
 
+export type ContainerDockerLayer = {
+  id: string;
+  created_by?: string | null;
+  size_bytes: number;
+  tags: string[];
+  comment?: string | null;
+};
+
+export type ContainerDockerImage = {
+  id: string;
+  repo_tags: string[];
+  size_bytes?: number | null;
+  virtual_size_bytes?: number | null;
+  shared_size_bytes?: number | null;
+  unique_size_bytes?: number | null;
+  containers?: number | null;
+  layer_count: number;
+  layers: ContainerDockerLayer[];
+};
+
 export type ContainerFootprintStatus = {
   checked_at: string;
   hostname: string;
   containerized: boolean;
   docker_socket_available: boolean;
   docker_engine_note: string;
+  docker_image?: ContainerDockerImage | null;
   restart_available: boolean;
   restart_mode: string;
   restart_note: string;
