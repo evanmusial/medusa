@@ -11269,23 +11269,32 @@ function SettingsView({
             <span>Model</span>
             <span>Scope</span>
           </div>
-          {importProcessingFlowRows.map((step) => (
-            <div className="import-processing-step-row" data-tooltip={step.tooltip} key={step.key}>
-              <span>
-                <strong>{step.label}</strong>
-                <small>{step.key.replaceAll("_", " ")}</small>
-              </span>
-              <span>
-                <StatusPill value={step.enabled ? "Enabled" : "Off"} tone={step.enabled ? "good" : "neutral"} />
-                <small>{step.route.route}</small>
-              </span>
-              <span className="import-route-model">{step.enabled ? step.route.model : "Not used"}</span>
-              <span>
-                {step.route.scope}
-                <small>{step.accomplishes}</small>
-              </span>
-            </div>
-          ))}
+          <div className="import-processing-flow-list">
+            {importProcessingFlowRows.map((step, index) => (
+              <div className="import-processing-flow-item" key={step.key}>
+                <div className="import-processing-step-row" data-tooltip={step.tooltip}>
+                  <span>
+                    <strong>{step.label}</strong>
+                    <small>{step.key.replaceAll("_", " ")}</small>
+                  </span>
+                  <span>
+                    <StatusPill value={step.enabled ? "Enabled" : "Off"} tone={step.enabled ? "good" : "neutral"} />
+                    <small>{step.route.route}</small>
+                  </span>
+                  <span className="import-route-model">{step.enabled ? step.route.model : "Not used"}</span>
+                  <span>
+                    {step.route.scope}
+                    <small>{step.accomplishes}</small>
+                  </span>
+                </div>
+                {index < importProcessingFlowRows.length - 1 ? (
+                  <div className="import-processing-flow-arrow" aria-hidden="true">
+                    <ArrowDown size={16} />
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </div>
         <div className="model-settings-panel import-shared-model-panel">
         <div className="panel-title-row">

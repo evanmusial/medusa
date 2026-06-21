@@ -4913,42 +4913,66 @@ pre {
 .import-processing-step-table {
   border: 1px solid var(--line);
   border-radius: 8px;
+  width: min(100%, 980px);
   overflow: hidden;
 }
 
 .import-processing-step-row {
   display: grid;
-  grid-template-columns: minmax(160px, 0.65fr) minmax(150px, 0.7fr) minmax(150px, 0.65fr) minmax(260px, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(170px, 0.85fr) minmax(170px, 0.85fr) minmax(260px, 1.15fr);
+  gap: 12px;
   align-items: start;
-  padding: 8px 10px;
-  border-top: 1px solid var(--line);
-  font-size: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.35;
 }
 
-.import-processing-step-row:first-child {
-  border-top: 0;
+.import-processing-flow-list {
+  display: grid;
+  gap: 0;
 }
 
 .import-processing-step-row.header {
   background: var(--panel);
   color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
   font-weight: 800;
+  padding-block: 8px;
+}
+
+.import-processing-flow-item .import-processing-step-row {
+  background: var(--surface);
 }
 
 .import-processing-step-row small {
   display: block;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.35;
-  margin-top: 3px;
+  margin-top: 4px;
 }
 
 .import-route-model {
   color: var(--text);
   font-weight: 800;
   overflow-wrap: anywhere;
+}
+
+.import-processing-flow-arrow {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding-left: 70px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+}
+
+.import-processing-flow-arrow svg {
+  stroke-width: 2.4;
 }
 
 .import-shared-model-panel {
