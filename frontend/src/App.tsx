@@ -24,6 +24,7 @@ import {
   Archive,
   AlertTriangle,
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   ArrowUpDown,
   Bold,
@@ -1152,10 +1153,20 @@ function updatePresetSection(
   return { ...preset, [section]: { ...(preset[section] || {}), ...patch } };
 }
 
-function modelRouteLabel(primary: string, fallback?: string | null) {
+function modelRouteLabel(primary: string, fallback?: string | null, suffix?: ReactNode) {
   const primaryLabel = modelDisplayName(primary || "local");
-  if (!fallback || fallback === primary) return primaryLabel;
-  return `${primaryLabel} -> ${modelDisplayName(fallback)}`;
+  return (
+    <span className="model-route-inline">
+      <span>{primaryLabel}</span>
+      {fallback && fallback !== primary ? (
+        <>
+          <ArrowRight aria-hidden="true" size={14} />
+          <span>{modelDisplayName(fallback)}</span>
+        </>
+      ) : null}
+      {suffix}
+    </span>
+  );
 }
 
 function importProcessingRouteForStep(
@@ -1217,10 +1228,10 @@ function importProcessingRouteForStep(
     if (visualCallPolicy === "none" || visualModel === "local") {
       return { route: "Local caption/context linking", model: "No visual model calls", scope: "Captions, headings, nearby paragraphs, explicit mentions." };
     }
-    const premium = visualPremiumAllowed ? `; premium ${modelDisplayName(visualPremiumModel)} allowed` : "";
+    const premium = visualPremiumAllowed ? <span className="model-route-note">premium {modelDisplayName(visualPremiumModel)}</span> : null;
     return {
       route: "Cropped-region visual context",
-      model: `${modelRouteLabel(visualModel, visualFallback)}${premium}`,
+      model: modelRouteLabel(visualModel, visualFallback, premium),
       scope: "Cropped regions only; never repeated whole-PDF visual calls.",
     };
   }
