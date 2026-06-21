@@ -67,7 +67,7 @@ services:
     environment:
       MEDUSA_API_PROXY: http://backend:8000
       MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
-      MEDUSA_BUILD_NUMBER: ${MEDUSA_BUILD_NUMBER:-}
+      MEDUSA_BUILD_HASH: ${MEDUSA_BUILD_HASH:-}
       MEDUSA_ALLOWED_HOSTS: ${MEDUSA_ALLOWED_HOSTS:-medusa.home.musial.io}
     expose:
       - "3737"

@@ -2105,6 +2105,25 @@ function sciHubDoiUrl(doi: string) {
   return `${SCI_HUB_LOOKUP_URL}${encodeURI(doi.trim())}`;
 }
 
+function openSciHubAfterCopy(stash: DoiStash, copyTitle: () => Promise<void>) {
+  const targetWindow = window.open("about:blank", "_blank");
+  const targetUrl = sciHubDoiUrl(stash.doi);
+  void copyTitle()
+    .catch(() => undefined)
+    .then(() => {
+      if (targetWindow) {
+        try {
+          targetWindow.opener = null;
+        } catch {
+          // The lookup can still proceed if the browser disallows opener mutation.
+        }
+        targetWindow.location.href = targetUrl;
+        return;
+      }
+      window.open(targetUrl, "_blank", "noopener");
+    });
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(<u>.*?<\/u>|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
@@ -6992,6 +7011,7 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
             const importBusy = importingStashId === stash.id;
             const importUnavailable = stash.status === "import_queued" || stash.status === "imported";
             const doiCopied = copiedKey === `stash-doi-${stash.id}`;
+            const sciHubTitleCopied = copiedKey === `stash-sci-hub-title-${stash.id}`;
             return (
               <article key={stash.id} className="stash-row">
                 <div className="stash-main">
@@ -7014,16 +7034,19 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                     {doiCopied ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
                     DOI
                   </button>
-                  <a
-                    className="secondary-button compact stash-copy-action"
-                    data-tooltip="Open Sci-Hub for this DOI in a new window."
-                    href={sciHubDoiUrl(stash.doi)}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    className={`secondary-button compact stash-copy-action${sciHubTitleCopied ? " copy-acknowledged" : ""}`}
+                    data-tooltip="Copy this paper title to the clipboard, then open Sci-Hub for this DOI in a new window."
+                    onClick={() =>
+                      openSciHubAfterCopy(stash, () =>
+                        copyToClipboard(`stash-sci-hub-title-${stash.id}`, (stash.title || stash.doi).trim()),
+                      )
+                    }
+                    type="button"
                   >
-                    <Search size={14} />
+                    {sciHubTitleCopied ? <CheckCircle2 size={14} /> : <Search size={14} />}
                     Sci-Hub
-                  </a>
+                  </button>
                   <AsyncActionSlot busy={importBusy} feedback={importFeedback.feedbackFor(stash.id)} label="DOI import in progress">
                     <button
                       className={asyncFeedbackClass("secondary-button compact", importFeedback.feedbackFor(stash.id), importBusy)}

@@ -1,9 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const vitePackage = require("vite/package.json") as { version?: string };
+const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 function pad2(value: number) {
   return value.toString().padStart(2, "0");
@@ -20,10 +25,57 @@ function normalizeBuildDate(value: string | undefined, fallback: string) {
   return digits.length >= 8 ? digits.slice(0, 8) : cleaned;
 }
 
+function normalizeBuildHash(value: string | undefined) {
+  return (value || "").trim().replace(/[^0-9A-Za-z._-]/g, "").slice(0, 16);
+}
+
+function addFileToBuildHash(hash: ReturnType<typeof createHash>, filePath: string, relativePath: string) {
+  hash.update(relativePath);
+  hash.update("\0");
+  hash.update(readFileSync(filePath));
+  hash.update("\0");
+}
+
+function addDirectoryToBuildHash(hash: ReturnType<typeof createHash>, directoryPath: string, relativeRoot: string) {
+  const entries = readdirSync(directoryPath, { withFileTypes: true }).sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  for (const entry of entries) {
+    const entryPath = path.join(directoryPath, entry.name);
+    const relativePath = path.join(relativeRoot, entry.name).split(path.sep).join("/");
+    if (entry.isDirectory()) {
+      addDirectoryToBuildHash(hash, entryPath, relativePath);
+    } else if (entry.isFile()) {
+      addFileToBuildHash(hash, entryPath, relativePath);
+    }
+  }
+}
+
+function buildContentHash() {
+  const hash = createHash("sha256");
+  for (const fileName of ["index.html", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts"]) {
+    const filePath = path.join(configDir, fileName);
+    try {
+      if (statSync(filePath).isFile()) addFileToBuildHash(hash, filePath, fileName);
+    } catch {
+      // Optional build inputs are skipped when absent.
+    }
+  }
+  for (const directoryName of ["public", "src"]) {
+    const directoryPath = path.join(configDir, directoryName);
+    try {
+      if (statSync(directoryPath).isDirectory()) addDirectoryToBuildHash(hash, directoryPath, directoryName);
+    } catch {
+      // Optional build input directories are skipped when absent.
+    }
+  }
+  return hash.digest("hex").slice(0, 12);
+}
+
 const buildInstant = new Date();
 const buildDate = normalizeBuildDate(process.env.MEDUSA_BUILD_DATE, buildDateStamp(buildInstant));
-const buildNumber = (process.env.MEDUSA_BUILD_NUMBER || `${pad2(buildInstant.getHours())}${pad2(buildInstant.getMinutes())}`).trim();
-const buildVersion = buildNumber ? `${buildDate} (${buildNumber})` : buildDate;
+const buildHash = normalizeBuildHash(process.env.MEDUSA_BUILD_HASH) || buildContentHash();
+const buildVersion = `${buildDate} (${buildHash})`;
 const frontendNodeVersion = process.version;
 const frontendViteVersion = vitePackage.version || "unknown";
 const allowedHosts = (process.env.MEDUSA_ALLOWED_HOSTS || "medusa.home.musial.io")
