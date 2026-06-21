@@ -1204,9 +1204,13 @@ function importProcessingRouteForStep(
     return { route: "Deterministic local cleanup", model: "No cloud model", scope: "All pages; preserves removed boilerplate as evidence." };
   }
   if (stepKey === "ocr_fallback") {
-    const model = ocrProvider === "none" ? "No OCR provider" : ocrProvider.replaceAll("_", " ");
+    const provider = ocrProvider === "none" ? "none" : ocrProvider.replaceAll("_", " ");
     const scope = ocrLowTextOnly ? `Low-text pages below ${ocrThreshold} characters.` : "All pages selected by the preset.";
-    return { route: "Provider OCR fallback", model, scope };
+    return {
+      route: "Eligibility audit only",
+      model: "No OCR calls yet",
+      scope: `${scope} Provider setting: ${provider}; OCR execution is still pending integration.`,
+    };
   }
   if (stepKey === "page_text_normalization") {
     if (!cleanupEscalation || cleanupModel === "local") {
@@ -1214,25 +1218,31 @@ function importProcessingRouteForStep(
     }
     return {
       route: "Flagged-page escalation",
-      model: modelRouteLabel(cleanupModel, cleanupFallback),
-      scope: `${cleanupCapMin} pages or ${cleanupCapPercent}% cap, whichever is larger.`,
+      model: modelRouteLabel(cleanupModel, null, <span className="model-route-note">fallback {modelDisplayName(cleanupFallback)} configured</span>),
+      scope: `${cleanupCapMin} pages or ${cleanupCapPercent}% cap, whichever is larger; failed calls currently fall back locally.`,
     };
   }
   if (stepKey === "structured_tables") {
-    return { route: "Local structure detection", model: "No cloud model", scope: "Table-like regions and page anchors." };
+    return {
+      route: "Evidence-only detection",
+      model: "No cloud model",
+      scope: "Table-like blocks are recorded in metadata evidence; structured table rows/cells are still pending.",
+    };
   }
   if (stepKey === "visual_asset_extraction") {
     return { route: "Local multi-pass crop extraction", model: "PyMuPDF renderer", scope: "Images, vector regions, scans, charts, maps, tables." };
   }
   if (stepKey === "visual_asset_context") {
-    if (visualCallPolicy === "none" || visualModel === "local") {
-      return { route: "Local caption/context linking", model: "No visual model calls", scope: "Captions, headings, nearby paragraphs, explicit mentions." };
-    }
-    const premium = visualPremiumAllowed ? <span className="model-route-note">premium {modelDisplayName(visualPremiumModel)}</span> : null;
+    const configuredRoute =
+      visualCallPolicy === "none" || visualModel === "local"
+        ? "none"
+        : `${modelDisplayName(visualModel)} / fallback ${modelDisplayName(visualFallback)}${
+            visualPremiumAllowed ? ` / premium ${modelDisplayName(visualPremiumModel)}` : ""
+          }`;
     return {
-      route: "Cropped-region visual context",
-      model: modelRouteLabel(visualModel, visualFallback, premium),
-      scope: "Cropped regions only; never repeated whole-PDF visual calls.",
+      route: "Local caption/context only",
+      model: "No visual model calls yet",
+      scope: `Captions, nearby text, and explicit mentions. Configured visual route: ${configuredRoute}; cropped-region model calls are pending.`,
     };
   }
   if (stepKey === "bibliography_extraction") {
