@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from sqlalchemy import or_
@@ -27,6 +29,7 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
 )
 from app.services.citations import decode_html_entities, merge_citation_metadata
+from app.services.bibliography import extract_document_bibliography
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.document_visibility import filter_library_visible_documents
 from app.services.figures import process_document_figures_from_storage
@@ -38,6 +41,7 @@ from app.services.history import (
 )
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
+from app.services.preferences import import_processing_cloud_page_cap, import_processing_snapshot
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
@@ -46,6 +50,8 @@ from app.services.processing import (
     normalize_document_pages,
     rebuild_document_text_chunks,
 )
+from app.services.second_pass import clean_document_structure
+from app.services.figures import enrich_figure_context
 from app.services.recommendations import refresh_document_recommendations
 from app.services.search import rebuild_document_search_text
 from app.services.tag_governance import apply_import_tag_governance
@@ -67,6 +73,24 @@ class CapabilityDefinition:
 
 
 CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
+    CapabilityDefinition(
+        key="document_structure_cleanup",
+        label="Document structure cleanup",
+        version=1,
+        description="Remove repeated headers/footers, page numbers, decorative text art, front matter noise, whitespace artifacts, drop caps, and bullet/list damage while preserving raw page text.",
+    ),
+    CapabilityDefinition(
+        key="structured_tables",
+        label="Structured tables",
+        version=1,
+        description="Detect table-like extracted regions and preserve table evidence separately from narrative body text.",
+    ),
+    CapabilityDefinition(
+        key="ocr_fallback",
+        label="OCR fallback",
+        version=1,
+        description="Audit low-text/scanned pages for OCR eligibility and run OCR when the selected preset and credentials allow it.",
+    ),
     CapabilityDefinition(
         key="page_text_normalization",
         label="Page text normalization",
@@ -92,10 +116,22 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
         description="Use routed document intelligence plus tag governance: high-quality metadata, GPT-5.4 summaries from text, and scored GPT-5.4-mini topic tags without generating APA unless citation refresh needs it.",
     ),
     CapabilityDefinition(
-        key="figure_assets",
-        label="Figure assets",
-        version=3,
-        description="Extract rendered image and vector figure/chart/photo crops into durable storage with page geometry, labels, and captions.",
+        key="bibliography_extraction",
+        label="Bibliography extraction",
+        version=1,
+        description="Extract the source document's own reference list into the Bibliography field, preserving Markdown italics from PDF span evidence when available.",
+    ),
+    CapabilityDefinition(
+        key="visual_asset_extraction",
+        label="Visual asset extraction",
+        version=1,
+        description="Run the second-pass visual extractor/audit for images, charts, vector graphics, diagrams, photos, maps, scans, and unclaimed visual regions.",
+    ),
+    CapabilityDefinition(
+        key="visual_asset_context",
+        label="Visual asset context",
+        version=1,
+        description="Link figures and tables to captions, nearby headings, surrounding paragraphs, and explicit references such as Figure 2 or Table 1.",
     ),
     CapabilityDefinition(
         key="recommendations",
@@ -112,7 +148,17 @@ SUMMARY_REFRESH_CAPABILITY = CapabilityDefinition(
     description="Regenerate the main document summary using only the selected Summary model.",
 )
 
-CAPABILITY_BY_KEY = {capability.key: capability for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY)}
+LEGACY_FIGURE_ASSETS_CAPABILITY = CapabilityDefinition(
+    key="figure_assets",
+    label="Figure assets",
+    version=4,
+    description="Legacy alias for visual asset extraction.",
+)
+
+CAPABILITY_BY_KEY = {
+    capability.key: capability
+    for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY, LEGACY_FIGURE_ASSETS_CAPABILITY)
+}
 
 
 def _summary_needs_markdown_refresh(summary: str | None) -> bool:
@@ -351,6 +397,12 @@ class ConcordanceProcessor:
 
             if job.capability_key == "page_text_normalization":
                 evidence = self._normalize_page_text(db, document, job)
+            elif job.capability_key == "document_structure_cleanup":
+                evidence = self._clean_document_structure(db, document, job)
+            elif job.capability_key == "structured_tables":
+                evidence = self._refresh_structured_tables(db, document)
+            elif job.capability_key == "ocr_fallback":
+                evidence = self._audit_ocr_fallback(document)
             elif job.capability_key == "search_index":
                 evidence = self._rebuild_search_index(document)
             elif job.capability_key == "citation_refresh":
@@ -359,8 +411,14 @@ class ConcordanceProcessor:
                 evidence = self._refresh_summary(db, document, job)
             elif job.capability_key == "summary_topics":
                 evidence = self._refresh_summary_topics(db, document, job)
+            elif job.capability_key == "bibliography_extraction":
+                evidence = self._extract_bibliography(db, document, job)
             elif job.capability_key == "figure_assets":
                 evidence = self._extract_figures(db, document)
+            elif job.capability_key == "visual_asset_extraction":
+                evidence = self._extract_figures(db, document)
+            elif job.capability_key == "visual_asset_context":
+                evidence = self._refresh_visual_context(document)
             elif job.capability_key == "recommendations":
                 evidence = self._refresh_recommendations(db, document)
             else:
@@ -423,6 +481,7 @@ class ConcordanceProcessor:
             model=get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION),
             pdf_bytes=pdf_bytes,
             usage_context=self._usage_context(document, job, "page_text_normalization"),
+            protect_manual=True,
         )
         reading_text = rebuild_document_text_chunks(db, document)
         evidence = dict(document.metadata_evidence or {})
@@ -453,8 +512,125 @@ class ConcordanceProcessor:
             "search_indexed_characters": search_evidence["indexed_characters"],
         }
 
+    def _clean_document_structure(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        before = document_correction_snapshot(document)
+        page_before = {page.id: document_page_snapshot(page) for page in document.pages}
+        preset = import_processing_snapshot(db)
+        cleanup_result = clean_document_structure(document, preset)
+        cleanup_text_by_page_id = cleanup_result.pop("cleaned_text_by_page_id", {})
+        cleanup_config = preset.get("cleanup") if isinstance(preset.get("cleanup"), dict) else {}
+        summary = normalize_document_pages(
+            document,
+            db=db,
+            model=str(cleanup_config.get("model") or get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION)),
+            usage_context=self._usage_context(document, job, "document_structure_cleanup"),
+            normalization_text_by_page_id=cleanup_text_by_page_id if isinstance(cleanup_text_by_page_id, dict) else None,
+            cloud_enabled=bool(cleanup_config.get("cloud_escalation", True)),
+            auto_max_pages_override=import_processing_cloud_page_cap(preset, len(document.pages)),
+            protect_manual=True,
+        )
+        reading_text = rebuild_document_text_chunks(db, document)
+        evidence = dict(document.metadata_evidence or {})
+        evidence["import_processing_preset"] = preset
+        evidence["document_structure_cleanup"] = cleanup_result
+        evidence["structured_tables"] = cleanup_result.get("structured_tables", {})
+        evidence["page_text_normalization"] = summary
+        document.metadata_evidence = evidence
+        search_evidence = self._rebuild_search_index(document)
+        changed_pages = [
+            {
+                "before": page_before[page.id],
+                "after": document_page_snapshot(page),
+            }
+            for page in document.pages
+            if page.id in page_before and page_before[page.id] != document_page_snapshot(page)
+        ]
+        if changed_pages:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance document structure cleanup",
+                changed_fields={"pages", "search_text"},
+                before=before,
+                after=document_correction_snapshot(document),
+                extra={"pages": changed_pages, "manual_pages_protected": summary.get("sources", {}).get("manual_protected", 0)},
+            )
+        return {
+            **cleanup_result,
+            "page_text_normalization": summary,
+            "readable_characters": len(reading_text),
+            "search_indexed_characters": search_evidence["indexed_characters"],
+        }
+
+    def _refresh_structured_tables(self, db: Session, document: Document) -> dict[str, Any]:
+        preset = import_processing_snapshot(db)
+        cleanup_result = clean_document_structure(document, preset)
+        cleanup_result.pop("cleaned_text_by_page_id", None)
+        evidence = dict(document.metadata_evidence or {})
+        evidence["structured_tables"] = cleanup_result.get("structured_tables", {})
+        document.metadata_evidence = evidence
+        return evidence["structured_tables"]
+
+    def _audit_ocr_fallback(self, document: Document) -> dict[str, Any]:
+        low_text_pages = [page.page_number for page in document.pages if page.low_text]
+        evidence = dict(document.metadata_evidence or {})
+        ocr_evidence = {
+            "low_text_pages": low_text_pages,
+            "eligible_pages": low_text_pages,
+            "status": "pending_provider_integration" if low_text_pages else "not_needed",
+        }
+        evidence["ocr_fallback"] = ocr_evidence
+        document.metadata_evidence = evidence
+        return ocr_evidence
+
+    def _extract_bibliography(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        if document.bibliography:
+            return {"status": "skipped_existing_bibliography", "characters": len(document.bibliography)}
+        preset = import_processing_snapshot(db)
+        bibliography_config = preset.get("bibliography") if isinstance(preset.get("bibliography"), dict) else {}
+        if not bool(bibliography_config.get("enabled", True)):
+            return {"status": "disabled_by_preset"}
+        pdf_bytes = self._document_pdf_bytes(db, document)
+        result: dict[str, Any]
+        if pdf_bytes and bool(bibliography_config.get("preserve_italics", True)):
+            with NamedTemporaryFile(suffix=".pdf") as handle:
+                handle.write(pdf_bytes)
+                handle.flush()
+                result = extract_document_bibliography(document, Path(handle.name))
+        else:
+            result = extract_document_bibliography(document)
+        bibliography = result.get("bibliography")
+        evidence = result.get("evidence") or {}
+        if bibliography:
+            before = document_correction_snapshot(document)
+            document.bibliography = bibliography
+            metadata_evidence = dict(document.metadata_evidence or {})
+            metadata_evidence["bibliography_extraction"] = evidence
+            document.metadata_evidence = metadata_evidence
+            document.search_text = rebuild_document_search_text(document)
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance bibliography extraction",
+                changed_fields={"bibliography", "search_text"},
+                before=before,
+                after=document_correction_snapshot(document),
+            )
+            return {**evidence, "characters": len(bibliography)}
+        metadata_evidence = dict(document.metadata_evidence or {})
+        metadata_evidence["bibliography_extraction"] = evidence
+        document.metadata_evidence = metadata_evidence
+        return evidence
+
     def _extract_figures(self, db: Session, document: Document) -> dict[str, Any]:
         return process_document_figures_from_storage(db, document)
+
+    def _refresh_visual_context(self, document: Document) -> dict[str, Any]:
+        result = enrich_figure_context(document)
+        evidence = dict(document.metadata_evidence or {})
+        evidence["visual_asset_context"] = result
+        document.metadata_evidence = evidence
+        return result
 
     def _refresh_recommendations(self, db: Session, document: Document) -> dict[str, Any]:
         if not document.doi:

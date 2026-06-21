@@ -38,6 +38,7 @@ import {
   Clipboard,
   Cloud,
   CornerDownRight,
+  Copy,
   Download,
   Edit3,
   Eraser,
@@ -107,6 +108,7 @@ import type {
   ImportDuplicateCheck,
   ImportDuplicateFile,
   ImportJob,
+  ImportProcessingPreset,
   ModelOptionGroup,
   Note,
   NotePayload,
@@ -649,6 +651,7 @@ const restorableDocumentKeys = new Set([
   "source_url",
   "abstract",
   "rich_summary",
+  "bibliography",
   "apa_citation",
   "apa_in_text_citation",
   "citation_status",
@@ -1076,6 +1079,66 @@ function StatusPill({ value, tone = "neutral" }: { value: string; tone?: "neutra
 
 function uniqueValues(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function importPresetById(preferences: AppPreferences | undefined, presetId?: string | null) {
+  const presets = preferences?.import_processing_presets || [];
+  return presets.find((preset) => preset.id === presetId) || presets.find((preset) => preset.id === "balanced") || presets[0];
+}
+
+function importPresetLabel(preset: Pick<ImportProcessingPreset, "name" | "mode"> | undefined | null) {
+  if (!preset) return "Balanced";
+  return preset.name || preset.mode.replaceAll("_", " ");
+}
+
+function presetSlug(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "preset";
+}
+
+function duplicateImportPreset(preset: ImportProcessingPreset, existing: ImportProcessingPreset[], name?: string): ImportProcessingPreset {
+  const baseName = name?.trim() || `${preset.name} Copy`;
+  const baseId = `custom_${presetSlug(baseName)}`;
+  let id = baseId;
+  let suffix = 2;
+  while (existing.some((item) => item.id === id)) {
+    id = `${baseId}_${suffix}`;
+    suffix += 1;
+  }
+  return {
+    ...JSON.parse(JSON.stringify(preset)),
+    id,
+    name: baseName,
+    built_in: false,
+    mode: "custom",
+    description: `Custom preset based on ${preset.name}.`,
+  };
+}
+
+function presetNumber(preset: ImportProcessingPreset, section: keyof ImportProcessingPreset, key: string, fallback: number) {
+  const sectionValue = preset[section];
+  if (!sectionValue || typeof sectionValue !== "object" || Array.isArray(sectionValue)) return fallback;
+  const value = (sectionValue as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function presetBoolean(preset: ImportProcessingPreset, section: keyof ImportProcessingPreset, key: string, fallback: boolean) {
+  const sectionValue = preset[section];
+  if (!sectionValue || typeof sectionValue !== "object" || Array.isArray(sectionValue)) return fallback;
+  const value = (sectionValue as Record<string, unknown>)[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function updatePresetSection(
+  preset: ImportProcessingPreset,
+  section: "cleanup" | "ocr" | "structured_tables" | "bibliography" | "visuals" | "cost",
+  patch: Record<string, unknown>,
+): ImportProcessingPreset {
+  return { ...preset, [section]: { ...(preset[section] || {}), ...patch } };
 }
 
 function inputEventShiftKey(event: ChangeEvent<HTMLInputElement>) {
@@ -1614,11 +1677,12 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
   const status = importJobStatusLabel(job);
   const model = modelDisplayName(job.current_model);
   const cost = formatUsd(job.estimated_cost_usd ?? 0);
+  const preset = job.processing_preset_name ? ` / ${job.processing_preset_name}` : "";
   return (
     <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : importJobEstimateTitle(job)}>
       <strong>{status}</strong>
       {model ? ` (${model})` : ""}
-      {` (${importJobEstimatePrefix(job)}${cost})`}
+      {` (${importJobEstimatePrefix(job)}${cost}${preset})`}
     </small>
   );
 }
@@ -3492,6 +3556,7 @@ type DocumentDraft = {
   source_url: string;
   abstract: string;
   rich_summary: string;
+  bibliography: string;
   priority: string;
   read_status: string;
   citation_status: string;
@@ -3516,6 +3581,7 @@ function draftFromDocument(document: DocumentDetail): DocumentDraft {
     source_url: document.source_url || "",
     abstract: document.abstract || "",
     rich_summary: document.rich_summary || "",
+    bibliography: document.bibliography || "",
     priority: document.priority || "normal",
     read_status: document.read_status || "unread",
     citation_status: document.citation_status || "needs_review",
@@ -5010,6 +5076,7 @@ function DocumentPanelContent({
       source_url: draft.source_url.trim() || null,
       abstract: draft.abstract.trim() || null,
       rich_summary: draft.rich_summary.trim() || null,
+      bibliography: draft.bibliography.trim() || null,
       priority: draft.priority,
       read_status: draft.read_status,
       citation_status: draft.citation_status,
@@ -5379,6 +5446,25 @@ function DocumentPanelContent({
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, SUMMARY_MODEL_KEY, "gpt-5.4")}</span>
+      </div>
+    </section>
+  );
+  const renderBibliographySection = () => (
+    <section className="detail-section bibliography-section">
+      <h3>Bibliography</h3>
+      <MarkdownBlock content={document.bibliography} empty="No source bibliography extracted yet." />
+      <div className="citation-actions">
+        <button
+          className="secondary-button"
+          data-disabled-reason="this document does not have an extracted bibliography to copy."
+          data-tooltip="Copy this document's extracted source bibliography to the clipboard."
+          onClick={() => document.bibliography && void copyToClipboard("document-bibliography", decodeHtmlEntities(document.bibliography))}
+          disabled={!document.bibliography}
+          type="button"
+        >
+          {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+          {copiedKey === "document-bibliography" ? "Copied" : "Copy"}
+        </button>
       </div>
     </section>
   );
@@ -5914,6 +6000,10 @@ function DocumentPanelContent({
             Summary
             <textarea value={draft.rich_summary} onChange={(event) => setDraftValue("rich_summary", event.target.value)} />
           </label>
+          <label>
+            Bibliography
+            <textarea value={draft.bibliography} onChange={(event) => setDraftValue("bibliography", event.target.value)} />
+          </label>
           <div className="editor-block">
             <div className="editor-block-head">
               <strong>Attributes</strong>
@@ -5962,6 +6052,7 @@ function DocumentPanelContent({
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
       {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
       {renderSummarySection()}
+      {renderBibliographySection()}
       <section className="detail-section accessory-summary-section">
         <div className="detail-section-title-row">
           <h3>Accessory Summaries</h3>
@@ -6667,13 +6758,26 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
   );
 }
 
-function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; domains: Domain[]; tags: Tag[]; projects: Project[] }) {
+function ImportView({
+  jobs,
+  domains,
+  tags,
+  projects,
+  preferences,
+}: {
+  jobs: ImportJob[];
+  domains: Domain[];
+  tags: Tag[];
+  projects: Project[];
+  preferences?: AppPreferences;
+}) {
   const [batchLabel, setBatchLabel] = useState("");
   const [priority, setPriority] = useState("normal");
   const [readStatus, setReadStatus] = useState("unread");
   const [selectedDomainIds, setSelectedDomainIds] = useState<string[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+  const [processingPresetId, setProcessingPresetId] = useState(preferences?.default_import_processing_preset_id || "balanced");
   const [dragDepth, setDragDepth] = useState(0);
   const [dropMessage, setDropMessage] = useState("Ready");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -6696,6 +6800,8 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     [sortedProjects],
   );
   const selectedDefaultCount = selectedDomainIds.length + selectedTagIds.length + selectedProjectIds.length;
+  const importPresets = preferences?.import_processing_presets || [];
+  const selectedProcessingPreset = importPresetById(preferences, processingPresetId);
   const importDefaults = () => ({
     label: batchLabel.trim(),
     priority,
@@ -6703,6 +6809,7 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     domain_ids: selectedDomainIds,
     tag_ids: selectedTagIds,
     project_ids: selectedProjectIds,
+    processing_preset_id: selectedProcessingPreset?.id || processingPresetId || "balanced",
   });
   const refreshImportQueueData = () => {
     void queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -6836,6 +6943,18 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
     const interval = window.setInterval(() => setProcessingListNow(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [jobs]);
+
+  useEffect(() => {
+    if (!preferences) return;
+    const preferredId = processingPresetId || preferences.default_import_processing_preset_id || "balanced";
+    if (processingPresetId === "balanced" && preferences.default_import_processing_preset_id !== "balanced") {
+      setProcessingPresetId(preferences.default_import_processing_preset_id);
+      return;
+    }
+    if (!preferences.import_processing_presets.some((preset) => preset.id === preferredId)) {
+      setProcessingPresetId(preferences.default_import_processing_preset_id || "balanced");
+    }
+  }, [preferences, processingPresetId]);
 
   const hasDraggedFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
   const importFiles = (incomingFiles: FileList | File[]) => {
@@ -7002,7 +7121,26 @@ function ImportView({ jobs, domains, tags, projects }: { jobs: ImportJob[]; doma
               <option value="read">Read</option>
             </select>
           </label>
+          <label>
+            Processing preset
+            <select
+              data-tooltip="Choose the import-processing preset snapshot for this batch. Medusa stores the selected preset on staged jobs so later Settings edits do not change queued work."
+              value={selectedProcessingPreset?.id || processingPresetId}
+              onChange={(event) => setProcessingPresetId(event.target.value)}
+            >
+              {importPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
+        {selectedProcessingPreset ? (
+          <p className="import-preset-note">
+            {selectedProcessingPreset.description || `${selectedProcessingPreset.name} import processing.`}
+          </p>
+        ) : null}
         <div className="import-picker-grid">
           <ImportDefaultPicker
             createLabel="New top-level domain"
@@ -10014,6 +10152,18 @@ function SettingsView({
   const [citationConvention, setCitationConvention] = useState(preferences?.citation_convention || CITATION_CONVENTION_APA_7);
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
   const [analysisModels, setAnalysisModels] = useState<Record<string, string>>(preferences?.analysis_models || {});
+  const [importProcessingPresets, setImportProcessingPresets] = useState<ImportProcessingPreset[]>(
+    preferences?.import_processing_presets || [],
+  );
+  const [defaultImportProcessingPresetId, setDefaultImportProcessingPresetId] = useState(
+    preferences?.default_import_processing_preset_id || "balanced",
+  );
+  const [selectedImportProcessingPresetId, setSelectedImportProcessingPresetId] = useState(
+    preferences?.default_import_processing_preset_id || "balanced",
+  );
+  const [secondPassProcessingEnabled, setSecondPassProcessingEnabled] = useState(
+    preferences?.second_pass_processing_enabled ?? true,
+  );
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const [selectedBackupUri, setSelectedBackupUri] = useState("");
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
@@ -10059,6 +10209,14 @@ function SettingsView({
       setCitationConvention(preferences.citation_convention || CITATION_CONVENTION_APA_7);
       setGcsBucket(preferences.gcs_bucket);
       setAnalysisModels(preferences.analysis_models);
+      setImportProcessingPresets(preferences.import_processing_presets || []);
+      setDefaultImportProcessingPresetId(preferences.default_import_processing_preset_id || "balanced");
+      setSelectedImportProcessingPresetId((current) =>
+        (preferences.import_processing_presets || []).some((preset) => preset.id === current)
+          ? current
+          : preferences.default_import_processing_preset_id || "balanced",
+      );
+      setSecondPassProcessingEnabled(preferences.second_pass_processing_enabled ?? true);
     }
   }, [preferences]);
 
@@ -10140,6 +10298,9 @@ function SettingsView({
         citation_convention: citationConvention,
         gcs_bucket: gcsBucket,
         analysis_models: analysisModels,
+        import_processing_presets: importProcessingPresets,
+        default_import_processing_preset_id: defaultImportProcessingPresetId,
+        second_pass_processing_enabled: secondPassProcessingEnabled,
       }),
     onSuccess: (updatedPreferences) => {
       savePreferencesFeedback.showSuccess();
@@ -10224,6 +10385,58 @@ function SettingsView({
   const modelPricingRefreshDisabledReason = refreshModelsAndPricing.isPending
     ? "model and pricing refresh is already running."
     : "";
+  const selectedImportProcessingPreset =
+    importProcessingPresets.find((preset) => preset.id === selectedImportProcessingPresetId) ||
+    importProcessingPresets.find((preset) => preset.id === defaultImportProcessingPresetId) ||
+    importProcessingPresets[0];
+  const selectedImportPresetIsBuiltIn = Boolean(selectedImportProcessingPreset?.built_in);
+  const importProcessingSteps = preferences?.import_processing_steps || [];
+  const importProcessingModelOptions = uniqueValues([
+    "local",
+    ...(preferences?.model_options.gpt || []),
+    ...(preferences?.model_options.google || []),
+  ]);
+  const updateSelectedImportPreset = (updater: (preset: ImportProcessingPreset) => ImportProcessingPreset) => {
+    if (!selectedImportProcessingPreset || selectedImportProcessingPreset.built_in) return;
+    setImportProcessingPresets((current) =>
+      current.map((preset) => (preset.id === selectedImportProcessingPreset.id ? updater(preset) : preset)),
+    );
+  };
+  const addImportPreset = () => {
+    const source = selectedImportProcessingPreset || importProcessingPresets[0];
+    if (!source) return;
+    const preset = duplicateImportPreset(source, importProcessingPresets, "Custom Balanced");
+    setImportProcessingPresets((current) => [...current, preset]);
+    setSelectedImportProcessingPresetId(preset.id);
+  };
+  const duplicateSelectedImportPreset = () => {
+    if (!selectedImportProcessingPreset) return;
+    const preset = duplicateImportPreset(selectedImportProcessingPreset, importProcessingPresets);
+    setImportProcessingPresets((current) => [...current, preset]);
+    setSelectedImportProcessingPresetId(preset.id);
+  };
+  const deleteSelectedImportPreset = () => {
+    if (!selectedImportProcessingPreset || selectedImportProcessingPreset.built_in) return;
+    const nextPresets = importProcessingPresets.filter((preset) => preset.id !== selectedImportProcessingPreset.id);
+    setImportProcessingPresets(nextPresets);
+    const nextDefault = defaultImportProcessingPresetId === selectedImportProcessingPreset.id ? "balanced" : defaultImportProcessingPresetId;
+    setDefaultImportProcessingPresetId(nextDefault);
+    setSelectedImportProcessingPresetId(nextDefault);
+  };
+  const setSelectedPresetAsDefault = () => {
+    if (selectedImportProcessingPreset) setDefaultImportProcessingPresetId(selectedImportProcessingPreset.id);
+  };
+  const stepEnabled = (stepKey: string) => {
+    const preset = selectedImportProcessingPreset;
+    if (!preset) return false;
+    if (stepKey === "document_structure_cleanup") return presetBoolean(preset, "cleanup", "enabled", true);
+    if (stepKey === "ocr_fallback") return presetBoolean(preset, "ocr", "enabled", true);
+    if (stepKey === "structured_tables") return presetBoolean(preset, "structured_tables", "enabled", true);
+    if (stepKey === "visual_asset_extraction") return presetBoolean(preset, "visuals", "enabled", true);
+    if (stepKey === "visual_asset_context") return presetBoolean(preset, "visuals", "context_enabled", true);
+    if (stepKey === "bibliography_extraction") return presetBoolean(preset, "bibliography", "enabled", true);
+    return true;
+  };
   const preferenceDirty = Boolean(
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
@@ -10235,7 +10448,10 @@ function SettingsView({
         preferences.citation_convention !== citationConvention ||
         preferences.gcs_bucket !== gcsBucket ||
         (Boolean(gcsBucket.trim()) && !preferences.gcs_bucket_saved) ||
-        !sameStringMap(preferences.analysis_models, analysisModels)),
+        !sameStringMap(preferences.analysis_models, analysisModels) ||
+        JSON.stringify(preferences.import_processing_presets || []) !== JSON.stringify(importProcessingPresets) ||
+        preferences.default_import_processing_preset_id !== defaultImportProcessingPresetId ||
+        preferences.second_pass_processing_enabled !== secondPassProcessingEnabled),
   );
   useEffect(() => {
     onDirtyChange?.(preferenceDirty);
@@ -10322,7 +10538,7 @@ function SettingsView({
         aria-label={`Save all preferences from the ${placement} of Settings`}
         className={asyncFeedbackClass("primary-button settings-save-all", savePreferencesFeedback.feedback)}
         data-disabled-reason={savePreferencesDisabledReason}
-        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, citation convention, download naming, and model selections.`}
+        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, citation convention, download naming, model selections, and Import Processing presets.`}
         disabled={savePreferencesDisabled}
         onClick={() => void saveAllPreferences()}
         type="button"
@@ -10496,6 +10712,306 @@ function SettingsView({
             <span className="accent-swatch" style={{ background: accentColorNight }} />
             <input data-tooltip="Pick the night-mode accent color." type="color" value={accentColorNight} onChange={(event) => setAccentColorNight(event.target.value)} />
           </label>
+        </div>
+      </div>
+      <div className="import-processing-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Import Processing</h2>
+            <span>{importPresetLabel(importPresetById(preferences, defaultImportProcessingPresetId))} defaults</span>
+          </div>
+          <FileSearch size={20} />
+        </div>
+        <div className="models-note">
+          <Info size={15} />
+          <span>Import stores the selected preset snapshot on staged jobs, so later Settings changes only affect new batches.</span>
+        </div>
+        <label className="checkbox-row preference-checkbox">
+          <input
+            checked={secondPassProcessingEnabled}
+            data-tooltip="Enable or disable all second-pass import processing. Turning this off preserves the original import path as an emergency fallback."
+            onChange={(event) => setSecondPassProcessingEnabled(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Enable second-pass processing</span>
+        </label>
+        <div className="import-processing-toolbar">
+          <label>
+            Default preset
+            <select
+              data-tooltip="Choose the preset Import should select by default for newly staged batches."
+              value={defaultImportProcessingPresetId}
+              onChange={(event) => setDefaultImportProcessingPresetId(event.target.value)}
+            >
+              {importProcessingPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Editing
+            <select
+              data-tooltip="Choose the preset to inspect or edit. Built-in presets are read-only but can be duplicated."
+              value={selectedImportProcessingPreset?.id || ""}
+              onChange={(event) => setSelectedImportProcessingPresetId(event.target.value)}
+            >
+              {importProcessingPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                  {preset.built_in ? " (built-in)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="import-processing-actions">
+            <button className="secondary-button compact" data-tooltip="Create a new editable preset from the currently selected preset." onClick={addImportPreset} type="button">
+              <Plus size={14} />
+              New
+            </button>
+            <button className="secondary-button compact" data-tooltip="Duplicate the selected preset into a new editable custom preset." onClick={duplicateSelectedImportPreset} type="button">
+              <Copy size={14} />
+              Duplicate
+            </button>
+            <button
+              className="secondary-button compact"
+              data-tooltip="Make the selected preset the Import default."
+              disabled={!selectedImportProcessingPreset || selectedImportProcessingPreset.id === defaultImportProcessingPresetId}
+              onClick={setSelectedPresetAsDefault}
+              type="button"
+            >
+              <CheckSquare size={14} />
+              Default
+            </button>
+            <button
+              className="secondary-button compact"
+              data-disabled-reason="built-in presets cannot be deleted."
+              data-tooltip="Delete this custom preset."
+              disabled={!selectedImportProcessingPreset || selectedImportPresetIsBuiltIn}
+              onClick={deleteSelectedImportPreset}
+              type="button"
+            >
+              <Trash2 size={14} />
+              Delete
+            </button>
+          </div>
+        </div>
+        {selectedImportProcessingPreset ? (
+          <div className="import-preset-editor">
+            <div className="import-preset-summary-row">
+              <label>
+                Preset name
+                <input
+                  data-disabled-reason="built-in presets are read-only; duplicate first to edit."
+                  data-tooltip="Rename this custom preset."
+                  disabled={selectedImportPresetIsBuiltIn}
+                  value={selectedImportProcessingPreset.name}
+                  onChange={(event) => updateSelectedImportPreset((preset) => ({ ...preset, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                Mode
+                <input
+                  data-disabled-reason="built-in presets are read-only; duplicate first to edit."
+                  data-tooltip="Name the processing mode represented by this custom preset."
+                  disabled={selectedImportPresetIsBuiltIn}
+                  value={selectedImportProcessingPreset.mode}
+                  onChange={(event) => updateSelectedImportPreset((preset) => ({ ...preset, mode: event.target.value }))}
+                />
+              </label>
+            </div>
+            <label>
+              Description
+              <textarea
+                data-disabled-reason="built-in presets are read-only; duplicate first to edit."
+                data-tooltip="Describe the quality and cost intent for this preset."
+                disabled={selectedImportPresetIsBuiltIn}
+                value={selectedImportProcessingPreset.description || ""}
+                onChange={(event) => updateSelectedImportPreset((preset) => ({ ...preset, description: event.target.value }))}
+              />
+            </label>
+            <div className="import-preset-grid">
+              <fieldset>
+                <legend>Text cleanup</legend>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "cleanup", "enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "cleanup", { enabled: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  <span>Cleanup enabled</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "cleanup", "cloud_escalation", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "cleanup", { cloud_escalation: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Flagged-page model cleanup</span>
+                </label>
+                <label>
+                  Cleanup model
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={String(selectedImportProcessingPreset.cleanup?.model || "gpt-5.4-mini")}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "cleanup", { model: event.target.value }))}
+                  >
+                    {importProcessingModelOptions.map((model) => (
+                      <option key={model} value={model}>
+                        {modelDisplayName(model)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="import-preset-number-row">
+                  <label>
+                    Min pages
+                    <input
+                      disabled={selectedImportPresetIsBuiltIn}
+                      min={0}
+                      onChange={(event) =>
+                        updateSelectedImportPreset((preset) =>
+                          updatePresetSection(preset, "cleanup", { page_cap_min: Math.max(0, Number(event.target.value) || 0) }),
+                        )
+                      }
+                      type="number"
+                      value={presetNumber(selectedImportProcessingPreset, "cleanup", "page_cap_min", 6)}
+                    />
+                  </label>
+                  <label>
+                    Percent cap
+                    <input
+                      disabled={selectedImportPresetIsBuiltIn}
+                      min={0}
+                      max={100}
+                      onChange={(event) =>
+                        updateSelectedImportPreset((preset) =>
+                          updatePresetSection(preset, "cleanup", { page_cap_percent: Math.max(0, Math.min(100, Number(event.target.value) || 0)) }),
+                        )
+                      }
+                      type="number"
+                      value={presetNumber(selectedImportProcessingPreset, "cleanup", "page_cap_percent", 15)}
+                    />
+                  </label>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Assets and structure</legend>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "ocr", "enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "ocr", { enabled: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  <span>OCR fallback</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "structured_tables", "enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "structured_tables", { enabled: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Structured tables</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "bibliography", "enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "bibliography", { enabled: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Bibliography extraction</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "bibliography", "preserve_italics", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "bibliography", { preserve_italics: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Preserve reference italics</span>
+                </label>
+              </fieldset>
+              <fieldset>
+                <legend>Visual assets</legend>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "visuals", "enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { enabled: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  <span>Extract visual crops</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "visuals", "audit_enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { audit_enabled: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Coverage audit</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    checked={presetBoolean(selectedImportProcessingPreset, "visuals", "context_enabled", true)}
+                    disabled={selectedImportPresetIsBuiltIn}
+                    onChange={(event) =>
+                      updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { context_enabled: event.target.checked }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Caption/context links</span>
+                </label>
+                <label>
+                  Visual model
+                  <select
+                    disabled={selectedImportPresetIsBuiltIn}
+                    value={String(selectedImportProcessingPreset.visuals?.model || "gemini-3.1-flash-lite")}
+                    onChange={(event) => updateSelectedImportPreset((preset) => updatePresetSection(preset, "visuals", { model: event.target.value }))}
+                  >
+                    {importProcessingModelOptions.map((model) => (
+                      <option key={model} value={model}>
+                        {modelDisplayName(model)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </fieldset>
+            </div>
+          </div>
+        ) : null}
+        <div className="import-processing-step-table">
+          <div className="import-processing-step-row header">
+            <span>Step</span>
+            <span>Status</span>
+            <span>What happens</span>
+          </div>
+          {importProcessingSteps.map((step) => (
+            <div className="import-processing-step-row" data-tooltip={step.tooltip} key={step.key}>
+              <span>
+                <strong>{step.label}</strong>
+                <small>{step.key.replaceAll("_", " ")}</small>
+              </span>
+              <StatusPill value={stepEnabled(step.key) ? "Enabled" : "Off"} tone={stepEnabled(step.key) ? "good" : "neutral"} />
+              <span>{step.description}</span>
+            </div>
+          ))}
         </div>
       </div>
       <div className="model-settings-panel">
@@ -11300,7 +11816,13 @@ export default function App() {
         ) : null}
         {activeView === "domains" ? <DomainsView documents={documents.data || []} domains={domains.data || []} /> : null}
         {activeView === "import" ? (
-          <ImportView domains={domains.data || []} jobs={jobs.data || []} projects={projects.data || []} tags={tags.data || []} />
+          <ImportView
+            domains={domains.data || []}
+            jobs={jobs.data || []}
+            preferences={preferences.data}
+            projects={projects.data || []}
+            tags={tags.data || []}
+          />
         ) : null}
         {activeView === "projects" ? <ProjectsView documents={documents.data || []} projects={projects.data || []} /> : null}
         {activeView === "tags" ? <TagsView tags={tags.data || []} preferences={preferences.data} /> : null}

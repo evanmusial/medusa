@@ -471,6 +471,25 @@ def _is_markdown_table(lines: list[str]) -> bool:
     return len(table_lines) >= 2
 
 
+_LIST_LINE_RE = re.compile(r"^\s*(?:[-*+•·]|\(?[A-Za-z0-9]{1,3}[.)])\s+\S+")
+
+
+def _normalize_list_lines(lines: list[str]) -> str:
+    normalized: list[str] = []
+    prose_buffer: list[str] = []
+    for line in lines:
+        if _LIST_LINE_RE.match(line):
+            if prose_buffer:
+                normalized.append(_join_paragraph_lines(prose_buffer))
+                prose_buffer = []
+            normalized.append(_normalize_inline_spacing(line))
+            continue
+        prose_buffer.append(line)
+    if prose_buffer:
+        normalized.append(_join_paragraph_lines(prose_buffer))
+    return "\n".join(part for part in normalized if part)
+
+
 def normalize_extracted_text(text: str | None) -> str:
     """Turn layout-oriented PDF text into readable paragraph-oriented text."""
     if not text:
@@ -483,6 +502,9 @@ def normalize_extracted_text(text: str | None) -> str:
             continue
         if _is_markdown_table(lines):
             paragraphs.append("\n".join(_normalize_inline_spacing(line) for line in lines))
+            continue
+        if any(_LIST_LINE_RE.match(line) for line in lines):
+            paragraphs.append(_normalize_list_lines(lines))
             continue
         paragraph = _join_paragraph_lines(lines)
         if paragraph:

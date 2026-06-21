@@ -977,6 +977,7 @@ def _assign_document_fields(document: Document, row: dict[str, Any]) -> None:
     document.source_url = row.get("source_url")
     document.abstract = row.get("abstract")
     document.rich_summary = row.get("rich_summary")
+    document.bibliography = row.get("bibliography")
     document.apa_citation = row.get("apa_citation")
     document.apa_citation_model = row.get("apa_citation_model")
     document.apa_citation_source = row.get("apa_citation_source")

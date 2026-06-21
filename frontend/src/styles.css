@@ -4815,6 +4815,7 @@ pre {
 .database-backup-panel h2,
 .preferences-panel h2,
 .storage-settings-panel h2,
+.import-processing-panel h2,
 .model-settings-panel h2,
 .openai-usage-panel h2,
 .budget-panel h2,
@@ -4827,6 +4828,7 @@ pre {
 .database-backup-panel p,
 .preferences-panel p,
 .storage-settings-panel p,
+.import-processing-panel p,
 .model-settings-panel p,
 .capability-grid p {
   margin: 0;
@@ -4838,6 +4840,101 @@ pre {
   grid-column: span 2;
   display: grid;
   gap: 12px;
+}
+
+.import-processing-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+
+.import-processing-toolbar,
+.import-preset-summary-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.import-processing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.import-preset-editor {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.import-preset-editor textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.import-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.import-preset-grid fieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.import-preset-grid legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.import-preset-number-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.import-processing-step-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.import-processing-step-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.65fr) 96px minmax(220px, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.import-processing-step-row:first-child {
+  border-top: 0;
+}
+
+.import-processing-step-row.header {
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.import-processing-step-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .storage-settings-panel {
@@ -6281,6 +6378,11 @@ pre {
 	  .scope-grid,
 	  .reader-compare,
 	  .import-default-controls,
+  .import-processing-toolbar,
+  .import-preset-summary-row,
+  .import-preset-grid,
+  .import-preset-number-row,
+  .import-processing-step-row,
   .import-picker-grid,
   .note-link-grid,
   .review-card {

@@ -133,7 +133,7 @@ def test_composition_pipeline_preserves_import_execution_order(monkeypatch, tmp_
             db,
             document=document,
             job=job,
-            stage_key="figure_assets",
+            stage_key="visual_asset_extraction",
             method="pymupdf",
             duration_ms=100,
         )
@@ -182,7 +182,7 @@ def test_composition_pipeline_preserves_import_execution_order(monkeypatch, tmp_
     assert pipeline_order == [
         ("raw_text_extraction", "local", "gpt-5.5", "pymupdf"),
         ("raw_text_extraction", "llm", "gpt-5.5", "medusa_page_text_normalization"),
-        ("figure_assets", "local", None, "pymupdf"),
+        ("visual_asset_extraction", "local", None, "pymupdf"),
         ("summary_topics", "llm", "gpt-5.5", "medusa_document_metadata"),
         ("summary_topics", "llm", "gpt-5.4", "medusa_document_summary"),
         ("summary_topics", "llm", "gpt-5.4-mini", "medusa_keywords_topics"),

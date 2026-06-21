@@ -101,6 +101,9 @@ export const api = {
         | "citation_convention"
         | "gcs_bucket"
         | "analysis_models"
+        | "import_processing_presets"
+        | "default_import_processing_preset_id"
+        | "second_pass_processing_enabled"
       >
     >,
   ) =>
@@ -267,6 +270,7 @@ export const api = {
     form.append("read_status", String(defaults.read_status || "unread"));
     form.append("attributes", JSON.stringify(defaults.attributes || {}));
     form.append("duplicate_strategy", defaults.duplicate_strategy || "skip");
+    form.append("processing_preset_id", String(defaults.processing_preset_id || ""));
     return request<{ id: string }>("/api/imports/batches", { method: "POST", body: form });
   },
 };

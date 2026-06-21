@@ -149,7 +149,7 @@ Current core entities:
 - `TagAlias`: normalized source label remembered from tag merges. The alias points at the current canonical `Tag` so later AI tag suggestions, Concordance refreshes, manual correction tags, bulk tag names, and tag creation resolve an old merged label to the kept tag. Aliases are moved forward when their target tag is merged again.
 - `SavedSearch`: named query and filter presets for repeated research views and Concordance scopes.
 - `Domain`: nested knowledge organization nodes with name, parent, description, color, sort order, document links, and soft delete. The API enforces no parent cycles, rejects duplicate active sibling names, rebuilds affected document search text when a domain rename changes searchable domain text, records document history for domain rename/delete effects, detaches deleted domains from documents and notes, and moves deleted-domain children up one level.
-- `Document`: canonical research object and processing/search state.
+- `Document`: canonical research object and processing/search state, including generated citation text and the source document's extracted Markdown-compatible `Bibliography` reference-list field when available.
 - `DocumentVersion`: metadata correction/history snapshots.
 - `DocumentCapability`: per-document completion state for versioned import/concordance capabilities.
 - `OpenAIUsageRecord`: per-call OpenAI Responses/embeddings/Gemini usage ledger with document/job/run context, model, task, token counts, cached input tokens, PDF/file-context bytes, status, and recent error text.
@@ -162,7 +162,7 @@ Current core entities:
 - `DocumentPage`: raw extracted per-page text, normalized reader text, source, low-text flags, and optional page image URI; the document detail API exposes these pages for the full-text reader.
 - `TextChunk`: chunked full text and optional embedding vector.
 - `Figure`: extracted figure, chart, photo, and diagram crops with durable asset URIs, page geometry, labels, captions, and searchable gists.
-- Planned second-pass entities: import-processing presets, layout blocks, structured tables, visual asset candidates, visual audit warnings, and richer figure context. Presets store mode, model choices, thresholds, caps, OCR settings, cleanup toggles, and visual settings. Layout/table/asset records preserve geometry, source, confidence, nearby text, caption/mention links, and audit metadata so raw extraction, cleaned body text, removed boilerplate, and derived visual assets can be inspected or regenerated independently.
+- Planned second-pass entities: import-processing presets, layout blocks, structured tables, visual asset candidates, visual audit warnings, extracted source bibliographies, and richer figure context. Presets store mode, model choices, thresholds, caps, OCR settings, cleanup toggles, and visual settings. Layout/table/asset records preserve geometry, source, confidence, nearby text, caption/mention links, and audit metadata so raw extraction, cleaned body text, removed boilerplate, source reference lists, and derived visual assets can be inspected or regenerated independently.
 - `Annotation`: page-aware highlights/notes with color, body, soft delete, and reserved geometry for future PDF overlays.
 - `Note`: document/domain/project notes and reminders.
 - `AttributeDefinition`, `DocumentAttributeValue`: custom per-document attributes.
@@ -246,7 +246,8 @@ Planned second-pass extension on `codex/second-pass-document-processing`:
 6. `structured_tables` stores table rows/cells, captions, page regions, and source geometry while keeping Markdown table text searchable.
 7. `visual_asset_extraction` becomes a multi-pass local extraction and audit stage for embedded raster images, displayed page-image regions, vector charts/plots/diagrams, photos, maps, full-page scans, and table regions. Crops should include complete axes, legends, labels, captions when appropriate, page rotation/orientation, source type, extraction method, confidence, and crop-quality warnings.
 8. `visual_asset_context` links figures and tables to labels, captions, nearby headings, surrounding paragraphs, and explicit references such as `Figure 2` or `Table 1`. Cropped-region model calls are allowed only when local caption/context evidence is insufficient and must be recorded in the usage ledger.
-9. Composition records second-pass stages, warnings, model/provider choices, local duration, token/file-context usage, and costs so the user can tell what improved the document and what it cost.
+9. `bibliography_extraction` detects References, Bibliography, and Works Cited sections and stores the paper's own reference list in `Document.bibliography` as Markdown-compatible text. PDF span metadata is used when available so visible italics in the reference list can be preserved as Markdown emphasis.
+10. Composition records second-pass stages, warnings, model/provider choices, local duration, token/file-context usage, and costs so the user can tell what improved the document and what it cost.
 
 Durability decisions:
 
@@ -280,11 +281,13 @@ Implemented foundation:
 Current first capabilities:
 
 - `page_text_normalization` v3: conforms raw extracted page text into standard readable paragraph flow using OpenAI when configured and local cleanup as a fallback; it preserves headings, labels, captions, citations, equations, lists, tables, and reading flow across columns/graphics without converting graphics to Markdown. Concordance reruns use the original PDF context when available.
-- `search_index` v3: rebuilds `Document.search_text` from title, authors, visible author contact emails, abstract, summary, APA reference-list and in-text citations, normalized pages, figure labels/captions/gists, notes, custom attributes, tags, and domains.
+- `search_index` v3: rebuilds `Document.search_text` from title, authors, visible author contact emails, abstract, summary, extracted Bibliography, APA reference-list and in-text citations, normalized pages, figure labels/captions/gists, notes, custom attributes, tags, and domains.
 - `citation_refresh` v4: regenerates Markdown APA 7 reference-list text and APA parenthetical in-text text from DOI/Crossref evidence first, fills missing fields, records citation model/provenance, and uses compact GPT-5.5 APA fallback only when evidence cannot verify the citation; uncertain output stays in Queue for citation review.
 - `summary_refresh` v1: button-scoped capability used by document Summary Refresh. It regenerates only the main `rich_summary` using the selected Summary model, records usage with task key `summary`, rebuilds document search when the summary changes, and keeps broader metadata/tag extraction out of one-off summary refreshes. It is accepted by the Concordance API for explicit Summary Refresh requests but is not included in default all-capability Concordance selections.
 - `summary_topics` v8: uses the configured AI adapter to fill missing metadata, visible author contacts, default paragraph-style summaries, and flattened tag suggestions without overwriting user-corrected identity metadata. The default path routes metadata through the high-quality model, summaries through GPT-5.4 text-only calls, and tag extraction through GPT-5.4-mini text-only calls. Tag extraction receives a compact sorted manifest of existing canonical/candidate tags and is instructed to prefer exact existing tags when they fit. Suggested tag names resolve through remembered merge aliases, then pass through the aggressive tag-governance scorer for existing-first/not-existing-only, three-axis relevance/fit/novelty scoring, optional embedding similarity, cluster-aware checks, low-value suppression, near-existing reuse/blocking, semantic covered-by reuse, and strict attachment caps before creating or attaching tags. Concordance `summary_topics` is additive for tags: it may attach newly scored tags but must not evict tags already on the document. Weak assignment removal remains an explicit Optimize pruning approval. Legacy combined `core_document_intelligence` remains opt-in.
-- `figure_assets` v3: extracts rendered page-image and vector graphic crops plus embedded-image fallbacks into durable storage and attaches them to document records with geometry, labels, captions, and source kind. Visible page-image crops are rendered from the page before raw embedded bytes are used so PDF color-space, mask, and decode instructions are preserved.
+- `bibliography_extraction` v1: extracts the source document's own reference list into the `Bibliography` field when a references/bibliography/works-cited section is present, preserving Markdown italics when PDF span evidence exposes emphasis. Concordance fills missing bibliographies and protects user-edited values from silent overwrite.
+- `visual_asset_extraction` v1: extracts rendered page-image and vector graphic crops plus embedded-image fallbacks into durable storage and attaches them to document records with geometry, labels, captions, source kind, orientation, and audit warnings. Visible page-image crops are rendered from the page before raw embedded bytes are used so PDF color-space, mask, and decode instructions are preserved. The legacy `figure_assets` capability key remains accepted for older queued jobs.
+- `visual_asset_context` v1: enriches extracted assets with caption, heading, nearby paragraph, and explicit mention context without requiring whole-PDF cloud calls.
 - `recommendations` v1: refreshes DOI-based related-paper recommendations from OpenAlex, Semantic Scholar, and Crossref, enriches open-PDF availability from Unpaywall/arXiv when configured, marks already-present library matches, exposes manual Google Scholar search links, and caches provider evidence without importing full text automatically.
 
 Use Concordance Runs when adding or improving:
@@ -571,7 +574,7 @@ Consequences:
 
 - The Library filter pane minimum is raised and enforced through persisted pane clamping so select arrows and control text cannot be collapsed out of view.
 - Document rows include a short rendered Markdown summary preview instead of leaving summary text as one large undifferentiated paragraph.
-- `rich_summary`, `apa_citation`, and `apa_in_text_citation` remain Markdown-compatible database fields.
+- `rich_summary`, `bibliography`, `apa_citation`, and `apa_in_text_citation` remain Markdown-compatible database fields.
 - OpenAI extraction prompts now request complete-sentence technical paragraph summaries that begin with the paper's broad facts and purpose, avoid single-word openers or standalone headings, and avoid bold, italics, bullets, em dashes, and fancy quotes unless the user explicitly asks for another format.
 - APA formatter output uses Markdown italics for APA publication elements and Crossref volume/issue/page fields when available.
 - The document detail and expanded Reader surfaces include APA Reference List and APA In-Text Citation Copy/Edit/Refresh controls. Refresh queues a forced `citation_refresh` Concordance Run for that document and disables while a matching queued/running job exists.
@@ -849,7 +852,7 @@ Consequences:
 - Import processing now runs a figure extraction step before metadata enrichment while the processing-cache PDF is still available.
 - `Figure` rows store page number, label, basic extraction gist, and durable asset URI.
 - Figure assets use storage keys under `figures/<first-two-sha256-chars>/<sha256>/...`.
-- `figure_assets` is a Concordance capability so older documents can be upgraded from their durable original object without re-upload.
+- `visual_asset_extraction` and `visual_asset_context` are Concordance capabilities so older documents can be upgraded from their durable original object without re-upload; legacy `figure_assets` requests are treated as a compatibility alias.
 - Visible PDF image blocks are stored from rendered page crops when available; raw embedded image bytes are only a fallback when no usable page crop can be rendered.
 - The detail pane shows extracted figure thumbnails through `/api/figures/{id}/asset`.
 

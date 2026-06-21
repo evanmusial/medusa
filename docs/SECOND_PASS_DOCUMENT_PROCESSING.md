@@ -19,6 +19,8 @@ without making routine imports expensive or fragile.
   lists, captions, tables, and the relationship between text and visual assets.
 - Extract all meaningful visual assets: figures, charts, plots, photos,
   diagrams, maps, scans, and table regions.
+- Extract a document's own reference list into a dedicated Bibliography field
+  when a references, bibliography, or works-cited section exists.
 - Detect likely missed or incomplete assets instead of silently declaring a
   page complete.
 - Make every new processing ability available at import time and retroactively
@@ -49,6 +51,9 @@ without making routine imports expensive or fragile.
   recorded as a possible miss with page evidence.
 - Figures and tables are linked to captions, nearby headings, surrounding text,
   and explicit mentions such as `Figure 2` or `Table 1` when available.
+- Papers with a detected reference list store it in a separate
+  Markdown-compatible `Bibliography` field while preserving visible italics
+  when span-level PDF evidence exposes emphasis.
 - New import steps have Settings rows with clear tooltips explaining what the
   step does and what it accomplishes.
 - Import lets the user select a processing preset before staging files.
@@ -134,7 +139,10 @@ staging, duplicate detection, storage, job durability, or queue visibility.
    nearby paragraphs, and explicit mentions.
 10. Run a visual coverage audit and record warnings for likely missed or
     incomplete assets.
-11. Rebuild reading text, chunks, search text, and downstream metadata,
+11. Run `bibliography_extraction` to detect reference-list sections, preserve
+    Markdown italics where PDF span metadata allows it, and store the result on
+    the document's `Bibliography` field with evidence.
+12. Rebuild reading text, chunks, search text, and downstream metadata,
     summaries, citations, tags, embeddings, and Composition rows from the
     cleaned body text plus structured tables/assets.
 
@@ -226,6 +234,8 @@ Planned schema additions:
 - structured table records with page geometry, rows/cells, caption, and source
 - visual asset candidates and audit warnings
 - richer figure context and crop-quality metadata
+- `Document.bibliography` as a Markdown-compatible extracted reference-list
+  field separate from generated APA citations and project bibliographies
 
 Planned API additions:
 
@@ -236,7 +246,7 @@ Planned API additions:
 - import job output includes preset name, cleanup status, visual extraction
   status, and warning summary
 - document detail exposes cleaned-text provenance, removed-boilerplate summary,
-  structured tables, layout evidence, and richer asset context
+  structured tables, layout evidence, richer asset context, and Bibliography
 - Composition exposes cleanup and visual extraction stages, warnings, and costs
 
 ## Concordance Behavior
@@ -254,6 +264,9 @@ Every second-pass capability must be import-time and retroactive.
   duplicate rows on retry.
 - `visual_asset_context`: enrich existing assets with captions, mentions,
   surrounding text, and searchable gists.
+- `bibliography_extraction`: fill missing Bibliography fields from existing
+  extracted pages/PDF layout evidence without overwriting manual edits unless
+  forced through an explicit correction workflow.
 
 Capability versions must be bumped whenever behavior changes so older
 documents are discoverably out of date.

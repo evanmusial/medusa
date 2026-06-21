@@ -473,6 +473,7 @@ class DocumentDetail(DocumentSummary):
     publisher: str | None = None
     source_url: str | None = None
     abstract: str | None = None
+    bibliography: str | None = None
     metadata_evidence: dict[str, Any]
     gcs_uri: str | None = None
     storage_status: str
@@ -485,7 +486,7 @@ class DocumentDetail(DocumentSummary):
     annotations: list[AnnotationOut] = Field(default_factory=list)
     duplicate_document_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("subtitle", "publisher", "source_url", "abstract", "search_text", mode="before")
+    @field_validator("subtitle", "publisher", "source_url", "abstract", "bibliography", "search_text", mode="before")
     @classmethod
     def decode_detail_text_fields(cls, value: Any) -> Any:
         return decode_html_entity_text(value)
@@ -629,6 +630,7 @@ class DocumentPatch(BaseModel):
     source_url: str | None = None
     abstract: str | None = None
     rich_summary: str | None = None
+    bibliography: str | None = None
     apa_citation: str | None = None
     apa_in_text_citation: str | None = None
     citation_status: str | None = None
@@ -673,6 +675,9 @@ class ImportJobOut(ApiModel):
     estimated_cost_usd: float = 0.0
     estimated_cost_basis: str = "none"
     estimated_cost_page_count: int | None = None
+    processing_preset_id: str | None = None
+    processing_preset_name: str | None = None
+    processing_preset_mode: str | None = None
     attempts: int
     last_error: str | None = None
     locked_at: datetime | None = None
@@ -908,6 +913,16 @@ class ModelPricingStatusOut(BaseModel):
     unchanged_count: int = 0
 
 
+class ImportProcessingStepOut(BaseModel):
+    key: str
+    label: str
+    description: str
+    accomplishes: str
+    tooltip: str
+    default_enabled: bool = True
+    configurable: bool = True
+
+
 class AppPreferencesOut(BaseModel):
     import_worker_concurrency: int
     recommended_import_worker_concurrency: int
@@ -929,6 +944,10 @@ class AppPreferencesOut(BaseModel):
     analysis_model_tasks: list[AnalysisModelTaskOut]
     model_options: dict[str, list[str]]
     model_pricing: ModelPricingStatusOut
+    import_processing_presets: list[dict[str, Any]] = Field(default_factory=list)
+    default_import_processing_preset_id: str = "balanced"
+    import_processing_steps: list[ImportProcessingStepOut] = Field(default_factory=list)
+    second_pass_processing_enabled: bool = True
 
 
 class AppPreferencesPatch(BaseModel):
@@ -941,6 +960,9 @@ class AppPreferencesPatch(BaseModel):
     citation_convention: str | None = Field(default=None, pattern=r"^apa_7$")
     gcs_bucket: str | None = None
     analysis_models: dict[str, str] | None = None
+    import_processing_presets: list[dict[str, Any]] | None = None
+    default_import_processing_preset_id: str | None = None
+    second_pass_processing_enabled: bool | None = None
 
 
 class DocumentCacheStatusOut(BaseModel):

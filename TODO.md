@@ -32,6 +32,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add deterministic document structure cleanup.
   - Acceptance: imports and Concordance can remove or normalize repeated headers/footers, page numbers, watermarks, decorative text art, front matter noise, excess whitespace, broken line wraps, hyphenation, bullets, and drop-cap styling artifacts while preserving headings, captions, citations, equations, lists, tables, and body text; removed text is kept as evidence but excluded from reader/search/enrichment body text; manual page edits are not silently overwritten.
 
+- [ ] Extract source-document bibliographies into a dedicated field.
+  - Acceptance: imports and Concordance detect references, bibliography, or works-cited sections; `Document.bibliography` stores the extracted reference list separately from generated APA citation text and project bibliographies; Markdown-compatible italics are preserved when PDF span metadata exposes emphasis; document detail displays and allows editing the Bibliography field; search, export, restore, and history include it.
+
 - [ ] Add structured table extraction and persistence.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data; Markdown table text remains searchable; tables can link to nearby headings, captions, and explicit `Table N` mentions; imports and Concordance are idempotent and retry-safe.
 
@@ -42,7 +45,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: figures/tables link to captions, nearby headings, surrounding paragraphs, and explicit mentions such as `Figure 2`; searchable gists come from captions/local context first; cropped-region model calls use cheaper OpenAI/Google models when local context is insufficient; premium visual/document analysis requires Deep Review or explicit Concordance scope; every cloud call records provider/model/task/tokens/file bytes/status/duration/cost.
 
 - [ ] Wire second-pass capabilities into Concordance.
-  - Acceptance: `document_structure_cleanup`, `visual_asset_extraction`, `visual_asset_context`, `structured_tables`, and `ocr_fallback` are versioned Concordance capabilities; old documents can be upgraded without re-upload; jobs are durable, resumable, idempotent, and visible through events/progress; manual page text is skipped or turned into reviewable candidates unless explicit replacement is requested.
+  - Acceptance: `document_structure_cleanup`, `bibliography_extraction`, `visual_asset_extraction`, `visual_asset_context`, `structured_tables`, and `ocr_fallback` are versioned Concordance capabilities; old documents can be upgraded without re-upload; jobs are durable, resumable, idempotent, and visible through events/progress; manual page text is skipped or turned into reviewable candidates unless explicit replacement is requested.
 
 - [ ] Design and implement Recon for corpus-grounded research inquiries.
   - Acceptance: add a Recon workspace between Projects and Tags; inquiries store scope, question/instructions, selected model, run mode, run history, answers, evidence, usage, and cost; scopes support whole library, domains, projects, saved searches/views, and eventually selected documents; the Start Research action uses Medusa's durable async progress convention with cost/time preview; Quick Answer uses retrieval over the selected corpus, Broad Sweep inspects every scoped document at least lightly, and Exhaustive is an explicit deep mode rather than the default; answers cite exact document/page/chunk evidence and can be re-run when the question, model, scope, or corpus changes. Planning notes live in `docs/RECON.md`.

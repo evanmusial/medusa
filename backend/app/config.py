@@ -72,6 +72,7 @@ class Settings(BaseSettings):
         validation_alias="MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS",
     )
     openai_embedding_timeout_seconds: float = Field(default=60.0, validation_alias="MEDUSA_OPENAI_EMBEDDING_TIMEOUT_SECONDS")
+    second_pass_processing_enabled: bool = Field(default=True, validation_alias="MEDUSA_SECOND_PASS_PROCESSING_ENABLED")
     raw_text_extraction_timeout_seconds: float = Field(
         default=900.0,
         validation_alias="MEDUSA_RAW_TEXT_EXTRACTION_TIMEOUT_SECONDS",

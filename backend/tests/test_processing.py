@@ -475,7 +475,7 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(
         processing,
         "normalize_document_pages",
-        lambda document, ai=None, db=None, job=None, resume_existing=False, model=None, pdf_bytes=None, usage_context=None: {
+        lambda document, ai=None, db=None, job=None, resume_existing=False, model=None, pdf_bytes=None, usage_context=None, **_: {
             "pages": 1,
             "sources": {"test": 1},
         },
@@ -503,9 +503,10 @@ def test_extract_replaces_existing_pages_on_retry(monkeypatch, tmp_path):
         assert pages[0].text == "Replacement text"
         assert "\x00" not in document.search_text
         assert job.current_step == "extracted"
-        composition = db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).one()
-        assert composition.stage_key == "raw_text_extraction"
-        assert composition.method == "test"
+        composition_rows = db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).all()
+        raw_composition = next(row for row in composition_rows if row.stage_key == "raw_text_extraction")
+        assert raw_composition.method == "test"
+        assert {row.stage_key for row in composition_rows} >= {"document_structure_cleanup", "bibliography_extraction", "raw_text_extraction"}
 
 
 def test_extract_resumes_page_normalization_from_persisted_pages(monkeypatch, tmp_path):

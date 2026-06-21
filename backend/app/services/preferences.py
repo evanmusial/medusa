@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from math import ceil
 import re
 from typing import Any
 
@@ -35,6 +37,9 @@ CITATION_CONVENTION_KEY = "citation_convention"
 ANALYSIS_MODEL_KEY_PREFIX = "analysis_model_"
 GCS_BUCKET_KEY = "gcs_bucket"
 GOOGLE_SERVICE_ACCOUNT_KEY = "google_service_account"
+IMPORT_PROCESSING_PRESETS_KEY = "import_processing_presets"
+DEFAULT_IMPORT_PROCESSING_PRESET_KEY = "default_import_processing_preset_id"
+SECOND_PASS_PROCESSING_ENABLED_KEY = "second_pass_processing_enabled"
 
 MIN_IMPORT_WORKER_CONCURRENCY = 1
 RECOMMENDED_IMPORT_WORKER_CONCURRENCY = 4
@@ -46,6 +51,10 @@ DEFAULT_DOWNLOAD_NAMING_TEMPLATE = "$title ($year)"
 CITATION_CONVENTION_APA_7 = "apa_7"
 CITATION_CONVENTIONS = {CITATION_CONVENTION_APA_7}
 DOWNLOAD_TEMPLATE_TOKENS = {"title", "year", "authors", "author", "pages"}
+IMPORT_PROCESSING_BALANCED_ID = "balanced"
+IMPORT_PROCESSING_STRICT_LOCAL_ID = "strict_local"
+IMPORT_PROCESSING_DEEP_REVIEW_ID = "deep_review"
+DEFAULT_IMPORT_PROCESSING_PRESET_ID = IMPORT_PROCESSING_BALANCED_ID
 
 SAFE_PREFERENCE_KEYS = {
     IMPORT_WORKER_CONCURRENCY_KEY,
@@ -56,12 +65,16 @@ SAFE_PREFERENCE_KEYS = {
     DOWNLOAD_NAMING_TEMPLATE_KEY,
     CITATION_CONVENTION_KEY,
     GCS_BUCKET_KEY,
+    IMPORT_PROCESSING_PRESETS_KEY,
+    DEFAULT_IMPORT_PROCESSING_PRESET_KEY,
+    SECOND_PASS_PROCESSING_ENABLED_KEY,
     *(f"{ANALYSIS_MODEL_KEY_PREFIX}{task.key}" for task in ANALYSIS_MODEL_TASKS),
 }
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 DOWNLOAD_TEMPLATE_TOKEN_RE = re.compile(r"\$(title|year|authors|author|pages)\b")
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+PRESET_ID_RE = re.compile(r"[^a-z0-9_-]+")
 RESERVED_WINDOWS_FILENAMES = {
     "CON",
     "PRN",
@@ -70,6 +83,207 @@ RESERVED_WINDOWS_FILENAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
+
+IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
+    {
+        "key": "stage_upload",
+        "label": "Stage Upload",
+        "default_enabled": True,
+        "configurable": False,
+        "description": "Hashes the uploaded file, checks duplicate checksums, stores the original, creates durable staged queue rows, and records the selected processing preset snapshot.",
+        "accomplishes": "Makes the upload resumable and keeps later Settings edits from changing queued work.",
+    },
+    {
+        "key": "raw_text_extraction",
+        "label": "Raw Text Extraction",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Extracts raw page text with the selected local extractor, using Marker by default and PyMuPDF as the fallback.",
+        "accomplishes": "Preserves raw page text as the source evidence before cleanup, normalization, search, and enrichment.",
+    },
+    {
+        "key": "document_structure_cleanup",
+        "label": "Structure Cleanup",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Runs deterministic cleanup for repeated headers and footers, page numbers, whitespace, wrapped lines, bullets, drop caps, decorative text art, and obvious front matter noise.",
+        "accomplishes": "Produces cleaner body text while storing removed boilerplate separately for audit and retry.",
+    },
+    {
+        "key": "ocr_fallback",
+        "label": "OCR Fallback",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Runs OCR only for low-text or scanned pages when credentials and the selected preset allow it.",
+        "accomplishes": "Recovers searchable text from pages where normal PDF extraction produced too little body text.",
+    },
+    {
+        "key": "page_text_normalization",
+        "label": "Page Normalization",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Locally normalizes clean pages and escalates only flagged pages to the selected cheap model, subject to the preset cap.",
+        "accomplishes": "Repairs page reading flow without repeatedly sending whole PDFs through cloud models.",
+    },
+    {
+        "key": "structured_tables",
+        "label": "Structured Tables",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Detects table-like regions and stores table text, page anchors, captions, and source evidence separately from narrative body text.",
+        "accomplishes": "Keeps tables searchable and reviewable without blending table layout noise into paragraphs.",
+    },
+    {
+        "key": "visual_asset_extraction",
+        "label": "Visual Assets",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Extracts embedded images, page image regions, vector charts, diagrams, photos, maps, scans, and table-like visual regions as cropped assets.",
+        "accomplishes": "Creates durable figure assets with page geometry, orientation hints, captions, and extraction warnings.",
+    },
+    {
+        "key": "visual_asset_context",
+        "label": "Visual Context",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Links figures and tables to captions, headings, nearby paragraphs, and explicit mentions such as Figure 2 or Table 1.",
+        "accomplishes": "Lets search, summaries, citations, and review surfaces understand where each visual belongs in the document.",
+    },
+    {
+        "key": "bibliography_extraction",
+        "label": "Bibliography",
+        "default_enabled": True,
+        "configurable": True,
+        "description": "Detects references, bibliography, and works-cited sections and stores the document's own reference list in a separate Markdown-compatible Bibliography field.",
+        "accomplishes": "Keeps source reference lists searchable and editable without confusing them with generated APA citation text or project bibliographies.",
+    },
+    {
+        "key": "composition_ledger",
+        "label": "Composition Ledger",
+        "default_enabled": True,
+        "configurable": False,
+        "description": "Records local stage timings, model/provider choices, token and file-context usage, warnings, failures, and estimated or actual costs.",
+        "accomplishes": "Makes the quality/cost tradeoff visible on staged rows, Composition, Budget & Costs, and Concordance evidence.",
+    },
+)
+
+_IMPORT_PROCESSING_BUILT_INS: tuple[dict[str, Any], ...] = (
+    {
+        "id": IMPORT_PROCESSING_BALANCED_ID,
+        "name": "Balanced",
+        "mode": "balanced",
+        "built_in": True,
+        "description": "Default local-first processing with capped cheap model escalation for pages or cropped regions that need help.",
+        "cleanup": {
+            "enabled": True,
+            "deterministic": True,
+            "cloud_escalation": True,
+            "model": "gpt-5.4-mini",
+            "fallback_model": "gemini-3.1-flash-lite",
+            "remove_headers_footers": True,
+            "remove_page_numbers": True,
+            "normalize_whitespace": True,
+            "repair_line_wraps": True,
+            "repair_bullets": True,
+            "repair_drop_caps": True,
+            "remove_text_art": True,
+            "front_matter_noise": True,
+            "page_cap_min": 6,
+            "page_cap_percent": 15,
+        },
+        "ocr": {"enabled": True, "low_text_only": True, "provider": "google_vision", "min_text_characters": 120},
+        "structured_tables": {"enabled": True, "local_detection": True},
+        "bibliography": {"enabled": True, "preserve_italics": True},
+        "visuals": {
+            "enabled": True,
+            "audit_enabled": True,
+            "context_enabled": True,
+            "local_multi_pass": True,
+            "model": "gemini-3.1-flash-lite",
+            "fallback_model": "gpt-5.4-mini",
+            "crop_only": True,
+            "premium_model_allowed": False,
+        },
+        "cost": {"max_cloud_cleanup_pages_min": 6, "max_cloud_cleanup_page_percent": 15, "visual_model_calls": "cropped_regions_only"},
+    },
+    {
+        "id": IMPORT_PROCESSING_STRICT_LOCAL_ID,
+        "name": "Strict Local",
+        "mode": "strict_local",
+        "built_in": True,
+        "description": "No cloud cleanup, no cloud visual gists, and no cloud OCR; keeps deterministic cleanup and local extraction/audit only.",
+        "cleanup": {
+            "enabled": True,
+            "deterministic": True,
+            "cloud_escalation": False,
+            "model": "local",
+            "fallback_model": "local",
+            "remove_headers_footers": True,
+            "remove_page_numbers": True,
+            "normalize_whitespace": True,
+            "repair_line_wraps": True,
+            "repair_bullets": True,
+            "repair_drop_caps": True,
+            "remove_text_art": True,
+            "front_matter_noise": True,
+            "page_cap_min": 0,
+            "page_cap_percent": 0,
+        },
+        "ocr": {"enabled": False, "low_text_only": True, "provider": "none", "min_text_characters": 120},
+        "structured_tables": {"enabled": True, "local_detection": True},
+        "bibliography": {"enabled": True, "preserve_italics": True},
+        "visuals": {
+            "enabled": True,
+            "audit_enabled": True,
+            "context_enabled": True,
+            "local_multi_pass": True,
+            "model": "local",
+            "fallback_model": "local",
+            "crop_only": True,
+            "premium_model_allowed": False,
+        },
+        "cost": {"max_cloud_cleanup_pages_min": 0, "max_cloud_cleanup_page_percent": 0, "visual_model_calls": "none"},
+    },
+    {
+        "id": IMPORT_PROCESSING_DEEP_REVIEW_ID,
+        "name": "Deep Review",
+        "mode": "deep_review",
+        "built_in": True,
+        "description": "Explicit high-quality processing with stronger models, higher caps, OCR fallback, and premium visual/document review allowed.",
+        "cleanup": {
+            "enabled": True,
+            "deterministic": True,
+            "cloud_escalation": True,
+            "model": "gpt-5.4",
+            "fallback_model": "gemini-2.5-flash",
+            "remove_headers_footers": True,
+            "remove_page_numbers": True,
+            "normalize_whitespace": True,
+            "repair_line_wraps": True,
+            "repair_bullets": True,
+            "repair_drop_caps": True,
+            "remove_text_art": True,
+            "front_matter_noise": True,
+            "page_cap_min": 20,
+            "page_cap_percent": 45,
+        },
+        "ocr": {"enabled": True, "low_text_only": True, "provider": "google_vision", "min_text_characters": 120},
+        "structured_tables": {"enabled": True, "local_detection": True},
+        "bibliography": {"enabled": True, "preserve_italics": True},
+        "visuals": {
+            "enabled": True,
+            "audit_enabled": True,
+            "context_enabled": True,
+            "local_multi_pass": True,
+            "model": "gemini-2.5-flash",
+            "fallback_model": "gpt-5.4",
+            "crop_only": True,
+            "premium_model_allowed": True,
+            "premium_model": "gpt-5.5",
+        },
+        "cost": {"max_cloud_cleanup_pages_min": 20, "max_cloud_cleanup_page_percent": 45, "visual_model_calls": "cropped_regions_only"},
+    },
+)
 
 
 def clamp_import_worker_concurrency(value: Any, default: int = MIN_IMPORT_WORKER_CONCURRENCY) -> int:
@@ -108,6 +322,169 @@ def normalize_bool(value: Any, default: bool) -> bool:
     if isinstance(value, int):
         return bool(value)
     return default
+
+
+def normalize_import_processing_preset_id(value: Any, default: str = DEFAULT_IMPORT_PROCESSING_PRESET_ID) -> str:
+    if not isinstance(value, str):
+        return default
+    candidate = PRESET_ID_RE.sub("_", value.strip().lower()).strip("_-")
+    return candidate[:80] or default
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _bounded_percent(value: Any, *, default: int) -> int:
+    return _bounded_int(value, default=default, minimum=0, maximum=100)
+
+
+def _merge_dict(defaults: dict[str, Any], value: Any) -> dict[str, Any]:
+    merged = deepcopy(defaults)
+    if not isinstance(value, dict):
+        return merged
+    for key, incoming in value.items():
+        if isinstance(incoming, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dict(merged[key], incoming)
+        else:
+            merged[key] = incoming
+    return merged
+
+
+def built_in_import_processing_presets() -> list[dict[str, Any]]:
+    return [deepcopy(preset) for preset in _IMPORT_PROCESSING_BUILT_INS]
+
+
+def import_processing_steps() -> list[dict[str, Any]]:
+    return [
+        {
+            **step,
+            "tooltip": f"{step['description']} Accomplishes: {step['accomplishes']}",
+        }
+        for step in IMPORT_PROCESSING_STEPS
+    ]
+
+
+def _preset_by_id(presets: list[dict[str, Any]], preset_id: str) -> dict[str, Any] | None:
+    return next((preset for preset in presets if preset.get("id") == preset_id), None)
+
+
+def _normalize_custom_import_processing_preset(value: Any, *, used_ids: set[str]) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    raw_name = value.get("name")
+    name = " ".join(str(raw_name or "").split())[:120] or "Custom preset"
+    raw_id = value.get("id") or name
+    preset_id = normalize_import_processing_preset_id(raw_id, default="custom")
+    if preset_id in {IMPORT_PROCESSING_BALANCED_ID, IMPORT_PROCESSING_STRICT_LOCAL_ID, IMPORT_PROCESSING_DEEP_REVIEW_ID}:
+        return None
+    if not preset_id.startswith("custom_") and not preset_id.startswith("custom-"):
+        preset_id = f"custom_{preset_id}"
+    base = deepcopy(_IMPORT_PROCESSING_BUILT_INS[0])
+    merged = _merge_dict(base, value)
+    suffix = 2
+    unique_id = preset_id
+    while unique_id in used_ids:
+        unique_id = f"{preset_id}_{suffix}"
+        suffix += 1
+    cleanup = merged.get("cleanup") if isinstance(merged.get("cleanup"), dict) else {}
+    cost = merged.get("cost") if isinstance(merged.get("cost"), dict) else {}
+    visuals = merged.get("visuals") if isinstance(merged.get("visuals"), dict) else {}
+    ocr = merged.get("ocr") if isinstance(merged.get("ocr"), dict) else {}
+    tables = merged.get("structured_tables") if isinstance(merged.get("structured_tables"), dict) else {}
+    bibliography = merged.get("bibliography") if isinstance(merged.get("bibliography"), dict) else {}
+    cleanup_page_cap_min = _bounded_int(
+        cleanup.get("page_cap_min", cost.get("max_cloud_cleanup_pages_min")),
+        default=6,
+        minimum=0,
+        maximum=500,
+    )
+    cleanup_page_cap_percent = _bounded_percent(
+        cleanup.get("page_cap_percent", cost.get("max_cloud_cleanup_page_percent")),
+        default=15,
+    )
+    normalized = {
+        "id": unique_id,
+        "name": name,
+        "mode": str(merged.get("mode") or "custom").strip().lower()[:80] or "custom",
+        "built_in": False,
+        "description": " ".join(str(merged.get("description") or "Custom import processing preset.").split())[:280],
+        "cleanup": {
+            "enabled": normalize_bool(cleanup.get("enabled"), True),
+            "deterministic": normalize_bool(cleanup.get("deterministic"), True),
+            "cloud_escalation": normalize_bool(cleanup.get("cloud_escalation"), True),
+            "model": normalize_model_id(cleanup.get("model"), "gpt-5.4-mini"),
+            "fallback_model": normalize_model_id(cleanup.get("fallback_model"), "gemini-3.1-flash-lite"),
+            "remove_headers_footers": normalize_bool(cleanup.get("remove_headers_footers"), True),
+            "remove_page_numbers": normalize_bool(cleanup.get("remove_page_numbers"), True),
+            "normalize_whitespace": normalize_bool(cleanup.get("normalize_whitespace"), True),
+            "repair_line_wraps": normalize_bool(cleanup.get("repair_line_wraps"), True),
+            "repair_bullets": normalize_bool(cleanup.get("repair_bullets"), True),
+            "repair_drop_caps": normalize_bool(cleanup.get("repair_drop_caps"), True),
+            "remove_text_art": normalize_bool(cleanup.get("remove_text_art"), True),
+            "front_matter_noise": normalize_bool(cleanup.get("front_matter_noise"), True),
+            "page_cap_min": cleanup_page_cap_min,
+            "page_cap_percent": cleanup_page_cap_percent,
+        },
+        "ocr": {
+            "enabled": normalize_bool(ocr.get("enabled"), True),
+            "low_text_only": normalize_bool(ocr.get("low_text_only"), True),
+            "provider": str(ocr.get("provider") or "google_vision").strip().lower()[:80],
+            "min_text_characters": _bounded_int(ocr.get("min_text_characters"), default=120, minimum=0, maximum=2000),
+        },
+        "structured_tables": {
+            "enabled": normalize_bool(tables.get("enabled"), True),
+            "local_detection": normalize_bool(tables.get("local_detection"), True),
+        },
+        "bibliography": {
+            "enabled": normalize_bool(bibliography.get("enabled"), True),
+            "preserve_italics": normalize_bool(bibliography.get("preserve_italics"), True),
+        },
+        "visuals": {
+            "enabled": normalize_bool(visuals.get("enabled"), True),
+            "audit_enabled": normalize_bool(visuals.get("audit_enabled"), True),
+            "context_enabled": normalize_bool(visuals.get("context_enabled"), True),
+            "local_multi_pass": normalize_bool(visuals.get("local_multi_pass"), True),
+            "model": normalize_model_id(visuals.get("model"), "gemini-3.1-flash-lite"),
+            "fallback_model": normalize_model_id(visuals.get("fallback_model"), "gpt-5.4-mini"),
+            "crop_only": normalize_bool(visuals.get("crop_only"), True),
+            "premium_model_allowed": normalize_bool(visuals.get("premium_model_allowed"), False),
+            "premium_model": normalize_model_id(visuals.get("premium_model"), "gpt-5.5"),
+        },
+        "cost": {
+            "max_cloud_cleanup_pages_min": cleanup_page_cap_min,
+            "max_cloud_cleanup_page_percent": cleanup_page_cap_percent,
+            "visual_model_calls": str(cost.get("visual_model_calls") or "cropped_regions_only").strip()[:80],
+        },
+    }
+    used_ids.add(unique_id)
+    return normalized
+
+
+def normalize_import_processing_presets(value: Any) -> list[dict[str, Any]]:
+    presets = built_in_import_processing_presets()
+    used_ids = {preset["id"] for preset in presets}
+    raw_presets = value if isinstance(value, list) else []
+    for raw_preset in raw_presets:
+        preset = _normalize_custom_import_processing_preset(raw_preset, used_ids=used_ids)
+        if preset:
+            presets.append(preset)
+        if len(presets) >= 27:
+            break
+    return presets
+
+
+def import_processing_cloud_page_cap(preset: dict[str, Any], page_count: int) -> int:
+    cleanup = preset.get("cleanup") if isinstance(preset.get("cleanup"), dict) else {}
+    if not normalize_bool(cleanup.get("cloud_escalation"), True):
+        return 0
+    min_pages = _bounded_int(cleanup.get("page_cap_min"), default=6, minimum=0, maximum=500)
+    percent = _bounded_percent(cleanup.get("page_cap_percent"), default=15)
+    return max(min_pages, ceil(max(0, page_count) * percent / 100))
 
 
 def normalize_download_naming_template(value: Any) -> str:
@@ -206,6 +583,41 @@ def get_download_naming_template(db: Session) -> str:
 
 def get_citation_convention(db: Session) -> str:
     return normalize_citation_convention(_get_preference_value(db, CITATION_CONVENTION_KEY))
+
+
+def get_second_pass_processing_enabled(db: Session) -> bool:
+    return normalize_bool(_get_preference_value(db, SECOND_PASS_PROCESSING_ENABLED_KEY), get_settings().second_pass_processing_enabled)
+
+
+def get_import_processing_presets(db: Session) -> list[dict[str, Any]]:
+    return normalize_import_processing_presets(_get_preference_value(db, IMPORT_PROCESSING_PRESETS_KEY))
+
+
+def get_default_import_processing_preset_id(db: Session) -> str:
+    presets = get_import_processing_presets(db)
+    preset_ids = {preset["id"] for preset in presets}
+    candidate = normalize_import_processing_preset_id(
+        _get_preference_value(db, DEFAULT_IMPORT_PROCESSING_PRESET_KEY),
+        DEFAULT_IMPORT_PROCESSING_PRESET_ID,
+    )
+    return candidate if candidate in preset_ids else DEFAULT_IMPORT_PROCESSING_PRESET_ID
+
+
+def get_import_processing_preset(db: Session, preset_id: str | None = None) -> dict[str, Any]:
+    presets = get_import_processing_presets(db)
+    selected_id = normalize_import_processing_preset_id(preset_id, get_default_import_processing_preset_id(db))
+    preset = _preset_by_id(presets, selected_id) or _preset_by_id(presets, DEFAULT_IMPORT_PROCESSING_PRESET_ID) or presets[0]
+    return deepcopy(preset)
+
+
+def import_processing_snapshot(db: Session, preset_id: str | None = None) -> dict[str, Any]:
+    preset = get_import_processing_preset(db, preset_id)
+    return {
+        **preset,
+        "snapshot_version": 1,
+        "snapshot_at": utc_now().isoformat(),
+        "second_pass_enabled": get_second_pass_processing_enabled(db),
+    }
 
 
 def author_display_name(author: Any) -> str:
@@ -381,6 +793,7 @@ def get_active_storage_settings() -> dict[str, Any]:
 def get_app_preferences(db: Session) -> dict[str, Any]:
     analysis_models = get_analysis_models(db)
     gcs_bucket = get_gcs_bucket(db)
+    import_processing_presets = get_import_processing_presets(db)
     return {
         "import_worker_concurrency": get_import_worker_concurrency(db),
         "recommended_import_worker_concurrency": RECOMMENDED_IMPORT_WORKER_CONCURRENCY,
@@ -397,6 +810,10 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "analysis_model_tasks": task_payloads(analysis_models),
         "model_options": model_options(analysis_models),
         "model_pricing": model_pricing_status(db),
+        "import_processing_presets": import_processing_presets,
+        "default_import_processing_preset_id": get_default_import_processing_preset_id(db),
+        "import_processing_steps": import_processing_steps(),
+        "second_pass_processing_enabled": get_second_pass_processing_enabled(db),
         **get_google_service_account_status(db),
     }
 
@@ -413,6 +830,9 @@ def update_app_preferences(
     citation_convention: str | None = None,
     gcs_bucket: str | None = None,
     analysis_models: dict[str, str] | None = None,
+    import_processing_presets: list[dict[str, Any]] | None = None,
+    default_import_processing_preset_id: str | None = None,
+    second_pass_processing_enabled: bool | None = None,
 ) -> dict[str, Any]:
     if import_worker_concurrency is not None:
         _set_preference_value(
@@ -443,6 +863,18 @@ def update_app_preferences(
                 _analysis_model_preference_key(task.key),
                 normalize_model_id(analysis_models.get(task.key), default_model_for_task(task.key)),
             )
+    if import_processing_presets is not None:
+        normalized_presets = normalize_import_processing_presets(import_processing_presets)
+        custom_presets = [preset for preset in normalized_presets if not preset.get("built_in")]
+        _set_preference_value(db, IMPORT_PROCESSING_PRESETS_KEY, custom_presets)
+    if default_import_processing_preset_id is not None:
+        presets = get_import_processing_presets(db)
+        candidate = normalize_import_processing_preset_id(default_import_processing_preset_id)
+        if not _preset_by_id(presets, candidate):
+            candidate = DEFAULT_IMPORT_PROCESSING_PRESET_ID
+        _set_preference_value(db, DEFAULT_IMPORT_PROCESSING_PRESET_KEY, candidate)
+    if second_pass_processing_enabled is not None:
+        _set_preference_value(db, SECOND_PASS_PROCESSING_ENABLED_KEY, bool(second_pass_processing_enabled))
     return get_app_preferences(db)
 
 

@@ -143,7 +143,8 @@ def test_process_document_figures_stores_assets(monkeypatch, tmp_path):
         db.commit()
         db.refresh(document)
 
-        assert result == {"figures": 1}
+        assert result["figures"] == 1
+        assert result["audit_warnings"] == []
         assert len(document.figures) == 1
         assert document.figures[0].asset_uri
         assert document.figures[0].figure_label == "Figure 1"

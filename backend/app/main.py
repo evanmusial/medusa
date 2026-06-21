@@ -177,6 +177,7 @@ from app.services.preferences import (
     get_analysis_models,
     get_app_preferences,
     get_download_naming_template,
+    import_processing_snapshot,
     render_download_filename,
     store_google_service_account,
     update_app_preferences,
@@ -842,6 +843,7 @@ RESTORABLE_DOCUMENT_FIELDS = (
     "source_url",
     "abstract",
     "rich_summary",
+    "bibliography",
     "apa_citation",
     "apa_citation_model",
     "apa_citation_source",
@@ -1123,6 +1125,9 @@ def patch_preferences(
         citation_convention=payload.citation_convention,
         gcs_bucket=payload.gcs_bucket,
         analysis_models=payload.analysis_models,
+        import_processing_presets=payload.import_processing_presets,
+        default_import_processing_preset_id=payload.default_import_processing_preset_id,
+        second_pass_processing_enabled=payload.second_pass_processing_enabled,
     )
     db.commit()
     return preferences
@@ -3240,6 +3245,7 @@ def reset_document_for_overwrite(db: Session, document: Document) -> None:
     document.source_url = None
     document.abstract = None
     document.rich_summary = None
+    document.bibliography = None
     document.apa_citation = None
     document.apa_citation_model = None
     document.apa_citation_source = None
@@ -3273,6 +3279,7 @@ def reset_document_for_overwrite(db: Session, document: Document) -> None:
             "source_url",
             "abstract",
             "rich_summary",
+            "bibliography",
             "apa_citation",
             "apa_in_text_citation",
             "citation_status",
@@ -3372,12 +3379,14 @@ async def create_import_batch(
     read_status: Annotated[str, Form()] = "unread",
     attributes: Annotated[str | None, Form()] = None,
     duplicate_strategy: Annotated[str, Form()] = "skip",
+    processing_preset_id: Annotated[str | None, Form()] = None,
 ) -> ImportBatch:
     duplicate_strategy = validate_duplicate_strategy(duplicate_strategy)
     parsed_domain_ids = parse_json_form(domain_ids, [])
     parsed_tag_ids = parse_json_form(tag_ids, [])
     parsed_project_ids = parse_json_form(project_ids, [])
     parsed_attributes = parse_json_form(attributes, {})
+    preset_snapshot = import_processing_snapshot(db, processing_preset_id)
     prepared_files = []
     for upload in files:
         data = await upload.read()
@@ -3396,6 +3405,10 @@ async def create_import_batch(
             "priority": priority,
             "read_status": read_status,
             "attributes": parsed_attributes,
+            "processing_preset_id": preset_snapshot["id"],
+            "processing_preset_name": preset_snapshot["name"],
+            "processing_preset_mode": preset_snapshot["mode"],
+            "processing_preset_snapshot": preset_snapshot,
         },
     )
     db.add(batch)
@@ -3479,6 +3492,7 @@ async def create_import_batch(
                 "basis": "pending_exemplar_cost_model",
             },
             "import_defaults": batch.shared_defaults,
+            "import_processing_preset": preset_snapshot,
             "duplicate_import": {
                 "strategy": duplicate_strategy,
                 "matched_document_ids": duplicate_source_ids,
@@ -3505,6 +3519,11 @@ async def create_import_batch(
             "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
             "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
             "model_preferences": model_preferences,
+            "processing_preset": {
+                "id": preset_snapshot["id"],
+                "name": preset_snapshot["name"],
+                "mode": preset_snapshot["mode"],
+            },
             "estimated_at": utc_now().isoformat(),
         }
         document.metadata_evidence = {**(document.metadata_evidence or {}), "upload_cost_estimate": upload_estimate}
@@ -3519,6 +3538,11 @@ async def create_import_batch(
             metadata={
                 "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
                 "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+                "processing_preset": {
+                    "id": preset_snapshot["id"],
+                    "name": preset_snapshot["name"],
+                    "mode": preset_snapshot["mode"],
+                },
             },
         )
         batch_documents_by_checksum[checksum] = document
@@ -3616,6 +3640,25 @@ def document_persisted_cost_estimate(document: Document | None) -> tuple[float, 
         page_count = document_estimated_page_count(document)
     basis = str(estimate.get("basis") or "persisted_estimate")
     return round(estimated_cost, 6), basis, page_count
+
+
+def document_import_processing_preset(document: Document | None, batch: ImportBatch | None = None) -> dict[str, Any] | None:
+    if document:
+        evidence = document.metadata_evidence or {}
+        preset = evidence.get("import_processing_preset")
+        if isinstance(preset, dict):
+            return preset
+    shared_defaults = batch.shared_defaults if batch else None
+    if isinstance(shared_defaults, dict):
+        preset = shared_defaults.get("processing_preset_snapshot")
+        if isinstance(preset, dict):
+            return preset
+        preset_id = shared_defaults.get("processing_preset_id")
+        preset_name = shared_defaults.get("processing_preset_name")
+        preset_mode = shared_defaults.get("processing_preset_mode")
+        if preset_id or preset_name:
+            return {"id": preset_id or "balanced", "name": preset_name or str(preset_id), "mode": preset_mode or "balanced"}
+    return None
 
 
 def import_estimate_calibration(db: Session) -> tuple[float, int]:
@@ -3827,7 +3870,15 @@ def import_job_step_model(current_step: str, model_preferences: dict[str, str]) 
         return model_preferences.get(MODEL_RAW_TEXT_EXTRACTION)
     if step == "normalizing_pages" or step.startswith("normalizing_page_"):
         return model_preferences.get(MODEL_PAGE_TEXT_NORMALIZATION)
-    if step in {"extracted", "extracting_figures", "figures", "cleaning_cache", "duplicate_skipped"}:
+    if step in {
+        "cleaning_structure",
+        "extracting_bibliography",
+        "extracted",
+        "extracting_figures",
+        "figures",
+        "cleaning_cache",
+        "duplicate_skipped",
+    }:
         return "local"
     if step in {"enriching", "enriched"}:
         models = [
@@ -3884,6 +3935,7 @@ def import_job_out(
         display_basis = estimate_basis
     event_title = import_job_event_value(job, "title", job.current_step) or import_job_event_value(job, "title")
     event_error = import_job_event_message(job, job.current_step) or import_job_event_message(job)
+    processing_preset = document_import_processing_preset(job.document, job.batch)
     last_error = job.last_error
     if job.status == "failed" and not job.document_id and job.current_step == "download_failed":
         last_error = event_error or job.last_error
@@ -3901,6 +3953,9 @@ def import_job_out(
         "estimated_cost_usd": round(display_cost, 6),
         "estimated_cost_basis": display_basis,
         "estimated_cost_page_count": estimate_page_count,
+        "processing_preset_id": processing_preset.get("id") if processing_preset else None,
+        "processing_preset_name": processing_preset.get("name") if processing_preset else None,
+        "processing_preset_mode": processing_preset.get("mode") if processing_preset else None,
         "attempts": job.attempts,
         "last_error": last_error or (event_error if job.status == "failed" else None),
         "locked_at": job.locked_at,

@@ -333,6 +333,7 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     source_url: Mapped[str | None] = mapped_column(Text)
     abstract: Mapped[str | None] = mapped_column(Text)
     rich_summary: Mapped[str | None] = mapped_column(Text)
+    bibliography: Mapped[str | None] = mapped_column(Text)
     apa_citation: Mapped[str | None] = mapped_column(Text)
     apa_citation_model: Mapped[str | None] = mapped_column(String(160))
     apa_citation_source: Mapped[str | None] = mapped_column(String(40))
