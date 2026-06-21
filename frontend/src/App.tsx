@@ -219,8 +219,12 @@ type SettingsSaveHandler = () => Promise<boolean>;
 type SelectMenuOption = { id: string; name: string };
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
+const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
+const METADATA_MODEL_KEY = "metadata";
 const SUMMARY_MODEL_KEY = "summary";
 const TAG_SUGGESTIONS_MODEL_KEY = "keywords_topics";
+const PAGE_TEXT_NORMALIZATION_MODEL_KEY = "page_text_normalization";
+const TEXT_CHUNK_ENCODING_MODEL_KEY = "text_chunk_encoding";
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
 const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
@@ -1146,6 +1150,102 @@ function updatePresetSection(
   patch: Record<string, unknown>,
 ): ImportProcessingPreset {
   return { ...preset, [section]: { ...(preset[section] || {}), ...patch } };
+}
+
+function modelRouteLabel(primary: string, fallback?: string | null) {
+  const primaryLabel = modelDisplayName(primary || "local");
+  if (!fallback || fallback === primary) return primaryLabel;
+  return `${primaryLabel} -> ${modelDisplayName(fallback)}`;
+}
+
+function importProcessingRouteForStep(
+  stepKey: string,
+  preset: ImportProcessingPreset | undefined,
+  preferences: AppPreferences | undefined,
+) {
+  const cleanupModel = preset ? presetString(preset, "cleanup", "model", "gpt-5.4-mini") : "gpt-5.4-mini";
+  const cleanupFallback = preset ? presetString(preset, "cleanup", "fallback_model", "gemini-3.1-flash-lite") : "gemini-3.1-flash-lite";
+  const cleanupEscalation = preset ? presetBoolean(preset, "cleanup", "cloud_escalation", true) : true;
+  const cleanupCapMin = preset ? presetNumber(preset, "cleanup", "page_cap_min", 6) : 6;
+  const cleanupCapPercent = preset ? presetNumber(preset, "cleanup", "page_cap_percent", 15) : 15;
+  const visualModel = preset ? presetString(preset, "visuals", "model", "gemini-3.1-flash-lite") : "gemini-3.1-flash-lite";
+  const visualFallback = preset ? presetString(preset, "visuals", "fallback_model", "gpt-5.4-mini") : "gpt-5.4-mini";
+  const visualCallPolicy = preset ? presetString(preset, "cost", "visual_model_calls", "cropped_regions_only") : "cropped_regions_only";
+  const visualPremiumAllowed = preset ? presetBoolean(preset, "visuals", "premium_model_allowed", false) : false;
+  const visualPremiumModel = preset ? presetString(preset, "visuals", "premium_model", "gpt-5.5") : "gpt-5.5";
+  const ocrProvider = preset ? presetString(preset, "ocr", "provider", "google_vision") : "google_vision";
+  const ocrLowTextOnly = preset ? presetBoolean(preset, "ocr", "low_text_only", true) : true;
+  const ocrThreshold = preset ? presetNumber(preset, "ocr", "min_text_characters", 120) : 120;
+  const rawExtractor = selectedAnalysisModel(preferences, RAW_TEXT_EXTRACTION_MODEL_KEY, "marker");
+  const metadataModel = selectedAnalysisModel(preferences, METADATA_MODEL_KEY, "gpt-5.5");
+  const summaryModel = selectedAnalysisModel(preferences, SUMMARY_MODEL_KEY, "gpt-5.4");
+  const citationModel = selectedAnalysisModel(preferences, APA_CITATION_MODEL_KEY, "gpt-5.5");
+  const tagModel = selectedAnalysisModel(preferences, TAG_SUGGESTIONS_MODEL_KEY, "gpt-5.4-mini");
+  const embeddingModel = selectedAnalysisModel(preferences, TEXT_CHUNK_ENCODING_MODEL_KEY, "text-embedding-3-small");
+
+  if (stepKey === "stage_upload") {
+    return { route: "Local staging", model: "No model", scope: "Whole file; checksum, duplicate check, storage, queue snapshot." };
+  }
+  if (stepKey === "raw_text_extraction") {
+    return { route: "Shared extractor default", model: modelDisplayName(rawExtractor), scope: "All pages; PyMuPDF remains the local fallback." };
+  }
+  if (stepKey === "document_structure_cleanup") {
+    return { route: "Deterministic local cleanup", model: "No cloud model", scope: "All pages; preserves removed boilerplate as evidence." };
+  }
+  if (stepKey === "ocr_fallback") {
+    const model = ocrProvider === "none" ? "No OCR provider" : ocrProvider.replaceAll("_", " ");
+    const scope = ocrLowTextOnly ? `Low-text pages below ${ocrThreshold} characters.` : "All pages selected by the preset.";
+    return { route: "Provider OCR fallback", model, scope };
+  }
+  if (stepKey === "page_text_normalization") {
+    if (!cleanupEscalation || cleanupModel === "local") {
+      return { route: "Local normalization only", model: "No cloud model", scope: "All pages; no flagged-page escalation." };
+    }
+    return {
+      route: "Flagged-page escalation",
+      model: modelRouteLabel(cleanupModel, cleanupFallback),
+      scope: `${cleanupCapMin} pages or ${cleanupCapPercent}% cap, whichever is larger.`,
+    };
+  }
+  if (stepKey === "structured_tables") {
+    return { route: "Local structure detection", model: "No cloud model", scope: "Table-like regions and page anchors." };
+  }
+  if (stepKey === "visual_asset_extraction") {
+    return { route: "Local multi-pass crop extraction", model: "PyMuPDF renderer", scope: "Images, vector regions, scans, charts, maps, tables." };
+  }
+  if (stepKey === "visual_asset_context") {
+    if (visualCallPolicy === "none" || visualModel === "local") {
+      return { route: "Local caption/context linking", model: "No visual model calls", scope: "Captions, headings, nearby paragraphs, explicit mentions." };
+    }
+    const premium = visualPremiumAllowed ? `; premium ${modelDisplayName(visualPremiumModel)} allowed` : "";
+    return {
+      route: "Cropped-region visual context",
+      model: `${modelRouteLabel(visualModel, visualFallback)}${premium}`,
+      scope: "Cropped regions only; never repeated whole-PDF visual calls.",
+    };
+  }
+  if (stepKey === "bibliography_extraction") {
+    return { route: "Local reference-section extraction", model: "PyMuPDF spans", scope: "References/Bibliography/Works Cited; preserves italics when span evidence exists." };
+  }
+  if (stepKey === "metadata") {
+    return { route: "Document intelligence", model: modelDisplayName(metadataModel), scope: "Title, authors, year, DOI, venue, abstract evidence." };
+  }
+  if (stepKey === "summary") {
+    return { route: "Document intelligence", model: modelDisplayName(summaryModel), scope: "Technical paragraph summary from extracted text." };
+  }
+  if (stepKey === "apa_citation") {
+    return { route: "DOI/Crossref first; model fallback", model: modelDisplayName(citationModel), scope: "Reviewable APA candidate only when evidence cannot verify locally." };
+  }
+  if (stepKey === "keywords_topics") {
+    return { route: "Tag suggestion scorer", model: modelDisplayName(tagModel), scope: "Tag candidates plus existing-tag manifest and governance scoring." };
+  }
+  if (stepKey === "text_chunk_encoding") {
+    return { route: "Vector indexing", model: modelDisplayName(embeddingModel), scope: "Text chunks for semantic search." };
+  }
+  if (stepKey === "composition_ledger") {
+    return { route: "Usage and provenance ledger", model: "No model", scope: "Records provider, model, tokens, files, duration, status, and cost." };
+  }
+  return { route: "Configured import step", model: "See preset", scope: "Uses this preset snapshot for newly staged jobs." };
 }
 
 function inputEventShiftKey(event: ChangeEvent<HTMLInputElement>) {
@@ -10444,6 +10544,11 @@ function SettingsView({
     if (stepKey === "bibliography_extraction") return presetBoolean(preset, "bibliography", "enabled", true);
     return true;
   };
+  const importProcessingFlowRows = importProcessingSteps.map((step) => ({
+    ...step,
+    enabled: stepEnabled(step.key),
+    route: importProcessingRouteForStep(step.key, selectedImportProcessingPreset, preferences),
+  }));
   const preferenceDirty = Boolean(
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
@@ -11160,32 +11265,39 @@ function SettingsView({
         <div className="import-processing-step-table">
           <div className="import-processing-step-row header">
             <span>Step</span>
-            <span>Status</span>
-            <span>What happens</span>
+            <span>Route</span>
+            <span>Model</span>
+            <span>Scope</span>
           </div>
-          {importProcessingSteps.map((step) => (
+          {importProcessingFlowRows.map((step) => (
             <div className="import-processing-step-row" data-tooltip={step.tooltip} key={step.key}>
               <span>
                 <strong>{step.label}</strong>
                 <small>{step.key.replaceAll("_", " ")}</small>
               </span>
-              <StatusPill value={stepEnabled(step.key) ? "Enabled" : "Off"} tone={stepEnabled(step.key) ? "good" : "neutral"} />
-              <span>{step.description}</span>
+              <span>
+                <StatusPill value={step.enabled ? "Enabled" : "Off"} tone={step.enabled ? "good" : "neutral"} />
+                <small>{step.route.route}</small>
+              </span>
+              <span className="import-route-model">{step.enabled ? step.route.model : "Not used"}</span>
+              <span>
+                {step.route.scope}
+                <small>{step.accomplishes}</small>
+              </span>
             </div>
           ))}
         </div>
-      </div>
-      <div className="model-settings-panel">
+        <div className="model-settings-panel import-shared-model-panel">
         <div className="panel-title-row">
           <div>
-            <h2>Models</h2>
-            <span>{preferences?.analysis_model_tasks.length || 8} document-analysis tasks</span>
+            <h2>Shared Model Defaults</h2>
+            <span>{preferences?.analysis_model_tasks.length || 8} import and Concordance tasks</span>
           </div>
           <Sparkles size={20} />
         </div>
         <div className="models-note">
           <Info size={15} />
-          <span>Changing a model affects new work. Run Concordance for older documents that need matching analysis.</span>
+          <span>These defaults feed the import-flow rows above whenever a step is not controlled directly by the selected preset.</span>
         </div>
         <div className="model-task-grid">
           {(preferences?.analysis_model_tasks || []).map((task) => (
@@ -11239,6 +11351,7 @@ function SettingsView({
             Model pricing is more than {modelPricing.stale_after_days} days old. Refresh before cost-sensitive imports or Concordance runs.
           </p>
         ) : null}
+        </div>
       </div>
       <div className="openai-usage-panel">
         <div className="panel-title-row">

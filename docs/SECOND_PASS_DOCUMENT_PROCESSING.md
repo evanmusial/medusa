@@ -196,11 +196,17 @@ Each step row includes:
 
 - label
 - enabled state when applicable
-- model/provider control when applicable
+- route and model/provider that will be used by the selected preset
 - core parameter controls
 - default value
 - current preset value
 - tooltip explaining exactly what the step does and what it accomplishes
+
+The broader document-analysis model defaults are displayed inside Import
+Processing as shared defaults, not as an unrelated Settings island. The flow
+table shows where each selected shared default is used: raw extraction,
+metadata, summary, APA fallback, tag suggestions, page normalization, chunk
+encoding, and related Concordance reruns.
 
 Required configurable values:
 

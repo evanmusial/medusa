@@ -23,7 +23,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Implement second-pass import processing on `codex/second-pass-document-processing`.
   - Acceptance: `docs/SECOND_PASS_DOCUMENT_PROCESSING.md`, `docs/ARCHITECTURE.md`, and this TODO ledger are committed before runtime code begins; the branch keeps second-pass work isolated; built-in Balanced/Strict Local/Deep Review presets exist; an emergency disable path can return imports to the current pipeline; final verification includes backend tests, frontend build, and app health.
 
-- [ ] Add Settings Import Processing presets and step controls.
+- [x] Add Settings Import Processing presets and step controls.
   - Acceptance: Settings has an Import Processing section with every import step, enabled state where applicable, model/provider controls where applicable, core parameters, sensible defaults, and tooltips explaining exactly what happens and what each step accomplishes; built-in presets are read-only but duplicable; user presets can be created, renamed, duplicated, edited, deleted, and set as default; Save All persists presets, default preset, caps, thresholds, OCR settings, cleanup toggles, and visual settings.
 
 - [ ] Add Import preset selection and durable preset snapshotting.
