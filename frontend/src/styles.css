@@ -534,18 +534,6 @@ textarea {
   gap: 6px;
 }
 
-.build-version {
-  align-self: center;
-  margin-right: 4px;
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 1.1;
-  letter-spacing: 0;
-  white-space: nowrap;
-}
-
 .header-work-slot {
   width: clamp(430px, 42vw, 720px);
   min-width: 430px;
@@ -6854,10 +6842,6 @@ pre {
     width: 100%;
     justify-self: stretch;
     justify-content: flex-start;
-  }
-
-  .build-version {
-    font-size: 12px;
   }
 
   .library-grid .resize-handle {

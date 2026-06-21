@@ -2464,9 +2464,6 @@ function Header({
       </label>
       <div className="topbar-actions">
         <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
-        <span className="build-version" title={`Medusa build ${MEDUSA_BUILD_VERSION}`}>
-          {MEDUSA_BUILD_VERSION}
-        </span>
         <button
           className="icon-button"
           data-tooltip={theme === "day" ? "Switch Medusa to night mode." : "Switch Medusa to day mode."}
