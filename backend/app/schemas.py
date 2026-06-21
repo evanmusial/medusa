@@ -578,6 +578,16 @@ class DoiStashOut(ApiModel):
         return decode_html_entity_text(value)
 
 
+class DoiStashImportOut(BaseModel):
+    stash: DoiStashOut
+    batch_id: str
+    queued_count: int
+    skipped_existing_count: int
+    unavailable_count: int
+    failed_count: int
+    message: str | None = None
+
+
 class ImportDuplicateDocumentOut(BaseModel):
     id: str
     title: str

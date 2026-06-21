@@ -30,6 +30,7 @@ import type {
   DocumentTextScrubPayload,
   DocumentUpdatePayload,
   DoiStash,
+  DoiStashImportResult,
   DoiStashPayload,
   Domain,
   DomainDeleteResult,
@@ -219,6 +220,7 @@ export const api = {
   createDoiStash: (body: DoiStashPayload) =>
     request<DoiStash>("/api/doi-stashes", { method: "POST", body: JSON.stringify(body) }),
   deleteDoiStash: (id: string) => request<{ status: string }>(`/api/doi-stashes/${id}`, { method: "DELETE" }),
+  importDoiStash: (id: string) => request<DoiStashImportResult>(`/api/doi-stashes/${id}/import`, { method: "POST" }),
   uploadDoiStashPdf: (id: string, file: File) => {
     const form = new FormData();
     form.append("file", file);

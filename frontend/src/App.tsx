@@ -2099,6 +2099,12 @@ function useClipboardNotice(resetMs = 1600) {
   return { copiedKey, copyToClipboard };
 }
 
+const SCI_HUB_LOOKUP_URL = "https://sci-hub.box/";
+
+function sciHubDoiUrl(doi: string) {
+  return `${SCI_HUB_LOOKUP_URL}${encodeURI(doi.trim())}`;
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(<u>.*?<\/u>|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
@@ -6831,9 +6837,12 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
   const [draggingStashId, setDraggingStashId] = useState<string | null>(null);
   const [uploadingStashId, setUploadingStashId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const uploadFeedback = useAsyncActionFeedbackMap();
+  const importFeedback = useAsyncActionFeedbackMap();
   const removeFeedback = useAsyncActionFeedbackMap();
+  const [importingStashId, setImportingStashId] = useState<string | null>(null);
   const sortedStashes = useMemo(() => {
     const direction = sortDirection === "asc" ? 1 : -1;
     return [...stashes].sort((left, right) => {
@@ -6896,6 +6905,40 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
     },
   });
 
+  const importDoi = useMutation({
+    mutationFn: (stash: DoiStash) => api.importDoiStash(stash.id),
+    onMutate: (stash) => {
+      setImportingStashId(stash.id);
+      setNotice(`Resolving open PDF for ${stash.doi}`);
+    },
+    onSuccess: (result, stash) => {
+      const message =
+        result.queued_count > 0
+          ? `Queued DOI import for ${stash.doi}`
+          : result.skipped_existing_count > 0
+            ? `Matched ${stash.doi} to an existing document`
+            : result.message || `No open PDF found for ${stash.doi}`;
+      if (result.queued_count > 0 || result.skipped_existing_count > 0) {
+        importFeedback.showSuccess(stash.id);
+      } else {
+        importFeedback.showError(stash.id, message);
+      }
+      setNotice(message);
+      void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error, stash) => {
+      const message = actionFailureMessage("Could not import DOI", error);
+      importFeedback.showError(stash.id, message);
+      setNotice(message);
+    },
+    onSettled: () => {
+      setImportingStashId(null);
+    },
+  });
+
   const chooseSort = (key: StashSortKey) => {
     if (key === sortKey) {
       setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
@@ -6946,6 +6989,9 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
           {sortedStashes.map((stash) => {
             const inputId = `stash-upload-${stash.id}`;
             const busy = uploadingStashId === stash.id;
+            const importBusy = importingStashId === stash.id;
+            const importUnavailable = stash.status === "import_queued" || stash.status === "imported";
+            const doiCopied = copiedKey === `stash-doi-${stash.id}`;
             return (
               <article key={stash.id} className="stash-row">
                 <div className="stash-main">
@@ -6959,6 +7005,44 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                   </span>
                 </div>
                 <div className="stash-actions">
+                  <button
+                    className={`secondary-button compact stash-copy-action${doiCopied ? " copy-acknowledged" : ""}`}
+                    data-tooltip="Copy this stashed DOI to the clipboard."
+                    onClick={() => void copyToClipboard(`stash-doi-${stash.id}`, stash.doi)}
+                    type="button"
+                  >
+                    {doiCopied ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
+                    DOI
+                  </button>
+                  <a
+                    className="secondary-button compact stash-copy-action"
+                    data-tooltip="Open Sci-Hub for this DOI in a new window."
+                    href={sciHubDoiUrl(stash.doi)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Search size={14} />
+                    Sci-Hub
+                  </a>
+                  <AsyncActionSlot busy={importBusy} feedback={importFeedback.feedbackFor(stash.id)} label="DOI import in progress">
+                    <button
+                      className={asyncFeedbackClass("secondary-button compact", importFeedback.feedbackFor(stash.id), importBusy)}
+                      data-disabled-reason={
+                        importDoi.isPending
+                          ? "a DOI import request is already running."
+                          : stash.status === "import_queued"
+                            ? "this DOI stash already has an import queued or running."
+                            : "this DOI stash is already matched to an imported document."
+                      }
+                      data-tooltip="Resolve this DOI through open-PDF metadata sources and queue the PDF through the normal import pipeline when available."
+                      disabled={importDoi.isPending || importUnavailable}
+                      onClick={() => importDoi.mutate(stash)}
+                      type="button"
+                    >
+                      <Download className={importBusy ? "spin" : ""} size={14} />
+                      Import DOI
+                    </button>
+                  </AsyncActionSlot>
                   <input
                     id={inputId}
                     className="hidden-file-input"

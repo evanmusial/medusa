@@ -89,6 +89,7 @@ from app.schemas import (
     DocumentRecommendationRefreshOut,
     DocumentTextScrub,
     DoiStashCreate,
+    DoiStashImportOut,
     DoiStashOut,
     DocumentSummary,
     DomainCreate,
@@ -205,6 +206,7 @@ from app.services.recommendations import (
     doi_url,
     list_document_recommendations,
     normalize_doi,
+    queue_doi_stash_open_pdf_import,
     queue_recommendation_imports,
     refresh_document_recommendations,
 )
@@ -2637,6 +2639,24 @@ def delete_doi_stash(
     stash.status = "removed"
     db.commit()
     return {"status": "ok"}
+
+
+@app.post("/api/doi-stashes/{stash_id}/import", response_model=DoiStashImportOut)
+def import_doi_stash_pdf(
+    stash_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DoiStashImportOut:
+    stash = doi_stash_query(db).filter(DoiStash.id == stash_id).one_or_none()
+    if not stash:
+        raise HTTPException(status_code=404, detail="DOI stash not found")
+    sync_doi_stash_import_status(stash)
+    if stash.status == "import_queued":
+        raise HTTPException(status_code=409, detail="This DOI stash already has an import queued or running")
+    result = queue_doi_stash_open_pdf_import(db, stash)
+    db.commit()
+    db.refresh(stash)
+    return DoiStashImportOut(stash=doi_stash_out(stash), **result)
 
 
 @app.post("/api/doi-stashes/{stash_id}/upload", response_model=DoiStashOut)

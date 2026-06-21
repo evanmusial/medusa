@@ -14,7 +14,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
-from app.models import Document, DocumentRecommendation, ImportBatch, ImportJob, ProcessingEvent, utc_now
+from app.models import Document, DocumentRecommendation, DoiStash, ImportBatch, ImportJob, ProcessingEvent, utc_now
 from app.services.document_cache import document_cache_path, document_cache_root, register_document_cache
 from app.services.document_visibility import filter_library_visible_documents, library_visible_document_filter
 from app.services.processing import refresh_import_batch_progress
@@ -324,6 +324,189 @@ def queue_recommendation_imports(
     return {"batch_id": batch.id, **counts}
 
 
+def resolve_open_pdf_candidate_for_doi(
+    doi: str,
+    *,
+    title: str | None = None,
+    source_url: str | None = None,
+    source_provider: str | None = None,
+) -> RecommendationCandidate | None:
+    normalized = normalize_doi(doi)
+    if not normalized:
+        return None
+    candidates: dict[str, RecommendationCandidate] = {}
+    _merge_candidate(
+        candidates,
+        RecommendationCandidate(
+            title=title or normalized,
+            provider=source_provider or "doi_stash",
+            relation="doi_lookup",
+            doi=normalized,
+            source_url=source_url or doi_url(normalized),
+            raw_metadata={"provider": source_provider or "doi_stash", "relation": "doi_lookup", "doi": normalized},
+        ),
+    )
+    for resolver in (_fetch_openalex_doi_candidate, _fetch_semantic_scholar_doi_candidate, _fetch_crossref_doi_candidate):
+        try:
+            if candidate := resolver(normalized):
+                _merge_candidate(candidates, candidate)
+        except Exception:
+            continue
+    for _name, enricher in _enabled_enrichers():
+        try:
+            for candidate in enricher(list(candidates.values()), 1):
+                _merge_candidate(candidates, candidate)
+        except Exception:
+            continue
+    pdf_candidates = [candidate for candidate in candidates.values() if candidate.pdf_url]
+    if not pdf_candidates:
+        return None
+    return sorted(pdf_candidates, key=_candidate_pdf_priority, reverse=True)[0]
+
+
+def queue_doi_stash_open_pdf_import(db: Session, stash: DoiStash) -> dict[str, Any]:
+    now = utc_now()
+    batch = ImportBatch(
+        label=f"Stash DOI: {stash.doi}",
+        total_files=1,
+        shared_defaults={
+            "source": "doi_stash_doi_import",
+            "doi_stash_id": stash.id,
+            "doi": stash.doi,
+        },
+    )
+    db.add(batch)
+    db.flush()
+
+    counts = {
+        "queued_count": 0,
+        "skipped_existing_count": 0,
+        "unavailable_count": 0,
+        "failed_count": 0,
+    }
+    candidate = resolve_open_pdf_candidate_for_doi(
+        stash.doi,
+        title=stash.title,
+        source_url=stash.source_url,
+        source_provider=stash.source_provider,
+    )
+    if not candidate or not candidate.pdf_url:
+        message = "No open PDF URL was available from DOI resolvers."
+        _add_doi_stash_import_event(
+            db,
+            batch=batch,
+            stash=stash,
+            step="download_unavailable",
+            reason=message,
+        )
+        _remember_doi_stash_import_attempt(stash, status="unavailable", message=message, candidate=candidate, now=now)
+        refresh_import_batch_progress(db, batch)
+        counts["unavailable_count"] = 1
+        return {"batch_id": batch.id, "message": message, **counts}
+
+    _remember_doi_stash_import_attempt(stash, status="resolving", message=None, candidate=candidate, now=now)
+    try:
+        data, content_type = _download_pdf(candidate.pdf_url)
+        checksum = hashlib.sha256(data).hexdigest()
+        filename = _candidate_filename(candidate)
+        duplicate = _first_active_checksum_match(db, checksum)
+        if duplicate:
+            job = _add_doi_stash_import_event(
+                db,
+                batch=batch,
+                stash=stash,
+                step="checksum_duplicate",
+                reason="Downloaded PDF matched an existing Medusa checksum.",
+                candidate=candidate,
+                document_id=duplicate.id,
+            )
+            stash.imported_document_id = duplicate.id
+            stash.import_job_id = job.id
+            stash.status = "imported"
+            stash.uploaded_filename = filename
+            stash.imported_at = now
+            _remember_doi_stash_import_attempt(stash, status="duplicate", message=None, candidate=candidate, now=now)
+            refresh_import_batch_progress(db, batch)
+            counts["skipped_existing_count"] = 1
+            return {"batch_id": batch.id, "message": "Downloaded PDF matched an existing Medusa document.", **counts}
+
+        source_document = stash.source_document
+        document = Document(
+            title=candidate.title or stash.title or stash.doi,
+            authors=candidate.authors or [],
+            publication_year=candidate.publication_year,
+            journal=candidate.journal,
+            doi=normalize_doi(candidate.doi) or stash.doi,
+            source_url=candidate.source_url or stash.source_url or doi_url(stash.doi),
+            abstract=candidate.description,
+            original_filename=filename,
+            content_type=content_type,
+            checksum_sha256=checksum,
+            priority=source_document.priority if source_document else "normal",
+            read_status="unread",
+        )
+        db.add(document)
+        db.flush()
+
+        storage = get_storage_service()
+        key = f"documents/{checksum[:2]}/{checksum}/{document.id}/{filename}"
+        stored = storage.put_bytes(key, data, content_type)
+        cache_path = document_cache_path(document.id)
+        cache_path.write_bytes(data)
+        document.gcs_uri = stored.uri
+        document.storage_status = stored.backend
+        document.processing_status = "queued"
+        document.metadata_evidence = {
+            "file_size_bytes": len(data),
+            "local_cache_path": str(cache_path),
+            "document_cache_path": str(cache_path),
+            "doi_stash_import": {
+                "id": stash.id,
+                "doi": stash.doi,
+                "title": stash.title,
+                "source_url": stash.source_url,
+                "source_provider": stash.source_provider,
+                "recommendation_id": stash.recommendation_id,
+                "source_document_id": stash.source_document_id,
+                "resolver_provider": candidate.provider,
+                "resolver_relation": candidate.relation,
+                "resolver_source_url": candidate.source_url,
+                "resolver_pdf_url": candidate.pdf_url,
+                "downloaded_at": now.isoformat(),
+            },
+        }
+        register_document_cache(document, cache_path, source="doi_stash_doi_import")
+        job = ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored")
+        db.add(job)
+        db.flush()
+        stash.imported_document_id = document.id
+        stash.import_job_id = job.id
+        stash.status = "import_queued"
+        stash.uploaded_filename = filename
+        _remember_doi_stash_import_attempt(stash, status="queued", message=None, candidate=candidate, now=now)
+        refresh_import_batch_progress(db, batch)
+        counts["queued_count"] = 1
+        return {"batch_id": batch.id, "message": "Queued DOI import.", **counts}
+    except Exception as exc:
+        message = str(exc)
+        job = _add_doi_stash_import_event(
+            db,
+            batch=batch,
+            stash=stash,
+            step="download_failed",
+            reason=message,
+            level="error",
+            status="failed",
+            candidate=candidate,
+        )
+        stash.import_job_id = job.id
+        stash.status = "import_failed"
+        _remember_doi_stash_import_attempt(stash, status="failed", message=message, candidate=candidate, now=now)
+        refresh_import_batch_progress(db, batch)
+        counts["failed_count"] = 1
+        return {"batch_id": batch.id, "message": message, **counts}
+
+
 def _enabled_fetchers():
     settings = get_settings()
     if settings.recommendations_enable_openalex:
@@ -340,6 +523,45 @@ def _enabled_enrichers():
         yield "unpaywall", enrich_unpaywall_recommendations
     if settings.recommendations_enable_arxiv:
         yield "arxiv", enrich_arxiv_recommendations
+
+
+def _fetch_openalex_doi_candidate(doi: str) -> RecommendationCandidate | None:
+    settings = get_settings()
+    if not settings.recommendations_enable_openalex:
+        return None
+    with _client() as client:
+        response = client.get(f"https://api.openalex.org/works/{quote(f'https://doi.org/{doi}', safe=':/')}", params=_params())
+        response.raise_for_status()
+        return _openalex_work_to_candidate(response.json(), "doi_lookup")
+
+
+def _fetch_semantic_scholar_doi_candidate(doi: str) -> RecommendationCandidate | None:
+    settings = get_settings()
+    if not settings.recommendations_enable_semantic_scholar:
+        return None
+    headers = {"x-api-key": settings.semantic_scholar_api_key} if settings.semantic_scholar_api_key else {}
+    fields = "paperId,title,abstract,venue,year,externalIds,openAccessPdf,url,authors"
+    with httpx.Client(
+        timeout=settings.recommendations_request_timeout_seconds,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        response = client.get(
+            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{quote(doi, safe='')}",
+            params={"fields": fields},
+        )
+        response.raise_for_status()
+        return _semantic_scholar_paper_to_candidate(response.json(), "doi_lookup")
+
+
+def _fetch_crossref_doi_candidate(doi: str) -> RecommendationCandidate | None:
+    settings = get_settings()
+    if not settings.recommendations_enable_crossref:
+        return None
+    with _client() as client:
+        response = client.get(f"https://api.crossref.org/works/{quote(doi, safe='')}")
+        response.raise_for_status()
+        return _crossref_work_to_candidate(response.json().get("message") or {}, "doi_lookup")
 
 
 def _client() -> httpx.Client:
@@ -909,6 +1131,78 @@ def _recommendation_filename(recommendation: DocumentRecommendation) -> str:
     base = recommendation.doi or recommendation.title or recommendation.id
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-._")[:96]
     return f"{slug or recommendation.id}.pdf"
+
+
+def _candidate_filename(candidate: RecommendationCandidate) -> str:
+    base = candidate.doi or candidate.title or candidate.external_id or "doi-import"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-._")[:96]
+    return f"{slug or 'doi-import'}.pdf"
+
+
+def _remember_doi_stash_import_attempt(
+    stash: DoiStash,
+    *,
+    status: str,
+    message: str | None,
+    candidate: RecommendationCandidate | None,
+    now,
+) -> None:
+    metadata = dict(stash.stash_metadata or {})
+    metadata["last_doi_import"] = {
+        "status": status,
+        "message": message,
+        "attempted_at": now.isoformat(),
+        "provider": candidate.provider if candidate else None,
+        "relation": candidate.relation if candidate else None,
+        "source_url": candidate.source_url if candidate else None,
+        "pdf_url": candidate.pdf_url if candidate else None,
+    }
+    stash.stash_metadata = metadata
+
+
+def _add_doi_stash_import_event(
+    db: Session,
+    *,
+    batch: ImportBatch,
+    stash: DoiStash,
+    step: str,
+    reason: str,
+    level: str = "warning",
+    status: str = "complete",
+    candidate: RecommendationCandidate | None = None,
+    document_id: str | None = None,
+) -> ImportJob:
+    job = ImportJob(
+        batch_id=batch.id,
+        document_id=document_id,
+        status=status,
+        current_step=step,
+        last_error=reason if status == "failed" else None,
+    )
+    db.add(job)
+    db.flush()
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=document_id,
+            level=level,
+            event_type=step,
+            message=reason,
+            payload={
+                "doi_stash_id": stash.id,
+                "doi": stash.doi,
+                "title": stash.title,
+                "source_url": stash.source_url,
+                "source_provider": stash.source_provider,
+                "resolver_provider": candidate.provider if candidate else None,
+                "resolver_relation": candidate.relation if candidate else None,
+                "resolver_source_url": candidate.source_url if candidate else None,
+                "pdf_url": candidate.pdf_url if candidate else None,
+                "matched_document_id": document_id,
+            },
+        )
+    )
+    return job
 
 
 def _add_recommendation_skip_event(

@@ -813,6 +813,16 @@ export type DoiStash = {
   updated_at: string;
 };
 
+export type DoiStashImportResult = {
+  stash: DoiStash;
+  batch_id: string;
+  queued_count: number;
+  skipped_existing_count: number;
+  unavailable_count: number;
+  failed_count: number;
+  message?: string | null;
+};
+
 export type DoiStashPayload = {
   doi: string;
   title?: string | null;

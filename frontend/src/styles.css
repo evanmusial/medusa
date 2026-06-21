@@ -3635,6 +3635,16 @@ pre {
   gap: 7px;
 }
 
+.stash-copy-action {
+  white-space: nowrap;
+}
+
+.stash-copy-action.copy-acknowledged {
+  background: var(--action-success);
+  border-color: var(--action-success);
+  color: #ffffff;
+}
+
 .stash-upload-button,
 .stash-upload-drop {
   min-height: 34px;

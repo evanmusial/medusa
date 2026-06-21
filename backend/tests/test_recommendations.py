@@ -383,6 +383,97 @@ def test_doi_stash_status_tracks_import_job(monkeypatch, tmp_path):
         assert rendered.imported_document_title == "Queued Paper"
 
 
+def test_queue_doi_stash_open_pdf_import_queues_normal_import(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.models import DoiStash, ImportJob
+    from app.services import recommendations as service
+    from app.services.recommendations import RecommendationCandidate, queue_doi_stash_open_pdf_import
+
+    get_settings.cache_clear()
+
+    class FakeStorage:
+        def put_bytes(self, key, data, content_type):
+            class Stored:
+                uri = str(tmp_path / key)
+                backend = "local"
+
+            assert key.endswith("10.1000-stashed.pdf")
+            assert data.startswith(b"%PDF")
+            assert content_type == "application/pdf"
+            return Stored()
+
+    Session = make_session()
+    with Session() as db:
+        stash = DoiStash(doi="10.1000/stashed", title="Stashed Paper", status="active", stash_metadata={})
+        db.add(stash)
+        db.commit()
+
+        candidate = RecommendationCandidate(
+            title="Resolved Stashed Paper",
+            doi="10.1000/stashed",
+            provider="unpaywall",
+            relation="open_access",
+            source_url="https://publisher.test/stashed",
+            pdf_url="https://publisher.test/stashed.pdf",
+        )
+        monkeypatch.setattr(service, "resolve_open_pdf_candidate_for_doi", lambda *_args, **_kwargs: candidate)
+        monkeypatch.setattr(service, "_download_pdf", lambda _url: (b"%PDF-1.4 stashed", "application/pdf"))
+        monkeypatch.setattr(service, "get_storage_service", lambda: FakeStorage())
+
+        result = queue_doi_stash_open_pdf_import(db, stash)
+        db.commit()
+
+        job = db.query(ImportJob).one()
+        db.refresh(stash)
+
+        assert result["queued_count"] == 1
+        assert job.status == "queued"
+        assert job.document.doi == "10.1000/stashed"
+        assert job.document.title == "Resolved Stashed Paper"
+        assert job.document.metadata_evidence["doi_stash_import"]["resolver_provider"] == "unpaywall"
+        assert stash.status == "import_queued"
+        assert stash.import_job_id == job.id
+        assert stash.stash_metadata["last_doi_import"]["status"] == "queued"
+
+
+def test_queue_doi_stash_open_pdf_import_records_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.models import DoiStash, ImportJob, ProcessingEvent
+    from app.services import recommendations as service
+    from app.services.recommendations import queue_doi_stash_open_pdf_import
+
+    get_settings.cache_clear()
+
+    Session = make_session()
+    with Session() as db:
+        stash = DoiStash(doi="10.1000/missing", title="Missing Open PDF", status="active", stash_metadata={})
+        db.add(stash)
+        db.commit()
+
+        monkeypatch.setattr(service, "resolve_open_pdf_candidate_for_doi", lambda *_args, **_kwargs: None)
+
+        result = queue_doi_stash_open_pdf_import(db, stash)
+        db.commit()
+
+        job = db.query(ImportJob).one()
+        event = db.query(ProcessingEvent).one()
+        db.refresh(stash)
+
+        assert result["unavailable_count"] == 1
+        assert result["queued_count"] == 0
+        assert job.status == "complete"
+        assert job.current_step == "download_unavailable"
+        assert event.payload["doi_stash_id"] == stash.id
+        assert stash.status == "active"
+        assert stash.stash_metadata["last_doi_import"]["status"] == "unavailable"
+
+
 def test_doi_stash_upload_duplicate_marks_imported(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
