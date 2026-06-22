@@ -98,6 +98,68 @@ def test_concordance_estimate_marks_same_model_summary_noop(monkeypatch, tmp_pat
         assert run.status == "complete"
 
 
+def test_forced_tag_refresh_queues_even_when_same_model_current(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentCapability, OpenAIUsageRecord
+    from app.services.analysis_models import MODEL_KEYWORDS_TOPICS
+    from app.services.concordance import CAPABILITY_BY_KEY, create_concordance_run, estimate_concordance_run
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Already Tagged",
+            original_filename="already-tagged.pdf",
+            checksum_sha256="t" * 64,
+            processing_status="ready",
+            page_count=6,
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            DocumentCapability(
+                document_id=document.id,
+                capability_key="tag_refresh",
+                version=CAPABILITY_BY_KEY["tag_refresh"].version,
+                status="complete",
+            )
+        )
+        db.add(
+            OpenAIUsageRecord(
+                document_id=document.id,
+                source="concordance",
+                capability_key="tag_refresh",
+                task_key=MODEL_KEYWORDS_TOPICS,
+                operation="medusa_keywords_topics",
+                endpoint="responses",
+                model="gpt-5.4-mini",
+                status="success",
+            )
+        )
+        db.commit()
+
+        estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["tag_refresh"],
+            force=True,
+        )
+        run = create_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["tag_refresh"],
+            force=True,
+        )
+
+        assert estimate["planned_jobs"] == 1
+        assert estimate["items"][0]["status"] == "planned"
+        assert run.total_jobs == 1
+        assert run.scope_data["_force"] is True
+
+
 def test_concordance_estimate_queues_current_capability_when_model_changed(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -644,6 +706,94 @@ def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document
                 "capability_key": "summary_topics",
                 "prompt_cache_key": f"medusa-doc:{'8' * 64}:tags",
             },
+        ]
+
+
+def test_concordance_tag_refresh_replaces_document_tags_with_governed_suggestions(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentVersion, Tag
+    from app.services.concordance import ConcordanceProcessor
+
+    calls: list[dict[str, object]] = []
+
+    class FakeAiService:
+        def extract_keywords_topics(self, filename, text, *, model=None, existing_tags=None, usage_context=None, prompt_cache_key=None):
+            calls.append(
+                {
+                    "filename": filename,
+                    "text": text,
+                    "model": model,
+                    "existing_tags": existing_tags,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
+                "topics": ["shared concept"],
+                "keywords": ["zero trust mesh"],
+                "confidence": 0.91,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "used_pdf_file": False},
+            }
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        stale_tag = Tag(name="stale manual tag", kind="tag", status="canonical")
+        shared_tag = Tag(name="shared concept", kind="tag", status="canonical")
+        document = Document(
+            title="Tagged Target",
+            original_filename="tagged-target.pdf",
+            checksum_sha256="7" * 64,
+            search_text="This document is about a shared concept and a zero trust mesh.",
+            processing_status="ready",
+            tags=[stale_tag],
+        )
+        db.add_all([stale_tag, shared_tag, document])
+        db.flush()
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"document_ids": [document.id], "_force": True},
+            capability_keys=["tag_refresh"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run_id=run.id,
+            document_id=document.id,
+            capability_key="tag_refresh",
+            target_version=1,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+        db.refresh(document)
+
+        version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+
+        assert job.status == "complete"
+        assert sorted(tag.name for tag in document.tags) == ["shared concept", "zero trust mesh"]
+        assert "stale manual tag" not in (document.search_text or "")
+        assert "shared concept" in (document.search_text or "")
+        assert "zero trust mesh" in (document.search_text or "")
+        assert document.metadata_evidence["tag_refresh_tag_governance"]["replace_existing"] is True
+        assert document.metadata_evidence["tag_refresh_tag_governance"]["replaced_tags"] == ["stale manual tag"]
+        assert version.change_note == "Concordance tag refresh"
+        assert "tags" in version.metadata_snapshot["changed_fields"]
+        assert calls == [
+            {
+                "filename": "tagged-target.pdf",
+                "text": "This document is about a shared concept and a zero trust mesh.",
+                "model": "gpt-5.4-mini",
+                "existing_tags": ["shared concept", "stale manual tag"],
+                "capability_key": "tag_refresh",
+                "prompt_cache_key": f"medusa-doc:{'7' * 64}:tag-refresh",
+            }
         ]
 
 

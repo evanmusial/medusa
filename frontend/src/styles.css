@@ -2481,6 +2481,22 @@ textarea {
   gap: 8px;
 }
 
+.detail-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detail-section-title-row h3 {
+  margin: 0;
+}
+
+.detail-section-title-row .secondary-button {
+  flex: 0 0 auto;
+}
+
 .detail-tag-list {
   display: flex;
   flex-wrap: wrap;

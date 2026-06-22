@@ -161,6 +161,13 @@ SUMMARY_REFRESH_CAPABILITY = CapabilityDefinition(
     description="Regenerate the main document summary using only the selected Summary model.",
 )
 
+TAG_REFRESH_CAPABILITY = CapabilityDefinition(
+    key="tag_refresh",
+    label="Tag refresh",
+    version=1,
+    description="Replace this document's tag assignments by rerunning import-style tag suggestions and existing-first tag governance.",
+)
+
 LEGACY_FIGURE_ASSETS_CAPABILITY = CapabilityDefinition(
     key="figure_assets",
     label="Figure assets",
@@ -170,7 +177,7 @@ LEGACY_FIGURE_ASSETS_CAPABILITY = CapabilityDefinition(
 
 CAPABILITY_BY_KEY = {
     capability.key: capability
-    for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY, LEGACY_FIGURE_ASSETS_CAPABILITY)
+    for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY, TAG_REFRESH_CAPABILITY, LEGACY_FIGURE_ASSETS_CAPABILITY)
 }
 
 CONCORDANCE_LOCAL_MODELS = {
@@ -227,6 +234,8 @@ def concordance_stage_model(db: Session, capability_key: str) -> str | None:
         return get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION)
     if capability_key == "summary_refresh":
         return get_analysis_model(db, MODEL_SUMMARY)
+    if capability_key == "tag_refresh":
+        return get_analysis_model(db, MODEL_KEYWORDS_TOPICS)
     if capability_key == "summary_topics":
         models = get_analysis_models(db)
         return ", ".join(
@@ -407,6 +416,15 @@ def concordance_model_requirements(
                 model=model_preferences.get(MODEL_SUMMARY),
             )
         ]
+    if capability_key == "tag_refresh":
+        return [
+            ConcordanceModelRequirement(
+                task_key=MODEL_KEYWORDS_TOPICS,
+                field_key="tags",
+                label="Tag suggestions",
+                model=model_preferences.get(MODEL_KEYWORDS_TOPICS),
+            )
+        ]
     if capability_key == "summary_topics":
         return [
             ConcordanceModelRequirement(
@@ -496,7 +514,7 @@ def _plan_concordance_item(
     *,
     force: bool,
 ) -> dict[str, Any]:
-    noop, requirements = _same_model_noop(db, document, capability.key)
+    noop, requirements = (False, []) if force else _same_model_noop(db, document, capability.key)
     if noop:
         return {
             "document": document,
@@ -543,11 +561,15 @@ def _plan_concordance_item(
             "cost_steps": [],
         }
     requirements = concordance_model_requirements(db, capability.key, document)
-    pending_requirements = [
-        requirement
-        for requirement in requirements
-        if not (_is_cloud_model(requirement.model) and _model_requirement_current(db, document, requirement))
-    ]
+    pending_requirements = (
+        requirements
+        if force
+        else [
+            requirement
+            for requirement in requirements
+            if not (_is_cloud_model(requirement.model) and _model_requirement_current(db, document, requirement))
+        ]
+    )
     cost_steps = [_estimate_requirement_cost(db, document, requirement) for requirement in pending_requirements]
     estimated_cost = round(sum(float(step.get("estimated_cost_usd") or 0.0) for step in cost_steps), 6)
     if cost_steps and any(step.get("status") == "unpriced" for step in cost_steps):
@@ -787,7 +809,7 @@ def create_concordance_run(
     run = ConcordanceRun(
         label=label,
         scope_type=scope_type,
-        scope_data=scope_data,
+        scope_data={**scope_data, "_force": True} if force else scope_data,
         capability_keys=plan["capability_keys"],
         status="queued",
     )
@@ -863,7 +885,8 @@ class ConcordanceProcessor:
             db.commit()
 
             stage_started_at, stage_started_perf = stage_timer()
-            model_noop, noop_requirements = _same_model_noop(db, document, job.capability_key)
+            run_force = bool(job.run and (job.run.scope_data or {}).get("_force"))
+            model_noop, noop_requirements = (False, []) if run_force else _same_model_noop(db, document, job.capability_key)
             if model_noop:
                 evidence = {
                     "status": "model_no_op",
@@ -885,6 +908,8 @@ class ConcordanceProcessor:
                 evidence = self._refresh_citation(db, document, job)
             elif job.capability_key == "summary_refresh":
                 evidence = self._refresh_summary(db, document, job)
+            elif job.capability_key == "tag_refresh":
+                evidence = self._refresh_tags(db, document, job)
             elif job.capability_key == "summary_topics":
                 evidence = self._refresh_summary_topics(db, document, job)
             elif job.capability_key == "bibliography_extraction":
@@ -1286,6 +1311,60 @@ class ConcordanceProcessor:
             "confidence": summary.get("confidence"),
             "summary_model": (summary.get("_openai") or {}).get("model") or summary_model,
             "configured": (summary.get("_openai") or {}).get("configured", True),
+        }
+
+    def _refresh_tags(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        before = document_correction_snapshot(document)
+        ai = get_ai_service()
+        tag_model = get_analysis_model(db, MODEL_KEYWORDS_TOPICS)
+        keywords = ai.extract_keywords_topics(
+            document.original_filename,
+            document.search_text or "",
+            model=tag_model,
+            existing_tags=existing_tag_manifest(db),
+            usage_context=self._usage_context(document, job, "tag_refresh"),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:tag-refresh",
+        )
+        if (keywords.get("_openai") or {}).get("configured") is False:
+            raise RuntimeError("Tag Suggestions model is not configured; existing tags were left unchanged.")
+
+        before_tag_count = len(document.tags)
+        before_tag_names = sorted(tag.name for tag in document.tags)
+        tag_governance = apply_import_tag_governance(
+            db,
+            document=document,
+            topics=keywords.get("topics") or [],
+            keywords=keywords.get("keywords") or [],
+            source="tag_refresh",
+            concordance_job_id=job.id,
+            ai=ai,
+            usage_context=self._usage_context(document, job, "tag_governance"),
+            replace_existing=True,
+        )
+        document.search_text = rebuild_document_search_text(document)
+        after = document_correction_snapshot(document)
+        after_tag_names = sorted(tag.name for tag in document.tags)
+        removed_tag_names = sorted(set(before_tag_names) - set(after_tag_names))
+        changed_fields = changed_snapshot_fields(before, after)
+        if changed_fields:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance tag refresh",
+                changed_fields=changed_fields,
+                before=before,
+                after=after,
+                extra={"run_id": job.run_id, "concordance_job_id": job.id},
+            )
+        return {
+            "confidence": keywords.get("confidence"),
+            "tag_model": (keywords.get("_openai") or {}).get("model") or tag_model,
+            "configured": (keywords.get("_openai") or {}).get("configured", True),
+            "tags_before": before_tag_count,
+            "tags_after": len(document.tags),
+            "tags_removed": len(removed_tag_names),
+            "removed_tags": removed_tag_names,
+            "tag_governance": tag_governance,
         }
 
     def _refresh_summary_topics(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:

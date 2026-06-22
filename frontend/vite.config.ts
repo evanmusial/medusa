@@ -107,6 +107,8 @@ export default defineConfig({
       "/api": {
         target: process.env.MEDUSA_API_PROXY || "http://localhost:8000",
         changeOrigin: true,
+        timeout: 300_000,
+        proxyTimeout: 300_000,
       },
     },
   },

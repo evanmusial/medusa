@@ -4487,6 +4487,7 @@ function DocumentPanelContent({
   const [citationRunId, setCitationRunId] = useState<string | null>(null);
   const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationRefreshTarget | null>(null);
   const [summaryRunId, setSummaryRunId] = useState<string | null>(null);
+  const [tagRefreshRunId, setTagRefreshRunId] = useState<string | null>(null);
   const [editingCitation, setEditingCitation] = useState<CitationKind | null>(null);
   const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
     reference: document.apa_citation || "",
@@ -4502,6 +4503,7 @@ function DocumentPanelContent({
   const referenceCitationFeedback = useAsyncActionFeedback();
   const inTextCitationFeedback = useAsyncActionFeedback();
   const summaryRefreshFeedback = useAsyncActionFeedback();
+  const tagRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const composition = useQuery({
     queryKey: ["document-composition", document.id],
@@ -4710,6 +4712,34 @@ function DocumentPanelContent({
       summaryRefreshFeedback.showError(actionFailureMessage("Could not start summary refresh", error));
     },
   });
+  const refreshTags = useMutation({
+    mutationFn: () =>
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Refreshing tags",
+        capability_keys: ["tag_refresh"],
+        capabilityKey: "tag_refresh",
+        documentId: document.id,
+        force: true,
+        label: `Tag refresh: ${document.title}`,
+        scope_data: { document_ids: [document.id] },
+        scope_type: "documents",
+      }),
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setTagRefreshRunId(run.id);
+      else tagRefreshFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+    },
+    onError: (error) => {
+      setTagRefreshRunId(null);
+      tagRefreshFeedback.showError(actionFailureMessage("Could not start tag refresh", error));
+    },
+  });
   const updateCitation = useMutation({
     mutationFn: ({ kind, value }: { kind: CitationKind; value: string }) =>
       api.updateDocument(document.id, kind === "reference" ? { apa_citation: value.trim() || null } : { apa_in_text_citation: value.trim() || null }),
@@ -4781,6 +4811,7 @@ function DocumentPanelContent({
     setCitationRunId(null);
     setCitationRefreshTarget(null);
     setSummaryRunId(null);
+    setTagRefreshRunId(null);
     setEditingCitation(null);
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
     setCitationEditError(null);
@@ -4856,6 +4887,9 @@ function DocumentPanelContent({
   const summaryRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "summary_refresh" && isActiveConcordanceStatus(job.status),
   );
+  const tagRefreshActive = citationJobs.some(
+    (job) => job.document_id === document.id && job.capability_key === "tag_refresh" && isActiveConcordanceStatus(job.status),
+  );
   const trackedDocumentConcordanceJobs = useMemo(
     () => (documentConcordanceRunId ? citationJobs.filter((job) => job.run_id === documentConcordanceRunId && job.document_id === document.id) : []),
     [citationJobs, document.id, documentConcordanceRunId],
@@ -4876,6 +4910,13 @@ function DocumentPanelContent({
         : [],
     [citationJobs, document.id, summaryRunId],
   );
+  const trackedTagRefreshJobs = useMemo(
+    () =>
+      tagRefreshRunId
+        ? citationJobs.filter((job) => job.run_id === tagRefreshRunId && job.document_id === document.id && job.capability_key === "tag_refresh")
+        : [],
+    [citationJobs, document.id, tagRefreshRunId],
+  );
   const documentConcordanceBusy =
     runConcordance.isPending ||
     Boolean(
@@ -4887,6 +4928,10 @@ function DocumentPanelContent({
     refreshSummary.isPending ||
     summaryRefreshActive ||
     Boolean(summaryRunId && (!trackedSummaryJobs.length || trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))));
+  const tagRefreshBusy =
+    refreshTags.isPending ||
+    tagRefreshActive ||
+    Boolean(tagRefreshRunId && (!trackedTagRefreshJobs.length || trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))));
   const pageTextBusyReason = updatePageText.isPending
     ? "a parsed-text save is already running."
     : scrubText.isPending
@@ -4901,6 +4946,11 @@ function DocumentPanelContent({
     ? "a summary refresh request is already starting."
     : summaryRefreshActive || summaryRunId
       ? "a summary refresh is already queued or running for this document."
+      : "";
+  const tagRefreshBusyReason = refreshTags.isPending
+    ? "a tag refresh request is already starting."
+    : tagRefreshActive || tagRefreshRunId
+      ? "a tag refresh is already queued or running for this document."
       : "";
   const documentConcordanceBusyReason = runConcordance.isPending
     ? "a document Concordance request is already starting."
@@ -4925,8 +4975,10 @@ function DocumentPanelContent({
   const sortedDocumentTags = useMemo(() => sortByName(document.tags), [document.tags]);
   const sortedAvailableTags = useMemo(() => sortByName(tags), [tags]);
   const currentTagNames = useMemo(() => normalizedNameList(sortedDocumentTags.map((tag) => tag.name)), [sortedDocumentTags]);
-  const tagUpdateBusy = updateDocumentTags.isPending;
-  const tagUpdateBusyReason = "a tag update is already saving for this document.";
+  const tagUpdateBusy = updateDocumentTags.isPending || tagRefreshBusy;
+  const tagUpdateBusyReason = updateDocumentTags.isPending
+    ? "a tag update is already saving for this document."
+    : "a tag refresh is already queued or running for this document.";
 
   useEffect(() => {
     if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
@@ -5006,6 +5058,25 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
   }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs]);
+
+  useEffect(() => {
+    if (!tagRefreshRunId || trackedTagRefreshJobs.length === 0) return;
+    if (trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    const failedJob = trackedTagRefreshJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      tagRefreshFeedback.showError(
+        actionFailureMessage("Tag refresh failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      tagRefreshFeedback.showSuccess();
+    }
+    setTagRefreshRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    void queryClient.invalidateQueries({ queryKey: ["tags"] });
+    void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+  }, [document.id, queryClient, tagRefreshFeedback, tagRefreshRunId, trackedTagRefreshJobs]);
 
   useEffect(() => {
     if (!trackedAccessorySummaryId || !trackedAccessorySummary) return;
@@ -5204,6 +5275,13 @@ function DocumentPanelContent({
   const checkSummary = () => {
     refreshSummary.mutate();
   };
+  const checkTags = () => {
+    const ok = window.confirm(
+      "Refresh document tags?\n\nMedusa will remove this document's current tag assignments, run Tag Suggestions again, prefer existing tags when they fit, and add a new candidate tag only when the current tag inventory does not cover the concept.",
+    );
+    if (!ok) return;
+    refreshTags.mutate();
+  };
   const replaceSummarySelection = (replacement: string, nextSelectionStart: number, nextSelectionEnd: number) => {
     const textarea = summaryTextareaRef.current;
     const start = textarea?.selectionStart ?? summaryDraft.length;
@@ -5370,7 +5448,22 @@ function DocumentPanelContent({
     const availableTags = sortedAvailableTags.filter((tag) => !existingTagNames.has(tag.name.toLocaleLowerCase()));
     return (
       <section className="detail-section detail-tags-section">
-        <h3>TAGS</h3>
+        <div className="detail-section-title-row">
+          <h3>TAGS</h3>
+          <AsyncActionSlot busy={tagRefreshBusy} feedback={tagRefreshFeedback.feedback} label="Tag refresh in progress">
+            <button
+              className={asyncFeedbackClass("secondary-button compact", tagRefreshFeedback.feedback, tagRefreshBusy)}
+              data-disabled-reason={tagRefreshBusyReason}
+              data-tooltip="Replace this document's current tags by rerunning Tag Suggestions through the import-style existing-first governance scorer."
+              disabled={tagRefreshBusy}
+              onClick={checkTags}
+              type="button"
+            >
+              <RefreshCw className={tagRefreshBusy ? "spin" : ""} size={14} />
+              {tagRefreshBusy ? "Refreshing" : "Refresh"}
+            </button>
+          </AsyncActionSlot>
+        </div>
         <div className="detail-tag-list">
           {sortedDocumentTags.length ? (
             sortedDocumentTags.map((tag) => (
@@ -8947,6 +9040,8 @@ function TagsView({
               <span>{optimizationResult ? `${optimizationResult.considered_tags} reviewed` : `${optimizationScopeLabel} tags`}</span>
               {optimizationResult?.health_summary?.candidate_tags ? <span>{optimizationResult.health_summary.candidate_tags} candidates</span> : null}
               {optimizationResult?.health_summary?.weak_assignments ? <span>{optimizationResult.health_summary.weak_assignments} weak assignments</span> : null}
+              {optimizationResult?.health_summary?.ai_planner_failed ? <span>model planner fallback</span> : null}
+              {optimizationResult?.health_summary?.ai_planner_skipped ? <span>local broad-scope plan</span> : null}
               {governanceSuggestionCount ? <span>{optimizationAffectedDocuments} affected document references</span> : null}
             </div>
             {optimizationError ? <p className="form-error tag-optimization-error">{optimizationError}</p> : null}

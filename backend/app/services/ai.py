@@ -234,7 +234,7 @@ def _tag_generation_prompt(existing_tags: list[str] | None = None) -> str:
         "Extract concise topic tags and keywords that would help organize and search this scholarly document. "
         "Use only the supplied document context. "
         f"{manifest_instruction}"
-        "Before inventing a new tag, compare the concept against the existing manifest. Use an existing tag when it "
+        "Before inventing a new tag, scan the existing manifest for every candidate concept. Use an existing tag when it "
         "is equivalent, clearly synonymous, or an appropriate reusable broader concept. Add a new concise tag only "
         "when the manifest is missing the concept or an existing tag would be misleading. Do not force unrelated "
         "existing tags, and prefer short reusable concepts over long phrases."
@@ -1186,8 +1186,8 @@ class AiService:
         input_file_bytes: int = 0,
         used_pdf_file: bool = False,
     ) -> dict[str, Any]:
-        if not self.gemini_api_key:
-            raise RuntimeError("Gemini API key is not configured.")
+        if not self.gemini_api_key and not (self.google_credentials and self.google_project_id):
+            raise RuntimeError("Gemini API key or service account is not configured.")
         response = None
         try:
             response = self._gemini_generate_content(

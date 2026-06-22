@@ -59,6 +59,42 @@ def test_import_tag_governance_prefers_existing_but_keeps_supported_new_candidat
         ]
 
 
+def test_import_tag_governance_replace_existing_removes_stale_tags(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+
+    from app.models import Document, Tag
+    from app.services.tag_governance import apply_import_tag_governance
+
+    with Session() as db:
+        stale = Tag(name="stale manual tag", kind="tag", status="canonical")
+        existing = Tag(name="access control", kind="tag", status="canonical")
+        document = Document(
+            title="Access Control Study",
+            original_filename="access-control.pdf",
+            checksum_sha256="d" * 64,
+            search_text="This paper studies access control and a zero trust mesh for campus systems.",
+            tags=[stale],
+        )
+        db.add_all([stale, existing, document])
+        db.commit()
+
+        summary = apply_import_tag_governance(
+            db,
+            document=document,
+            topics=["access control model"],
+            keywords=["zero trust mesh"],
+            source="tag_refresh",
+            replace_existing=True,
+        )
+        db.commit()
+
+        assert summary["replace_existing"] is True
+        assert summary["replaced_tags"] == ["stale manual tag"]
+        assert summary["attached_count"] == 2
+        assert summary["new_candidate_count"] == 1
+        assert sorted(tag.name for tag in document.tags) == ["access control", "zero trust mesh"]
+
+
 def test_import_tag_governance_caps_new_tags_and_suppresses_low_value_candidates(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
 
@@ -288,34 +324,31 @@ def test_optimize_uses_import_tag_creation_model(monkeypatch, tmp_path):
         assert result.model == "gpt-5.4"
 
 
-def test_optimize_caps_broad_model_inventory_but_counts_full_scope(monkeypatch, tmp_path):
+def test_optimize_skips_model_planner_for_broad_scope(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
 
-    from app.main import TAG_OPTIMIZATION_AI_INVENTORY_LIMIT, optimize_tags
+    from app.main import TAG_OPTIMIZATION_MODEL_SCOPE_LIMIT, optimize_tags
     from app.models import Tag
     from app.schemas import TagOptimizationCreate
 
-    seen: dict[str, int] = {}
-
     class FakeAiService:
         def generate_tag_optimization_suggestions(self, tags, **_):
-            seen["model_inventory_size"] = len(tags)
-            return {"suggestions": [], "singleton_suggestions": []}
+            raise AssertionError("Broad tag scopes should use the local deterministic planner.")
 
     monkeypatch.setattr("app.main.get_ai_service", lambda: FakeAiService())
 
     with Session() as db:
         tags = [
             Tag(name=f"legacy singleton family {index}", kind="tag", status="candidate")
-            for index in range(TAG_OPTIMIZATION_AI_INVENTORY_LIMIT + 25)
+            for index in range(TAG_OPTIMIZATION_MODEL_SCOPE_LIMIT + 25)
         ]
         db.add_all(tags)
         db.commit()
 
         result = optimize_tags(TagOptimizationCreate(tag_ids=[tag.id for tag in tags]), object(), db)
 
-        assert seen["model_inventory_size"] == TAG_OPTIMIZATION_AI_INVENTORY_LIMIT
-        assert result.considered_tags == TAG_OPTIMIZATION_AI_INVENTORY_LIMIT + 25
+        assert result.considered_tags == TAG_OPTIMIZATION_MODEL_SCOPE_LIMIT + 25
+        assert result.health_summary["ai_planner_skipped"] == 1
 
 
 def test_optimize_flags_legacy_singleton_canonical_tags(monkeypatch, tmp_path):
@@ -394,6 +427,39 @@ def test_optimize_returns_cleanup_actions_for_low_use_scope_without_ai_merges(mo
         assert (candidate_document.id, singleton_candidate.id) in prune_pairs
         assert (canonical_document.id, singleton_canonical.id) in prune_pairs
         assert result.health_summary["singletons"] == 3
+
+
+def test_optimize_returns_deterministic_plan_when_ai_planner_fails(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+
+    from app.main import optimize_tags
+    from app.models import Document, Tag
+    from app.schemas import TagOptimizationCreate
+
+    class FailingAiService:
+        def generate_tag_optimization_suggestions(self, *_, **__):
+            raise RuntimeError("planner unavailable")
+
+    monkeypatch.setattr("app.main.get_ai_service", lambda: FailingAiService())
+
+    with Session() as db:
+        base = Tag(name="access control", kind="tag", status="canonical")
+        plural = Tag(name="access controls", kind="tag", status="candidate")
+        document = Document(
+            title="Access",
+            original_filename="access.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+            tags=[plural],
+        )
+        db.add_all([base, plural, document])
+        db.commit()
+
+        result = optimize_tags(TagOptimizationCreate(tag_ids=[base.id, plural.id]), object(), db)
+
+        assert result.suggestions == []
+        assert result.health_summary["ai_planner_failed"] == 1
+        assert any(base.id in item.source_tag_ids and plural.id in item.source_tag_ids for item in result.singleton_suggestions)
 
 
 def test_optimize_merges_orphaned_tags_into_used_targets(monkeypatch, tmp_path):

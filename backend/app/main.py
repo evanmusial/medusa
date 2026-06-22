@@ -655,7 +655,8 @@ TAG_OPTIMIZATION_ORPHAN_PRUNE_LIMIT = 200
 TAG_OPTIMIZATION_RELATIONSHIP_LIMIT = 120
 TAG_OPTIMIZATION_STATUS_LIMIT = 200
 TAG_OPTIMIZATION_ASSIGNMENT_PRUNE_LIMIT = 200
-TAG_OPTIMIZATION_AI_INVENTORY_LIMIT = 650
+TAG_OPTIMIZATION_AI_INVENTORY_LIMIT = 300
+TAG_OPTIMIZATION_MODEL_SCOPE_LIMIT = 300
 
 
 def cleanup_tag_tokens(name: str) -> list[str]:
@@ -1865,16 +1866,22 @@ def optimize_tags(
     ]
     model_inventory = tag_optimization_model_inventory(inventory)
     tag_creation_model = get_analysis_model(db, MODEL_KEYWORDS_TOPICS)
-    try:
-        result = get_ai_service().generate_tag_optimization_suggestions(
-            model_inventory,
-            model=tag_creation_model,
-            primary_limit=TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT,
-            singleton_limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
-            usage_context=OpenAIUsageContext(source="tags", capability_key="tag_optimization"),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Tag optimization failed: {exc}") from exc
+    ai_planner_error: str | None = None
+    ai_planner_skipped = len(tag_rows) > TAG_OPTIMIZATION_MODEL_SCOPE_LIMIT
+    if ai_planner_skipped:
+        result = {"suggestions": [], "singleton_suggestions": []}
+    else:
+        try:
+            result = get_ai_service().generate_tag_optimization_suggestions(
+                model_inventory,
+                model=tag_creation_model,
+                primary_limit=TAG_OPTIMIZATION_PRIMARY_MERGE_LIMIT,
+                singleton_limit=TAG_OPTIMIZATION_SINGLETON_MERGE_LIMIT,
+                usage_context=OpenAIUsageContext(source="tags", capability_key="tag_optimization"),
+            )
+        except Exception as exc:
+            ai_planner_error = str(exc)
+            result = {"suggestions": [], "singleton_suggestions": []}
 
     tag_by_id = {tag.id: tag for tag in tag_rows}
     considered_tag_by_name = {tag.name: tag for tag in tag_rows}
@@ -2132,6 +2139,12 @@ def optimize_tags(
         for item in pruning_review_suggestions(db, tag_rows, limit=TAG_OPTIMIZATION_ASSIGNMENT_PRUNE_LIMIT)
     ]
 
+    health_summary = tag_health_summary(db, tag_rows)
+    if ai_planner_error:
+        health_summary["ai_planner_failed"] = 1
+    if ai_planner_skipped:
+        health_summary["ai_planner_skipped"] = 1
+
     return TagOptimizationOut(
         model=tag_creation_model,
         considered_tags=len(tag_rows),
@@ -2150,7 +2163,7 @@ def optimize_tags(
             }
             for item in orphan_prune_suggestions
         ],
-        health_summary=tag_health_summary(db, tag_rows),
+        health_summary=health_summary,
     )
 
 

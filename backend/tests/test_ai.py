@@ -216,6 +216,7 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
     ]
     assert "Existing Medusa tags manifest" in responses.prompts["medusa_keywords_topics"]
     assert '"access control"' in responses.prompts["medusa_keywords_topics"]
+    assert "scan the existing manifest for every candidate concept" in responses.prompts["medusa_keywords_topics"]
     assert "Add a new concise tag only" in responses.prompts["medusa_keywords_topics"]
     assert {record["task_key"] for record in usage_records} == {
         MODEL_METADATA,
@@ -559,3 +560,79 @@ def test_ai_service_routes_gemini_json_calls_and_records_google_usage(monkeypatc
     assert usage_records[0]["model"] == "gemini-2.5-flash"
     assert usage_records[0]["input_tokens"] == 30
     assert usage_records[0]["output_tokens"] == 9
+
+
+def test_ai_service_routes_gemini_json_calls_with_service_account(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import SUMMARY_SCHEMA, AiService
+    from app.services.analysis_models import MODEL_SUMMARY
+    from app.services.openai_usage import OpenAIUsageContext
+
+    class FakeCredentials:
+        project_id = "managed-project"
+
+    monkeypatch.setattr("app.services.ai.get_active_google_project_id", lambda: "managed-project")
+    monkeypatch.setattr("app.services.ai.get_active_google_service_account_path", lambda: "/tmp/service-account.json")
+    monkeypatch.setattr("app.services.ai.load_service_account_credentials", lambda _: FakeCredentials())
+
+    get_settings.cache_clear()
+    service = AiService()
+    assert service.gemini_api_key is None
+    assert service.google_credentials is not None
+    assert service._can_call_text_model("gemini-2.5-flash") is True
+
+    def fake_generate_content(*, model, schema, prompt, input_text, timeout):
+        assert model == "gemini-2.5-flash"
+        assert schema == SUMMARY_SCHEMA
+        assert "Summarize" in prompt
+        assert "Extracted text" in input_text
+        assert timeout == 12
+        return {
+            "responseId": "vertex-response-1",
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "rich_summary": "This paper uses managed Vertex credentials.",
+                                        "confidence": 0.86,
+                                        "needs_review_reasons": [],
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 30,
+                "candidatesTokenCount": 9,
+                "totalTokenCount": 39,
+            },
+        }
+
+    service._gemini_generate_content = fake_generate_content  # type: ignore[method-assign]
+    usage_records: list[dict] = []
+
+    result = service._responses_json(
+        model="gemini-2.5-flash",
+        schema_name="medusa_document_summary",
+        schema=SUMMARY_SCHEMA,
+        prompt="Summarize this document.",
+        input_content=[{"type": "input_text", "text": "Extracted text"}],
+        timeout=12,
+        usage_context=OpenAIUsageContext(document_id="doc-google", source="test", recorder=usage_records.append),
+        task_key=MODEL_SUMMARY,
+        input_text_characters=14,
+    )
+
+    assert result["rich_summary"] == "This paper uses managed Vertex credentials."
+    assert usage_records[0]["provider"] == "google"
+    assert usage_records[0]["endpoint"] == "generateContent"

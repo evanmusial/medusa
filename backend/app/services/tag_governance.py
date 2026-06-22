@@ -148,6 +148,7 @@ def apply_import_tag_governance(
     concordance_job_id: str | None = None,
     ai: Any | None = None,
     usage_context: OpenAIUsageContext | None = None,
+    replace_existing: bool = False,
 ) -> dict[str, Any]:
     candidates = candidate_tag_names(topics, keywords)
     decisions = score_tag_candidates(
@@ -158,6 +159,10 @@ def apply_import_tag_governance(
         ai=ai,
         usage_context=usage_context,
     )
+
+    replaced_tag_names = sorted(tag.name for tag in document.tags) if replace_existing else []
+    if replace_existing:
+        document.tags.clear()
 
     attached = 0
     new_candidates = 0
@@ -254,6 +259,9 @@ def apply_import_tag_governance(
         "max_new_candidates": TAG_IMPORT_MAX_NEW_CANDIDATES,
         "selection_policy": "ranked_existing_first_total_cap_new_cap",
         "score_axes": ["document_relevance", "library_fit", "novelty_value"],
+        "replace_existing": replace_existing,
+        "replaced_tag_count": len(replaced_tag_names),
+        "replaced_tags": replaced_tag_names,
         "decisions": assessments[:20],
     }
     evidence = dict(document.metadata_evidence or {})
