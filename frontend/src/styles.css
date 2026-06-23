@@ -1302,6 +1302,79 @@ textarea {
   vertical-align: 0;
 }
 
+.domain-assign-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.domain-assign-popover {
+  position: absolute;
+  z-index: 35;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(380px, calc(100vw - 36px));
+  max-height: min(420px, 58vh);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+
+.domain-assign-list {
+  display: grid;
+  gap: 3px;
+}
+
+.domain-assign-list label {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 16px 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+  padding: 4px 8px;
+}
+
+.domain-assign-list label:hover,
+.domain-assign-list label.selected {
+  border-color: color-mix(in srgb, var(--domain-chip-color, var(--blue)) 26%, var(--line));
+  background: color-mix(in srgb, var(--domain-chip-color, var(--blue)) 10%, var(--panel-2));
+}
+
+.domain-assign-list input[type="checkbox"] {
+  accent-color: var(--blue);
+}
+
+.domain-assign-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--domain-chip-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.domain-assign-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.domain-assign-list small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .document-list {
   overflow: hidden;
   display: grid;
@@ -2614,6 +2687,7 @@ textarea {
   gap: 8px;
 }
 
+.detail-domains-section,
 .detail-tags-section {
   display: grid;
   gap: 8px;

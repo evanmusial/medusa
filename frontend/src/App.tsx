@@ -49,6 +49,7 @@ import {
   FileSearch,
   FileText,
   Filter,
+  FolderPlus,
   FolderTree,
   Gauge,
   IndentDecrease,
@@ -4553,6 +4554,7 @@ function DocumentPanelContent({
   const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const comparePdfRef = useRef<HTMLIFrameElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
+  const domainAssignRef = useRef<HTMLDivElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [pageTextDraft, setPageTextDraft] = useState("");
@@ -4575,6 +4577,9 @@ function DocumentPanelContent({
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState(document.rich_summary || "");
   const [summaryEditError, setSummaryEditError] = useState<string | null>(null);
+  const [domainAssignOpen, setDomainAssignOpen] = useState(false);
+  const [domainAssignSearch, setDomainAssignSearch] = useState("");
+  const [domainEditError, setDomainEditError] = useState<string | null>(null);
   const [tagNameDraft, setTagNameDraft] = useState("");
   const [tagEditError, setTagEditError] = useState<string | null>(null);
   const [documentConcordanceRunId, setDocumentConcordanceRunId] = useState<string | null>(null);
@@ -4633,6 +4638,19 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setTagEditError(actionFailureMessage("Could not update tags", error)),
+  });
+  const updateDocumentDomains = useMutation({
+    mutationFn: (domainIds: string[]) => api.updateDocument(document.id, { domain_ids: domainIds }),
+    onSuccess: (updatedDocument) => {
+      setDomainEditError(null);
+      setDraft((current) => ({ ...current, domain_ids: updatedDocument.domains.map((domain) => domain.id) }));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setDomainEditError(actionFailureMessage("Could not update domains", error)),
   });
   const updateDoi = useMutation({
     mutationFn: (value: string) => api.updateDocument(document.id, { doi: value.trim() || null }),
@@ -4895,6 +4913,9 @@ function DocumentPanelContent({
     setEditingSummary(false);
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
+    setDomainAssignOpen(false);
+    setDomainAssignSearch("");
+    setDomainEditError(null);
     setTagNameDraft("");
     setTagEditError(null);
     setEditingPageId(null);
@@ -4929,6 +4950,15 @@ function DocumentPanelContent({
   useEffect(() => {
     setAccessoryModel(accessorySummaryDefaultModel);
   }, [accessorySummaryDefaultModel, document.id]);
+
+  useEffect(() => {
+    if (!domainAssignOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!domainAssignRef.current?.contains(event.target as Node)) setDomainAssignOpen(false);
+    };
+    window.addEventListener("mousedown", closeOnOutsideClick);
+    return () => window.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [domainAssignOpen]);
 
   const copyCitation = (kind: CitationKind) => {
     const text = citationText(document, kind);
@@ -5070,10 +5100,25 @@ function DocumentPanelContent({
   const sortedDocumentDomains = useMemo(() => sortByName(document.domains), [document.domains]);
   const sortedAvailableTags = useMemo(() => sortByName(tags), [tags]);
   const currentTagNames = useMemo(() => normalizedNameList(sortedDocumentTags.map((tag) => tag.name)), [sortedDocumentTags]);
+  const currentDomainIds = useMemo(() => new Set(document.domains.map((domain) => domain.id)), [document.domains]);
+  const currentDomainIdList = useMemo(() => document.domains.map((domain) => domain.id), [document.domains]);
+  const domainAssignOptions = useMemo(() => {
+    const byId = new Map(domains.map((domain) => [domain.id, domain]));
+    return domainPickerItems(domains).flatMap((item) => {
+      const domain = byId.get(item.id);
+      return domain ? [{ ...item, domain }] : [];
+    });
+  }, [domains]);
+  const filteredDomainAssignOptions = useMemo(() => {
+    const needle = domainAssignSearch.trim().toLocaleLowerCase();
+    if (!needle) return domainAssignOptions;
+    return domainAssignOptions.filter((option) => `${option.name} ${option.meta || ""}`.toLocaleLowerCase().includes(needle));
+  }, [domainAssignOptions, domainAssignSearch]);
   const tagUpdateBusy = updateDocumentTags.isPending || tagRefreshBusy;
   const tagUpdateBusyReason = updateDocumentTags.isPending
     ? "a tag update is already saving for this document."
     : "a tag refresh is already queued or running for this document.";
+  const domainUpdateBusyReason = updateDocumentDomains.isPending ? "a domain assignment update is already saving for this document." : "";
 
   useEffect(() => {
     if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
@@ -5443,6 +5488,14 @@ function DocumentPanelContent({
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
+  const toggleDocumentDomainAssignment = (domainId: string) => {
+    if (updateDocumentDomains.isPending) return;
+    const nextDomainIds = currentDomainIds.has(domainId)
+      ? currentDomainIdList.filter((id) => id !== domainId)
+      : [...currentDomainIdList, domainId];
+    updateDocumentDomains.mutate(uniqueValues(nextDomainIds));
+  };
+
   const toggleDomain = (domainId: string) => {
     setDraft((current) => ({
       ...current,
@@ -5474,6 +5527,7 @@ function DocumentPanelContent({
   };
 
   useEscapeLayer(recommendationsOpen, () => setRecommendationsOpen(false), ESCAPE_PRIORITY_POPOVER);
+  useEscapeLayer(domainAssignOpen, () => setDomainAssignOpen(false), ESCAPE_PRIORITY_MENU);
   useEscapeLayer(accessoryComposerOpen && !accessorySummaryBusy, () => setAccessoryComposerOpen(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingDoi && !updateDoi.isPending, () => setEditingDoi(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingSummary && !updateSummary.isPending, () => setEditingSummary(false), ESCAPE_PRIORITY_EXPANDED);
@@ -5559,6 +5613,59 @@ function DocumentPanelContent({
           <span>No domains yet.</span>
         </div>
       )}
+      <div className="domain-assign-row" ref={domainAssignRef}>
+        <button
+          aria-expanded={domainAssignOpen}
+          className="secondary-button compact"
+          data-tooltip="Open the domain assignment popup for this document."
+          onClick={() =>
+            setDomainAssignOpen((open) => {
+              if (open) setDomainAssignSearch("");
+              return !open;
+            })
+          }
+          type="button"
+        >
+          <FolderPlus size={14} />
+          Assign...
+        </button>
+        {domainAssignOpen ? (
+          <div className="domain-assign-popover" data-escape-layer="menu">
+            <input
+              aria-label="Filter domains"
+              className="select-search-input"
+              data-tooltip="Type to filter the available domains."
+              onChange={(event) => setDomainAssignSearch(event.target.value)}
+              placeholder="Filter domains"
+              value={domainAssignSearch}
+            />
+            <div className="domain-assign-list" aria-label="Domain assignments">
+              {filteredDomainAssignOptions.length ? (
+                filteredDomainAssignOptions.map((option) => {
+                  const assigned = currentDomainIds.has(option.id);
+                  return (
+                    <label className={assigned ? "selected" : ""} key={option.id}>
+                      <input
+                        checked={assigned}
+                        data-disabled-reason={domainUpdateBusyReason}
+                        disabled={updateDocumentDomains.isPending}
+                        onChange={() => toggleDocumentDomainAssignment(option.id)}
+                        type="checkbox"
+                      />
+                      <span className="domain-assign-dot" style={{ "--domain-chip-color": option.domain.color || "var(--blue)" } as CSSProperties} />
+                      <span className="domain-assign-name">{option.name}</span>
+                      <small>{option.meta}</small>
+                    </label>
+                  );
+                })
+              ) : (
+                <div className="bulk-multi-empty">{domainAssignSearch.trim() ? "No matching domains" : "No domains available"}</div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      {domainEditError ? <p className="form-error">{domainEditError}</p> : null}
     </section>
   );
   const renderTagsSection = () => {
