@@ -450,7 +450,7 @@ function authorLine(document: DocumentSummary | DocumentDetail) {
 }
 
 function pageCountMarker(document: DocumentSummary | DocumentDetail) {
-  return document.page_count > 0 ? `${document.page_count}pp` : "?pp";
+  return document.page_count > 0 ? `${document.page_count}p` : "?p";
 }
 
 function BookSearchIcon({ size = 15 }: { size?: number }) {
@@ -1500,6 +1500,11 @@ function importFileCountLabel(count: number) {
 function formatMetric(value?: number | null) {
   if (value === undefined || value === null || !Number.isFinite(value)) return "0";
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0, notation: Math.abs(value) >= 100000 ? "compact" : "standard" }).format(value);
+}
+
+function formatWholeNumber(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "0";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }
 
 function formatUsd(value?: number | null) {
@@ -3479,6 +3484,8 @@ function LibraryView({
     [documents],
   );
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
+  const libraryPageCount = sortedDocuments.reduce((total, item) => total + Math.max(0, item.page_count || 0), 0);
+  const libraryCountLabel = `${formatWholeNumber(sortedDocuments.length)} document${sortedDocuments.length === 1 ? "" : "s"} (${formatWholeNumber(libraryPageCount)} page${libraryPageCount === 1 ? "" : "s"})`;
   const domainOptions = useMemo(() => domainPickerItems(domains).map(({ id, name }) => ({ id, name })), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
@@ -3730,7 +3737,7 @@ function LibraryView({
                 if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id, { updateUrl: false });
               }}
             />
-            <strong>{loading ? "Searching..." : `${sortedDocuments.length} documents`}</strong>
+            <strong>{loading ? "Searching..." : libraryCountLabel}</strong>
           </label>
           {selectedIds.length ? (
             <div className="bulk-bar">

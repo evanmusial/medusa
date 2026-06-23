@@ -25,6 +25,8 @@ Core workflows:
 
 Medusa should feel like a serious research cockpit: dense, calm, polished, and fast to scan.
 
+Typography should reserve very small, heavy, or all-caps treatment for compact controls, interaction chips, and button-adjacent metadata. Section subtitles, metric labels, table headers, usage ledgers, and ordinary panel copy should use sentence/title case or source text casing with moderate weight so repeated operational surfaces remain readable.
+
 Current UI architecture:
 
 - Fixed top header with the Medusa emblem, global search, a reserved active-work progress control, theme toggle, and session action. The active-work slot keeps its width while idle so the header does not jump when imports, Concordance, or citation refresh work starts.

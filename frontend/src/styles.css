@@ -1714,8 +1714,8 @@ textarea {
 
 .composition-head span {
   font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .composition-grid {
@@ -1821,8 +1821,8 @@ textarea {
 
 .composition-estimate-row span {
   font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .composition-estimate-row small {
@@ -1841,10 +1841,9 @@ textarea {
 }
 
 .composition-local-row span,
-.composition-pipeline-node span,
 .composition-issue-row strong {
   color: var(--ink);
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .composition-flow-chart {
@@ -1991,7 +1990,8 @@ textarea {
   font-size: 12px;
   letter-spacing: 0;
   line-height: 1.15;
-  text-transform: uppercase;
+  font-weight: 600;
+  text-transform: none;
   color: color-mix(in srgb, var(--muted) 78%, var(--node-accent));
 }
 
@@ -2219,7 +2219,7 @@ textarea {
   border-radius: 999px;
   padding: 0 8px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: capitalize;
   border: 1px solid var(--line);
   color: var(--muted);
@@ -2251,7 +2251,7 @@ textarea {
   border-radius: 999px;
   padding: 0 8px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 650;
   text-transform: capitalize;
   border: 1px solid transparent;
 }
@@ -2600,9 +2600,9 @@ textarea {
 
 .reader-page header span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .reader-page pre {
@@ -2662,8 +2662,9 @@ textarea {
 
 .detail-section h3 {
   margin: 0 0 8px;
-  font-size: 13px;
-  text-transform: uppercase;
+  font-size: 14px;
+  font-weight: 650;
+  text-transform: none;
   color: var(--muted);
 }
 
@@ -4132,10 +4133,10 @@ pre {
 
 .tag-optimization-head span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .tag-optimization-head strong {
@@ -4173,10 +4174,10 @@ pre {
 .tag-optimization-progress-copy span {
   flex: 0 0 auto;
   color: var(--blue);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .tag-optimization-progress-copy strong {
@@ -5416,9 +5417,9 @@ pre {
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .budget-controls select {
@@ -5449,9 +5450,9 @@ pre {
 
 .budget-metric-grid span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .budget-metric-grid strong {
@@ -5504,9 +5505,9 @@ pre {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .budget-chart-head strong {
@@ -5564,8 +5565,8 @@ pre {
   align-items: center;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .budget-trend-axis span {
@@ -5671,7 +5672,7 @@ pre {
   color: var(--muted);
   font-size: 11px;
   font-style: normal;
-  font-weight: 800;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -5718,9 +5719,9 @@ pre {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .budget-section-head > svg {
@@ -5763,8 +5764,8 @@ pre {
 .budget-row.header {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-weight: 650;
+  text-transform: none;
 }
 
 .budget-row.empty {
@@ -5820,19 +5821,20 @@ pre {
 .budget-recent-row strong {
   color: var(--ink);
   font-size: 12px;
+  font-weight: 600;
 }
 
 .budget-recent-row span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .budget-recent-row em {
   color: var(--ink);
   font-size: 12px;
   font-style: normal;
-  font-weight: 850;
+  font-weight: 650;
   white-space: nowrap;
 }
 
@@ -5843,7 +5845,7 @@ pre {
   gap: 8px;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .budget-footnote a {
@@ -5904,9 +5906,9 @@ pre {
 .utilities-status-grid span,
 .utility-action-block span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .utilities-status-grid strong {
@@ -5933,8 +5935,8 @@ pre {
 .database-size-readout span {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .database-size-readout strong {
@@ -5969,7 +5971,7 @@ pre {
   display: block;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 850;
+  font-weight: 650;
 }
 
 .utility-action-block span {
@@ -6022,9 +6024,9 @@ pre {
 .container-path-row span,
 .container-path-empty {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .container-footprint-card strong {
@@ -6179,11 +6181,11 @@ pre {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-transform: uppercase;
+  text-transform: none;
   white-space: nowrap;
 }
 
@@ -6413,11 +6415,11 @@ pre {
 
 .model-options-group-label {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0;
   padding: 6px 8px 4px;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .model-options button {
@@ -6467,9 +6469,9 @@ pre {
 
 .model-pricing-status span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .model-pricing-status strong {
@@ -6517,9 +6519,9 @@ pre {
 
 .usage-metric-grid span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .usage-metric-grid strong {
@@ -6552,8 +6554,8 @@ pre {
 .usage-row.header {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-weight: 650;
+  text-transform: none;
 }
 
 .usage-row.empty {
@@ -6683,9 +6685,9 @@ pre {
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .restore-source-grid select {
@@ -6724,9 +6726,9 @@ pre {
 
 .backup-status-grid span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .backup-status-grid strong {
@@ -6803,9 +6805,9 @@ pre {
   background: transparent;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 850;
+  font-weight: 650;
   padding-block: 0;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .backup-history-row.empty {
