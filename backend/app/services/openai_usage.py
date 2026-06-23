@@ -574,6 +574,11 @@ def estimated_cost_usd_for_record(record: OpenAIUsageRecord, db: Session | None 
     return _cost_for_record(record, _pricing_index(db))
 
 
+def estimated_costs_usd_for_records(records: list[OpenAIUsageRecord], db: Session | None = None) -> dict[str, float | None]:
+    pricing_index = _pricing_index(db)
+    return {record.id: _cost_for_record(record, pricing_index) for record in records}
+
+
 def estimated_cost_usd_for_model_tokens(
     model: str | None,
     *,

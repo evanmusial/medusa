@@ -108,6 +108,85 @@ def test_composition_syncs_usage_costs_and_local_duration(monkeypatch, tmp_path)
     assert summary["estimate_comparison"]["status"] == "over"
 
 
+def test_composition_includes_tiny_usage_costs_from_raw_usage(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import Document, DocumentCompositionRecord, ImportBatch, ImportJob, OpenAIUsageRecord
+    from app.services.composition import document_composition_summary, sync_import_usage_composition
+
+    with Session() as db:
+        document = Document(title="Tiny", original_filename="tiny.pdf", checksum_sha256="c" * 64)
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        job = ImportJob(batch=batch, document=document, status="running", current_step="enriching")
+        db.add_all([document, batch, job])
+        db.flush()
+        db.add(
+            OpenAIUsageRecord(
+                document_id=document.id,
+                import_job_id=job.id,
+                source="import",
+                capability_key="tag_governance",
+                task_key="text_chunk_encoding",
+                operation="text_chunk_embedding",
+                provider="openai",
+                endpoint="embeddings",
+                model="text-embedding-3-small",
+                status="success",
+                input_tokens=427,
+                output_tokens=0,
+                total_tokens=427,
+                created_at=datetime(2026, 6, 19, 15, tzinfo=timezone.utc),
+                usage_metadata={},
+            )
+        )
+        db.commit()
+
+        assert sync_import_usage_composition(db, document=document, job=job) == 1
+        db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).update(
+            {"amount_usd": 0.0}
+        )
+        db.commit()
+        summary = document_composition_summary(db, document)
+
+    embedding_entry = next(entry for entry in summary["cost_entries"] if entry["record_kind"] == "embedding")
+    assert embedding_entry["amount_usd"] == 0.00000854
+    assert embedding_entry["stage_key"] == "tag_governance"
+    assert embedding_entry["stage_label"] == "Tag governance"
+    assert summary["provider_breakdown"][0]["amount_usd"] == 0.00000854
+    assert summary["total_estimated_cost_usd"] == 0.00000854
+
+
+def test_composition_local_page_normalization_does_not_claim_fallback_model(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import Document, ImportBatch, ImportJob
+    from app.services.composition import document_composition_summary, record_import_stage
+
+    with Session() as db:
+        document = Document(title="Local Pages", original_filename="local-pages.pdf", checksum_sha256="e" * 64)
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        job = ImportJob(batch=batch, document=document, status="running", current_step="extracting")
+        db.add_all([document, batch, job])
+        db.flush()
+        record_import_stage(
+            db,
+            document=document,
+            job=job,
+            stage_key="page_text_normalization",
+            method="local_first_auto",
+            model="gpt-5.4-mini",
+            duration_ms=34,
+            metadata={"sources": {"local_auto": 7}, "auto_cloud_pages": 0},
+        )
+        db.commit()
+
+        summary = document_composition_summary(db, document)
+
+    page_node = summary["pipeline"][0]
+    assert page_node["stage_key"] == "page_text_normalization"
+    assert page_node["method"] == "local_auto"
+    assert page_node["model"] is None
+    assert page_node["provider"] == "Local"
+
+
 def test_composition_pipeline_preserves_import_execution_order(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.models import Document, ImportBatch, ImportJob, OpenAIUsageRecord

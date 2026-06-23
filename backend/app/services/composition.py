@@ -17,7 +17,7 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
-from app.services.openai_usage import estimated_cost_usd_for_record
+from app.services.openai_usage import estimated_cost_usd_for_record, estimated_costs_usd_for_records
 
 
 STAGE_SEQUENCE = {
@@ -32,6 +32,7 @@ STAGE_SEQUENCE = {
     "figure_assets": 20,
     "visual_asset_context": 22,
     "summary_topics": 30,
+    "tag_governance": 31,
     "summary_refresh": 32,
     "citation_refresh": 34,
     "text_chunk_encoding": 40,
@@ -53,6 +54,7 @@ STAGE_LABELS = {
     "figure_assets": "Figure extraction",
     "visual_asset_context": "Visual asset context",
     "summary_topics": "Metadata, summary, and topics",
+    "tag_governance": "Tag governance",
     "summary_refresh": "Summary refresh",
     "citation_refresh": "APA citation matching",
     "text_chunk_encoding": "Text chunk encoding",
@@ -74,6 +76,7 @@ CAPABILITY_STAGE = {
     "figure_assets": "visual_asset_extraction",
     "search_index": "search_index",
     "summary_topics": "summary_topics",
+    "tag_governance": "tag_governance",
     "summary_refresh": "summary_refresh",
     "citation_refresh": "citation_refresh",
     "text_chunk_encoding": "text_chunk_encoding",
@@ -442,6 +445,78 @@ def _record_metadata(record: DocumentCompositionRecord) -> dict[str, Any]:
     return record.record_metadata if isinstance(record.record_metadata, dict) else {}
 
 
+def _metadata_int(metadata: dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        return int(metadata.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _record_stage_key(record: DocumentCompositionRecord) -> str:
+    metadata = _record_metadata(record)
+    capability_key = metadata.get("capability_key")
+    if record.record_kind in {"llm", "embedding"} and isinstance(capability_key, str) and capability_key in CAPABILITY_STAGE:
+        return CAPABILITY_STAGE[capability_key]
+    return record.stage_key
+
+
+def _record_stage_label(record: DocumentCompositionRecord) -> str:
+    stage = _record_stage_key(record)
+    if stage != record.stage_key:
+        return stage_label(stage)
+    return record.stage_label
+
+
+def _record_sequence(record: DocumentCompositionRecord) -> int:
+    return STAGE_SEQUENCE.get(_record_stage_key(record), record.sequence if record.sequence is not None else 80)
+
+
+def _record_method(record: DocumentCompositionRecord) -> str | None:
+    metadata = _record_metadata(record)
+    if (
+        record.record_kind in {"local", "concordance"}
+        and record.stage_key == "page_text_normalization"
+        and record.method == "local_first_auto"
+        and _metadata_int(metadata, "auto_cloud_pages") <= 0
+    ):
+        return "local_auto"
+    return record.method
+
+
+def _record_model(record: DocumentCompositionRecord) -> str | None:
+    if (
+        record.record_kind in {"local", "concordance"}
+        and record.stage_key == "page_text_normalization"
+        and record.method == "local_first_auto"
+    ):
+        return None
+    if record.record_kind == "local" and record.stage_key == "text_chunk_encoding" and record.method == "embedding_index":
+        return None
+    return record.model
+
+
+def _usage_costs_by_id(db: Session, records: list[DocumentCompositionRecord]) -> dict[str, float | None]:
+    usage_ids = sorted(
+        {
+            record.usage_record_id
+            for record in records
+            if record.usage_record_id and record.record_kind in {"llm", "embedding"}
+        }
+    )
+    if not usage_ids:
+        return {}
+    usage_records = db.query(OpenAIUsageRecord).filter(OpenAIUsageRecord.id.in_(usage_ids)).all()
+    return estimated_costs_usd_for_records(usage_records, db)
+
+
+def _record_amount(record: DocumentCompositionRecord, usage_costs: dict[str, float | None]) -> float:
+    if record.usage_record_id and record.record_kind in {"llm", "embedding"}:
+        cost = usage_costs.get(record.usage_record_id)
+        if cost is not None:
+            return max(0.0, float(cost or 0.0))
+    return _float(record.amount_usd)
+
+
 def _timestamp_sort_value(value: datetime | None) -> float:
     return value.timestamp() if value else float("inf")
 
@@ -460,25 +535,28 @@ def _record_source(record: DocumentCompositionRecord) -> str:
 
 def _record_task_identity(record: DocumentCompositionRecord) -> str:
     metadata = _record_metadata(record)
+    capability_key = metadata.get("capability_key")
+    if isinstance(capability_key, str) and capability_key and capability_key != record.stage_key and capability_key in CAPABILITY_STAGE:
+        return capability_key
     task_key = metadata.get("task_key")
     if isinstance(task_key, str) and task_key:
         return task_key
-    capability_key = metadata.get("capability_key")
     if isinstance(capability_key, str) and capability_key:
         return capability_key
-    return record.stage_key
+    return _record_stage_key(record)
 
 
 def _pipeline_record_order(record: DocumentCompositionRecord, fallback_index: int) -> tuple[float, float, int]:
     metadata = _record_metadata(record)
     task_key = metadata.get("task_key")
-    base = float(record.sequence if record.sequence is not None else STAGE_SEQUENCE.get(record.stage_key, 80))
+    stage = _record_stage_key(record)
+    base = float(_record_sequence(record))
     if isinstance(task_key, str) and task_key in PIPELINE_TASK_OFFSETS:
         offset = PIPELINE_TASK_OFFSETS[task_key]
     elif record.record_kind == "local":
-        offset = PIPELINE_LOCAL_OFFSETS.get(record.stage_key, 0.5)
+        offset = PIPELINE_LOCAL_OFFSETS.get(stage, 0.5)
     elif record.record_kind == "concordance":
-        offset = PIPELINE_LOCAL_OFFSETS.get(record.stage_key, 0.05)
+        offset = PIPELINE_LOCAL_OFFSETS.get(stage, 0.05)
     else:
         offset = 0.4
     source = _record_source(record)
@@ -493,17 +571,13 @@ def _sum_duration(records: list[DocumentCompositionRecord]) -> int:
     return sum(max(0, int(record.duration_ms or 0)) for record in records if record.record_kind in {"local", "concordance"})
 
 
-def _group_key(record: DocumentCompositionRecord, *fields: str) -> tuple[Any, ...]:
-    return tuple(getattr(record, field) for field in fields)
-
-
 def _pipeline_group_key(record: DocumentCompositionRecord) -> tuple[Any, ...]:
     metadata = _record_metadata(record)
     return (
-        record.stage_key,
+        _record_stage_key(record),
         record.provider,
-        record.method,
-        record.model,
+        _record_method(record),
+        _record_model(record),
         record.record_kind,
         _record_source(record),
         metadata.get("concordance_run_id"),
@@ -590,7 +664,7 @@ def _estimate_step_rows(
     return rows
 
 
-def _estimate_comparison(records: list[DocumentCompositionRecord]) -> dict[str, Any] | None:
+def _estimate_comparison(records: list[DocumentCompositionRecord], usage_costs: dict[str, float | None]) -> dict[str, Any] | None:
     estimate = _latest_import_estimate(records)
     if not estimate or _float(estimate.amount_usd) <= 0:
         return None
@@ -598,11 +672,11 @@ def _estimate_comparison(records: list[DocumentCompositionRecord]) -> dict[str, 
     estimated_cost = round(_float(estimate.amount_usd), 6)
     actual_cost = round(
         sum(
-            _float(record.amount_usd)
+            _record_amount(record, usage_costs)
             for record in records
-            if record.record_kind in {"llm", "embedding"} and _float(record.amount_usd) > 0
+            if record.record_kind in {"llm", "embedding"} and _record_amount(record, usage_costs) > 0
         ),
-        6,
+        9,
     )
     variance = round(actual_cost - estimated_cost, 6) if actual_cost > 0 else None
     variance_percent = round((variance / estimated_cost) * 100, 2) if variance is not None and estimated_cost > 0 else None
@@ -658,21 +732,26 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
     pipeline_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     represented_task_keys: set[str] = set()
     errata: list[dict[str, Any]] = []
+    usage_costs = _usage_costs_by_id(db, records)
 
     for record_index, record in enumerate(records):
-        amount = _float(record.amount_usd)
+        amount = _record_amount(record, usage_costs)
         provider = provider_label(record.provider)
+        display_stage_key = _record_stage_key(record)
+        display_stage_label = _record_stage_label(record)
+        display_method = _record_method(record)
+        display_model = _record_model(record)
         if amount > 0 and record.record_kind != "estimate":
-            key = _group_key(record, "provider", "model", "stage_key", "record_kind")
+            key = (record.provider, display_model, display_stage_key, record.record_kind)
             group = cost_groups.setdefault(
                 key,
                 {
-                    "label": record.model or record.method or provider,
-                    "stage_key": record.stage_key,
-                    "stage_label": record.stage_label,
+                    "label": display_model or display_method or provider,
+                    "stage_key": display_stage_key,
+                    "stage_label": display_stage_label,
                     "provider": provider,
-                    "method": record.method,
-                    "model": record.model,
+                    "method": display_method,
+                    "model": display_model,
                     "record_kind": record.record_kind,
                     "status": record.status,
                     "amount_usd": 0.0,
@@ -695,9 +774,9 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
         if record.record_kind in {"local", "concordance"} and record.duration_ms:
             metadata = _record_metadata(record)
             key = (
-                record.stage_key,
-                record.method,
-                record.model,
+                display_stage_key,
+                display_method,
+                display_model,
                 _record_source(record),
                 metadata.get("concordance_run_id"),
                 metadata.get("concordance_job_id"),
@@ -705,12 +784,12 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             group = local_groups.setdefault(
                 key,
                 {
-                    "label": record.stage_label,
-                    "stage_key": record.stage_key,
-                    "stage_label": record.stage_label,
+                    "label": display_stage_label,
+                    "stage_key": display_stage_key,
+                    "stage_label": display_stage_label,
                     "provider": provider,
-                    "method": record.method,
-                    "model": record.model,
+                    "method": display_method,
+                    "model": display_model,
                     "record_kind": record.record_kind,
                     "status": record.status,
                     "amount_usd": 0.0,
@@ -731,12 +810,12 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
             group = pipeline_groups.setdefault(
                 key,
                 {
-                    "label": record.stage_label,
-                    "stage_key": record.stage_key,
-                    "stage_label": record.stage_label,
+                    "label": display_stage_label,
+                    "stage_key": display_stage_key,
+                    "stage_label": display_stage_label,
                     "provider": provider,
-                    "method": record.method,
-                    "model": record.model,
+                    "method": display_method,
+                    "model": display_model,
                     "record_kind": record.record_kind,
                     "status": record.status,
                     "amount_usd": 0.0,
@@ -745,7 +824,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
                     "output_tokens": 0,
                     "total_tokens": 0,
                     "call_count": 0,
-                    "sequence": record.sequence,
+                    "sequence": _record_sequence(record),
                     "created_at": record.completed_at or record.started_at or record.created_at,
                     "_sort_order": pipeline_order,
                 },
@@ -764,12 +843,12 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
         if record.record_kind == "erratum" or record.status in {"failed", "error", "warning"}:
             errata.append(
                 {
-                    "label": record.stage_label,
-                    "stage_key": record.stage_key,
-                    "stage_label": record.stage_label,
+                    "label": display_stage_label,
+                    "stage_key": display_stage_key,
+                    "stage_label": display_stage_label,
                     "provider": provider if record.provider else None,
-                    "method": record.method,
-                    "model": record.model,
+                    "method": display_method,
+                    "model": display_model,
                     "record_kind": record.record_kind,
                     "status": record.status,
                     "message": record.message,
@@ -783,7 +862,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
         rows = []
         for value in values:
             row = dict(value)
-            row["amount_usd"] = round(_float(row.get("amount_usd")), 6)
+            row["amount_usd"] = round(_float(row.get("amount_usd")), 9)
             row["duration_ms"] = int(row.get("duration_ms") or 0)
             rows.append(row)
         return rows
@@ -805,7 +884,7 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
     )
     for row in pipeline:
         row.pop("_sort_order", None)
-    total_cost = round(sum(row["amount_usd"] for row in cost_entries), 6)
+    total_cost = round(sum(_float(group.get("amount_usd")) for group in cost_groups.values()), 9)
     return {
         "document_id": document.id,
         "available": True,
@@ -816,5 +895,5 @@ def document_composition_summary(db: Session, document: Document) -> dict[str, A
         "local_duration_entries": local_duration_entries,
         "pipeline": pipeline,
         "errata": errata,
-        "estimate_comparison": _estimate_comparison(records),
+        "estimate_comparison": _estimate_comparison(records, usage_costs),
     }

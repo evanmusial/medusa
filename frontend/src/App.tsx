@@ -1504,11 +1504,16 @@ function formatMetric(value?: number | null) {
 
 function formatUsd(value?: number | null) {
   if (value === undefined || value === null || !Number.isFinite(value)) return "Unpriced";
-  const minimumFractionDigits = value > 0 && value < 0.01 ? 4 : 2;
+  let fractionDigits = 2;
+  if (value > 0 && value < 0.0001) {
+    fractionDigits = 8;
+  } else if (value > 0 && value < 0.01) {
+    fractionDigits = 4;
+  }
   return new Intl.NumberFormat(undefined, {
     currency: "USD",
-    maximumFractionDigits: 4,
-    minimumFractionDigits,
+    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: fractionDigits,
     style: "currency",
   }).format(value);
 }
@@ -1591,7 +1596,9 @@ type PipelineNodeData = Record<string, unknown> & {
   amountUsd: number;
   callCount: number;
   durationMs: number;
+  inputPosition: Position;
   meta: string;
+  outputPosition: Position;
   status: string;
   subtitle: string;
   title: string;
@@ -1609,8 +1616,9 @@ const compositionPipelineEdgeTypes = {
 };
 
 const COMPOSITION_PIPELINE_NODE_WIDTH = 236;
-const COMPOSITION_PIPELINE_NODE_HEIGHT = 126;
-const COMPOSITION_PIPELINE_GAP = 96;
+const COMPOSITION_PIPELINE_NODE_HEIGHT = 138;
+const COMPOSITION_PIPELINE_COLUMN_GAP = 76;
+const COMPOSITION_PIPELINE_ROW_GAP = 78;
 const COMPOSITION_PIPELINE_HANDLE_OFFSET = 6;
 const COMPOSITION_PIPELINE_ARROW_LENGTH = 14;
 const COMPOSITION_PIPELINE_ARROW_WIDTH = 12;
@@ -1638,31 +1646,58 @@ function pipelineMeta(entry: DocumentCompositionEntry) {
     .join(" / ");
 }
 
+function pipelineColumnCount(total: number) {
+  if (total <= 4) return Math.max(total, 1);
+  if (total <= 12) return 4;
+  return 5;
+}
+
+function pipelineNodeLayout(index: number, total: number) {
+  const columns = pipelineColumnCount(total);
+  const row = Math.floor(index / columns);
+  const columnIndex = index % columns;
+  const rowIsReversed = row % 2 === 1;
+  const visualColumn = rowIsReversed ? columns - 1 - columnIndex : columnIndex;
+  const rowEnd = columnIndex === columns - 1 || index === total - 1;
+  const rowStart = columnIndex === 0;
+  return {
+    inputPosition: index === 0 ? Position.Left : rowStart ? Position.Top : rowIsReversed ? Position.Right : Position.Left,
+    outputPosition: index === total - 1 ? Position.Right : rowEnd ? Position.Bottom : rowIsReversed ? Position.Left : Position.Right,
+    x: visualColumn * (COMPOSITION_PIPELINE_NODE_WIDTH + COMPOSITION_PIPELINE_COLUMN_GAP),
+    y: row * (COMPOSITION_PIPELINE_NODE_HEIGHT + COMPOSITION_PIPELINE_ROW_GAP),
+  };
+}
+
 function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
-  const nodes: CompositionPipelineNode[] = pipeline.map((entry, index) => ({
-    id: `pipeline-${index}`,
-    type: "compositionPipeline",
-    position: {
-      x: index * (COMPOSITION_PIPELINE_NODE_WIDTH + COMPOSITION_PIPELINE_GAP),
-      y: 88,
-    },
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    style: {
-      height: COMPOSITION_PIPELINE_NODE_HEIGHT,
-      width: COMPOSITION_PIPELINE_NODE_WIDTH,
-    },
-    data: {
-      amountUsd: entry.amount_usd || 0,
-      callCount: entry.call_count || 0,
-      durationMs: entry.duration_ms || 0,
-      meta: pipelineMeta(entry),
-      status: entry.status || "complete",
-      subtitle: compositionLabel(entry),
-      title: entry.stage_label || entry.label || "Pipeline step",
-      tone: pipelineTone(entry),
-    },
-  }));
+  const nodes: CompositionPipelineNode[] = pipeline.map((entry, index) => {
+    const layout = pipelineNodeLayout(index, pipeline.length);
+    return {
+      id: `pipeline-${index}`,
+      type: "compositionPipeline",
+      position: {
+        x: layout.x,
+        y: layout.y,
+      },
+      sourcePosition: layout.outputPosition,
+      targetPosition: layout.inputPosition,
+      style: {
+        height: COMPOSITION_PIPELINE_NODE_HEIGHT,
+        width: COMPOSITION_PIPELINE_NODE_WIDTH,
+      },
+      data: {
+        amountUsd: entry.amount_usd || 0,
+        callCount: entry.call_count || 0,
+        durationMs: entry.duration_ms || 0,
+        inputPosition: layout.inputPosition,
+        meta: pipelineMeta(entry),
+        outputPosition: layout.outputPosition,
+        status: entry.status || "complete",
+        subtitle: compositionLabel(entry),
+        title: entry.stage_label || entry.label || "Pipeline step",
+        tone: pipelineTone(entry),
+      },
+    };
+  });
   const edges: Edge[] = pipeline.slice(1).map((_, index) => ({
     id: `pipeline-edge-${index}`,
     source: `pipeline-${index}`,
@@ -1670,11 +1705,12 @@ function pipelineNodesAndEdges(pipeline: DocumentCompositionEntry[]) {
     target: `pipeline-${index + 1}`,
     targetHandle: "pipeline-input",
     type: "compositionPipeline",
+    data: { tone: pipelineTone(pipeline[index + 1]) },
   }));
   return { nodes, edges };
 }
 
-function CompositionPipelineEdgeView({ id, sourceX, sourceY, targetX, targetY }: EdgeProps) {
+function CompositionPipelineEdgeView({ id, sourceX, sourceY, targetX, targetY, data }: EdgeProps) {
   const deltaX = targetX - sourceX;
   const deltaY = targetY - sourceY;
   const length = Math.hypot(deltaX, deltaY);
@@ -1702,7 +1738,7 @@ function CompositionPipelineEdgeView({ id, sourceX, sourceY, targetX, targetY }:
   ].join(" ");
 
   return (
-    <g className="composition-pipeline-edge" data-edge-id={id}>
+    <g className={`composition-pipeline-edge ${String(data?.tone || "local")}`} data-edge-id={id}>
       <path className="composition-pipeline-edge-shadow" d={path} vectorEffect="non-scaling-stroke" />
       <path className="composition-pipeline-edge-path" d={path} vectorEffect="non-scaling-stroke" />
       <polygon className="composition-pipeline-edge-arrow" points={points} />
@@ -1719,13 +1755,13 @@ function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode
         className="composition-pipeline-handle input"
         id="pipeline-input"
         isConnectable={false}
-        position={Position.Left}
+        position={data.inputPosition}
         type="target"
       />
-      <span>{data.title}</span>
-      <strong>{data.subtitle}</strong>
-      {data.meta ? <small>{data.meta}</small> : null}
-      <div>
+      <span className="composition-pipeline-stage">{data.title}</span>
+      <span className="composition-pipeline-subtitle">{data.subtitle}</span>
+      {data.meta ? <small className="composition-pipeline-meta">{data.meta}</small> : null}
+      <div className="composition-pipeline-pills">
         <em>{data.status}</em>
         {hasSpend ? <em>{formatUsd(data.amountUsd)}</em> : null}
         {hasDuration ? <em>{formatDurationMs(data.durationMs)}</em> : null}
@@ -1734,7 +1770,7 @@ function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode
         className="composition-pipeline-handle output"
         id="pipeline-output"
         isConnectable={false}
-        position={Position.Right}
+        position={data.outputPosition}
         type="source"
       />
     </div>
@@ -4374,7 +4410,8 @@ function CompositionDialog({
                     colorMode="system"
                     edges={pipelineGraph.edges}
                     elementsSelectable={false}
-                    defaultViewport={{ x: 24, y: 34, zoom: 1 }}
+                    fitView
+                    fitViewOptions={{ padding: 0.1 }}
                     maxZoom={1.3}
                     minZoom={0.55}
                     edgeTypes={compositionPipelineEdgeTypes}

@@ -217,7 +217,7 @@ class DocumentCompositionRecord(Base, TimestampMixin):
     method: Mapped[str | None] = mapped_column(String(160))
     model: Mapped[str | None] = mapped_column(String(160), index=True)
     status: Mapped[str] = mapped_column(String(40), default="complete", nullable=False, index=True)
-    amount_usd: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    amount_usd: Mapped[float | None] = mapped_column(Numeric(18, 12))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
