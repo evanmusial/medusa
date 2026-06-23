@@ -1282,6 +1282,26 @@ textarea {
   color: var(--muted);
 }
 
+.domain-chip-list .domain-chip {
+  border-color: color-mix(in srgb, var(--domain-chip-color) 42%, var(--line));
+  background: color-mix(in srgb, var(--domain-chip-color) 18%, var(--panel));
+  color: color-mix(in srgb, var(--domain-chip-color) 58%, var(--ink));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--domain-chip-color) 12%, transparent);
+  font-weight: 750;
+}
+
+.domain-chip-list .domain-chip::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 999px;
+  background: var(--domain-chip-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--panel) 72%, transparent);
+  vertical-align: 0;
+}
+
 .document-list {
   overflow: hidden;
   display: grid;

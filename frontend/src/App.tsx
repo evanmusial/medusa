@@ -5542,9 +5542,15 @@ function DocumentPanelContent({
     <section className="detail-section detail-domains-section">
       <h3>Domains</h3>
       {sortedDocumentDomains.length ? (
-        <div className="tag-cloud">
+        <div className="tag-cloud domain-chip-list">
           {sortedDocumentDomains.map((domain) => (
-            <span key={domain.id}>{domain.name}</span>
+            <span
+              className="domain-chip"
+              key={domain.id}
+              style={{ "--domain-chip-color": domain.color || "var(--blue)" } as CSSProperties}
+            >
+              {domain.name}
+            </span>
           ))}
         </div>
       ) : (
