@@ -1263,7 +1263,7 @@ def read_openai_usage(
 
 @app.get("/api/domains", response_model=list[DomainOut])
 def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[DomainOut]:
-    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(Domain.sort_order, Domain.name).all()
+    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(func.lower(Domain.name), Domain.name, Domain.sort_order).all()
     return [domain_out(domain, db) for domain in domains]
 
 
@@ -1394,7 +1394,7 @@ def reorder_domains(
         domain.sort_order = item.sort_order
 
     db.commit()
-    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(Domain.sort_order, Domain.name).all()
+    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(func.lower(Domain.name), Domain.name, Domain.sort_order).all()
     return [domain_out(domain, db) for domain in domains]
 
 
@@ -1411,7 +1411,7 @@ def delete_domain(
     for document in documents:
         document.domains = [item for item in document.domains if item.id != domain.id]
 
-    children = db.query(Domain).filter(Domain.deleted_at.is_(None), Domain.parent_id == domain.id).order_by(Domain.sort_order, Domain.name).all()
+    children = db.query(Domain).filter(Domain.deleted_at.is_(None), Domain.parent_id == domain.id).order_by(func.lower(Domain.name), Domain.name, Domain.sort_order).all()
     for child in children:
         target_parent_id = domain.parent_id
         if active_domain_name_exists(db, name=child.name, parent_id=target_parent_id, exclude_id=child.id):

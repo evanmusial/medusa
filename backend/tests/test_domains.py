@@ -100,6 +100,27 @@ def test_domain_delete_soft_deletes_detaches_documents_and_reparents_children(mo
         assert version.metadata_snapshot["operation"] == "domain_delete"
 
 
+def test_list_domains_returns_alphabetical_names_before_manual_sort_order(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_domains
+    from app.models import Domain
+
+    Session = make_session()
+    with Session() as db:
+        zeta = Domain(name="Zeta", sort_order=0)
+        alpha = Domain(name="Alpha", sort_order=10)
+        beta_child = Domain(name="Beta Child", parent=alpha, sort_order=0)
+        alpha_child = Domain(name="Alpha Child", parent=alpha, sort_order=99)
+        db.add_all([zeta, alpha, beta_child, alpha_child])
+        db.commit()
+
+        result = list_domains(object(), db)
+
+    assert [domain.name for domain in result] == ["Alpha", "Alpha Child", "Beta Child", "Zeta"]
+
+
 def test_domain_reorder_moves_domains_and_rejects_parent_cycles(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -26,7 +26,6 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowRight,
-  ArrowUp,
   ArrowUpDown,
   Bold,
   Bookmark,
@@ -2559,8 +2558,8 @@ function WorkspaceNav({
 function orderedDomainList(domains: Domain[]) {
   return [...domains].sort(
     (left, right) =>
-      (left.sort_order ?? 0) - (right.sort_order ?? 0) ||
-      left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }),
+      left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }) ||
+      (left.sort_order ?? 0) - (right.sort_order ?? 0),
   );
 }
 
@@ -2617,15 +2616,31 @@ function descendantDomainIds(domainId: string, domains: Domain[]) {
   return ids;
 }
 
-function DomainTree({ domains }: { domains: Domain[] }) {
+function DomainTree({
+  assigningDomainId,
+  draggedDocumentAssignedDomainIds,
+  draggedDocumentId,
+  domains,
+  onAssignDocumentToDomain,
+}: {
+  assigningDomainId?: string | null;
+  draggedDocumentAssignedDomainIds?: Set<string>;
+  draggedDocumentId?: string | null;
+  domains: Domain[];
+  onAssignDocumentToDomain?: (documentId: string, domainId: string) => void;
+}) {
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
   const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const roots = children.root || [];
   const domainIds = useMemo(() => new Set(domains.map((domain) => domain.id)), [domains]);
+  const [dropHoverDomainId, setDropHoverDomainId] = useState<string | null>(null);
+  const dropReady = Boolean(draggedDocumentId && onAssignDocumentToDomain);
 
   const render = (domain: Domain, depth = 0) => {
     const count = subtreeCounts[domain.id] ?? domain.document_count ?? 0;
     const label = `${domain.name} (${count})`;
+    const alreadyAssigned = Boolean(dropReady && draggedDocumentAssignedDomainIds?.has(domain.id));
+    const assigning = assigningDomainId === domain.id;
     const depthStep = 14;
     const baseOffset = 4;
     const style = {
@@ -2633,9 +2648,49 @@ function DomainTree({ domains }: { domains: Domain[] }) {
       "--domain-connector-left": `${baseOffset + Math.max(depth - 1, 0) * depthStep + 4}px`,
       "--domain-connector-width": `${depth > 0 ? depthStep : 0}px`,
     } as CSSProperties;
+    const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+      if (!dropReady || !draggedDocumentId || alreadyAssigned || assigning) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDropHoverDomainId(domain.id);
+    };
+    const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+      if ((event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) return;
+      setDropHoverDomainId((current) => (current === domain.id ? null : current));
+    };
+    const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+      if (!dropReady || alreadyAssigned || assigning) return;
+      event.preventDefault();
+      const droppedDocumentId = event.dataTransfer.getData("application/x-medusa-document-id") || draggedDocumentId;
+      setDropHoverDomainId(null);
+      if (droppedDocumentId) onAssignDocumentToDomain?.(droppedDocumentId, domain.id);
+    };
+    const rowClassName = [
+      "domain-row",
+      dropReady ? "domain-row-droppable" : "",
+      alreadyAssigned ? "drop-assigned" : "",
+      assigning ? "drop-saving" : "",
+      dropHoverDomainId === domain.id ? "drop-hover" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     return (
       <div key={domain.id} className="domain-tree-node" data-depth={depth} style={style}>
-        <div className="domain-row" title={label}>
+        <div
+          aria-label={dropReady && !alreadyAssigned ? `Drop document on ${domain.name}` : undefined}
+          className={rowClassName}
+          data-tooltip={
+            dropReady
+              ? alreadyAssigned
+                ? `The dragged document is already assigned to ${domain.name}.`
+                : `Drop the dragged document here to assign it to ${domain.name}.`
+              : undefined
+          }
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          title={label}
+        >
           <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
           <span className="domain-label">
             <span className="domain-name">{domain.name}</span>
@@ -2693,11 +2748,6 @@ function DomainsView({
     if (!normalized) return [];
     return orderedDomainList(domains).filter((domain) => domainPathLabel(domain, domains).toLowerCase().includes(normalized));
   }, [domains, searchText]);
-  const selectedSiblings = useMemo(() => {
-    if (!selected) return [];
-    return children[selected.parent_id || "root"] || [];
-  }, [children, selected]);
-  const selectedSiblingIndex = selected ? selectedSiblings.findIndex((domain) => domain.id === selected.id) : -1;
   const selectedPath = selected ? domainPathLabel(selected, domains) : "";
   const selectedChildCount = selected ? (children[selected.id] || []).length : 0;
   const canSave = Boolean(selected && String(draft.name || "").trim());
@@ -2721,15 +2771,6 @@ function DomainsView({
       refreshDomainManagementData(queryClient);
     },
     onError: (mutationError) => setError(actionFailureMessage("Could not save domain", mutationError)),
-  });
-  const reorderDomains = useMutation({
-    mutationFn: api.reorderDomains,
-    onSuccess: () => {
-      setNotice("Domain order updated");
-      setError(null);
-      refreshDomainManagementData(queryClient);
-    },
-    onError: (mutationError) => setError(actionFailureMessage("Could not reorder domains", mutationError)),
   });
   const deleteDomain = useMutation({
     mutationFn: api.deleteDomain,
@@ -2780,14 +2821,6 @@ function DomainsView({
       },
     });
   };
-  const moveSelected = (direction: -1 | 1) => {
-    if (!selected || selectedSiblingIndex < 0) return;
-    const targetIndex = selectedSiblingIndex + direction;
-    if (targetIndex < 0 || targetIndex >= selectedSiblings.length) return;
-    const nextSiblings = [...selectedSiblings];
-    [nextSiblings[selectedSiblingIndex], nextSiblings[targetIndex]] = [nextSiblings[targetIndex], nextSiblings[selectedSiblingIndex]];
-    reorderDomains.mutate(nextSiblings.map((domain, index) => ({ id: domain.id, parent_id: domain.parent_id || null, sort_order: index })));
-  };
   const renderDomainButton = (domain: Domain, depth: number, pathOverride?: string) => {
     const childCount = (children[domain.id] || []).length;
     const selectedRow = selected?.id === domain.id;
@@ -2815,16 +2848,14 @@ function DomainsView({
       {(children[domain.id] || []).map((child) => renderDomainNode(child, depth + 1))}
     </div>
   );
-  const busy = createDomain.isPending || updateDomain.isPending || reorderDomains.isPending || deleteDomain.isPending;
+  const busy = createDomain.isPending || updateDomain.isPending || deleteDomain.isPending;
   const domainBusyReason = createDomain.isPending
     ? "a domain create request is already running."
     : updateDomain.isPending
       ? "a domain save request is already running."
-      : reorderDomains.isPending
-        ? "a domain reorder request is already running."
-        : deleteDomain.isPending
-          ? "a domain delete request is already running."
-          : "";
+      : deleteDomain.isPending
+        ? "a domain delete request is already running."
+        : "";
 
   return (
     <section className="workbench domains-workbench">
@@ -2958,28 +2989,6 @@ function DomainsView({
               >
                 <Save size={16} />
                 Save
-              </button>
-              <button
-                className="secondary-button"
-                data-disabled-reason={busy ? domainBusyReason : "the selected domain is already first among its siblings."}
-                data-tooltip="Move the selected domain up among siblings."
-                disabled={selectedSiblingIndex <= 0 || busy}
-                onClick={() => moveSelected(-1)}
-                type="button"
-              >
-                <ArrowUp size={16} />
-                Up
-              </button>
-              <button
-                className="secondary-button"
-                data-disabled-reason={busy ? domainBusyReason : "the selected domain is already last among its siblings."}
-                data-tooltip="Move the selected domain down among siblings."
-                disabled={selectedSiblingIndex < 0 || selectedSiblingIndex >= selectedSiblings.length - 1 || busy}
-                onClick={() => moveSelected(1)}
-                type="button"
-              >
-                <ArrowDown size={16} />
-                Down
               </button>
               <button
                 className="secondary-button"
@@ -3380,6 +3389,8 @@ function LibraryView({
   const [bulkCustomTag, setBulkCustomTag] = useState("");
   const [bulkDomainId, setBulkDomainId] = useState("");
   const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
+  const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
+  const [domainDropError, setDomainDropError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const titleCleanupFeedback = useAsyncActionFeedback();
   const saveSearch = useMutation({
@@ -3431,6 +3442,28 @@ function LibraryView({
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
+  const assignDomainFromDrop = useMutation({
+    mutationFn: ({ documentId, domainId }: { documentId: string; domainId: string }) => {
+      const targetDocument = document?.id === documentId ? document : documents.find((item) => item.id === documentId);
+      if (!targetDocument) throw new Error("The dragged document is no longer visible in the Library list.");
+      const currentDomainIds = uniqueValues(targetDocument.domains.map((domain) => domain.id));
+      if (currentDomainIds.includes(domainId)) return Promise.resolve(null);
+      return api.updateDocument(documentId, { domain_ids: [...currentDomainIds, domainId] });
+    },
+    onSuccess: (updatedDocument) => {
+      setDomainDropError(null);
+      setDraggedDocumentId(null);
+      if (updatedDocument) queryClient.setQueryData(["document", updatedDocument.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document"] });
+    },
+    onError: (error) => {
+      setDomainDropError(actionFailureMessage("Could not assign domain", error));
+      setDraggedDocumentId(null);
+    },
+  });
   useEscapeLayer(readerOpen, () => setReaderOpen(false), ESCAPE_PRIORITY_READER);
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
@@ -3450,6 +3483,14 @@ function LibraryView({
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const projectOptions = useMemo(() => sortedProjects.map(({ id, name }) => ({ id, name })), [sortedProjects]);
+  const draggedDocument = useMemo(
+    () => (draggedDocumentId ? sortedDocuments.find((item) => item.id === draggedDocumentId) : undefined),
+    [draggedDocumentId, sortedDocuments],
+  );
+  const draggedDocumentAssignedDomainIds = useMemo(
+    () => new Set((draggedDocument?.domains || []).map((domain) => domain.id)),
+    [draggedDocument],
+  );
   const savedSearchLookup = useMemo(
     () => ({
       domains: new Map(domainOptions.map((option) => [option.id, option.name])),
@@ -3625,7 +3666,14 @@ function LibraryView({
           <FolderTree size={17} />
           Domains
         </div>
-        <DomainTree domains={domains} />
+        <DomainTree
+          assigningDomainId={assignDomainFromDrop.isPending ? assignDomainFromDrop.variables?.domainId : null}
+          draggedDocumentAssignedDomainIds={draggedDocumentAssignedDomainIds}
+          draggedDocumentId={draggedDocumentId}
+          domains={domains}
+          onAssignDocumentToDomain={(documentId, domainId) => assignDomainFromDrop.mutate({ documentId, domainId })}
+        />
+        {domainDropError ? <p className="form-error domain-drop-error">{domainDropError}</p> : null}
         <div className="domain-tool-row">
           <AsyncActionSlot busy={titleCleanup.isPending} feedback={titleCleanupFeedback.feedback} label="Title cleanup in progress">
             <button
@@ -3752,7 +3800,16 @@ function LibraryView({
           {sortedDocuments.map((item) => (
             <div
               key={item.id}
-              className={`doc-row ${selectedId === item.id ? "selected" : ""}`}
+              className={`doc-row ${selectedId === item.id ? "selected" : ""} ${draggedDocumentId === item.id ? "dragging" : ""}`}
+              draggable
+              onDragEnd={() => setDraggedDocumentId(null)}
+              onDragStart={(event) => {
+                setDraggedDocumentId(item.id);
+                setDomainDropError(null);
+                event.dataTransfer.effectAllowed = "copy";
+                event.dataTransfer.setData("application/x-medusa-document-id", item.id);
+                event.dataTransfer.setData("text/plain", item.title);
+              }}
               onClick={() => activateDocument(item.id)}
             >
               <input
@@ -5010,6 +5067,7 @@ function DocumentPanelContent({
       ? "an Accessory Summary is already queued or running for this document."
       : "";
   const sortedDocumentTags = useMemo(() => sortByName(document.tags), [document.tags]);
+  const sortedDocumentDomains = useMemo(() => sortByName(document.domains), [document.domains]);
   const sortedAvailableTags = useMemo(() => sortByName(tags), [tags]);
   const currentTagNames = useMemo(() => normalizedNameList(sortedDocumentTags.map((tag) => tag.name)), [sortedDocumentTags]);
   const tagUpdateBusy = updateDocumentTags.isPending || tagRefreshBusy;
@@ -5480,6 +5538,23 @@ function DocumentPanelContent({
   };
   const annotations = document.annotations || [];
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
+  const renderDomainsSection = () => (
+    <section className="detail-section detail-domains-section">
+      <h3>Domains</h3>
+      {sortedDocumentDomains.length ? (
+        <div className="tag-cloud">
+          {sortedDocumentDomains.map((domain) => (
+            <span key={domain.id}>{domain.name}</span>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-inline">
+          <FolderTree size={17} />
+          <span>No domains yet.</span>
+        </div>
+      )}
+    </section>
+  );
   const renderTagsSection = () => {
     const existingTagNames = new Set(currentTagNames.map((name) => name.toLocaleLowerCase()));
     const availableTags = sortedAvailableTags.filter((tag) => !existingTagNames.has(tag.name.toLocaleLowerCase()));
@@ -6492,6 +6567,7 @@ function DocumentPanelContent({
           {saveError ? <p className="form-error">{saveError}</p> : null}
         </form>
       ) : null}
+      {renderDomainsSection()}
       {renderTagsSection()}
       {renderDoiSection()}
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
@@ -6656,14 +6732,6 @@ function DocumentPanelContent({
             <span>No extracted figures yet.</span>
           </div>
         )}
-      </section>
-      <section className="detail-section">
-        <h3>Domains</h3>
-        <div className="tag-cloud">
-          {document.domains.map((domain) => (
-            <span key={domain.id}>{domain.name}</span>
-          ))}
-        </div>
       </section>
       <section className="detail-section">
         <h3>Attributes</h3>
