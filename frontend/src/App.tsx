@@ -6163,6 +6163,96 @@ function DocumentPanelContent({
     );
   };
 
+  const renderReaderActions = (placement: "top" | "bottom") => {
+    const bottom = placement === "bottom";
+    return (
+      <div className={`reader-actions${bottom ? " reader-actions-bottom" : ""}`}>
+        <button
+          className="icon-button reader-arrow"
+          type="button"
+          data-disabled-reason={
+            pageTextBusy
+              ? pageTextBusyReason
+              : !pages.length
+                ? "this document does not have parsed pages yet."
+                : "the reader is already on the first parsed page."
+          }
+          data-tooltip="Move the parsed-text reader to the previous page."
+          disabled={!pages.length || currentPageIndex === 0 || pageTextBusy}
+          onClick={() => setReaderPageIndex((index) => Math.max(0, index - 1))}
+        >
+          <ChevronLeft size={18} />
+        </button>
+        <span className="page-counter">{pages.length ? `${currentPage?.page_number ?? currentPageIndex + 1} / ${pages.length}` : "0 / 0"}</span>
+        <button
+          className="icon-button reader-arrow"
+          type="button"
+          data-disabled-reason={
+            pageTextBusy
+              ? pageTextBusyReason
+              : !pages.length
+                ? "this document does not have parsed pages yet."
+                : "the reader is already on the last parsed page."
+          }
+          data-tooltip="Move the parsed-text reader to the next page."
+          disabled={!pages.length || currentPageIndex >= pages.length - 1 || pageTextBusy}
+          onClick={() => setReaderPageIndex((index) => Math.min(pages.length - 1, index + 1))}
+        >
+          <ChevronRight size={18} />
+        </button>
+        <button
+          className="secondary-button compact"
+          data-disabled-reason={pageTextBusy ? pageTextBusyReason : "this document does not have parsed text to copy."}
+          data-tooltip="Copy all parsed document text to the clipboard."
+          onClick={copyFullText}
+          disabled={!fullText || pageTextBusy}
+          type="button"
+        >
+          {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
+          {copiedKey === "full-text" ? "Copied" : "Copy"}
+        </button>
+        {pageTextEditing && bottom ? (
+          <>
+            <button
+              className="primary-button compact"
+              data-disabled-reason={pageTextBusyReason}
+              data-tooltip="Save the edited parsed text for this page, rebuild document search, and record the change in history."
+              disabled={pageTextBusy}
+              onClick={savePageTextEdit}
+              type="button"
+            >
+              <Save size={14} />
+              Save
+            </button>
+            <button
+              className="secondary-button compact"
+              data-disabled-reason={pageTextBusyReason}
+              data-tooltip="Discard parsed page text edits and close the editor."
+              disabled={pageTextBusy}
+              onClick={cancelPageTextEdit}
+              type="button"
+            >
+              <X size={14} />
+              Cancel
+            </button>
+          </>
+        ) : !pageTextEditing ? (
+          <button
+            className="secondary-button compact"
+            data-disabled-reason={pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
+            data-tooltip="Open the parsed page text editor for the current page."
+            disabled={!currentPage || pageTextBusy}
+            onClick={startPageTextEdit}
+            type="button"
+          >
+            <Edit3 size={14} />
+            Edit
+          </button>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderTextReader = (compare = false) => (
     <section className={`text-reader ${compare ? "compare-pane" : ""}`}>
       <div className="text-reader-head">
@@ -6170,65 +6260,7 @@ function DocumentPanelContent({
           <strong>Parsed text</strong>
           <span>{pages.length ? `Page ${currentPageIndex + 1} of ${pages.length}` : `${document.page_count || "?"} pages`}</span>
         </div>
-        <div className="reader-actions">
-          <button
-            className="icon-button reader-arrow"
-            type="button"
-            data-disabled-reason={
-              pageTextBusy
-                ? pageTextBusyReason
-                : !pages.length
-                  ? "this document does not have parsed pages yet."
-                  : "the reader is already on the first parsed page."
-            }
-            data-tooltip="Move the parsed-text reader to the previous page."
-            disabled={!pages.length || currentPageIndex === 0 || pageTextBusy}
-            onClick={() => setReaderPageIndex((index) => Math.max(0, index - 1))}
-          >
-            <ChevronLeft size={18} />
-          </button>
-          <span className="page-counter">{pages.length ? `${currentPage?.page_number ?? currentPageIndex + 1} / ${pages.length}` : "0 / 0"}</span>
-          <button
-            className="icon-button reader-arrow"
-            type="button"
-            data-disabled-reason={
-              pageTextBusy
-                ? pageTextBusyReason
-                : !pages.length
-                  ? "this document does not have parsed pages yet."
-                  : "the reader is already on the last parsed page."
-            }
-            data-tooltip="Move the parsed-text reader to the next page."
-            disabled={!pages.length || currentPageIndex >= pages.length - 1 || pageTextBusy}
-            onClick={() => setReaderPageIndex((index) => Math.min(pages.length - 1, index + 1))}
-          >
-            <ChevronRight size={18} />
-          </button>
-          <button
-            className="secondary-button compact"
-            data-disabled-reason={pageTextBusy ? pageTextBusyReason : "this document does not have parsed text to copy."}
-            data-tooltip="Copy all parsed document text to the clipboard."
-            onClick={copyFullText}
-            disabled={!fullText || pageTextBusy}
-            type="button"
-          >
-            {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
-            {copiedKey === "full-text" ? "Copied" : "Copy"}
-          </button>
-          {!pageTextEditing ? (
-            <button
-              className="secondary-button compact"
-              data-disabled-reason={pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
-              data-tooltip="Open the parsed page text editor for the current page."
-              disabled={!currentPage || pageTextBusy}
-              onClick={startPageTextEdit}
-              type="button"
-            >
-              <Edit3 size={14} />
-              Edit
-            </button>
-          ) : null}
-        </div>
+        {renderReaderActions("top")}
       </div>
       {currentPage ? (
         <article
@@ -6278,28 +6310,6 @@ function DocumentPanelContent({
                   {scrubButtonLabel}
                 </button>
                 <span className="reader-tool-spacer" />
-                <button
-                  className="primary-button compact"
-                  data-disabled-reason={pageTextBusyReason}
-                  data-tooltip="Save the edited parsed text for this page, rebuild document search, and record the change in history."
-                  disabled={pageTextBusy}
-                  onClick={savePageTextEdit}
-                  type="button"
-                >
-                  <Save size={14} />
-                  Save
-                </button>
-                <button
-                  className="secondary-button compact"
-                  data-disabled-reason={pageTextBusyReason}
-                  data-tooltip="Discard parsed page text edits and close the editor."
-                  disabled={pageTextBusy}
-                  onClick={cancelPageTextEdit}
-                  type="button"
-                >
-                  <X size={14} />
-                  Cancel
-                </button>
               </div>
               {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
             </div>
@@ -6313,6 +6323,7 @@ function DocumentPanelContent({
           <span>No parsed pages yet.</span>
         </div>
       )}
+      {renderReaderActions("bottom")}
     </section>
   );
   const readerButton = onOpenReader ? (
@@ -6426,112 +6437,114 @@ function DocumentPanelContent({
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
-      <div className="detail-head">
-        <div>
-          <h2>{document.title}</h2>
-          <p>{authorLine(document)}</p>
-        </div>
-        <div className="detail-status">
-          {document.duplicate_count > 0 ? <StatusPill value={`Duplicate ${document.duplicate_count + 1}`} tone="warn" /> : null}
-          <PriorityPill value={document.priority} />
-        </div>
-      </div>
-      <div className={`detail-actions ${readerExpanded ? "detail-actions-expanded" : ""}`}>
-        {readerExpanded ? (
-          <>
-            <div className="detail-actions-row">
-              {readerButton}
-              {editButton}
-              {linkButton}
-              {relatedButton}
-              {compositionButton}
-              {concordButton}
-              {downloadOriginalLink}
-              {openOriginalLink}
-            </div>
-            {closeReaderButton}
-          </>
-        ) : (
-          <>
-            <div className="detail-actions-row">
-              {readerButton}
-              {editButton}
-              {linkButton}
-            </div>
-            <div className="detail-actions-row">
-              {relatedButton}
-              {compositionButton}
-              {concordButton}
-            </div>
-            <div className="detail-actions-row">
-              {downloadOriginalLink}
-              {openOriginalLink}
-            </div>
-          </>
-        )}
-      </div>
-      {compositionOpen ? (
-        <CompositionDialog
-          composition={composition.data}
-          document={document}
-          loading={composition.isFetching && !composition.data}
-          onClose={() => setCompositionOpen(false)}
-        />
-      ) : null}
-      <div className="reader-surface">
-        <div className="reader-tabs" role="tablist" aria-label="Document reader">
-          <button
-            className={readerMode === "pdf" ? "selected" : ""}
-            data-tooltip="Show the authenticated original PDF preview."
-            type="button"
-            onClick={() => {
-              setRecommendationsOpen(false);
-              setReaderMode("pdf");
-            }}
-          >
-            <FileSearch size={15} />
-            PDF
-          </button>
-          <button
-            className={readerMode === "text" ? "selected" : ""}
-            data-tooltip="Show the normalized parsed-text reader for this document."
-            type="button"
-            onClick={() => {
-              setRecommendationsOpen(false);
-              setReaderMode("text");
-            }}
-          >
-            <FileText size={15} />
-            Text
-          </button>
-          <button
-            className={readerMode === "compare" ? "selected" : ""}
-            data-tooltip="Show the original PDF beside the parsed text editor for page-by-page comparison."
-            type="button"
-            onClick={() => {
-              setRecommendationsOpen(false);
-              setReaderMode("compare");
-            }}
-          >
-            <BookOpen size={15} />
-            Compare
-          </button>
-        </div>
-        {recommendationsOpen ? (
-          <div className="recommendations-popover" data-escape-layer="popover">
-            <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} />
+      <div className={readerExpanded ? "reader-frame" : undefined}>
+        <div className="detail-head">
+          <div>
+            <h2>{document.title}</h2>
+            <p>{authorLine(document)}</p>
           </div>
+          <div className="detail-status">
+            {document.duplicate_count > 0 ? <StatusPill value={`Duplicate ${document.duplicate_count + 1}`} tone="warn" /> : null}
+            <PriorityPill value={document.priority} />
+          </div>
+        </div>
+        <div className={`detail-actions ${readerExpanded ? "detail-actions-expanded" : ""}`}>
+          {readerExpanded ? (
+            <>
+              <div className="detail-actions-row">
+                {readerButton}
+                {editButton}
+                {linkButton}
+                {relatedButton}
+                {compositionButton}
+                {concordButton}
+                {downloadOriginalLink}
+                {openOriginalLink}
+              </div>
+              {closeReaderButton}
+            </>
+          ) : (
+            <>
+              <div className="detail-actions-row">
+                {readerButton}
+                {editButton}
+                {linkButton}
+              </div>
+              <div className="detail-actions-row">
+                {relatedButton}
+                {compositionButton}
+                {concordButton}
+              </div>
+              <div className="detail-actions-row">
+                {downloadOriginalLink}
+                {openOriginalLink}
+              </div>
+            </>
+          )}
+        </div>
+        {compositionOpen ? (
+          <CompositionDialog
+            composition={composition.data}
+            document={document}
+            loading={composition.isFetching && !composition.data}
+            onClose={() => setCompositionOpen(false)}
+          />
         ) : null}
-        {readerMode === "pdf" ? (
-          renderPdfPreview()
-        ) : readerMode === "compare" ? (
-          <div className="reader-compare">
-            {renderPdfPreview(true)}
-            {renderTextReader(true)}
+        <div className="reader-surface">
+          <div className="reader-tabs" role="tablist" aria-label="Document reader">
+            <button
+              className={readerMode === "pdf" ? "selected" : ""}
+              data-tooltip="Show the authenticated original PDF preview."
+              type="button"
+              onClick={() => {
+                setRecommendationsOpen(false);
+                setReaderMode("pdf");
+              }}
+            >
+              <FileSearch size={15} />
+              PDF
+            </button>
+            <button
+              className={readerMode === "text" ? "selected" : ""}
+              data-tooltip="Show the normalized parsed-text reader for this document."
+              type="button"
+              onClick={() => {
+                setRecommendationsOpen(false);
+                setReaderMode("text");
+              }}
+            >
+              <FileText size={15} />
+              Text
+            </button>
+            <button
+              className={readerMode === "compare" ? "selected" : ""}
+              data-tooltip="Show the original PDF beside the parsed text editor for page-by-page comparison."
+              type="button"
+              onClick={() => {
+                setRecommendationsOpen(false);
+                setReaderMode("compare");
+              }}
+            >
+              <BookOpen size={15} />
+              Compare
+            </button>
           </div>
-        ) : (
-          renderTextReader()
-        )}
+          {recommendationsOpen ? (
+            <div className="recommendations-popover" data-escape-layer="popover">
+              <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} />
+            </div>
+          ) : null}
+          {readerMode === "pdf" ? (
+            renderPdfPreview()
+          ) : readerMode === "compare" ? (
+            <div className="reader-compare">
+              {renderPdfPreview(true)}
+              {renderTextReader(true)}
+            </div>
+          ) : (
+            renderTextReader()
+          )}
+        </div>
       </div>
       {editing ? (
         <form

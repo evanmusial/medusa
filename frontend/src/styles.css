@@ -761,6 +761,7 @@ textarea {
 
 .library-grid.reader-mode {
   grid-template-columns: minmax(0, 1fr);
+  height: 100%;
 }
 
 .filter-pane,
@@ -2283,7 +2284,15 @@ textarea {
 
 .detail-pane.reader-detail {
   width: 100%;
+  height: 100%;
   min-height: 0;
+}
+
+.reader-frame {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .detail-pane.empty {
@@ -2364,6 +2373,14 @@ textarea {
   min-width: 0;
 }
 
+.reader-detail .reader-surface {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
 .reader-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2411,12 +2428,14 @@ textarea {
 }
 
 .reader-detail .pdf-preview {
-  min-height: min(76vh, 960px);
-  grid-template-rows: minmax(620px, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .reader-detail .pdf-preview iframe {
-  min-height: 620px;
+  min-height: 0;
 }
 
 .reader-compare {
@@ -2434,12 +2453,24 @@ textarea {
   max-height: none;
 }
 
+.reader-detail .reader-compare {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.reader-detail .reader-compare .pdf-preview,
+.reader-detail .reader-compare .text-reader {
+  height: 100%;
+  min-height: 0;
+}
+
 .reader-compare .pdf-preview {
-  grid-template-rows: minmax(620px, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .reader-compare .pdf-preview iframe {
-  min-height: 620px;
+  min-height: 0;
 }
 
 .pdf-preview-meta {
@@ -2461,13 +2492,15 @@ textarea {
   border-radius: 8px;
   background: var(--panel);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
 .reader-detail .text-reader {
-  min-height: min(76vh, 960px);
+  height: 100%;
+  min-height: 0;
   max-height: none;
+  margin: 0;
 }
 
 .text-reader-head {
@@ -2502,6 +2535,17 @@ textarea {
 }
 
 .reader-actions .secondary-button {
+  min-height: 34px;
+}
+
+.reader-actions-bottom {
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.reader-actions-bottom .primary-button,
+.reader-actions-bottom .secondary-button {
   min-height: 34px;
 }
 
@@ -2591,6 +2635,11 @@ textarea {
   font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   font-size: 15px;
   line-height: 1.68;
+}
+
+.reader-detail .reader-page-editor textarea {
+  min-height: 0;
+  resize: none;
 }
 
 .reader-editor-tools {
@@ -7134,6 +7183,17 @@ pre {
   .note-link-grid,
   .review-card {
     grid-template-columns: 1fr;
+  }
+
+  .reader-detail .reader-compare {
+    overflow: auto;
+    align-content: start;
+  }
+
+  .reader-detail .reader-compare .pdf-preview,
+  .reader-detail .reader-compare .text-reader {
+    height: min(70vh, 760px);
+    min-height: 360px;
   }
 
   .review-actions {
