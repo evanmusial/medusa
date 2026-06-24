@@ -1707,10 +1707,10 @@ const compositionPipelineEdgeTypes = {
   compositionPipeline: CompositionPipelineEdgeView,
 };
 
-const COMPOSITION_PIPELINE_NODE_WIDTH = 248;
-const COMPOSITION_PIPELINE_NODE_HEIGHT = 146;
-const COMPOSITION_PIPELINE_COLUMN_GAP = 86;
-const COMPOSITION_PIPELINE_ROW_GAP = 86;
+const COMPOSITION_PIPELINE_NODE_WIDTH = 296;
+const COMPOSITION_PIPELINE_NODE_HEIGHT = 168;
+const COMPOSITION_PIPELINE_COLUMN_GAP = 72;
+const COMPOSITION_PIPELINE_ROW_GAP = 68;
 const COMPOSITION_PIPELINE_HANDLE_OFFSET = 6;
 const COMPOSITION_PIPELINE_ARROW_LENGTH = 14;
 const COMPOSITION_PIPELINE_ARROW_WIDTH = 12;
@@ -1740,8 +1740,7 @@ function pipelineMeta(entry: DocumentCompositionEntry) {
 
 function pipelineColumnCount(total: number) {
   if (total <= 4) return Math.max(total, 1);
-  if (total <= 12) return 4;
-  return 5;
+  return 4;
 }
 
 function pipelineNodeLayout(index: number, total: number) {
@@ -4710,9 +4709,9 @@ function CompositionDialog({
                     edges={pipelineGraph.edges}
                     elementsSelectable={false}
                     fitView
-                    fitViewOptions={{ padding: 0.1 }}
+                    fitViewOptions={{ padding: 0.04 }}
                     maxZoom={1.3}
-                    minZoom={0.55}
+                    minZoom={0.45}
                     edgeTypes={compositionPipelineEdgeTypes}
                     nodeTypes={compositionPipelineNodeTypes}
                     nodes={pipelineGraph.nodes}
