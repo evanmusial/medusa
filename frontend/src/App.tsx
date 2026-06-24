@@ -4782,8 +4782,9 @@ function DocumentPanelContent({
   const titleEditInputRef = useRef<HTMLInputElement | null>(null);
   const doiEditInputRef = useRef<HTMLInputElement | null>(null);
   const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const comparePdfRef = useRef<HTMLIFrameElement | null>(null);
+  const pdfPreviewScrollRef = useRef<HTMLDivElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
+  const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
   const domainAssignRef = useRef<HTMLDivElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
@@ -4791,7 +4792,7 @@ function DocumentPanelContent({
   const [pageTextError, setPageTextError] = useState<string | null>(null);
   const [pageTextSelection, setPageTextSelection] = useState("");
   const [visualScanPageDraft, setVisualScanPageDraft] = useState("1");
-  const [pdfScrollListenerTick, setPdfScrollListenerTick] = useState(0);
+  const [pdfPreviewPageTarget, setPdfPreviewPageTarget] = useState(1);
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
   const accessorySummaryTask = preferences?.analysis_model_tasks.find((task) => task.key === ACCESSORY_SUMMARIES_MODEL_KEY);
   const accessorySummaryDefaultModel =
@@ -5169,6 +5170,7 @@ function DocumentPanelContent({
     setPageTextError(null);
     setPageTextSelection("");
     setVisualScanPageDraft("1");
+    setPdfPreviewPageTarget(1);
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
     setCitationRefreshTarget(null);
@@ -5237,6 +5239,7 @@ function DocumentPanelContent({
     maxVisualScanPage,
     Math.max(1, Number.isFinite(parsedVisualScanPage) ? parsedVisualScanPage : currentPage?.page_number || 1),
   );
+  const pdfPageNumbers = useMemo(() => Array.from({ length: maxVisualScanPage }, (_, index) => index + 1), [maxVisualScanPage]);
   const visualScanBusyReason = scanVisualPage.isPending ? "a page visual scan is already running for this document." : "";
   const pageTextBusy = updatePageText.isPending || scrubText.isPending;
   const scrubNeedle = pageTextSelection.trim() ? pageTextSelection : "";
@@ -5519,14 +5522,56 @@ function DocumentPanelContent({
     element.scrollTop = maximum > 0 ? maximum * ratio : 0;
   };
 
-  const pdfScrollElement = () => {
-    try {
-      const frameDocument = comparePdfRef.current?.contentDocument;
-      return frameDocument?.scrollingElement || frameDocument?.documentElement || frameDocument?.body || null;
-    } catch {
-      return null;
+  const pdfScrollElement = () => pdfPreviewScrollRef.current;
+
+  const clampPdfPageNumber = useCallback(
+    (pageNumber: number) => Math.min(maxVisualScanPage, Math.max(1, Math.round(pageNumber))),
+    [maxVisualScanPage],
+  );
+
+  const pdfPageFromScrollRatio = useCallback(() => {
+    const scroller = pdfScrollElement();
+    if (!scroller || maxVisualScanPage <= 1) return null;
+    const maximum = scroller.scrollHeight - scroller.clientHeight;
+    if (maximum <= 0) return null;
+    return clampPdfPageNumber(scrollRatioFor(scroller) * (maxVisualScanPage - 1) + 1);
+  }, [clampPdfPageNumber, maxVisualScanPage]);
+
+  const currentPdfPreviewPage = useCallback(() => {
+    const scroller = pdfScrollElement();
+    if (!scroller) return null;
+    const pageNodes = Array.from(scroller.querySelectorAll<HTMLElement>(".pdf-page-render[data-page-number]"));
+    if (!pageNodes.length) return pdfPageFromScrollRatio();
+    const scrollerRect = scroller.getBoundingClientRect();
+    const viewportTop = scrollerRect.top + scroller.clientHeight * 0.35;
+    let bestPage: number | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const node of pageNodes) {
+      const pageNumber = Number(node.dataset.pageNumber);
+      if (!Number.isFinite(pageNumber) || pageNumber <= 0) continue;
+      const pageRect = node.getBoundingClientRect();
+      const distance =
+        viewportTop >= pageRect.top && viewportTop <= pageRect.bottom
+          ? 0
+          : Math.min(Math.abs(viewportTop - pageRect.top), Math.abs(viewportTop - pageRect.bottom));
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = pageNumber;
+      }
     }
-  };
+    return bestPage ? clampPdfPageNumber(bestPage) : pdfPageFromScrollRatio();
+  }, [clampPdfPageNumber, pdfPageFromScrollRatio]);
+
+  const syncVisualScanPageFromPdf = useCallback(() => {
+    if (window.document.activeElement === visualScanPageInputRef.current) return;
+    const pageNumber = currentPdfPreviewPage();
+    if (!pageNumber) return;
+    setVisualScanPageDraft((current) => (current === String(pageNumber) ? current : String(pageNumber)));
+    if (readerMode === "compare") {
+      const pageIndex = pages.findIndex((page) => page.page_number === pageNumber);
+      if (pageIndex >= 0 && pageIndex !== currentPageIndex) setReaderPageIndex(pageIndex);
+    }
+  }, [currentPageIndex, currentPdfPreviewPage, pages, readerMode]);
 
   const releaseScrollSync = () => {
     window.requestAnimationFrame(() => {
@@ -5544,26 +5589,28 @@ function DocumentPanelContent({
   };
 
   const handleComparePdfScroll = useCallback(() => {
+    syncVisualScanPageFromPdf();
     if (readerMode !== "compare" || syncScrollSourceRef.current === "text") return;
     const source = pdfScrollElement();
     if (!source) return;
     syncScrollSourceRef.current = "pdf";
     applyScrollRatio(compareTextRef.current, scrollRatioFor(source));
     releaseScrollSync();
-  }, [readerMode]);
+  }, [readerMode, syncVisualScanPageFromPdf]);
 
   useEffect(() => {
-    if (readerMode !== "compare") return;
-    const frameWindow = comparePdfRef.current?.contentWindow;
-    const frameDocument = comparePdfRef.current?.contentDocument;
-    if (!frameWindow && !frameDocument) return;
-    frameWindow?.addEventListener("scroll", handleComparePdfScroll, { passive: true });
-    frameDocument?.addEventListener("scroll", handleComparePdfScroll, { passive: true });
-    return () => {
-      frameWindow?.removeEventListener("scroll", handleComparePdfScroll);
-      frameDocument?.removeEventListener("scroll", handleComparePdfScroll);
-    };
-  }, [document.id, readerMode, currentPage?.id, handleComparePdfScroll, pdfScrollListenerTick]);
+    if (readerMode !== "pdf" && readerMode !== "compare") return;
+    syncVisualScanPageFromPdf();
+  }, [document.id, readerMode, syncVisualScanPageFromPdf]);
+
+  useEffect(() => {
+    if (readerMode !== "pdf" && readerMode !== "compare") return;
+    const scroller = pdfPreviewScrollRef.current;
+    const pageNode = scroller?.querySelector<HTMLElement>(`.pdf-page-render[data-page-number="${pdfPreviewPageTarget}"]`);
+    if (!scroller || !pageNode) return;
+    scroller.scrollTo({ top: pageNode.offsetTop, behavior: "auto" });
+    window.requestAnimationFrame(syncVisualScanPageFromPdf);
+  }, [document.id, pdfPreviewPageTarget, readerMode, syncVisualScanPageFromPdf]);
 
   const copyFullText = () => {
     if (fullText) void copyToClipboard("full-text", fullText);
@@ -6398,6 +6445,7 @@ function DocumentPanelContent({
   };
   const commitVisualScanPage = () => {
     setVisualScanPageDraft(String(visualScanPageNumber));
+    setPdfPreviewPageTarget(visualScanPageNumber);
     const pageIndex = pages.findIndex((page) => page.page_number === visualScanPageNumber);
     if (pageIndex >= 0) setReaderPageIndex(pageIndex);
     return visualScanPageNumber;
@@ -6407,23 +6455,26 @@ function DocumentPanelContent({
     scanVisualPage.mutate(pageNumber);
   };
   const renderPdfPreview = (compare = false) => {
-    const previewPageNumber = compare && currentPage ? currentPage.page_number : visualScanPageNumber;
-    const fragment = previewPageNumber ? `#page=${previewPageNumber}&toolbar=0&navpanes=0` : "#toolbar=0&navpanes=0";
     return (
       <div className={`pdf-preview ${compare ? "compare-pane" : ""}`}>
-        <iframe
-          ref={compare ? comparePdfRef : undefined}
-          title={`PDF preview for ${document.title}`}
-          src={`/api/documents/${document.id}/original${fragment}`}
-          onLoad={
-            compare
-              ? () => {
-                  setPdfScrollListenerTick((value) => value + 1);
-                  handleCompareTextScroll();
-                }
-              : undefined
-          }
-        />
+        <div
+          className="pdf-page-scroll"
+          onScroll={handleComparePdfScroll}
+          ref={pdfPreviewScrollRef}
+          role="region"
+          aria-label={`PDF pages for ${document.title}`}
+        >
+          {pdfPageNumbers.map((pageNumber) => (
+            <figure className="pdf-page-render" data-page-number={pageNumber} key={pageNumber}>
+              <img
+                alt={`Page ${pageNumber} of ${document.title}`}
+                loading={pageNumber <= 2 ? "eager" : "lazy"}
+                src={`/api/documents/${document.id}/pages/${pageNumber}/image`}
+              />
+              <figcaption>Page {pageNumber}</figcaption>
+            </figure>
+          ))}
+        </div>
         <div className="pdf-preview-meta">
           <div className="pdf-preview-count">
             <FileSearch size={16} />
@@ -6433,6 +6484,7 @@ function DocumentPanelContent({
             <label>
               <span>Page</span>
               <input
+                ref={visualScanPageInputRef}
                 aria-label="Page to scan for visual assets"
                 disabled={scanVisualPage.isPending}
                 inputMode="numeric"

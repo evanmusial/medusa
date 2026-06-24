@@ -2495,12 +2495,40 @@ textarea {
   overflow: hidden;
 }
 
-.pdf-preview iframe {
+.pdf-page-scroll {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 320px;
-  border: 0;
   background: var(--panel);
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pdf-page-render {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  display: grid;
+  gap: 6px;
+}
+
+.pdf-page-render img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--line);
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
+
+.pdf-page-render figcaption {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
 }
 
 .reader-detail .pdf-preview {
@@ -2510,7 +2538,7 @@ textarea {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
-.reader-detail .pdf-preview iframe {
+.reader-detail .pdf-page-scroll {
   min-height: 0;
 }
 
@@ -2545,8 +2573,8 @@ textarea {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
-.reader-compare .pdf-preview iframe {
-  min-height: 0;
+.reader-compare .pdf-page-render {
+  width: min(100%, 620px);
 }
 
 .pdf-preview-meta {

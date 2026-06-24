@@ -168,7 +168,13 @@ from app.services.concordance import create_concordance_run, current_capabilitie
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
 from app.services.container_footprint import container_footprint_status, request_container_restart
-from app.services.document_cache import current_document_cache_usage, document_cache_root, metadata_cache_path, register_document_cache
+from app.services.document_cache import (
+    current_document_cache_usage,
+    document_cache_root,
+    ensure_document_pdf_bytes,
+    metadata_cache_path,
+    register_document_cache,
+)
 from app.services.document_visibility import (
     LIBRARY_VISIBLE_DOCUMENT_STATUSES,
     document_is_library_visible,
@@ -2986,6 +2992,46 @@ def document_original(
         content=data,
         media_type=document.content_type or "application/pdf",
         headers={"Content-Disposition": content_disposition_header("attachment" if download else "inline", filename)},
+    )
+
+
+@app.get("/api/documents/{document_id}/pages/{page_number}/image")
+def document_page_image(
+    document_id: str,
+    page_number: int,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> FastAPIResponse:
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="Page number must be at least 1")
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.page_count and page_number > document.page_count:
+        raise HTTPException(status_code=404, detail="Page image not found")
+    if not document.gcs_uri:
+        raise HTTPException(status_code=404, detail="Original document is unavailable")
+    try:
+        import fitz
+
+        data = ensure_document_pdf_bytes(db, document, source="page_preview")
+        if data is None:
+            raise HTTPException(status_code=404, detail="Original document is unavailable")
+        db.commit()
+        with fitz.open(stream=data, filetype="pdf") as pdf:
+            if page_number > pdf.page_count:
+                raise HTTPException(status_code=404, detail="Page image not found")
+            page = pdf.load_page(page_number - 1)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.75, 1.75), alpha=False)
+            png = pixmap.tobytes("png")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Could not render page image: {exc}") from exc
+    return FastAPIResponse(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
