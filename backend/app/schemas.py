@@ -514,6 +514,11 @@ class DocumentRecommendationOut(ApiModel):
     status: str
     raw_metadata: dict[str, Any]
     has_pdf: bool = False
+    relation_family: str = "closest"
+    reason_chips: list[str] = Field(default_factory=list)
+    known_status: str = "new"
+    hidden_reason: str | None = None
+    diversity_score: float | None = None
     scholar_url: str
     last_seen_at: datetime | None = None
     created_at: datetime

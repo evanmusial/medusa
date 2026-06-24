@@ -2531,11 +2531,16 @@ def get_document_recommendations(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
     hide_existing: bool = False,
+    view: str | None = Query(default=None, pattern="^(discover|known|all)$"),
+    family: str | None = Query(
+        default=None,
+        pattern="^(diverse|closest|newer|foundational|methods|contrasting|open_pdf|reference_material)$",
+    ),
 ) -> list[DocumentRecommendation]:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
-    rows = list_document_recommendations(db, document, hide_existing=hide_existing)
+    rows = list_document_recommendations(db, document, hide_existing=hide_existing, view=view, family=family)
     db.commit()
     return rows
 
@@ -2572,18 +2577,22 @@ def download_recommendations(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
-    query = db.query(DocumentRecommendation).filter(DocumentRecommendation.source_document_id == document.id)
     if payload.mode == "new":
-        query = query.filter(
-            DocumentRecommendation.existing_document_id.is_(None),
-            DocumentRecommendation.imported_document_id.is_(None),
-        )
+        recommendations = [
+            row
+            for row in list_document_recommendations(db, document, view="discover", family="open_pdf")
+            if row.has_pdf
+        ]
     else:
         ids = payload.recommendation_ids or []
         if not ids:
             raise HTTPException(status_code=400, detail="recommendation_ids is required for selected downloads")
-        query = query.filter(DocumentRecommendation.id.in_(ids))
-    recommendations = query.order_by(DocumentRecommendation.title).all()
+        recommendations = (
+            db.query(DocumentRecommendation)
+            .filter(DocumentRecommendation.source_document_id == document.id, DocumentRecommendation.id.in_(ids))
+            .order_by(DocumentRecommendation.title)
+            .all()
+        )
     if not recommendations:
         raise HTTPException(status_code=400, detail="No recommendations matched the download request")
     result = queue_recommendation_imports(db, document, recommendations, skip_existing=payload.skip_existing)
@@ -3060,7 +3069,7 @@ def figure_asset(
     if not figure or not figure.asset_uri:
         raise HTTPException(status_code=404, detail="Figure asset not found")
     try:
-        data = get_storage_service().get_bytes(figure.asset_uri)
+        data = get_storage_service().get_bytes(figure.asset_uri, timeout=5, retry=None)
     except Exception as exc:
         raise HTTPException(status_code=404, detail="Figure asset is unavailable") from exc
     content_type = mimetypes.guess_type(figure.asset_uri)[0] or "application/octet-stream"

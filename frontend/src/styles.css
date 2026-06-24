@@ -489,7 +489,7 @@ textarea {
   grid-column: 1 / -1;
   height: 98px;
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(260px, 760px) minmax(460px, 1fr);
+  grid-template-columns: minmax(210px, 300px) minmax(300px, 1fr) minmax(0, auto);
   align-items: center;
   gap: 12px;
   padding: 0 14px;
@@ -512,6 +512,8 @@ textarea {
 }
 
 .global-search {
+  min-width: 0;
+  width: 100%;
   height: 38px;
   gap: 8px;
   border: 1px solid var(--line);
@@ -531,16 +533,18 @@ textarea {
 .topbar-actions {
   justify-self: end;
   min-width: 0;
+  max-width: 100%;
   gap: 6px;
 }
 
 .header-work-slot {
-  width: clamp(430px, 42vw, 720px);
-  min-width: 430px;
+  width: clamp(280px, 24vw, 520px);
+  min-width: 0;
+  max-width: 100%;
   min-height: 46px;
   display: flex;
   align-items: center;
-  flex: 0 0 clamp(430px, 42vw, 720px);
+  flex: 1 1 clamp(280px, 24vw, 520px);
 }
 
 .header-work-slot.empty {
@@ -596,14 +600,14 @@ textarea {
 
 .header-work-copy strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
 }
 
 .header-work-copy small {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .header-work-track {
@@ -871,7 +875,7 @@ textarea {
 
 .saved-search-apply small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -953,7 +957,7 @@ textarea {
   background: var(--panel);
   color: var(--blue);
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 850;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1371,7 +1375,7 @@ textarea {
 
 .domain-assign-list small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
 }
@@ -1577,7 +1581,7 @@ textarea {
 
 .bulk-multi-note {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 750;
   padding: 6px 8px 4px;
 }
@@ -1657,17 +1661,23 @@ textarea {
   padding: 18px;
 }
 
+.composition-backdrop {
+  padding: clamp(8px, 1.3vw, 18px);
+}
+
 .composition-dialog {
-  width: min(1120px, 100%);
-  max-height: min(90vh, 920px);
-  overflow: auto;
+  width: min(1760px, calc(100vw - 24px));
+  height: min(1040px, calc(100dvh - 24px));
+  max-height: none;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   box-shadow: var(--shadow);
   display: grid;
-  gap: 16px;
-  padding: 18px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
 }
 
 .composition-head,
@@ -1683,7 +1693,8 @@ textarea {
 .composition-head {
   align-items: flex-start;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
+  min-height: 0;
+  padding-bottom: 10px;
 }
 
 .composition-head span,
@@ -1706,13 +1717,33 @@ textarea {
 
 .composition-head h2 {
   margin-top: 3px;
-  font-size: 20px;
+  font-size: clamp(20px, 1.35vw, 25px);
+  line-height: 1.12;
+  max-width: 110ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composition-head span {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: none;
+}
+
+.composition-content {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, clamp(340px, 26vw, 480px)) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.composition-summary-rail {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
 }
 
 .composition-grid {
@@ -1721,30 +1752,35 @@ textarea {
   gap: 14px;
 }
 
+.composition-summary-rail .composition-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
 .composition-chart-panel,
 .composition-provider-panel,
 .composition-section {
   border: 1px solid var(--line);
   border-radius: 8px;
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 12px;
 }
 
 .composition-section-title strong {
   color: var(--ink);
-  font-size: 18px;
+  font-size: 19px;
 }
 
 .composition-pie-wrap {
   display: grid;
-  grid-template-columns: 178px minmax(0, 1fr);
+  grid-template-columns: clamp(118px, 8vw, 154px) minmax(0, 1fr);
   align-items: center;
-  gap: 18px;
+  gap: 14px;
 }
 
 .composition-pie {
-  width: 178px;
+  width: clamp(118px, 8vw, 154px);
   aspect-ratio: 1;
   border-radius: 999px;
   display: grid;
@@ -1756,7 +1792,7 @@ textarea {
 .composition-pie::after {
   content: "";
   position: absolute;
-  inset: 38px;
+  inset: clamp(26px, 1.9vw, 34px);
   border-radius: inherit;
   background: var(--panel);
   box-shadow: inset 0 0 0 1px var(--line);
@@ -1766,7 +1802,7 @@ textarea {
   position: relative;
   z-index: 1;
   color: var(--ink);
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 850;
 }
 
@@ -1817,19 +1853,23 @@ textarea {
 }
 
 .composition-estimate-row span {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: none;
 }
 
 .composition-estimate-row small {
   color: var(--muted);
+  font-size: 13px;
 }
 
 .composition-local-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .composition-local-row {
@@ -1837,14 +1877,39 @@ textarea {
   gap: 3px;
 }
 
+.composition-local-panel {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.composition-issues-panel {
+  max-height: 150px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.composition-issue-list {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
 .composition-local-row span,
 .composition-issue-row strong {
   color: var(--ink);
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.composition-pipeline-section {
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .composition-flow-chart {
-  height: clamp(500px, 64vh, 760px);
+  height: 100%;
   min-height: 0;
   overflow: hidden;
   border-radius: 8px;
@@ -1930,9 +1995,9 @@ textarea {
 }
 
 .composition-pipeline-node {
-  width: 236px;
-  height: 138px;
-  min-height: 138px;
+  width: 248px;
+  height: 146px;
+  min-height: 146px;
   box-sizing: border-box;
   position: relative;
   --node-accent: var(--primary);
@@ -1984,7 +2049,7 @@ textarea {
 }
 
 .composition-pipeline-stage {
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0;
   line-height: 1.15;
   font-weight: 600;
@@ -1994,7 +2059,7 @@ textarea {
 
 .composition-pipeline-subtitle {
   color: var(--ink);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 500;
   line-height: 1.2;
   overflow-wrap: anywhere;
@@ -2002,7 +2067,7 @@ textarea {
 
 .composition-pipeline-meta {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.3;
 }
 
@@ -2020,7 +2085,7 @@ textarea {
   padding: 2px 7px;
   background: var(--panel-2);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
   font-weight: 500;
   overflow: hidden;
@@ -2081,6 +2146,7 @@ textarea {
 
 .composition-issue-row span {
   color: var(--muted);
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -3015,7 +3081,7 @@ textarea {
 }
 
 .recommendations-popover .recommendations-panel {
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   max-height: min(64vh, 680px);
   margin-top: 0;
   overflow: hidden;
@@ -3060,6 +3126,38 @@ textarea {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 7px;
+}
+
+.recommendations-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.recommendation-view-tabs,
+.recommendation-family-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.recommendation-view-tabs button,
+.recommendation-family-tabs button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recommendation-view-tabs button.selected,
+.recommendation-family-tabs button.selected {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
 }
 
 .compact-toggle {
@@ -3151,6 +3249,24 @@ textarea {
   gap: 5px;
 }
 
+.recommendation-reason-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.recommendation-reason-chips span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  padding: 2px 7px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
 .recommendation-copy code {
   width: fit-content;
   max-width: 100%;
@@ -3166,7 +3282,7 @@ textarea {
 .recommendation-copy p {
   margin: 0;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -4277,7 +4393,7 @@ pre {
 
 .tag-optimization-section-head span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
   font-weight: 750;
 }
@@ -4345,7 +4461,7 @@ pre {
 
 .tag-suggestion-tags small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 750;
 }
 
@@ -5561,7 +5677,7 @@ pre {
   gap: 8px;
   align-items: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: none;
 }
@@ -5667,7 +5783,7 @@ pre {
 
 .budget-chart-legend-row em {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
   font-weight: 500;
   white-space: nowrap;
@@ -5760,7 +5876,7 @@ pre {
 
 .budget-row.header {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   text-transform: none;
 }
@@ -5823,7 +5939,7 @@ pre {
 
 .budget-recent-row span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -5841,7 +5957,7 @@ pre {
   flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -6136,7 +6252,7 @@ pre {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   overflow-wrap: anywhere;
   text-transform: none;
@@ -6550,7 +6666,7 @@ pre {
 
 .usage-row.header {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   text-transform: none;
 }
@@ -6801,7 +6917,7 @@ pre {
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   padding-block: 0;
   text-transform: none;
@@ -7088,6 +7204,21 @@ pre {
 }
 
 @media (max-width: 1180px) {
+  .topbar {
+    grid-template-columns: minmax(190px, 240px) minmax(220px, 1fr) minmax(0, auto);
+    gap: 8px;
+    padding-inline: 10px;
+  }
+
+  .topbar-brand-area {
+    padding-inline: 6px;
+  }
+
+  .header-work-slot {
+    width: clamp(240px, 22vw, 320px);
+    flex-basis: clamp(240px, 22vw, 320px);
+  }
+
   .library-grid {
     grid-template-columns: minmax(260px, var(--filter-pane-width, 280px)) 8px minmax(0, 1fr);
   }
@@ -7122,6 +7253,37 @@ pre {
 
   .budget-trend-panel {
     grid-row: auto;
+  }
+}
+
+@media (max-width: 980px) {
+  .composition-dialog {
+    height: calc(100dvh - 16px);
+    overflow: auto;
+  }
+
+  .composition-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .composition-summary-rail {
+    overflow: visible;
+  }
+
+  .composition-local-panel,
+  .composition-issues-panel {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .composition-local-grid,
+  .composition-issue-list {
+    overflow: visible;
+  }
+
+  .composition-flow-chart {
+    height: 58vh;
+    min-height: 420px;
   }
 }
 

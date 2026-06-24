@@ -756,6 +756,17 @@ export type DocumentDetail = DocumentSummary & {
   duplicate_document_ids: string[];
 };
 
+export type RecommendationView = "discover" | "known" | "all";
+export type RecommendationFamily =
+  | "diverse"
+  | "closest"
+  | "newer"
+  | "foundational"
+  | "methods"
+  | "contrasting"
+  | "open_pdf"
+  | "reference_material";
+
 export type DocumentRecommendation = {
   id: string;
   source_document_id: string;
@@ -777,6 +788,11 @@ export type DocumentRecommendation = {
   status: string;
   raw_metadata: Record<string, unknown>;
   has_pdf: boolean;
+  relation_family: RecommendationFamily | string;
+  reason_chips: string[];
+  known_status: "new" | "in_library" | "active_import" | "stashed" | string;
+  hidden_reason?: string | null;
+  diversity_score?: number | null;
   scholar_url: string;
   last_seen_at?: string | null;
   created_at: string;

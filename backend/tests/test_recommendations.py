@@ -75,6 +75,98 @@ def test_refresh_recommendations_caches_and_marks_existing_match(monkeypatch, tm
         assert rows[0].has_pdf is True
 
 
+def test_recommendations_v2_filters_known_items_and_relation_families(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentRecommendation, DoiStash
+    from app.services.recommendations import list_document_recommendations
+
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="a" * 64,
+            publication_year=2020,
+            processing_status="ready",
+        )
+        existing = Document(
+            title="Existing Related Paper",
+            doi="10.1000/existing",
+            original_filename="existing.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        queued = Document(
+            title="Queued Related Paper",
+            doi="10.1000/queued",
+            original_filename="queued.pdf",
+            checksum_sha256="c" * 64,
+            processing_status="queued",
+        )
+        db.add_all([source, existing, queued])
+        db.flush()
+        rows = [
+            DocumentRecommendation(
+                source_document_id=source.id,
+                match_key="doi:10.1000/new",
+                title="A Method Framework for Seed Paper",
+                doi="10.1000/new",
+                source_provider="semantic_scholar",
+                source_relation="recommended",
+                publication_year=2024,
+                description="A method framework for analyzing the seed topic.",
+                pdf_url="https://example.test/new.pdf",
+                raw_metadata={},
+            ),
+            DocumentRecommendation(
+                source_document_id=source.id,
+                match_key="doi:10.1000/existing",
+                title="Existing Related Paper",
+                doi="10.1000/existing",
+                source_provider="openalex",
+                source_relation="related",
+                raw_metadata={},
+            ),
+            DocumentRecommendation(
+                source_document_id=source.id,
+                match_key="doi:10.1000/queued",
+                title="Queued Related Paper",
+                doi="10.1000/queued",
+                source_provider="openalex",
+                source_relation="related",
+                raw_metadata={},
+            ),
+            DocumentRecommendation(
+                source_document_id=source.id,
+                match_key="doi:10.1000/stashed",
+                title="Stashed Related Paper",
+                doi="10.1000/stashed",
+                source_provider="crossref",
+                source_relation="reference",
+                raw_metadata={},
+            ),
+        ]
+        db.add_all(rows)
+        db.add(DoiStash(doi="10.1000/stashed", title="Stashed Related Paper", status="active", stash_metadata={}))
+        db.commit()
+
+        discover = list_document_recommendations(db, source, view="discover")
+        known = list_document_recommendations(db, source, view="known")
+        methods = list_document_recommendations(db, source, view="discover", family="methods")
+
+        assert [row.doi for row in discover] == ["10.1000/new"]
+        assert discover[0].known_status == "new"
+        assert discover[0].relation_family == "methods"
+        assert "Methods" in discover[0].reason_chips
+        assert discover[0].raw_metadata["recommendations_v2"]["evidence"]["open_pdf_evidence"] is True
+        assert [row.doi for row in methods] == ["10.1000/new"]
+        assert {row.known_status for row in known} == {"in_library", "active_import", "stashed"}
+        assert all(row.hidden_reason for row in known)
+
+
 def test_refresh_recommendations_enriches_pdf_availability_and_resets_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -286,6 +378,53 @@ def test_queue_recommendation_imports_reuses_import_pipeline(monkeypatch, tmp_pa
         assert jobs[0].document.priority == "high"
         assert jobs[0].document.doi == "10.1000/new"
         assert recommendation.imported_document_id == jobs[0].document_id
+
+
+def test_queue_recommendation_imports_skips_stashed_recommendations(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentRecommendation, DoiStash, ImportJob
+    from app.services import recommendations as service
+    from app.services.recommendations import queue_recommendation_imports
+
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="c" * 64,
+            priority="high",
+            processing_status="ready",
+        )
+        db.add(source)
+        db.flush()
+        recommendation = DocumentRecommendation(
+            source_document_id=source.id,
+            match_key="doi:10.1000/stashed",
+            title="Stashed Related Paper",
+            doi="10.1000/stashed",
+            source_provider="test",
+            pdf_url="https://example.test/stashed.pdf",
+            raw_metadata={},
+        )
+        stash = DoiStash(doi="10.1000/stashed", title="Stashed Related Paper", status="active", stash_metadata={})
+        db.add_all([recommendation, stash])
+        db.commit()
+
+        monkeypatch.setattr(service, "_download_pdf", lambda _url: (_ for _ in ()).throw(AssertionError("downloaded known item")))
+
+        result = queue_recommendation_imports(db, source, [recommendation])
+        db.commit()
+
+        job = db.query(ImportJob).one()
+        db.refresh(recommendation)
+
+        assert result["queued_count"] == 0
+        assert result["skipped_existing_count"] == 1
+        assert job.current_step == "stashed"
+        assert recommendation.known_status == "stashed"
 
 
 def test_queue_recommendation_imports_records_download_failures(monkeypatch, tmp_path):

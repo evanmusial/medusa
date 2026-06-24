@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import get_settings
 from app.models import Document, DocumentRecommendation, DoiStash, ImportBatch, ImportJob, ProcessingEvent, utc_now
 from app.services.document_cache import document_cache_path, document_cache_root, register_document_cache
-from app.services.document_visibility import filter_library_visible_documents, library_visible_document_filter
+from app.services.document_visibility import LIBRARY_VISIBLE_DOCUMENT_STATUSES, filter_library_visible_documents, library_visible_document_filter
 from app.services.processing import refresh_import_batch_progress
 from app.services.storage import get_storage_service
 from app.services.verifier import normalized_title_similarity
@@ -39,6 +39,50 @@ PDF_PROVIDER_PRIORITY = {
     "openalex": 60,
     "crossref": 45,
 }
+RECOMMENDATION_V2_METADATA_KEY = "recommendations_v2"
+RECOMMENDATION_VIEWS = {"discover", "known", "all"}
+RECOMMENDATION_FAMILIES = {
+    "diverse",
+    "closest",
+    "newer",
+    "foundational",
+    "methods",
+    "contrasting",
+    "open_pdf",
+    "reference_material",
+}
+RECOMMENDATION_IMPORT_KNOWN_STATUSES = {"staged", "queued", "running", "failed", "restored_paused"}
+RECOMMENDATION_FAMILY_LABELS = {
+    "closest": "Closest",
+    "newer": "Newer",
+    "foundational": "Foundational",
+    "methods": "Methods",
+    "contrasting": "Contrasting",
+    "open_pdf": "Open PDF",
+    "reference_material": "Reference material",
+    "diverse": "Diverse set",
+}
+RECOMMENDATION_KNOWN_LABELS = {
+    "new": "Outside library",
+    "in_library": "In library",
+    "active_import": "Queued import",
+    "stashed": "Wishlisted",
+}
+METHOD_TERMS = {
+    "approach",
+    "algorithm",
+    "classification",
+    "dataset",
+    "framework",
+    "measurement",
+    "method",
+    "methodology",
+    "model",
+    "protocol",
+    "technique",
+}
+CONTRAST_TERMS = {"challenge", "contrary", "contrast", "critique", "critical", "debate", "limitation", "opposing"}
+REFERENCE_MATERIAL_TERMS = {"book", "chapter", "dataset", "handbook", "manual", "policy", "report", "standard", "survey"}
 
 
 @dataclass
@@ -96,7 +140,14 @@ def recommendation_match_key(doi: str | None, title: str | None) -> str:
     return f"title:{normalized_title[:840]}" if normalized_title else "title:untitled"
 
 
-def list_document_recommendations(db: Session, document: Document, *, hide_existing: bool = False) -> list[DocumentRecommendation]:
+def list_document_recommendations(
+    db: Session,
+    document: Document,
+    *,
+    hide_existing: bool = False,
+    view: str | None = None,
+    family: str | None = None,
+) -> list[DocumentRecommendation]:
     rows = (
         db.query(DocumentRecommendation)
         .options(
@@ -105,17 +156,164 @@ def list_document_recommendations(db: Session, document: Document, *, hide_exist
         )
         .filter(DocumentRecommendation.source_document_id == document.id)
         .order_by(
-        DocumentRecommendation.existing_document_id.isnot(None),
-        DocumentRecommendation.score.desc().nullslast(),
-        DocumentRecommendation.publication_year.desc().nullslast(),
-        DocumentRecommendation.title,
+            DocumentRecommendation.score.desc().nullslast(),
+            DocumentRecommendation.publication_year.desc().nullslast(),
+            DocumentRecommendation.title,
         )
         .all()
     )
-    mark_existing_library_matches(db, rows, source_document_id=document.id)
-    if hide_existing:
-        return [row for row in rows if not row.existing_document_id and not row.imported_document_id]
-    return rows
+    mark_recommendation_discovery_state(db, rows, source_document=document)
+    effective_view = _recommendation_view(view, hide_existing=hide_existing)
+    effective_family = _recommendation_family(family)
+    rows = _rank_recommendations(document, rows, effective_family)
+    return _filter_recommendations(rows, view=effective_view, family=effective_family)
+
+
+def _recommendation_view(value: str | None, *, hide_existing: bool) -> str:
+    if value in RECOMMENDATION_VIEWS:
+        return value
+    return "discover" if hide_existing else "all"
+
+
+def _recommendation_family(value: str | None) -> str:
+    return value if value in RECOMMENDATION_FAMILIES else "diverse"
+
+
+def _filter_recommendations(
+    rows: list[DocumentRecommendation],
+    *,
+    view: str,
+    family: str,
+) -> list[DocumentRecommendation]:
+    filtered = rows
+    if view == "discover":
+        filtered = [row for row in filtered if row.known_status == "new"]
+    elif view == "known":
+        filtered = [row for row in filtered if row.known_status != "new"]
+    if family == "open_pdf":
+        filtered = [row for row in filtered if row.has_pdf]
+    elif family != "diverse":
+        filtered = [row for row in filtered if row.relation_family == family]
+    return filtered
+
+
+def _rank_recommendations(
+    source_document: Document,
+    rows: list[DocumentRecommendation],
+    family: str,
+) -> list[DocumentRecommendation]:
+    if family != "diverse":
+        ranked = sorted(rows, key=lambda row: _recommendation_sort_key(source_document, row))
+        for index, row in enumerate(ranked):
+            _write_recommendation_v2_metadata(
+                row,
+                {"diversity_score": round(max(0.0, 1.0 - index * 0.02), 3)},
+            )
+        return ranked
+
+    remaining = list(rows)
+    selected: list[DocumentRecommendation] = []
+    seen_authors: set[str] = set()
+    seen_decades: set[int] = set()
+    seen_journals: set[str] = set()
+    seen_families: set[str] = set()
+    seen_providers: set[str] = set()
+    while remaining:
+        best = max(
+            remaining,
+            key=lambda row: _diversity_rank_score(
+                source_document,
+                row,
+                seen_authors=seen_authors,
+                seen_decades=seen_decades,
+                seen_journals=seen_journals,
+                seen_families=seen_families,
+                seen_providers=seen_providers,
+            ),
+        )
+        score = _diversity_rank_score(
+            source_document,
+            best,
+            seen_authors=seen_authors,
+            seen_decades=seen_decades,
+            seen_journals=seen_journals,
+            seen_families=seen_families,
+            seen_providers=seen_providers,
+        )
+        _write_recommendation_v2_metadata(best, {"diversity_score": round(score, 3)})
+        selected.append(best)
+        remaining.remove(best)
+        seen_authors.update(_author_families(best.authors))
+        if best.publication_year:
+            seen_decades.add((best.publication_year // 10) * 10)
+        if best.journal:
+            seen_journals.add(normalize_title_key(best.journal))
+        seen_families.add(best.relation_family)
+        seen_providers.update(_provider_tokens(best.source_provider))
+    return selected
+
+
+def _recommendation_sort_key(source_document: Document, row: DocumentRecommendation) -> tuple[int, float, int, str]:
+    known_penalty = 0 if row.known_status == "new" else 1
+    return (
+        known_penalty,
+        -_base_recommendation_score(source_document, row),
+        -(row.publication_year or 0),
+        normalize_title_key(row.title),
+    )
+
+
+def _diversity_rank_score(
+    source_document: Document,
+    row: DocumentRecommendation,
+    *,
+    seen_authors: set[str],
+    seen_decades: set[int],
+    seen_journals: set[str],
+    seen_families: set[str],
+    seen_providers: set[str],
+) -> float:
+    score = _base_recommendation_score(source_document, row)
+    authors = _author_families(row.authors)
+    if authors and seen_authors.isdisjoint(authors):
+        score += 0.34
+    elif authors:
+        score -= 0.12
+    if row.publication_year:
+        decade = (row.publication_year // 10) * 10
+        score += 0.18 if decade not in seen_decades else -0.06
+    journal_key = normalize_title_key(row.journal)
+    if journal_key:
+        score += 0.16 if journal_key not in seen_journals else -0.06
+    if row.relation_family not in seen_families:
+        score += 0.24
+    providers = _provider_tokens(row.source_provider)
+    if providers and seen_providers.isdisjoint(providers):
+        score += 0.08
+    return score
+
+
+def _base_recommendation_score(source_document: Document, row: DocumentRecommendation) -> float:
+    try:
+        score = float(row.score or 0)
+    except (TypeError, ValueError):
+        score = 0.0
+    if row.has_pdf:
+        score += 0.18
+    if normalize_doi(row.doi):
+        score += 0.12
+    if row.source_url:
+        score += 0.05
+    family = row.relation_family
+    if family == "closest":
+        score += 0.18
+    elif family in {"methods", "contrasting", "reference_material"}:
+        score += 0.12
+    elif family == "newer" and row.publication_year and source_document.publication_year:
+        score += min(0.18, max(0, row.publication_year - source_document.publication_year) * 0.02)
+    elif family == "foundational" and row.publication_year and source_document.publication_year:
+        score += min(0.16, max(0, source_document.publication_year - row.publication_year) * 0.01)
+    return score
 
 
 def refresh_document_recommendations(db: Session, document: Document, *, limit: int | None = None) -> list[DocumentRecommendation]:
@@ -221,15 +419,15 @@ def queue_recommendation_imports(
     document_cache_root()
     storage = get_storage_service()
 
-    mark_existing_library_matches(db, recommendations, source_document_id=source_document.id)
+    mark_recommendation_discovery_state(db, recommendations, source_document=source_document)
     for recommendation in recommendations:
-        if skip_existing and (recommendation.existing_document_id or recommendation.imported_document_id):
+        if skip_existing and recommendation.known_status != "new":
             _add_recommendation_skip_event(
                 db,
                 batch=batch,
                 recommendation=recommendation,
-                step="already_in_library",
-                reason="Recommendation already matches a Medusa document.",
+                step=recommendation.known_status,
+                reason=recommendation.hidden_reason or "Recommendation already matches a known Medusa item.",
             )
             counts["skipped_existing_count"] += 1
             continue
@@ -1057,6 +1255,8 @@ def _arxiv_entry_to_candidate(
 
 
 def _apply_candidate(row: DocumentRecommendation, candidate: RecommendationCandidate) -> None:
+    previous_metadata = row.raw_metadata if isinstance(row.raw_metadata, dict) else {}
+    previous_v2 = previous_metadata.get(RECOMMENDATION_V2_METADATA_KEY)
     row.match_key = candidate.match_key
     row.title = candidate.title[:800]
     row.doi = normalize_doi(candidate.doi)
@@ -1072,19 +1272,290 @@ def _apply_candidate(row: DocumentRecommendation, candidate: RecommendationCandi
     row.score = candidate.score
     row.status = "candidate" if row.status in {"stale", "download_failed"} else row.status or "candidate"
     row.raw_metadata = candidate.raw_metadata or {}
+    if isinstance(previous_v2, dict):
+        row.raw_metadata[RECOMMENDATION_V2_METADATA_KEY] = previous_v2
     row.last_seen_at = utc_now()
 
 
 def mark_existing_library_matches(db: Session, recommendations: list[DocumentRecommendation], *, source_document_id: str) -> None:
+    source_document = db.get(Document, source_document_id)
+    if source_document:
+        mark_recommendation_discovery_state(db, recommendations, source_document=source_document)
+
+
+def mark_recommendation_discovery_state(
+    db: Session,
+    recommendations: list[DocumentRecommendation],
+    *,
+    source_document: Document,
+) -> None:
     if not recommendations:
         return
-    documents = filter_library_visible_documents(db.query(Document)).filter(Document.id != source_document_id).all()
-    doi_map = {normalize_doi(document.doi): document for document in documents if normalize_doi(document.doi)}
+    visible_documents = filter_library_visible_documents(db.query(Document)).filter(Document.id != source_document.id).all()
+    active_import_documents = (
+        db.query(Document)
+        .filter(
+            Document.deleted_at.is_(None),
+            Document.id != source_document.id,
+            Document.processing_status.in_(RECOMMENDATION_IMPORT_KNOWN_STATUSES),
+        )
+        .all()
+    )
+    active_stashes = db.query(DoiStash).filter(DoiStash.deleted_at.is_(None), DoiStash.status != "removed").all()
+    stash_by_doi = {normalize_doi(stash.doi): stash for stash in active_stashes if normalize_doi(stash.doi)}
+
     for recommendation in recommendations:
-        match = doi_map.get(normalize_doi(recommendation.doi))
-        if not match and recommendation.title:
-            match = _best_title_match(documents, recommendation.title)
-        recommendation.existing_document_id = recommendation.imported_document_id or (match.id if match else None)
+        library_match, library_basis = _best_document_match(visible_documents, recommendation)
+        active_match, active_basis = _best_document_match(active_import_documents, recommendation)
+        imported_document = recommendation.imported_document
+        if recommendation.imported_document_id and not imported_document:
+            imported_document = db.get(Document, recommendation.imported_document_id)
+        stash_match = stash_by_doi.get(normalize_doi(recommendation.doi))
+
+        known_status = "new"
+        hidden_reason = None
+        match_basis = library_basis
+        matched_document_id = library_match.id if library_match else None
+        matched_document_title = library_match.title if library_match else None
+
+        if imported_document and imported_document.deleted_at is None:
+            if imported_document.processing_status in LIBRARY_VISIBLE_DOCUMENT_STATUSES:
+                known_status = "in_library"
+                hidden_reason = "Already imported from a recommendation."
+                matched_document_id = imported_document.id
+                matched_document_title = imported_document.title
+                match_basis = match_basis or "recommendation_import"
+                recommendation.existing_document_id = imported_document.id
+            elif imported_document.processing_status in RECOMMENDATION_IMPORT_KNOWN_STATUSES:
+                known_status = "active_import"
+                hidden_reason = "Already queued or staged for import."
+                matched_document_id = imported_document.id
+                matched_document_title = imported_document.title
+                match_basis = "recommendation_import"
+                recommendation.existing_document_id = None
+        elif library_match:
+            known_status = "in_library"
+            hidden_reason = f"Matched existing library document by {library_basis.replace('_', ' ')}."
+            recommendation.existing_document_id = library_match.id
+        elif active_match:
+            known_status = "active_import"
+            hidden_reason = f"Matched an active import by {active_basis.replace('_', ' ')}."
+            match_basis = active_basis
+            matched_document_id = active_match.id
+            matched_document_title = active_match.title
+            recommendation.existing_document_id = None
+        elif stash_match:
+            known_status = "stashed"
+            hidden_reason = "Already saved to DOI Stashes."
+            match_basis = "doi_stash"
+            recommendation.existing_document_id = None
+        else:
+            recommendation.existing_document_id = None
+
+        relation_family = _classify_relation_family(source_document, recommendation)
+        _write_recommendation_v2_metadata(
+            recommendation,
+            {
+                "relation_family": relation_family,
+                "known_status": known_status,
+                "hidden_reason": hidden_reason,
+                "match_basis": match_basis,
+                "matched_document_id": matched_document_id,
+                "matched_document_title": matched_document_title,
+                "doi_stash_id": stash_match.id if stash_match else None,
+                "reason_chips": _recommendation_reason_chips(recommendation, relation_family, known_status),
+                "evidence": _recommendation_v2_evidence(
+                    recommendation,
+                    relation_family=relation_family,
+                    known_status=known_status,
+                    hidden_reason=hidden_reason,
+                    match_basis=match_basis,
+                    matched_document_id=matched_document_id,
+                ),
+            },
+        )
+
+
+def _write_recommendation_v2_metadata(row: DocumentRecommendation, updates: dict[str, Any]) -> None:
+    metadata = dict(row.raw_metadata or {})
+    v2_metadata = metadata.get(RECOMMENDATION_V2_METADATA_KEY)
+    if not isinstance(v2_metadata, dict):
+        v2_metadata = {}
+    v2_metadata.update(updates)
+    metadata[RECOMMENDATION_V2_METADATA_KEY] = v2_metadata
+    row.raw_metadata = metadata
+
+
+def _best_document_match(documents: list[Document], recommendation: DocumentRecommendation) -> tuple[Document | None, str | None]:
+    recommendation_doi = normalize_doi(recommendation.doi)
+    if recommendation_doi:
+        for document in documents:
+            if normalize_doi(document.doi) == recommendation_doi:
+                return document, "doi"
+    best_document: Document | None = None
+    best_basis: str | None = None
+    best_score = 0.0
+    for document in documents:
+        basis, score = _strong_metadata_match_basis(document, recommendation)
+        if basis and score > best_score:
+            best_document = document
+            best_basis = basis
+            best_score = score
+    return best_document, best_basis
+
+
+def _strong_metadata_match_basis(document: Document, recommendation: DocumentRecommendation) -> tuple[str | None, float]:
+    if not recommendation.title:
+        return None, 0.0
+    title_score = normalized_title_similarity(document.title, recommendation.title)
+    if title_score < 0.94:
+        return None, title_score
+    supports: list[str] = []
+    if _publication_year_matches(document.publication_year, recommendation.publication_year):
+        supports.append("year")
+    if not _author_families(document.authors).isdisjoint(_author_families(recommendation.authors)):
+        supports.append("author")
+    if title_score >= 0.985:
+        return ("title" if not supports else f"title_{'_'.join(supports)}"), title_score
+    if title_score >= 0.96 and supports:
+        return f"title_{'_'.join(supports)}", title_score
+    if len(supports) >= 2:
+        return f"title_{'_'.join(supports)}", title_score
+    return None, title_score
+
+
+def _publication_year_matches(left: int | None, right: int | None) -> bool:
+    return bool(left and right and abs(left - right) <= 1)
+
+
+def _author_families(authors: list[dict[str, Any]] | None) -> set[str]:
+    families: set[str] = set()
+    for author in authors or []:
+        value = None
+        if isinstance(author, dict):
+            value = author.get("family") or author.get("name")
+            if not value and (author.get("given") or author.get("full_name")):
+                value = author.get("full_name") or author.get("given")
+        elif isinstance(author, str):
+            value = author
+        if not value:
+            continue
+        cleaned = normalize_title_key(str(value)).split()
+        if cleaned:
+            families.add(cleaned[-1])
+    return families
+
+
+def _provider_tokens(value: str | None) -> set[str]:
+    return {token.strip().lower() for token in (value or "").split(",") if token.strip()}
+
+
+def _classify_relation_family(source_document: Document, recommendation: DocumentRecommendation) -> str:
+    relation_text = normalize_title_key(recommendation.source_relation)
+    title_text = normalize_title_key(recommendation.title)
+    description_text = normalize_title_key(recommendation.description)
+    journal_text = normalize_title_key(recommendation.journal)
+    metadata = recommendation.raw_metadata if isinstance(recommendation.raw_metadata, dict) else {}
+    type_text = normalize_title_key(str(metadata.get("type") or metadata.get("work_type") or ""))
+    combined = " ".join([relation_text, title_text, description_text, journal_text, type_text])
+    terms = set(combined.split())
+
+    if terms & CONTRAST_TERMS:
+        return "contrasting"
+    if terms & METHOD_TERMS:
+        return "methods"
+    if terms & REFERENCE_MATERIAL_TERMS:
+        return "reference_material"
+    if source_document.publication_year and recommendation.publication_year:
+        if recommendation.publication_year > source_document.publication_year:
+            return "newer"
+        if recommendation.publication_year < source_document.publication_year and (
+            "reference" in terms or "referenced" in terms or recommendation.publication_year <= source_document.publication_year - 3
+        ):
+            return "foundational"
+    if "reference" in terms or "referenced" in terms:
+        return "foundational"
+    if "open" in terms and "access" in terms and recommendation.has_pdf:
+        return "open_pdf"
+    return "closest"
+
+
+def _recommendation_reason_chips(
+    recommendation: DocumentRecommendation,
+    relation_family: str,
+    known_status: str,
+) -> list[str]:
+    chips = [
+        RECOMMENDATION_KNOWN_LABELS.get(known_status, known_status.replace("_", " ").title()),
+        RECOMMENDATION_FAMILY_LABELS.get(relation_family, relation_family.replace("_", " ").title()),
+    ]
+    relation_chip = _relation_reason_chip(recommendation.source_relation)
+    if relation_chip:
+        chips.append(relation_chip)
+    if recommendation.has_pdf:
+        chips.append("Open PDF")
+    if normalize_doi(recommendation.doi):
+        chips.append("DOI")
+    for provider in _provider_tokens(recommendation.source_provider):
+        if provider in {"unpaywall", "arxiv"}:
+            chips.append(provider.replace("_", " ").title())
+    return _unique_reason_chips(chips)
+
+
+def _relation_reason_chip(relation: str | None) -> str | None:
+    relation_key = normalize_title_key(relation)
+    if not relation_key:
+        return None
+    if "referenced" in relation_key or "reference" in relation_key:
+        return "Cited by source"
+    if "cited by" in relation_key or "citing" in relation_key:
+        return "Cites source"
+    if "open access" in relation_key:
+        return "Open access evidence"
+    if "title match" in relation_key:
+        return "Title match"
+    if "recommended" in relation_key:
+        return "Recommended"
+    if "related" in relation_key:
+        return "Related work"
+    return relation.replace("_", " ").strip().title() if relation else None
+
+
+def _unique_reason_chips(values: list[str]) -> list[str]:
+    chips: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        chip = " ".join(str(value).split())
+        key = chip.lower()
+        if chip and key not in seen:
+            chips.append(chip)
+            seen.add(key)
+    return chips[:7]
+
+
+def _recommendation_v2_evidence(
+    recommendation: DocumentRecommendation,
+    *,
+    relation_family: str,
+    known_status: str,
+    hidden_reason: str | None,
+    match_basis: str | None,
+    matched_document_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "provider": recommendation.source_provider,
+        "relation": recommendation.source_relation,
+        "relation_family": relation_family,
+        "doi": normalize_doi(recommendation.doi),
+        "source_url": recommendation.source_url,
+        "pdf_url": recommendation.pdf_url,
+        "abstract_snippet": recommendation.description[:420] if recommendation.description else None,
+        "known_status": known_status,
+        "duplicate_suppression_reason": hidden_reason,
+        "match_basis": match_basis,
+        "matched_document_id": matched_document_id,
+        "open_pdf_evidence": bool(recommendation.pdf_url),
+    }
 
 
 def _best_title_match(documents: list[Document], title: str) -> Document | None:

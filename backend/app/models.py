@@ -606,6 +606,44 @@ class DocumentRecommendation(Base, TimestampMixin):
         return bool(self.pdf_url)
 
     @property
+    def relation_family(self) -> str:
+        metadata = self.raw_metadata if isinstance(self.raw_metadata, dict) else {}
+        v2_metadata = metadata.get("recommendations_v2") if isinstance(metadata.get("recommendations_v2"), dict) else {}
+        return str(v2_metadata.get("relation_family") or "closest")
+
+    @property
+    def reason_chips(self) -> list[str]:
+        metadata = self.raw_metadata if isinstance(self.raw_metadata, dict) else {}
+        v2_metadata = metadata.get("recommendations_v2") if isinstance(metadata.get("recommendations_v2"), dict) else {}
+        chips = v2_metadata.get("reason_chips")
+        if not isinstance(chips, list):
+            return []
+        return [str(chip) for chip in chips if chip]
+
+    @property
+    def known_status(self) -> str:
+        metadata = self.raw_metadata if isinstance(self.raw_metadata, dict) else {}
+        v2_metadata = metadata.get("recommendations_v2") if isinstance(metadata.get("recommendations_v2"), dict) else {}
+        return str(v2_metadata.get("known_status") or "new")
+
+    @property
+    def hidden_reason(self) -> str | None:
+        metadata = self.raw_metadata if isinstance(self.raw_metadata, dict) else {}
+        v2_metadata = metadata.get("recommendations_v2") if isinstance(metadata.get("recommendations_v2"), dict) else {}
+        reason = v2_metadata.get("hidden_reason")
+        return str(reason) if reason else None
+
+    @property
+    def diversity_score(self) -> float | None:
+        metadata = self.raw_metadata if isinstance(self.raw_metadata, dict) else {}
+        v2_metadata = metadata.get("recommendations_v2") if isinstance(metadata.get("recommendations_v2"), dict) else {}
+        score = v2_metadata.get("diversity_score")
+        try:
+            return float(score) if score is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
     def scholar_url(self) -> str:
         query = self.doi or self.title
         return f"https://scholar.google.com/scholar?q={quote_plus(query)}"

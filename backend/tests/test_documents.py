@@ -550,6 +550,48 @@ def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
         assert 'filename="Stored_Paper_ Study_ (1843).pdf"' in download_response.headers["content-disposition"]
 
 
+def test_figure_asset_uses_fast_storage_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import figure_asset
+    from app.models import Document, Figure
+
+    calls = []
+
+    class FakeStorage:
+        def get_bytes(self, uri, **kwargs):
+            calls.append((uri, kwargs))
+            return b"fake-png"
+
+    monkeypatch.setattr("app.main.get_storage_service", lambda: FakeStorage())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Paper with figures",
+            original_filename="paper.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.flush()
+        figure = Figure(
+            document_id=document.id,
+            page_number=1,
+            figure_label="Figure 1",
+            asset_uri="gs://bucket/figures/figure-1.png",
+        )
+        db.add(figure)
+        db.commit()
+
+        response = figure_asset(figure.id, object(), db)
+
+    assert response.body == b"fake-png"
+    assert response.media_type == "image/png"
+    assert calls == [("gs://bucket/figures/figure-1.png", {"timeout": 5, "retry": None})]
+
+
 def test_document_detail_schema_includes_parsed_pages(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

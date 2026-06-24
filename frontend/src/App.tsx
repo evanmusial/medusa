@@ -134,6 +134,8 @@ import type {
   OpenAIUsagePeriod,
   Project,
   ProjectItem,
+  RecommendationFamily,
+  RecommendationView,
   SavedSearch,
   Tag,
   TagOrphanPruneSuggestion,
@@ -484,6 +486,37 @@ function recommendationProviderLabel(value: string) {
         .replace(/\b\w/g, (letter) => letter.toUpperCase()),
     )
     .join(", ");
+}
+
+function recommendationFamilyLabel(value?: string | null) {
+  const option = RECOMMENDATION_FAMILY_OPTIONS.find((item) => item.id === value);
+  return option?.label || (value ? value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Closest");
+}
+
+function recommendationKnownLabel(value?: string | null) {
+  if (value === "in_library") return "In library";
+  if (value === "active_import") return "Queued import";
+  if (value === "stashed") return "Wishlisted";
+  return "New";
+}
+
+function isKnownRecommendation(item: DocumentRecommendation) {
+  return item.known_status !== "new" || Boolean(item.existing_document_id || item.imported_document_id);
+}
+
+function recommendationStatusPill(item: DocumentRecommendation) {
+  if (isKnownRecommendation(item)) {
+    const tone = item.known_status === "stashed" || item.known_status === "active_import" ? "blue" : "good";
+    return <StatusPill value={recommendationKnownLabel(item.known_status)} tone={tone} />;
+  }
+  if (item.status === "download_failed") return <StatusPill value="Download failed" tone="warn" />;
+  if (item.has_pdf) return <StatusPill value="Open PDF" tone="blue" />;
+  return null;
+}
+
+function recommendationReasonChips(item: DocumentRecommendation) {
+  const chips = item.reason_chips?.length ? item.reason_chips : [recommendationFamilyLabel(item.relation_family)];
+  return Array.from(new Set(chips.filter(Boolean))).slice(0, 7);
 }
 
 function citationText(document: DocumentDetail, kind: CitationKind) {
@@ -1674,10 +1707,10 @@ const compositionPipelineEdgeTypes = {
   compositionPipeline: CompositionPipelineEdgeView,
 };
 
-const COMPOSITION_PIPELINE_NODE_WIDTH = 236;
-const COMPOSITION_PIPELINE_NODE_HEIGHT = 138;
-const COMPOSITION_PIPELINE_COLUMN_GAP = 76;
-const COMPOSITION_PIPELINE_ROW_GAP = 78;
+const COMPOSITION_PIPELINE_NODE_WIDTH = 248;
+const COMPOSITION_PIPELINE_NODE_HEIGHT = 146;
+const COMPOSITION_PIPELINE_COLUMN_GAP = 86;
+const COMPOSITION_PIPELINE_ROW_GAP = 86;
 const COMPOSITION_PIPELINE_HANDLE_OFFSET = 6;
 const COMPOSITION_PIPELINE_ARROW_LENGTH = 14;
 const COMPOSITION_PIPELINE_ARROW_WIDTH = 12;
@@ -2165,6 +2198,19 @@ function useStoredBoolean(key: string, defaultValue: boolean) {
 
   useEffect(() => {
     localStorage.setItem(key, String(value));
+  }, [key, value]);
+
+  return [value, setValue] as const;
+}
+
+function useStoredString<T extends string>(key: string, defaultValue: T, allowedValues: readonly T[]) {
+  const [value, setValue] = useState<T>(() => {
+    const stored = localStorage.getItem(key);
+    return allowedValues.includes(stored as T) ? (stored as T) : defaultValue;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(key, value);
   }, [key, value]);
 
   return [value, setValue] as const;
@@ -4017,6 +4063,21 @@ type DocumentDraft = {
 type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
 type CitationRefreshTarget = CitationKind | "doi";
+const RECOMMENDATION_VIEW_OPTIONS: Array<{ id: RecommendationView; label: string }> = [
+  { id: "discover", label: "Discover" },
+  { id: "known", label: "Already Known" },
+  { id: "all", label: "All" },
+];
+const RECOMMENDATION_FAMILY_OPTIONS: Array<{ id: RecommendationFamily; label: string }> = [
+  { id: "diverse", label: "Diverse" },
+  { id: "closest", label: "Closest" },
+  { id: "newer", label: "Newer" },
+  { id: "foundational", label: "Foundational" },
+  { id: "methods", label: "Methods" },
+  { id: "contrasting", label: "Contrasting" },
+  { id: "open_pdf", label: "Open PDF" },
+  { id: "reference_material", label: "Reference Material" },
+];
 
 function draftFromDocument(document: DocumentDetail): DocumentDraft {
   return {
@@ -4095,7 +4156,16 @@ function DocumentPanel({
 }
 
 function RecommendationsPanel({ document, onClose }: { document: DocumentDetail; onClose?: () => void }) {
-  const [hideExisting, setHideExisting] = useStoredBoolean("medusa-recommendations-hide-existing-v2", true);
+  const [view, setView] = useStoredString<RecommendationView>(
+    "medusa-recommendations-view-v1",
+    "discover",
+    RECOMMENDATION_VIEW_OPTIONS.map((item) => item.id),
+  );
+  const [family, setFamily] = useStoredString<RecommendationFamily>(
+    "medusa-recommendations-family-v1",
+    "diverse",
+    RECOMMENDATION_FAMILY_OPTIONS.map((item) => item.id),
+  );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
   const autoRefreshKeyRef = useRef<string | null>(null);
@@ -4106,8 +4176,8 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const newDownloadFeedback = useAsyncActionFeedback();
   const stashFeedback = useAsyncActionFeedbackMap();
   const recommendations = useQuery({
-    queryKey: ["document-recommendations", document.id, hideExisting],
-    queryFn: () => api.documentRecommendations(document.id, hideExisting),
+    queryKey: ["document-recommendations", document.id, view, family],
+    queryFn: () => api.documentRecommendations(document.id, { view, family }),
     enabled: document.processing_status === "ready" && Boolean(document.doi),
   });
   const refresh = useMutation({
@@ -4135,8 +4205,9 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
       }),
     onSuccess: (_stash, item) => {
       stashFeedback.showSuccess(item.id);
-      setNotice(`Stashed DOI ${item.doi}`);
+      setNotice(`Wishlisted DOI ${item.doi}`);
       void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-recommendations", document.id] });
     },
     onError: (error, item) => {
       const message = actionFailureMessage("Could not stash DOI", error);
@@ -4170,20 +4241,29 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   useEffect(() => {
     setSelectedIds([]);
     setNotice("");
-  }, [document.id, hideExisting]);
+  }, [document.id, view, family]);
 
   const rows = recommendations.data || [];
-  const newRows = rows.filter((item) => !item.existing_document_id && !item.imported_document_id);
-  const selectableRows = rows.filter((item) => !item.existing_document_id && !item.imported_document_id);
+  const newRows = rows.filter((item) => !isKnownRecommendation(item));
+  const selectableRows = rows.filter((item) => !isKnownRecommendation(item));
   const allSelectableSelected =
     selectableRows.length > 0 && selectableRows.every((item) => selectedIds.includes(item.id));
   const selectedCount = selectedIds.length;
   const selectedDownloadable = rows.filter((item) => selectedIds.includes(item.id) && item.has_pdf).length;
+  const rowDownloadable = rows.filter((item) => item.has_pdf).length;
   const newDownloadable = newRows.filter((item) => item.has_pdf).length;
   const canRefresh = document.processing_status === "ready" && Boolean(document.doi);
 
   useEffect(() => {
-    const autoRefreshKey = `${document.id}:${hideExisting}`;
+    const selectableIds = new Set(selectableRows.map((item) => item.id));
+    setSelectedIds((current) => {
+      const next = current.filter((id) => selectableIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [rows, selectableRows]);
+
+  useEffect(() => {
+    const autoRefreshKey = `${document.id}:${view}:${family}`;
     if (
       !canRefresh ||
       recommendations.isFetching ||
@@ -4200,12 +4280,13 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   }, [
     canRefresh,
     document.id,
-    hideExisting,
+    family,
     recommendations.data,
     recommendations.isError,
     recommendations.isFetching,
     refresh,
     rows.length,
+    view,
   ]);
 
   const toggleSelected = (id: string) => {
@@ -4224,14 +4305,12 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
           <span>
             {recommendations.isFetching
               ? "Loading related papers"
-              : `${rows.length} shown / ${newRows.length} new / ${newDownloadable} with PDFs`}
+              : view === "known"
+                ? `${rows.length} known / ${rowDownloadable} with open PDFs`
+                : `${rows.length} shown / ${newRows.length} discovery leads / ${newDownloadable} with open PDFs`}
           </span>
         </div>
         <div className="recommendation-actions">
-          <label className="compact-toggle">
-            <input type="checkbox" checked={hideExisting} onChange={(event) => setHideExisting(event.target.checked)} />
-            <span>Hide existing</span>
-          </label>
           <AsyncActionSlot feedback={refreshFeedback.feedback}>
             <button
               className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback)}
@@ -4256,29 +4335,55 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
           ) : null}
         </div>
       </div>
+      <div className="recommendations-controls">
+        <div className="recommendation-view-tabs" role="tablist" aria-label="Recommendation view">
+          {RECOMMENDATION_VIEW_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              className={view === option.id ? "selected" : ""}
+              onClick={() => setView(option.id)}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="recommendation-family-tabs" role="tablist" aria-label="Recommendation relation family">
+          {RECOMMENDATION_FAMILY_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              className={family === option.id ? "selected" : ""}
+              onClick={() => setFamily(option.id)}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="recommendations-download-row">
         <label className="select-all-row">
           <input
             data-disabled-reason="there are no new recommendations available for selection."
-            data-tooltip={allSelectableSelected ? "Clear all selectable recommendation rows." : "Select all new recommendation rows that are not already in the library."}
+            data-tooltip={allSelectableSelected ? "Clear all selectable recommendation rows." : "Select all discovery rows that are not already known to Medusa."}
             type="checkbox"
             checked={allSelectableSelected}
             onChange={toggleAllSelectable}
             disabled={!selectableRows.length}
           />
-          <strong>{selectedCount ? `${selectedCount} selected` : "Select new papers"}</strong>
+          <strong>{selectedCount ? `${selectedCount} selected` : "Select discovery leads"}</strong>
         </label>
         <AsyncActionSlot feedback={selectedDownloadFeedback.feedback}>
           <button
             className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
             data-disabled-reason={
               download.isPending
-                ? "recommendation downloads are already being queued."
-                : !selectedCount
-                  ? "select one or more new recommendation rows first."
+                  ? "recommendation downloads are already being queued."
+                  : !selectedCount
+                  ? "select one or more discovery rows first."
                   : "none of the selected recommendations has an open PDF URL."
             }
-            data-tooltip="Queue imports for the selected new recommendations that have open PDF URLs."
+            data-tooltip="Queue imports for selected discovery rows that have open PDF URLs."
             disabled={!selectedCount || !selectedDownloadable || download.isPending}
             onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
             type="button"
@@ -4292,18 +4397,18 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
             data-disabled-reason={
               download.isPending
-                ? "recommendation downloads are already being queued."
-                : !newRows.length
-                  ? "there are no new recommendation rows."
-                  : "no new recommendation has an open PDF URL."
+                  ? "recommendation downloads are already being queued."
+                  : !newRows.length
+                  ? "there are no discovery rows."
+                  : "no discovery row has an open PDF URL."
             }
-            data-tooltip="Queue imports for every new recommendation that has an open PDF URL."
+            data-tooltip="Queue imports for every discovery row that has an open PDF URL."
             disabled={!newRows.length || !newDownloadable || download.isPending}
             onClick={() => download.mutate({ mode: "new", skip_existing: true })}
             type="button"
           >
             <Download size={14} />
-            All new
+            All Open PDFs
           </button>
         </AsyncActionSlot>
       </div>
@@ -4316,25 +4421,20 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
       ) : rows.length ? (
         <div className="recommendation-list">
           {rows.map((item) => {
-            const inLibrary = Boolean(item.existing_document_id || item.imported_document_id);
+            const known = isKnownRecommendation(item);
             const doiCopied = copiedKey === `doi-${item.id}`;
             const titleCopied = copiedKey === `title-${item.id}`;
-            const statusPill = inLibrary ? (
-              <StatusPill value="In library" tone="good" />
-            ) : item.status === "download_failed" ? (
-              <StatusPill value="Download failed" tone="warn" />
-            ) : item.has_pdf ? (
-              <StatusPill value="PDF" tone="blue" />
-            ) : null;
+            const statusPill = recommendationStatusPill(item);
+            const reasonChips = recommendationReasonChips(item);
             return (
-              <article key={item.id} className={`recommendation-row ${inLibrary ? "in-library" : ""}`}>
+              <article key={item.id} className={`recommendation-row ${known ? "known" : ""}`}>
                 <input
                   aria-label={`Select ${item.title}`}
-                  data-disabled-reason="this recommendation is already in the library or has already been imported."
+                  data-disabled-reason="this recommendation is already known to Medusa."
                   data-tooltip={`Toggle selection for ${item.title} before queueing recommendation imports.`}
                   type="checkbox"
                   checked={selectedIds.includes(item.id)}
-                  disabled={inLibrary}
+                  disabled={known}
                   onChange={() => toggleSelected(item.id)}
                 />
                 <strong className="recommendation-title">{item.title}</strong>
@@ -4345,12 +4445,18 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                     {item.publication_year ? ` / ${item.publication_year}` : ""}
                     {item.journal ? ` / ${item.journal}` : ""}
                   </span>
+                  <div className="recommendation-reason-chips" aria-label="Recommendation evidence">
+                    {reasonChips.map((chip) => (
+                      <span key={chip}>{chip}</span>
+                    ))}
+                  </div>
                   {item.doi ? <code>{item.doi}</code> : null}
                   <p>{item.description || "No abstract available from recommendation sources."}</p>
                   <small>
                     {recommendationProviderLabel(item.source_provider)}
                     {item.source_relation ? ` / ${item.source_relation.replaceAll("_", " ")}` : ""}
                     {item.existing_document_title ? ` / ${item.existing_document_title}` : ""}
+                    {item.hidden_reason ? ` / ${item.hidden_reason}` : ""}
                   </small>
                 </div>
                 <div className="recommendation-row-actions">
@@ -4379,13 +4485,13 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                       <button
                         className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(item.id))}
                         data-disabled-reason={stashDoi.isPending ? "a DOI stash request is already running." : "this recommendation does not include a DOI to stash."}
-                        data-tooltip="Save this DOI to Stashes for later PDF follow-up."
-                        disabled={!item.doi || stashDoi.isPending}
+                        data-tooltip="Save this DOI to Stashes as acquisition follow-up."
+                        disabled={!item.doi || stashDoi.isPending || item.known_status === "stashed"}
                         onClick={() => stashDoi.mutate(item)}
                         type="button"
                       >
                         <Bookmark size={15} />
-                        Stash
+                        {item.known_status === "stashed" ? "Wishlisted" : "Wishlist"}
                       </button>
                     </AsyncActionSlot>
                     <a
@@ -4477,104 +4583,122 @@ function CompositionDialog({
             <span>This document was imported before composition tracking was available.</span>
           </div>
         ) : (
-          <>
-            <div className="composition-grid">
-              <section className="composition-chart-panel">
-                <div className="composition-section-title">
-                  <div>
-                    <h3>Cost Composition</h3>
-                    <span>{duration ? `${duration} processing` : "Processing time unavailable"}</span>
+          <div className="composition-content">
+            <div className="composition-summary-rail">
+              <div className="composition-grid">
+                <section className="composition-chart-panel">
+                  <div className="composition-section-title">
+                    <div>
+                      <h3>Cost Composition</h3>
+                      <span>{duration ? `${duration} processing` : "Processing time unavailable"}</span>
+                    </div>
+                    <strong>{formatUsd(composition?.total_estimated_cost_usd)}</strong>
                   </div>
-                  <strong>{formatUsd(composition?.total_estimated_cost_usd)}</strong>
-                </div>
-                <div className="composition-pie-wrap">
-                  <div className="composition-pie" style={{ background: compositionPieGradient(costEntries) }}>
-                    <span>{formatUsd(composition?.total_estimated_cost_usd)}</span>
+                  <div className="composition-pie-wrap">
+                    <div className="composition-pie" style={{ background: compositionPieGradient(costEntries) }}>
+                      <span>{formatUsd(composition?.total_estimated_cost_usd)}</span>
+                    </div>
+                    <div className="composition-legend">
+                      {costEntries.length ? (
+                        costEntries.map((entry, index) => (
+                          <div key={`${entry.provider}-${entry.model}-${entry.stage_key}`} className="composition-legend-row">
+                            <i style={{ background: COMPOSITION_COLORS[index % COMPOSITION_COLORS.length] }} />
+                            <span>{compositionLabel(entry)}</span>
+                            <strong>{formatUsd(entry.amount_usd)}</strong>
+                          </div>
+                        ))
+                      ) : (
+                        <span>No dollar-cost model calls recorded.</span>
+                      )}
+                    </div>
                   </div>
-                  <div className="composition-legend">
-                    {costEntries.length ? (
-                      costEntries.map((entry, index) => (
-                        <div key={`${entry.provider}-${entry.model}-${entry.stage_key}`} className="composition-legend-row">
-                          <i style={{ background: COMPOSITION_COLORS[index % COMPOSITION_COLORS.length] }} />
-                          <span>{compositionLabel(entry)}</span>
+                </section>
+                <section className="composition-provider-panel">
+                  <div className="composition-section-title">
+                    <h3>Provider Spend</h3>
+                  </div>
+                  {providerEntries.length ? (
+                    <div className="composition-provider-list">
+                      {providerEntries.map((entry) => (
+                        <div key={entry.provider || "unknown"} className="composition-provider-row">
+                          <span>{entry.provider}</span>
                           <strong>{formatUsd(entry.amount_usd)}</strong>
                         </div>
-                      ))
-                    ) : (
-                      <span>No dollar-cost model calls recorded.</span>
-                    )}
+                      ))}
+                    </div>
+                  ) : (
+                    <p>No provider spend recorded.</p>
+                  )}
+                </section>
+              </div>
+              {estimateComparison ? (
+                <section className="composition-section composition-estimate-panel">
+                  <div className="composition-section-title">
+                    <div>
+                      <h3>Estimate vs Actual</h3>
+                      <span>{compositionEstimateBasisLabel(estimateComparison.basis)}</span>
+                    </div>
+                    <strong>{compositionEstimateStatusLabel(estimateComparison.status)}</strong>
                   </div>
+                  <div className="composition-estimate-grid">
+                    <div className="composition-estimate-row">
+                      <span>Estimated</span>
+                      <strong>{formatUsd(estimateComparison.estimated_cost_usd)}</strong>
+                      <small>
+                        {estimateComparison.estimated_page_count
+                          ? `${estimateComparison.estimated_page_count} pages`
+                          : "Page count unavailable"}
+                      </small>
+                    </div>
+                    <div className="composition-estimate-row">
+                      <span>Actual</span>
+                      <strong>{formatUsd(estimateComparison.actual_cost_usd)}</strong>
+                      <small>{estimateComparison.actual_cost_usd > 0 ? "Recorded model spend" : "Not recorded yet"}</small>
+                    </div>
+                    <div className="composition-estimate-row">
+                      <span>Difference</span>
+                      <strong>{formatSignedUsd(estimateComparison.variance_usd)}</strong>
+                      <small>{formatSignedPercent(estimateComparison.variance_percent)}</small>
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+              <section className="composition-section composition-local-panel">
+                <div className="composition-section-title">
+                  <h3>Local Time</h3>
+                </div>
+                <div className="composition-local-grid">
+                  {localEntries.length ? (
+                    localEntries.map((entry) => (
+                      <div key={`${entry.stage_key}-${entry.method}`} className="composition-local-row">
+                        <span>{entry.stage_label}</span>
+                        <strong>{formatDurationMs(entry.duration_ms) || "0s"}</strong>
+                        <small>{entry.method || "local"}</small>
+                      </div>
+                    ))
+                  ) : (
+                    <span>No local timing records.</span>
+                  )}
                 </div>
               </section>
-              <section className="composition-provider-panel">
-                <div className="composition-section-title">
-                  <h3>Provider Spend</h3>
-                </div>
-                {providerEntries.length ? (
-                  <div className="composition-provider-list">
-                    {providerEntries.map((entry) => (
-                      <div key={entry.provider || "unknown"} className="composition-provider-row">
-                        <span>{entry.provider}</span>
-                        <strong>{formatUsd(entry.amount_usd)}</strong>
+              {issues.length ? (
+                <section className="composition-section composition-issues-panel">
+                  <div className="composition-section-title">
+                    <h3>Processing Issues</h3>
+                  </div>
+                  <div className="composition-issue-list">
+                    {issues.map((entry, index) => (
+                      <div key={`${entry.stage_key}-${index}`} className="composition-issue-row">
+                        <strong>{entry.stage_label || entry.label}</strong>
+                        <span>{entry.message || entry.status}</span>
+                        <small>{[entry.status, entry.provider, entry.model || entry.method].filter(Boolean).join(" / ")}</small>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <p>No provider spend recorded.</p>
-                )}
-              </section>
+                </section>
+              ) : null}
             </div>
-            {estimateComparison ? (
-              <section className="composition-section composition-estimate-panel">
-                <div className="composition-section-title">
-                  <div>
-                    <h3>Estimate vs Actual</h3>
-                    <span>{compositionEstimateBasisLabel(estimateComparison.basis)}</span>
-                  </div>
-                  <strong>{compositionEstimateStatusLabel(estimateComparison.status)}</strong>
-                </div>
-                <div className="composition-estimate-grid">
-                  <div className="composition-estimate-row">
-                    <span>Estimated</span>
-                    <strong>{formatUsd(estimateComparison.estimated_cost_usd)}</strong>
-                    <small>
-                      {estimateComparison.estimated_page_count
-                        ? `${estimateComparison.estimated_page_count} pages`
-                        : "Page count unavailable"}
-                    </small>
-                  </div>
-                  <div className="composition-estimate-row">
-                    <span>Actual</span>
-                    <strong>{formatUsd(estimateComparison.actual_cost_usd)}</strong>
-                    <small>{estimateComparison.actual_cost_usd > 0 ? "Recorded model spend" : "Not recorded yet"}</small>
-                  </div>
-                  <div className="composition-estimate-row">
-                    <span>Difference</span>
-                    <strong>{formatSignedUsd(estimateComparison.variance_usd)}</strong>
-                    <small>{formatSignedPercent(estimateComparison.variance_percent)}</small>
-                  </div>
-                </div>
-              </section>
-            ) : null}
-            <section className="composition-section">
-              <div className="composition-section-title">
-                <h3>Local Time</h3>
-              </div>
-              <div className="composition-local-grid">
-                {localEntries.length ? (
-                  localEntries.map((entry) => (
-                    <div key={`${entry.stage_key}-${entry.method}`} className="composition-local-row">
-                      <span>{entry.stage_label}</span>
-                      <strong>{formatDurationMs(entry.duration_ms) || "0s"}</strong>
-                      <small>{entry.method || "local"}</small>
-                    </div>
-                  ))
-                ) : (
-                  <span>No local timing records.</span>
-                )}
-              </div>
-            </section>
-            <section className="composition-section">
+            <section className="composition-section composition-pipeline-section">
               <div className="composition-section-title">
                 <h3>Pipeline</h3>
                 <span>{pipeline.length ? `${pipeline.length} recorded steps` : "No recorded steps"}</span>
@@ -4612,23 +4736,7 @@ function CompositionDialog({
                 </div>
               )}
             </section>
-            {issues.length ? (
-              <section className="composition-section">
-                <div className="composition-section-title">
-                  <h3>Processing Issues</h3>
-                </div>
-                <div className="composition-issue-list">
-                  {issues.map((entry, index) => (
-                    <div key={`${entry.stage_key}-${index}`} className="composition-issue-row">
-                      <strong>{entry.stage_label || entry.label}</strong>
-                      <span>{entry.message || entry.status}</span>
-                      <small>{[entry.status, entry.provider, entry.model || entry.method].filter(Boolean).join(" / ")}</small>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-          </>
+          </div>
         )}
       </section>
     </div>
@@ -6963,7 +7071,12 @@ function DocumentPanelContent({
                 target="_blank"
                 rel="noreferrer"
               >
-                <img alt={figure.figure_label || "Extracted figure"} src={`/api/figures/${figure.id}/asset`} />
+                <img
+                  alt={figure.figure_label || "Extracted figure"}
+                  decoding="async"
+                  loading="lazy"
+                  src={`/api/figures/${figure.id}/asset`}
+                />
                 <span>{figure.figure_label || `Page ${figure.page_number || "?"}`}</span>
                 <small>{figure.caption || figure.gist || "Extracted figure"}</small>
               </a>

@@ -152,7 +152,7 @@ MEDUSA_UNPAYWALL_EMAIL=
 SEMANTIC_SCHOLAR_API_KEY=
 ```
 
-Related-paper discovery uses OpenAlex, Semantic Scholar, and Crossref to find candidates. Unpaywall and arXiv enrich those candidates with open PDF links before they are queued for import; set `MEDUSA_UNPAYWALL_EMAIL` to a real contact email to enable Unpaywall lookups. Google Scholar is available as a manual per-item search link rather than an automated scraper.
+Related-paper discovery uses OpenAlex, Semantic Scholar, and Crossref to find candidates. Unpaywall and arXiv enrich those candidates with open PDF links before they are queued for import; set `MEDUSA_UNPAYWALL_EMAIL` to a real contact email to enable Unpaywall lookups. The Library detail Recommendations panel defaults to a Discover view that suppresses library-held, queued-import, and DOI-wishlisted candidates while keeping an Already Known audit view, relation-family filters, compact evidence chips, wishlist actions, and manual Google Scholar links rather than automated Scholar scraping.
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 

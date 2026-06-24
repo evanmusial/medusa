@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from app.config import get_settings
@@ -19,7 +20,7 @@ class StorageService:
     def put_bytes(self, key: str, data: bytes, content_type: str) -> StoredObject:
         raise NotImplementedError
 
-    def get_bytes(self, uri: str) -> bytes:
+    def get_bytes(self, uri: str, **kwargs: Any) -> bytes:
         raise NotImplementedError
 
     def delete_uri(self, uri: str) -> bool:
@@ -38,7 +39,8 @@ class LocalStorageService(StorageService):
         path.write_bytes(data)
         return StoredObject(uri=str(path.resolve()), backend="local")
 
-    def get_bytes(self, uri: str) -> bytes:
+    def get_bytes(self, uri: str, **kwargs: Any) -> bytes:
+        del kwargs
         return Path(uri).read_bytes()
 
     def delete_uri(self, uri: str) -> bool:
@@ -72,13 +74,13 @@ class GcsStorageService(StorageService):
         blob.upload_from_string(data, content_type=content_type)
         return StoredObject(uri=f"gs://{self.bucket_name}/{object_name}", backend="gcs")
 
-    def get_bytes(self, uri: str) -> bytes:
+    def get_bytes(self, uri: str, **kwargs: Any) -> bytes:
         parsed = urlparse(uri)
         if parsed.scheme != "gs":
             return Path(uri).read_bytes()
         bucket = self.client.bucket(parsed.netloc)
         blob = bucket.blob(parsed.path.lstrip("/"))
-        return blob.download_as_bytes()
+        return blob.download_as_bytes(**kwargs)
 
     def delete_uri(self, uri: str) -> bool:
         parsed = urlparse(uri)

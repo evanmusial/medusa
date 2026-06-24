@@ -49,6 +49,8 @@ import type {
   Project,
   ProjectDetail,
   ProjectItem,
+  RecommendationFamily,
+  RecommendationView,
   RuntimeLocation,
   SavedSearch,
   Tag,
@@ -204,8 +206,17 @@ export const api = {
     request<AccessorySummary>(`/api/documents/${documentId}/accessory-summaries`, { method: "POST", body: JSON.stringify(body) }),
   updateAccessorySummary: (id: string, body: Partial<AccessorySummaryPayload>) =>
     request<AccessorySummary>(`/api/accessory-summaries/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  documentRecommendations: (id: string, hideExisting = false) =>
-    request<DocumentRecommendation[]>(`/api/documents/${id}/recommendations${hideExisting ? "?hide_existing=true" : ""}`),
+  documentRecommendations: (
+    id: string,
+    options: { hideExisting?: boolean; view?: RecommendationView; family?: RecommendationFamily } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.hideExisting) params.set("hide_existing", "true");
+    if (options.view) params.set("view", options.view);
+    if (options.family) params.set("family", options.family);
+    const suffix = params.toString();
+    return request<DocumentRecommendation[]>(`/api/documents/${id}/recommendations${suffix ? `?${suffix}` : ""}`);
+  },
   refreshDocumentRecommendations: (id: string) =>
     request<DocumentRecommendationRefresh>(`/api/documents/${id}/recommendations/refresh`, { method: "POST" }),
   downloadRecommendations: (
