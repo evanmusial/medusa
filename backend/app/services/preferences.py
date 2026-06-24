@@ -154,8 +154,8 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "Bibliography",
         "default_enabled": True,
         "configurable": True,
-        "description": "Detects references, bibliography, and works-cited sections and stores the document's own reference list in a separate Markdown-compatible Bibliography field.",
-        "accomplishes": "Keeps source reference lists searchable and editable without confusing them with generated APA citation text or project bibliographies.",
+        "description": "Detects references, bibliography, and works-cited sections and stores the document's own reference list as one normalized Bibliography source per line.",
+        "accomplishes": "Keeps source reference lists searchable and editable without source-list numbering, generated APA citation text, or project bibliographies getting mixed together.",
     },
     {
         "key": "metadata",

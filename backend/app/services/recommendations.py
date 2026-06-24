@@ -25,6 +25,7 @@ from app.services.verifier import normalized_title_similarity
 DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 TRAILING_DOI_PUNCTUATION = ".,;:)]}>"
 REFERENCE_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)])\s+")
+REFERENCE_LINE_ENTRY_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)]\s+|[A-Z][A-Za-z'`-]+,\s+[A-Z]|(?:[A-Z]\.\s*){1,5}[A-Z][A-Za-z'`-]+)")
 REFERENCE_QUOTED_TITLE_RE = re.compile(r"[\"“]([^\"”]{8,300})[\"”]")
 REFERENCE_MARKDOWN_TITLE_RE = re.compile(r"(?<!\*)\*([^*\n]{8,300})\*(?!\*)")
 REFERENCE_APA_TITLE_RE = re.compile(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)\.\s+(.+?)(?:\.\s+|$)")
@@ -432,7 +433,7 @@ def _bibliography_reference_entries(text: str | None, *, limit: int) -> list[str
     entries: list[str] = []
     current: list[str] = []
     for line in [line.strip() for line in normalized.splitlines() if line.strip()]:
-        if REFERENCE_ENTRY_MARKER_RE.match(line) and current:
+        if REFERENCE_LINE_ENTRY_RE.match(line) and current:
             entries.append(" ".join(current).strip())
             current = [line]
         else:

@@ -248,6 +248,7 @@ const TAG_SUGGESTIONS_MODEL_KEY = "keywords_topics";
 const PAGE_TEXT_NORMALIZATION_MODEL_KEY = "page_text_normalization";
 const TEXT_CHUNK_ENCODING_MODEL_KEY = "text_chunk_encoding";
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
+const BIBLIOGRAPHY_PROCESSING_LABEL = "local extraction";
 const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
@@ -2427,6 +2428,22 @@ function MarkdownBlock({
   flushList();
 
   return <div className={`markdown-content ${compact ? "compact" : ""}`}>{blocks}</div>;
+}
+
+function BibliographyBlock({ content, empty }: { content?: string | null; empty: string }) {
+  const entries = decodeHtmlEntities(content || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!entries.length) return <p className="markdown-empty">{empty}</p>;
+
+  return (
+    <div className="markdown-content source-bibliography">
+      {entries.map((entry, index) => (
+        <p key={`source-bibliography-${index}`}>{renderInlineMarkdown(entry, `source-bibliography-${index}`)}</p>
+      ))}
+    </div>
+  );
 }
 
 function ResizeHandle({
@@ -6528,7 +6545,7 @@ function DocumentPanelContent({
   const renderBibliographySection = () => (
     <section className="detail-section bibliography-section">
       <h3>Bibliography</h3>
-      <MarkdownBlock content={document.bibliography} empty="No source bibliography extracted yet." />
+      <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
       <div className="citation-actions">
         <button
           className="secondary-button"
@@ -6554,6 +6571,7 @@ function DocumentPanelContent({
             {bibliographyRefreshBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
+        <span className="citation-model-label">{BIBLIOGRAPHY_PROCESSING_LABEL}</span>
       </div>
     </section>
   );

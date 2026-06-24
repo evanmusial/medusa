@@ -123,6 +123,35 @@ def test_refresh_recommendations_uses_stored_bibliography_references(monkeypatch
         assert unheld.source_url == "https://example.test/source"
 
 
+def test_bibliography_reference_entries_split_one_source_per_line(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.recommendations import _bibliography_reference_entries
+
+    entries = _bibliography_reference_entries(
+        "Smith, A. (2024). A careful source. Journal.\n"
+        "Jones, B. (2023). Another source. Press.",
+        limit=10,
+    )
+
+    assert entries == [
+        "Smith, A. (2024). A careful source. Journal.",
+        "Jones, B. (2023). Another source. Press.",
+    ]
+
+    initial_entries = _bibliography_reference_entries(
+        "P. Barrett and P. Rolland, The meta-analytic correlation between two Big Five factors, 2012.\n"
+        "D.M. Cappelli, A. Moore, and R. Trzeciak, The CERT Guide to Insider Threats, 2012.",
+        limit=10,
+    )
+
+    assert initial_entries == [
+        "P. Barrett and P. Rolland, The meta-analytic correlation between two Big Five factors, 2012.",
+        "D.M. Cappelli, A. Moore, and R. Trzeciak, The CERT Guide to Insider Threats, 2012.",
+    ]
+
+
 def test_recommendations_v2_filters_known_items_and_relation_families(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

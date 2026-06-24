@@ -11,12 +11,27 @@ from app.services.extraction import normalize_extracted_text, sanitize_extracted
 REFERENCE_HEADING_RE = re.compile(r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\s*$", re.IGNORECASE)
 REFERENCE_HEADING_INLINE_RE = re.compile(r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\b[:\s-]*", re.IGNORECASE)
 STOP_HEADING_RE = re.compile(r"^\s*(?:appendix|appendices|acknowledg(?:e)?ments?|notes?|index|about\s+the\s+author)\b", re.IGNORECASE)
-REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:\[\d+\]|\d+\.|[A-Z][A-Za-z'`-]+,\s+[A-Z])")
+REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:\[\d+\]|\d+\.|[A-Z][A-Za-z'`-]+,\s+[A-Z]|(?:[A-Z]\.\s*){1,5}[A-Z][A-Za-z'`-]+)")
+REFERENCE_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)])\s+")
+REFERENCE_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*]|\u2013|\u2014|\u2022|\u2023|\u2043|\u25e6)\s+")
 ITALIC_FONT_RE = re.compile(r"(?:italic|oblique|kursiv)", re.IGNORECASE)
 
 
 def _strip_markdown(value: str) -> str:
     return value.replace("*", "").replace("_", "").replace("`", "")
+
+
+def _strip_reference_list_marker(value: str) -> str:
+    return REFERENCE_LIST_MARKER_RE.sub("", value, count=1).strip()
+
+
+def _strip_reference_entry_prefix(value: str) -> str:
+    return REFERENCE_ENTRY_PREFIX_RE.sub("", value, count=1).strip()
+
+
+def _line_starts_reference_entry(line: str) -> bool:
+    plain = _strip_markdown(_strip_reference_list_marker(line)).strip()
+    return bool(REFERENCE_ENTRY_RE.match(plain))
 
 
 def _line_is_reference_heading(line: str) -> bool:
@@ -165,31 +180,44 @@ def _entry_count(text: str | None) -> int:
     if not text:
         return 0
     lines = [line for line in text.splitlines() if line.strip()]
-    matches = sum(1 for line in lines if REFERENCE_ENTRY_RE.match(_strip_markdown(line)))
-    return matches or max(1, len([part for part in re.split(r"\n\s*\n+", text) if part.strip()]))
+    matches = sum(1 for line in lines if _line_starts_reference_entry(line))
+    return matches or len(lines) or max(1, len([part for part in re.split(r"\n\s*\n+", text) if part.strip()]))
+
+
+def _clean_reference_line(raw_line: str) -> str:
+    line = sanitize_extracted_text(raw_line).strip()
+    if not line:
+        return ""
+    return _strip_reference_list_marker(line)
+
+
+def _normalize_reference_entry(parts: list[str]) -> str:
+    entry = " ".join(part.strip() for part in parts if part.strip())
+    return _strip_reference_entry_prefix(normalize_extracted_text(entry).replace("\n", " ")).strip()
 
 
 def _format_reference_lines(lines: list[str]) -> str:
     entries: list[str] = []
-    current = ""
+    current: list[str] = []
     for raw_line in lines:
-        line = sanitize_extracted_text(raw_line).strip()
+        line = _clean_reference_line(raw_line)
         if not line:
-            if current:
-                entries.append(current.strip())
-                current = ""
             continue
-        if REFERENCE_ENTRY_RE.match(_strip_markdown(line)) and current:
-            entries.append(current.strip())
-            current = line
+        if _line_starts_reference_entry(line) and current:
+            entry = _normalize_reference_entry(current)
+            if entry:
+                entries.append(entry)
+            current = [line]
             continue
-        if not current:
-            current = line
+        if current:
+            current.append(line)
         else:
-            current = f"{current.rstrip()} {line.lstrip()}"
+            current = [line]
     if current:
-        entries.append(current.strip())
-    return "\n\n".join(normalize_extracted_text(entry) for entry in entries if entry.strip()).strip()
+        entry = _normalize_reference_entry(current)
+        if entry:
+            entries.append(entry)
+    return "\n".join(entries).strip()
 
 
 def extract_document_bibliography(document: Document, pdf_path: Path | None = None) -> dict[str, Any]:

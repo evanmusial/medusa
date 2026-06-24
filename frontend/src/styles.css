@@ -3022,6 +3022,10 @@ textarea {
   line-height: 1.42;
 }
 
+.markdown-content.source-bibliography {
+  gap: 5px;
+}
+
 .markdown-content p,
 .markdown-empty {
   margin: 0;
