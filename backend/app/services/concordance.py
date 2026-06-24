@@ -24,6 +24,7 @@ from app.models import (
 from app.services.ai import get_ai_service
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
+    MODEL_BIBLIOGRAPHY_CLEANUP,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
@@ -249,6 +250,8 @@ def concordance_stage_model(db: Session, capability_key: str) -> str | None:
         )
     if capability_key == "citation_refresh":
         return get_analysis_model(db, MODEL_APA_CITATION)
+    if capability_key == "bibliography_extraction":
+        return get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
     return None
 
 
@@ -1140,6 +1143,33 @@ class ConcordanceProcessor:
             result = extract_document_bibliography(document)
         bibliography = result.get("bibliography")
         evidence = result.get("evidence") or {}
+        if bibliography and run_force:
+            cleanup_model = get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
+            try:
+                cleanup = get_ai_service().normalize_bibliography(
+                    document.original_filename or document.title or "document.pdf",
+                    bibliography,
+                    model=cleanup_model,
+                    usage_context=self._usage_context(document, job, "bibliography_extraction"),
+                    prompt_cache_key=f"medusa-bibliography:{document.id}",
+                )
+                bibliography = cleanup.get("bibliography") or bibliography
+                evidence["model_cleanup"] = {
+                    "status": "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback",
+                    "model": (cleanup.get("_openai") or {}).get("model") or cleanup_model,
+                    "confidence": cleanup.get("confidence"),
+                    "notes": cleanup.get("notes") or [],
+                    "formatting": "apa_markdown_one_source_per_line",
+                }
+                if (cleanup.get("_openai") or {}).get("configured"):
+                    evidence["formatting"] = "apa_markdown_model_cleanup"
+            except Exception as exc:
+                evidence["model_cleanup"] = {
+                    "status": "failed",
+                    "model": cleanup_model,
+                    "error": str(exc),
+                    "formatting": "local_fallback",
+                }
         if bibliography:
             before = document_correction_snapshot(document)
             document.bibliography = bibliography

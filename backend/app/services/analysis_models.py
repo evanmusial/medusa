@@ -10,6 +10,7 @@ from app.config import get_settings
 DEFAULT_GPT_MODEL = "gpt-5.5"
 DEFAULT_SUMMARY_MODEL = "gpt-5.4"
 DEFAULT_KEYWORDS_TOPICS_MODEL = "gpt-5.4-mini"
+DEFAULT_BIBLIOGRAPHY_CLEANUP_MODEL = "gpt-5.4-nano"
 DEFAULT_ACCESSORY_SUMMARIES_MODEL = "gpt-5.4"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_RAW_TEXT_EXTRACTOR = "marker"
@@ -21,6 +22,7 @@ MODEL_APA_CITATION = "apa_citation"
 MODEL_KEYWORDS_TOPICS = "keywords_topics"
 MODEL_PAGE_TEXT_NORMALIZATION = "page_text_normalization"
 MODEL_TEXT_CHUNK_ENCODING = "text_chunk_encoding"
+MODEL_BIBLIOGRAPHY_CLEANUP = "bibliography_cleanup"
 MODEL_ACCESSORY_SUMMARIES = "accessory_summaries"
 MODEL_CORE_DOCUMENT_INTELLIGENCE = "core_document_intelligence"
 
@@ -114,6 +116,12 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         description="Conforms extracted page text into standard readable flow across columns and graphics while preserving wording, order, citations, equations, headings, labels, captions, and tables.",
     ),
     AnalysisModelTask(
+        key=MODEL_BIBLIOGRAPHY_CLEANUP,
+        label="Bibliography Cleanup",
+        model_kind="gpt",
+        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default.",
+    ),
+    AnalysisModelTask(
         key=MODEL_TEXT_CHUNK_ENCODING,
         label="Text Chunk Encoding",
         model_kind="embedding",
@@ -156,6 +164,8 @@ def default_model_for_task(task_key: str) -> str:
         return DEFAULT_SUMMARY_MODEL
     if task_key == MODEL_KEYWORDS_TOPICS:
         return DEFAULT_KEYWORDS_TOPICS_MODEL
+    if task_key == MODEL_BIBLIOGRAPHY_CLEANUP:
+        return DEFAULT_BIBLIOGRAPHY_CLEANUP_MODEL
     if task_key == MODEL_ACCESSORY_SUMMARIES:
         return DEFAULT_ACCESSORY_SUMMARIES_MODEL
     return normalize_model_id(settings.openai_model, DEFAULT_GPT_MODEL)

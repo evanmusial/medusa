@@ -248,7 +248,7 @@ const TAG_SUGGESTIONS_MODEL_KEY = "keywords_topics";
 const PAGE_TEXT_NORMALIZATION_MODEL_KEY = "page_text_normalization";
 const TEXT_CHUNK_ENCODING_MODEL_KEY = "text_chunk_encoding";
 const ACCESSORY_SUMMARIES_MODEL_KEY = "accessory_summaries";
-const BIBLIOGRAPHY_PROCESSING_LABEL = "local extraction";
+const BIBLIOGRAPHY_CLEANUP_MODEL_KEY = "bibliography_cleanup";
 const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
@@ -6562,7 +6562,7 @@ function DocumentPanelContent({
           <button
             className={asyncFeedbackClass("secondary-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
             data-disabled-reason={bibliographyRefreshBusyReason}
-            data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list from the current parsed pages and original PDF evidence."
+            data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as one APA-style source per line with the selected Bibliography Cleanup model."
             onClick={checkBibliography}
             disabled={bibliographyRefreshBusy}
             type="button"
@@ -6571,7 +6571,7 @@ function DocumentPanelContent({
             {bibliographyRefreshBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
-        <span className="citation-model-label">{BIBLIOGRAPHY_PROCESSING_LABEL}</span>
+        <span className="citation-model-label">{analysisModelActionLabel(preferences, BIBLIOGRAPHY_CLEANUP_MODEL_KEY, "gpt-5.4-nano")}</span>
       </div>
     </section>
   );
@@ -13675,13 +13675,13 @@ function SettingsView({
         <div className="panel-title-row">
           <div>
             <h2>Shared Model Defaults</h2>
-            <span>{preferences?.analysis_model_tasks.length || 8} import and Concordance tasks</span>
+            <span>{preferences?.analysis_model_tasks.length || 9} import, Concordance, and ad hoc tasks</span>
           </div>
           <Sparkles size={20} />
         </div>
         <div className="models-note">
           <Info size={15} />
-          <span>These defaults feed the import-flow rows above whenever a step is not controlled directly by the selected preset.</span>
+          <span>These defaults feed import, Concordance, and document-level refresh actions whenever a step is not controlled directly by the selected preset.</span>
         </div>
         <div className="model-task-grid">
           {(preferences?.analysis_model_tasks || []).map((task) => (

@@ -20,6 +20,7 @@ from app.services.analysis_models import (
     DEFAULT_KEYWORDS_TOPICS_MODEL,
     MODEL_APA_CITATION,
     MODEL_ACCESSORY_SUMMARIES,
+    MODEL_BIBLIOGRAPHY_CLEANUP,
     MODEL_CORE_DOCUMENT_INTELLIGENCE,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
@@ -258,6 +259,31 @@ APA_CITATION_JUDGMENT_PROMPT = (
     "pages, or URLs. Use Markdown-compatible italics where APA requires italicized publication elements."
 )
 
+BIBLIOGRAPHY_CLEANUP_PROMPT = (
+    "Clean and format an extracted scholarly reference section for a research library. APA 7-style formatting, "
+    "intelligent source grouping, and one source per output item are paramount. First infer which wrapped, indented, "
+    "blank-separated, numbered, or bulleted lines belong to the same source. Then return one Markdown-compatible "
+    "APA-style reference-list entry per source. Remove leading source prefixes such as numbers, bracketed numbers, "
+    "bullets, and list markers. Start each entry with the visible author or group author when present; when "
+    "no author is visible, start with the title. Use Markdown italics where APA requires italics, such as book, "
+    "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Preserve DOI "
+    "links, stable URLs, retrieval notes, edition/series details, page ranges, publishers, and years when visible. "
+    "Do not invent missing authors, years, titles, venues, publishers, pages, DOI links, URLs, or access dates. If "
+    "the supplied text is incomplete, keep the available source wording in the closest sensible APA order. Do not "
+    "return bullets, numbering, blank lines, headings, explanations, or multiple sources in one reference string."
+)
+
+BIBLIOGRAPHY_CLEANUP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "references": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["references", "confidence", "notes"],
+}
+
 PAGE_TEXT_NORMALIZATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -339,6 +365,7 @@ _STANDALONE_SUMMARY_HEADING_RE = re.compile(
     r"\s*[:.\-–—]?\s*(?:\*\*)?$",
     re.IGNORECASE,
 )
+_BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\s+")
 
 
 def normalize_obfuscated_email(value: Any) -> str | None:
@@ -387,6 +414,14 @@ def strip_standalone_summary_heading(value: Any) -> str:
     if _STANDALONE_SUMMARY_HEADING_RE.match(first_line):
         return "\n".join(lines[first_content_index + 1 :]).strip()
     return text
+
+
+def normalize_model_bibliography_entry(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    entry = normalize_extracted_text(value).replace("\n", " ").strip()
+    entry = _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE.sub("", entry, count=1).strip()
+    return entry
 
 
 @contextmanager
@@ -936,6 +971,65 @@ class AiService:
             "used_pdf_file": False,
         }
         return result
+
+    def normalize_bibliography(
+        self,
+        filename: str,
+        bibliography: str,
+        *,
+        model: str | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, Any]:
+        fallback_entries = [normalize_model_bibliography_entry(line) for line in bibliography.splitlines()]
+        fallback = "\n".join(entry for entry in fallback_entries if entry).strip()
+        if not fallback:
+            return {
+                "bibliography": "",
+                "confidence": 1.0,
+                "notes": ["No bibliography text was supplied."],
+                "_openai": {"model": model or default_analysis_models()[MODEL_BIBLIOGRAPHY_CLEANUP], "configured": False},
+            }
+        selected_model = model or default_analysis_models()[MODEL_BIBLIOGRAPHY_CLEANUP]
+        if not self._can_call_text_model(selected_model):
+            return {
+                "bibliography": fallback,
+                "confidence": 0.45,
+                "notes": ["AI bibliography cleanup is not configured for the selected model."],
+                "_openai": {"model": selected_model, "configured": False},
+            }
+        input_text = (
+            f"Filename: {filename}\n\n"
+            "Extracted source bibliography text. Format this as APA-style references, one source per item:\n"
+            f"{fallback[:60_000]}"
+        )
+        result = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_bibliography_cleanup",
+            schema=BIBLIOGRAPHY_CLEANUP_SCHEMA,
+            prompt=BIBLIOGRAPHY_CLEANUP_PROMPT,
+            input_content=[{"type": "input_text", "text": input_text}],
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_BIBLIOGRAPHY_CLEANUP,
+            input_text_characters=len(input_text),
+            input_file_bytes=0,
+            used_pdf_file=False,
+            prompt_cache_key=prompt_cache_key,
+        )
+        entries = [normalize_model_bibliography_entry(entry) for entry in result.get("references") or []]
+        bibliography_text = "\n".join(entry for entry in entries if entry).strip() or fallback
+        return {
+            "bibliography": bibliography_text,
+            "confidence": result.get("confidence"),
+            "notes": result.get("notes") or [],
+            "_openai": {
+                "model": selected_model,
+                "configured": True,
+                "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+                "input_characters": len(input_text),
+            },
+        }
 
     def generate_document_summary(
         self,

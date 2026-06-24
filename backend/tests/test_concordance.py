@@ -48,7 +48,30 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCapability, DocumentPage
+    from app.services import concordance as concordance_service
     from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    cleanup_calls = []
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+            cleanup_calls.append(
+                {
+                    "filename": filename,
+                    "bibliography": bibliography,
+                    "model": model,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
+                "bibliography": "Smith, A. (2024). *Fresh source*. Journal.",
+                "confidence": 0.93,
+                "notes": [],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
 
     Session = make_session()
     with Session() as db:
@@ -104,11 +127,16 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
 
         ConcordanceProcessor().process_job(db, forced_job)
 
-        assert document.bibliography == "Smith, A. (2024). Fresh source. Journal."
+        assert document.bibliography == "Smith, A. (2024). *Fresh source*. Journal."
         assert forced_job.status == "complete"
         db.refresh(capability)
         assert capability.evidence["status"] == "extracted"
+        assert capability.evidence["model_cleanup"]["model"] == "gpt-5.4-nano"
+        assert capability.evidence["model_cleanup"]["formatting"] == "apa_markdown_one_source_per_line"
         assert document.metadata_evidence["bibliography_extraction"]["status"] == "extracted"
+        assert len(cleanup_calls) == 1
+        assert cleanup_calls[0]["model"] == "gpt-5.4-nano"
+        assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"
 
 
 def test_concordance_estimate_marks_same_model_summary_noop(monkeypatch, tmp_path):
