@@ -118,8 +118,8 @@ def test_extract_pdf_figures_reads_embedded_images(tmp_path):
 
     assert len(figures) == 1
     assert figures[0].page_number == 1
-    assert figures[0].width > 0
-    assert figures[0].height > 0
+    assert figures[0].width >= 740
+    assert figures[0].height >= 615
     assert figures[0].bbox
     assert figures[0].label == "Figure 1"
     assert figures[0].caption == "Figure 1. Fixture diagram."
@@ -135,8 +135,8 @@ def test_extract_pdf_figures_prefers_rendered_small_displayed_images(tmp_path):
 
     assert len(figures) == 1
     assert figures[0].source == "page_image"
-    assert figures[0].width >= 80
-    assert figures[0].height >= 80
+    assert figures[0].width >= 295
+    assert figures[0].height >= 370
     assert figures[0].bbox
     assert figures[0].label == "Figure 3"
     assert figures[0].caption == "Figure 3. Small displayed portrait."

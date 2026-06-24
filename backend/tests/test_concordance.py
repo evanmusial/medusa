@@ -43,6 +43,74 @@ def test_create_concordance_run_skips_current_capability(monkeypatch, tmp_path):
         assert run.status == "complete"
 
 
+def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCapability, DocumentPage
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="References Target",
+            original_filename="references.pdf",
+            checksum_sha256="r" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                normalized_text="Body text.\n\nReferences\nSmith, A. (2024). Fresh source. Journal.",
+            )
+        )
+        db.add(document)
+        run = ConcordanceRun(scope_type="documents", scope_data={}, capability_keys=["bibliography_extraction"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert document.bibliography == "Old bibliography."
+        assert job.status == "complete"
+        capability = db.query(DocumentCapability).filter_by(document_id=document.id, capability_key="bibliography_extraction").one()
+        assert capability.evidence["status"] == "skipped_existing_bibliography"
+
+        forced_run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(forced_run)
+        db.flush()
+        forced_job = ConcordanceJob(
+            run=forced_run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(forced_job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, forced_job)
+
+        assert document.bibliography == "Smith, A. (2024). Fresh source. Journal."
+        assert forced_job.status == "complete"
+        db.refresh(capability)
+        assert capability.evidence["status"] == "extracted"
+        assert document.metadata_evidence["bibliography_extraction"]["status"] == "extracted"
+
+
 def test_concordance_estimate_marks_same_model_summary_noop(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

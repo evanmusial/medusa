@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-06-23
+Last updated: 2026-06-24
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -11,6 +11,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add real low-text OCR fallback with Google Vision.
   - Acceptance: low-text/scanned PDF pages are detected, OCR is run only when needed, OCR text is stored per page, and processing remains resumable.
+
+- [ ] Add manual Reader region nomination for missed figures and tables.
+  - Acceptance: Reader PDF/Scan Page offers an Add Region or Draw Region mode where the user can draw one or more rough bounding boxes on a rendered PDF page, label each region as table/figure/chart/photo/diagram, optionally provide a label and description, preview the exact crop, and keep or discard each candidate. Kept regions create durable figure/table extraction records with page geometry, searchable captions/descriptions, document history, and safe retry semantics; the flow must support multiple regions on one page and work as a rescue path when automatic table/visual extraction misses subtle or mostly text-based tables.
 
 - [ ] Add robust citation verification beyond current Crossref basics.
   - Acceptance: DOI, Crossref, Semantic Scholar, DOI.org, publisher, PDF/static-source, and web evidence can be compared field by field; uncertain conflicts create Queue candidates instead of overwriting trusted metadata.
@@ -35,7 +38,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Partial: import and Concordance run deterministic cleanup, preserve removed boilerplate evidence, protect manual page text during Concordance, and feed cleaned text into normalization/search. Remaining work is broader fixture coverage and stronger handling for body-boundary detection, hyphenation, watermarks, and edge-case scholarly layouts.
 
 - [x] Extract source-document bibliographies into a dedicated field.
-  - Acceptance: imports and Concordance detect references, bibliography, or works-cited sections; `Document.bibliography` stores the extracted reference list separately from generated APA citation text and project bibliographies; Markdown-compatible italics are preserved when PDF span metadata exposes emphasis; document detail displays and allows editing the Bibliography field; search, export, restore, and history include it.
+  - Acceptance: imports and Concordance detect references, bibliography, or works-cited sections; `Document.bibliography` stores the extracted reference list separately from generated APA citation text and project bibliographies; Markdown-compatible italics are preserved when PDF span metadata exposes emphasis; document detail displays and allows editing, copying, and explicitly refreshing the Bibliography field; search, export, restore, and history include it.
 
 - [ ] Add structured table extraction and persistence.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data; Markdown table text remains searchable; tables can link to nearby headings, captions, and explicit `Table N` mentions; imports and Concordance are idempotent and retry-safe.
@@ -138,7 +141,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Expand Related Documents into a diverse discovery and acquisition workflow.
   - Acceptance: Related hides library-held, active-import, staged-import, and already-stashed candidates from the main list by default while preserving an Already Known audit view; duplicate suppression uses DOI equality first and strong normalized-title/year/author evidence second; results are grouped or filterable by relation family such as closest, newer, foundational, methods, contrasting, open PDF, reference material, and diverse set; ranking balances relevance with diversity across authors, years, venues, methods, source types, domains, and relation types; evidence records preserve provider, relation, DOI/source URL, matched references, abstract snippets, open-PDF evidence, and duplicate-suppression reason; refreshes can run on a schedule or Concordance scope; source/provider failures are visible in Settings or Activity; open-PDF downloads run as durable background jobs; useful non-open recommendations can be moved into an acquisition wishlist without pretending a PDF is available.
-  - Partial: recommendation refresh now enriches OpenAlex/Semantic Scholar/Crossref candidates with Unpaywall and arXiv open-PDF availability, resets previously failed candidates when a refreshed match is seen, exposes manual Google Scholar search links, and renders the Library detail overlay as a Discover / Already Known / All workflow. Discover hides library-held, active-import, queued-import, and already-stashed rows by default; Already Known shows the suppression reason. Rows carry relation-family metadata, reason chips, evidence payloads, diversity scores, and known status in `raw_metadata.recommendations_v2`; filters cover diverse, closest, newer, foundational, methods, contrasting, open PDF, and reference material; default ranking balances relevance with diversity across authors, years, venues, providers, and relation families; DOI Stashes now serve as the Stash action from recommendations. Remaining work is scheduled/Concordance-scope refreshes, a centralized Settings/Activity provider-failure surface beyond processing-event payloads, durable background download jobs before PDF fetch, and project/domain-aware expansion.
+  - Partial: recommendation refresh now enriches OpenAlex/Semantic Scholar/Crossref candidates with Unpaywall and arXiv open-PDF availability, parses stored `Document.bibliography` reference entries into local DOI/title/source-url candidates, resets previously failed candidates when a refreshed match is seen, exposes manual Google Scholar search links, and renders the Library detail overlay as a Discover / Already Known / All workflow. Discover hides library-held, active-import, queued-import, and already-stashed rows by default; Already Known shows the suppression reason. Rows carry relation-family metadata, reason chips, evidence payloads, diversity scores, and known status in `raw_metadata.recommendations_v2`; filters cover diverse, closest, newer, foundational, methods, contrasting, open PDF, and reference material; default ranking balances relevance with diversity across authors, years, venues, providers, and relation families; DOI Stashes now serve as the Stash action from recommendations. Remaining work is scheduled/Concordance-scope refreshes, a centralized Settings/Activity provider-failure surface beyond processing-event payloads, durable background download jobs before PDF fetch, and project/domain-aware expansion.
 
 - [ ] Add arbitrary-filter Concordance scopes.
   - Acceptance: Concordance can run against the current filtered result set, not only whole library, document, domain, project, search text, or saved search.

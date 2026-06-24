@@ -24,6 +24,12 @@ from app.services.verifier import normalized_title_similarity
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 TRAILING_DOI_PUNCTUATION = ".,;:)]}>"
+REFERENCE_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)])\s+")
+REFERENCE_QUOTED_TITLE_RE = re.compile(r"[\"“]([^\"”]{8,300})[\"”]")
+REFERENCE_MARKDOWN_TITLE_RE = re.compile(r"(?<!\*)\*([^*\n]{8,300})\*(?!\*)")
+REFERENCE_APA_TITLE_RE = re.compile(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)\.\s+(.+?)(?:\.\s+|$)")
+REFERENCE_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+REFERENCE_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})[a-z]?\b")
 OPENALEX_WORK_RE = re.compile(r"W\d+")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ARXIV_ABS_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([^?#]+)", re.IGNORECASE)
@@ -331,6 +337,12 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
         except Exception as exc:
             errors[provider] = str(exc)
 
+    bibliography_candidates = bibliography_reference_candidates(document, limit)
+    for candidate in bibliography_candidates:
+        if not candidate.title.strip():
+            continue
+        _merge_candidate(candidates, candidate)
+
     for provider, enricher in _enabled_enrichers():
         try:
             for candidate in enricher(list(candidates.values()), limit):
@@ -381,12 +393,117 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
             message=f"Recommendation refresh found {len(rows)} related papers.",
             payload={
                 "candidate_count": len(candidates),
+                "bibliography_reference_count": len(bibliography_candidates),
                 "providers": sorted({row.source_provider for row in rows}),
                 "errors": errors,
             },
         )
     )
     return rows
+
+
+def bibliography_reference_candidates(document: Document, limit: int) -> list[RecommendationCandidate]:
+    entries = _bibliography_reference_entries(document.bibliography, limit=limit)
+    candidates: list[RecommendationCandidate] = []
+    source_doi = normalize_doi(document.doi)
+    source_title_key = normalize_title_key(document.title)
+    for index, entry in enumerate(entries, start=1):
+        candidate = _bibliography_entry_to_candidate(entry, index)
+        if not candidate:
+            continue
+        if source_doi and normalize_doi(candidate.doi) == source_doi:
+            continue
+        if not normalize_doi(candidate.doi) and normalize_title_key(candidate.title) == source_title_key:
+            continue
+        candidates.append(candidate)
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _bibliography_reference_entries(text: str | None, *, limit: int) -> list[str]:
+    normalized = unescape(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return []
+    paragraphs = [" ".join(part.split()) for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+    if len(paragraphs) > 1:
+        return paragraphs[:limit]
+
+    entries: list[str] = []
+    current: list[str] = []
+    for line in [line.strip() for line in normalized.splitlines() if line.strip()]:
+        if REFERENCE_ENTRY_MARKER_RE.match(line) and current:
+            entries.append(" ".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        entries.append(" ".join(current).strip())
+    return [entry for entry in entries if entry][:limit]
+
+
+def _bibliography_entry_to_candidate(entry: str, index: int) -> RecommendationCandidate | None:
+    raw_reference = " ".join(entry.split())
+    if not raw_reference:
+        return None
+    doi = normalize_doi(raw_reference)
+    title = _reference_title(raw_reference)
+    if not title and doi:
+        title = doi
+    if not title:
+        return None
+    source_url = doi_url(doi) or _first_reference_url(raw_reference)
+    return RecommendationCandidate(
+        title=title[:800],
+        provider="bibliography",
+        relation="bibliography_reference",
+        doi=doi,
+        publication_year=_reference_year(raw_reference),
+        source_url=source_url,
+        score=max(0.3, 0.78 - index * 0.004),
+        raw_metadata={
+            "provider": "bibliography",
+            "relation": "bibliography_reference",
+            "reference_index": index,
+            "raw_reference": raw_reference[:2400],
+            "doi": doi,
+            "source_url": source_url,
+            "parsed_title": title,
+        },
+    )
+
+
+def _reference_title(entry: str) -> str | None:
+    clean = REFERENCE_ENTRY_MARKER_RE.sub("", entry).strip()
+    for pattern in (REFERENCE_QUOTED_TITLE_RE, REFERENCE_APA_TITLE_RE, REFERENCE_MARKDOWN_TITLE_RE):
+        match = pattern.search(clean)
+        if match:
+            title = _clean_reference_title(match.group(1))
+            if title:
+                return title
+    return None
+
+
+def _clean_reference_title(value: str | None) -> str | None:
+    title = unescape(value or "")
+    title = re.sub(r"\s+", " ", title.replace("*", "")).strip(" .,:;\"'“”")
+    if len(title) < 8:
+        return None
+    if DOI_RE.search(title) or REFERENCE_URL_RE.search(title):
+        return None
+    return title
+
+
+def _reference_year(entry: str) -> int | None:
+    if match := REFERENCE_YEAR_RE.search(entry):
+        return int(match.group(1))
+    return None
+
+
+def _first_reference_url(entry: str) -> str | None:
+    if match := REFERENCE_URL_RE.search(entry):
+        return match.group(0).rstrip(TRAILING_DOI_PUNCTUATION)
+    return None
 
 
 def queue_recommendation_imports(

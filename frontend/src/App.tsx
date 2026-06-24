@@ -2567,6 +2567,7 @@ function Login() {
           </button>
           {login.error ? <p className="form-error">{login.error.message}</p> : null}
         </form>
+        <p className="login-build-stamp">{MEDUSA_BUILD_VERSION}</p>
       </section>
     </main>
   );
@@ -4840,6 +4841,7 @@ function DocumentPanelContent({
   const [citationRunId, setCitationRunId] = useState<string | null>(null);
   const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationRefreshTarget | null>(null);
   const [summaryRunId, setSummaryRunId] = useState<string | null>(null);
+  const [bibliographyRunId, setBibliographyRunId] = useState<string | null>(null);
   const [tagRefreshRunId, setTagRefreshRunId] = useState<string | null>(null);
   const [editingCitation, setEditingCitation] = useState<CitationKind | null>(null);
   const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
@@ -4856,6 +4858,7 @@ function DocumentPanelContent({
   const referenceCitationFeedback = useAsyncActionFeedback();
   const inTextCitationFeedback = useAsyncActionFeedback();
   const summaryRefreshFeedback = useAsyncActionFeedback();
+  const bibliographyRefreshFeedback = useAsyncActionFeedback();
   const tagRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const visualPageScanFeedback = useAsyncActionFeedback();
@@ -5109,6 +5112,34 @@ function DocumentPanelContent({
       summaryRefreshFeedback.showError(actionFailureMessage("Could not start summary refresh", error));
     },
   });
+  const refreshBibliography = useMutation({
+    mutationFn: () =>
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Refreshing bibliography",
+        capability_keys: ["bibliography_extraction"],
+        capabilityKey: "bibliography_extraction",
+        documentId: document.id,
+        force: true,
+        label: `Bibliography refresh: ${document.title}`,
+        scope_data: { document_ids: [document.id] },
+        scope_type: "documents",
+      }),
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setBibliographyRunId(run.id);
+      else bibliographyRefreshFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    },
+    onError: (error) => {
+      setBibliographyRunId(null);
+      bibliographyRefreshFeedback.showError(actionFailureMessage("Could not start bibliography refresh", error));
+    },
+  });
   const refreshTags = useMutation({
     mutationFn: () =>
       startConcordanceRun({
@@ -5251,6 +5282,7 @@ function DocumentPanelContent({
     setCitationRunId(null);
     setCitationRefreshTarget(null);
     setSummaryRunId(null);
+    setBibliographyRunId(null);
     setTagRefreshRunId(null);
     setEditingCitation(null);
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
@@ -5348,6 +5380,9 @@ function DocumentPanelContent({
   const summaryRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "summary_refresh" && isActiveConcordanceStatus(job.status),
   );
+  const bibliographyRefreshActive = citationJobs.some(
+    (job) => job.document_id === document.id && job.capability_key === "bibliography_extraction" && isActiveConcordanceStatus(job.status),
+  );
   const tagRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "tag_refresh" && isActiveConcordanceStatus(job.status),
   );
@@ -5371,6 +5406,15 @@ function DocumentPanelContent({
         : [],
     [citationJobs, document.id, summaryRunId],
   );
+  const trackedBibliographyJobs = useMemo(
+    () =>
+      bibliographyRunId
+        ? citationJobs.filter(
+            (job) => job.run_id === bibliographyRunId && job.document_id === document.id && job.capability_key === "bibliography_extraction",
+          )
+        : [],
+    [bibliographyRunId, citationJobs, document.id],
+  );
   const trackedTagRefreshJobs = useMemo(
     () =>
       tagRefreshRunId
@@ -5389,6 +5433,13 @@ function DocumentPanelContent({
     refreshSummary.isPending ||
     summaryRefreshActive ||
     Boolean(summaryRunId && (!trackedSummaryJobs.length || trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))));
+  const bibliographyRefreshBusy =
+    refreshBibliography.isPending ||
+    bibliographyRefreshActive ||
+    Boolean(
+      bibliographyRunId &&
+        (!trackedBibliographyJobs.length || trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status))),
+    );
   const tagRefreshBusy =
     refreshTags.isPending ||
     tagRefreshActive ||
@@ -5407,6 +5458,11 @@ function DocumentPanelContent({
     ? "a summary refresh request is already starting."
     : summaryRefreshActive || summaryRunId
       ? "a summary refresh is already queued or running for this document."
+      : "";
+  const bibliographyRefreshBusyReason = refreshBibliography.isPending
+    ? "a bibliography refresh request is already starting."
+    : bibliographyRefreshActive || bibliographyRunId
+      ? "a bibliography refresh is already queued or running for this document."
       : "";
   const tagRefreshBusyReason = refreshTags.isPending
     ? "a tag refresh request is already starting."
@@ -5539,6 +5595,24 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
   }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs]);
+
+  useEffect(() => {
+    if (!bibliographyRunId || trackedBibliographyJobs.length === 0) return;
+    if (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    const failedJob = trackedBibliographyJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      bibliographyRefreshFeedback.showError(
+        actionFailureMessage("Bibliography refresh failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      bibliographyRefreshFeedback.showSuccess();
+    }
+    setBibliographyRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+  }, [bibliographyRefreshFeedback, bibliographyRunId, document.id, queryClient, trackedBibliographyJobs]);
 
   useEffect(() => {
     if (!tagRefreshRunId || trackedTagRefreshJobs.length === 0) return;
@@ -5803,6 +5877,9 @@ function DocumentPanelContent({
   };
   const checkSummary = () => {
     refreshSummary.mutate();
+  };
+  const checkBibliography = () => {
+    refreshBibliography.mutate();
   };
   const checkTags = () => {
     const ok = window.confirm(
@@ -6464,6 +6541,19 @@ function DocumentPanelContent({
           {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
           {copiedKey === "document-bibliography" ? "Copied" : "Copy"}
         </button>
+        <AsyncActionSlot busy={bibliographyRefreshBusy} feedback={bibliographyRefreshFeedback.feedback} label="Bibliography refresh in progress">
+          <button
+            className={asyncFeedbackClass("secondary-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
+            data-disabled-reason={bibliographyRefreshBusyReason}
+            data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list from the current parsed pages and original PDF evidence."
+            onClick={checkBibliography}
+            disabled={bibliographyRefreshBusy}
+            type="button"
+          >
+            <RefreshCw className={bibliographyRefreshBusy ? "spin" : ""} size={15} />
+            {bibliographyRefreshBusy ? "Refreshing" : "Refresh"}
+          </button>
+        </AsyncActionSlot>
       </div>
     </section>
   );

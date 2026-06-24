@@ -137,8 +137,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="visual_asset_extraction",
         label="Visual asset extraction",
-        version=1,
-        description="Run the second-pass visual extractor/audit for images, charts, vector graphics, diagrams, photos, maps, scans, and unclaimed visual regions.",
+        version=2,
+        description="Run the second-pass 300 DPI visual extractor/audit for images, charts, vector graphics, diagrams, photos, maps, scans, and unclaimed visual regions.",
     ),
     CapabilityDefinition(
         key="visual_asset_context",
@@ -1122,7 +1122,8 @@ class ConcordanceProcessor:
         return ocr_evidence
 
     def _extract_bibliography(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
-        if document.bibliography:
+        run_force = bool(job.run and (job.run.scope_data or {}).get("_force"))
+        if document.bibliography and not run_force:
             return {"status": "skipped_existing_bibliography", "characters": len(document.bibliography)}
         preset = import_processing_snapshot(db)
         bibliography_config = preset.get("bibliography") if isinstance(preset.get("bibliography"), dict) else {}

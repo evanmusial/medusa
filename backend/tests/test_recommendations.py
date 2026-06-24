@@ -75,6 +75,54 @@ def test_refresh_recommendations_caches_and_marks_existing_match(monkeypatch, tm
         assert rows[0].has_pdf is True
 
 
+def test_refresh_recommendations_uses_stored_bibliography_references(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document
+    from app.services import recommendations as service
+    from app.services.recommendations import refresh_document_recommendations
+
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+            bibliography=(
+                '[1] A. Author, "Known Reference Paper," Journal of References, 2018.\n\n'
+                "[2] Smith, A. (2020). Unheld bibliography source. Research Press. https://example.test/source"
+            ),
+        )
+        existing = Document(
+            title="Known Reference Paper",
+            original_filename="known.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        db.add_all([source, existing])
+        db.commit()
+
+        monkeypatch.setattr(service, "_enabled_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_enrichers", lambda: [])
+
+        rows = refresh_document_recommendations(db, source)
+        db.commit()
+
+        by_title = {row.title: row for row in rows}
+        known = by_title["Known Reference Paper"]
+        unheld = by_title["Unheld bibliography source"]
+        assert known.source_provider == "bibliography"
+        assert known.source_relation == "bibliography_reference"
+        assert known.existing_document_id == existing.id
+        assert known.known_status == "in_library"
+        assert known.relation_family == "foundational"
+        assert known.raw_metadata["recommendations_v2"]["evidence"]["provider"] == "bibliography"
+        assert unheld.source_url == "https://example.test/source"
+
+
 def test_recommendations_v2_filters_known_items_and_relation_families(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

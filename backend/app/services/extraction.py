@@ -139,6 +139,8 @@ _MARKER_PAGE_BREAK_RE = re.compile(r"(?:^|\n)\s*(?P<page>\d+)\s*\n-{10,}\s*(?:\n
 RAW_TEXT_EXTRACTOR_MARKER = "marker"
 RAW_TEXT_EXTRACTOR_PYMUPDF = "pymupdf"
 RAW_TEXT_EXTRACTOR_DOCLING = "docling"
+PDF_POINTS_PER_INCH = 72
+FIGURE_CROP_DPI = 300
 
 
 def sanitize_extracted_text(text: str | None) -> str:
@@ -642,7 +644,8 @@ def extract_pdf_text(path: Path, extractor: str | None = None) -> ExtractedDocum
 def _render_page_crop(page: Any, bbox: tuple[float, float, float, float]) -> tuple[bytes, int, int]:
     import fitz
 
-    pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=fitz.Rect(*bbox), alpha=False)
+    zoom = FIGURE_CROP_DPI / PDF_POINTS_PER_INCH
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=fitz.Rect(*bbox), alpha=False)
     return pixmap.tobytes("png"), int(pixmap.width), int(pixmap.height)
 
 

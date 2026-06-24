@@ -175,6 +175,14 @@ button {
   gap: 12px;
 }
 
+.login-build-stamp {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
 label {
   display: grid;
   gap: 7px;

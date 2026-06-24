@@ -264,6 +264,7 @@ IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
     "restored_paused",
 )
 DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.04
+PDF_PREVIEW_RENDER_SCALE = 2.5
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
@@ -3025,7 +3026,7 @@ def document_page_image(
             if page_number > pdf.page_count:
                 raise HTTPException(status_code=404, detail="Page image not found")
             page = pdf.load_page(page_number - 1)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.75, 1.75), alpha=False)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(PDF_PREVIEW_RENDER_SCALE, PDF_PREVIEW_RENDER_SCALE), alpha=False)
             png = pixmap.tobytes("png")
     except HTTPException:
         raise
