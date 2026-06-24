@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-06-21
+Last updated: 2026-06-23
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -98,6 +98,17 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add image/figure gist search surfaces.
   - Acceptance: figure gists, captions, and image-derived descriptions participate in full-text and semantic search.
 
+## Activity, Notes, And Research Workflows
+
+- [ ] Add a unified Activity and Work Ledger.
+  - Acceptance: Activity gives one durable, searchable place to inspect imports, Concordance Runs, citation refreshes, Accessory Summaries, recommendation fetches/downloads, backups/restores, OCR, embeddings, future Recon runs, and maintenance jobs; rows use common status language for staged, queued, running, paused, blocked, failed, retryable, complete, and cleared work; lanes or filters distinguish interactive work, imports, maintenance, cloud/model work, backups, and research runs; row actions support retry, pause/resume where safe, cancel, open result/source, and inspect details; each detail view shows processing events, model/provider calls, warnings, errors, retries, duration, rough/known cost, and next available action without weakening Queue's import/review workflows.
+
+- [ ] Fully build out Notes for documents, topics, and ideas.
+  - Acceptance: Notes supports standalone notes for topics, concepts, questions, ideas, and thesis/research thinking as well as notes attached to one or more documents; a note can link to documents, pages, annotations, figures, tables, projects, domains, tags, citations, or saved searches without requiring a document link; notes have title, body, type, status, optional due/reminder fields, and project/domain/tag organization; document detail shows linked notes and can create/link notes in context; the Notes workspace supports search, filters, backlinks, link management, soft delete/restore, and export/restore coverage; document-linked notes continue to contribute to document search while standalone topic/idea notes are searchable from Notes and global search.
+
+- [ ] Add a Corpus Health dashboard.
+  - Acceptance: Corpus Health summarizes documents missing DOI/source links, verified citation, authors/year/pages, summary, tags, domains, projects, OCR, figures/tables, embeddings, or current capability versions; it groups failed, partial, stale, and low-confidence processing states by cause; it surfaces tag/domain/project hygiene issues; each issue opens the relevant filtered Library, Queue, Tags, Settings, or Concordance action; broad repair actions provide scope, time, and cost previews before queuing work.
+
 ## Reader And Annotation Experience
 
 - [ ] Add geometric PDF highlight overlays.
@@ -125,9 +136,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: tag dropdowns and lists render alphabetically by default; any non-alphabetical display order is an explicit, view-specific choice; import and Concordance tag extraction splits overly verbose compound phrases into useful primitives, such as `insider threat assessment` into `insider threat` and `threat assessment`, and `access control and cyber identity` into `access control` and `cyber identity`; deduplication clusters near-duplicates and favors primitive tags such as `access control` while still allowing meaningfully distinct specific variants such as `access control lists` or `access control monitoring`.
   - Completed: Tags are now user-facing flat labels; legacy keyword/topic kind values are normalized to `tag`, the Settings task is labeled Tag Suggestions, the Tags view no longer exposes a kind column, the Tags table supports shift-click range selection across visible sorted/filtered rows, merged tag names are remembered as aliases, tag prompts prefer an existing-tag manifest, import and Concordance run tag candidates through existing-first/not-existing-only three-axis governance scoring, import tag attachment is capped at five total tags and one brand-new candidate tag per document, low-value and near-existing candidates are recorded without creating new labels, strong new concepts become candidate tags only after stricter relevance/novelty scoring, semantic covered-by checks reduce duplicate creation, Optimize honors the same Tag Suggestions model preference used for import tag creation, can flag zero-use and singleton tags for larger merge/status cleanup, orphan pruning, or assignment pruning plans even when no model merge candidate exists, Optimize supports batch approval of all current suggestions with visible in-pane progress while the bulk request runs, broad `summary_topics` Concordance tag updates remain additive, and document-level Tag Refresh can explicitly replace a document's tag assignments through the import-style governance scorer. The original method notes live in `docs/TAG_GOVERNANCE.md`.
 
-- [ ] Add richer recommendation source/import management.
-  - Acceptance: related-paper recommendations can be refreshed on a schedule or Concordance scope, source/provider failures are visible in Settings, downloads run as durable background fetch jobs instead of request-time fetches, and non-open recommendations can be triaged into a wishlist without pretending a PDF is available.
-  - Partial: recommendation refresh now enriches OpenAlex/Semantic Scholar/Crossref candidates with Unpaywall and arXiv open-PDF availability, resets previously failed candidates when a refreshed match is seen, and exposes manual Google Scholar search links. Remaining work is scheduled/Concordance refreshes, Settings-visible provider failures, durable background download jobs, and fuller wishlist triage.
+- [ ] Expand Related Documents into a diverse discovery and acquisition workflow.
+  - Acceptance: Related hides library-held, active-import, staged-import, and already-stashed candidates from the main list by default while preserving an Already Known audit view; duplicate suppression uses DOI equality first and strong normalized-title/year/author evidence second; results are grouped or filterable by relation family such as closest, newer, foundational, methods, contrasting, open PDF, reference material, and diverse set; ranking balances relevance with diversity across authors, years, venues, methods, source types, domains, and relation types; evidence records preserve provider, relation, DOI/source URL, matched references, abstract snippets, open-PDF evidence, and duplicate-suppression reason; refreshes can run on a schedule or Concordance scope; source/provider failures are visible in Settings or Activity; open-PDF downloads run as durable background jobs; useful non-open recommendations can be moved into an acquisition wishlist without pretending a PDF is available.
+  - Partial: recommendation refresh now enriches OpenAlex/Semantic Scholar/Crossref candidates with Unpaywall and arXiv open-PDF availability, resets previously failed candidates when a refreshed match is seen, exposes manual Google Scholar search links, and defaults Hide Existing on in the Library detail overlay. Remaining work is default suppression instead of badging, relation-family/diversity ranking, scheduled/Concordance refreshes, Settings/Activity-visible provider failures, durable background download jobs, and fuller wishlist triage.
 
 - [ ] Add arbitrary-filter Concordance scopes.
   - Acceptance: Concordance can run against the current filtered result set, not only whole library, document, domain, project, search text, or saved search.

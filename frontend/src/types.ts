@@ -414,6 +414,8 @@ export type OpenAIUsagePeriod = "last_day" | "last_month" | "last_3_months" | "a
 
 export type ModelPricingStatus = {
   basis: string;
+  price_basis?: string;
+  openai_pricing_tier?: string;
   source_url: string;
   source_urls?: Record<string, string>;
   updated_at: string;
@@ -422,6 +424,7 @@ export type ModelPricingStatus = {
   stale_after_days: number;
   model_count: number;
   current_model_count: number;
+  missing_current_model_count?: number;
   provider_counts: Record<string, number>;
   checked_count?: number;
   inserted_count?: number;
@@ -730,6 +733,7 @@ export type DocumentSummary = {
   duplicate_count: number;
   tags: Tag[];
   domains: Domain[];
+  projects?: Project[];
 };
 
 export type DocumentDetail = DocumentSummary & {
@@ -836,6 +840,7 @@ export type DoiStashPayload = {
 export type DocumentUpdatePayload = Partial<DocumentDetail> & {
   tag_names?: string[];
   domain_ids?: string[];
+  project_ids?: string[];
   attribute_values?: Record<string, unknown>;
 };
 

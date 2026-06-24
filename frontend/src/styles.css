@@ -1479,12 +1479,9 @@ textarea {
 }
 
 .bulk-multi-menu {
-  position: absolute;
-  z-index: 35;
-  top: calc(100% + 4px);
-  right: 0;
-  width: min(320px, 72vw);
-  max-height: 280px;
+  position: fixed;
+  z-index: 70;
+  max-width: calc(100vw - 24px);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;

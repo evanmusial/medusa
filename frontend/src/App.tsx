@@ -6,7 +6,9 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
+  RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Background,
@@ -1126,6 +1128,13 @@ function uniqueValues(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+function sameStringValues(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  const leftSorted = [...left].sort();
+  const rightSorted = [...right].sort();
+  return leftSorted.every((value, index) => value === rightSorted[index]);
+}
+
 function importPresetById(preferences: AppPreferences | undefined, presetId?: string | null) {
   const presets = preferences?.import_processing_presets || [];
   return presets.find((preset) => preset.id === presetId) || presets.find((preset) => preset.id === "balanced") || presets[0];
@@ -1390,6 +1399,51 @@ function matchingSelectOptions<T extends SelectMenuOption | { id: string; name: 
 
 function visibleSelectOptions<T extends SelectMenuOption | { id: string; name: string }>(options: T[]) {
   return options.slice(0, DROPDOWN_VISIBLE_OPTION_LIMIT);
+}
+
+const FLOATING_MENU_PADDING = 12;
+const FLOATING_MENU_MIN_WIDTH = 240;
+const FLOATING_MENU_MAX_HEIGHT = 280;
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function floatingSelectMenuStyle(anchor: HTMLElement | null): CSSProperties {
+  if (!anchor) return {};
+  const rect = anchor.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  const maxWidth = Math.max(160, viewportWidth - FLOATING_MENU_PADDING * 2);
+  const width = Math.min(Math.max(rect.width, FLOATING_MENU_MIN_WIDTH), maxWidth);
+  const left = clampNumber(rect.left, FLOATING_MENU_PADDING, viewportWidth - width - FLOATING_MENU_PADDING);
+  const belowSpace = viewportHeight - rect.bottom - FLOATING_MENU_PADDING;
+  const aboveSpace = rect.top - FLOATING_MENU_PADDING;
+  const openAbove = belowSpace < 180 && aboveSpace > belowSpace;
+  const availableHeight = Math.max(96, (openAbove ? aboveSpace : belowSpace) - 4);
+  const maxHeight = Math.min(FLOATING_MENU_MAX_HEIGHT, availableHeight);
+  return openAbove
+    ? { bottom: viewportHeight - rect.top + 4, left, maxHeight, width }
+    : { left, maxHeight, top: rect.bottom + 4, width };
+}
+
+function useFloatingSelectMenuStyle(open: boolean, anchorRef: RefObject<HTMLElement>) {
+  const [style, setStyle] = useState<CSSProperties>({});
+  useEffect(() => {
+    if (!open) {
+      setStyle({});
+      return;
+    }
+    const update = () => setStyle(floatingSelectMenuStyle(anchorRef.current));
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [anchorRef, open]);
+  return style;
 }
 
 function priorityLabel(value?: string | null) {
@@ -3116,6 +3170,9 @@ function BulkMultiSelect({
   const [activeIndex, setActiveIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuStyle = useFloatingSelectMenuStyle(open, triggerRef);
   const selectedCount = selectedIds.length + extraCount;
   const selectedOptions = options.filter((option) => selectedIds.includes(option.id));
   const triggerLabel =
@@ -3131,7 +3188,8 @@ function BulkMultiSelect({
   useEffect(() => {
     if (!open) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!wrapperRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     window.addEventListener("mousedown", closeOnOutsideClick);
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
@@ -3166,9 +3224,49 @@ function BulkMultiSelect({
     }
   };
 
+  const menu = open ? (
+    <div className="bulk-multi-menu" ref={menuRef} style={menuStyle}>
+      <input
+        ref={searchRef}
+        className="select-search-input"
+        data-tooltip={`Type to filter ${label.toLocaleLowerCase()} options; press Enter to toggle the highlighted match${onCreateFromSearch ? " or create the typed value" : ""}.`}
+        onChange={(event) => setSearchText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setActiveIndex((index) => Math.min(Math.max(0, visibleOptions.length - 1), index + 1));
+          } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setActiveIndex((index) => Math.max(0, index - 1));
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            chooseActive();
+          }
+        }}
+        placeholder={searchPlaceholder}
+        value={searchText}
+      />
+      {visibleOptions.length ? (
+        visibleOptions.map((option, index) => (
+          <label className={index === activeIndex ? "active" : ""} key={option.id}>
+            <input type="checkbox" checked={selectedIds.includes(option.id)} onChange={() => toggleId(option.id)} />
+            <span>{option.name}</span>
+          </label>
+        ))
+      ) : (
+        <div className="bulk-multi-empty">
+          {searchText.trim() && onCreateFromSearch ? `${createFromSearchLabel || "Add"} "${searchText.trim()}" with Enter` : emptyLabel}
+        </div>
+      )}
+      {hiddenOptionCount > 0 ? <div className="bulk-multi-note">Type to narrow {hiddenOptionCount} more</div> : null}
+      {footer ? <div className="bulk-multi-footer">{footer}</div> : null}
+    </div>
+  ) : null;
+
   return (
     <div className="bulk-multi-select" ref={wrapperRef}>
       <button
+        ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="listbox"
         className="bulk-multi-trigger"
@@ -3179,44 +3277,7 @@ function BulkMultiSelect({
         <span>{triggerLabel}</span>
         <ChevronRight size={14} />
       </button>
-      {open ? (
-        <div className="bulk-multi-menu">
-          <input
-            ref={searchRef}
-            className="select-search-input"
-            data-tooltip={`Type to filter ${label.toLocaleLowerCase()} options; press Enter to toggle the highlighted match${onCreateFromSearch ? " or create the typed value" : ""}.`}
-            onChange={(event) => setSearchText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setActiveIndex((index) => Math.min(Math.max(0, visibleOptions.length - 1), index + 1));
-              } else if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setActiveIndex((index) => Math.max(0, index - 1));
-              } else if (event.key === "Enter") {
-                event.preventDefault();
-                chooseActive();
-              }
-            }}
-            placeholder={searchPlaceholder}
-            value={searchText}
-          />
-          {visibleOptions.length ? (
-            visibleOptions.map((option, index) => (
-              <label className={index === activeIndex ? "active" : ""} key={option.id}>
-                <input type="checkbox" checked={selectedIds.includes(option.id)} onChange={() => toggleId(option.id)} />
-                <span>{option.name}</span>
-              </label>
-            ))
-          ) : (
-            <div className="bulk-multi-empty">
-              {searchText.trim() && onCreateFromSearch ? `${createFromSearchLabel || "Add"} "${searchText.trim()}" with Enter` : emptyLabel}
-            </div>
-          )}
-          {hiddenOptionCount > 0 ? <div className="bulk-multi-note">Type to narrow {hiddenOptionCount} more</div> : null}
-          {footer ? <div className="bulk-multi-footer">{footer}</div> : null}
-        </div>
-      ) : null}
+      {menu ? createPortal(menu, document.body) : null}
     </div>
   );
 }
@@ -3241,6 +3302,9 @@ function LibrarySingleSelect({
   const [activeIndex, setActiveIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuStyle = useFloatingSelectMenuStyle(open, triggerRef);
   const selected = options.find((option) => option.id === value);
   const matchingOptions = useMemo(() => matchingSelectOptions(options, searchText), [options, searchText]);
   const visibleOptions = useMemo(() => visibleSelectOptions(matchingOptions), [matchingOptions]);
@@ -3249,7 +3313,8 @@ function LibrarySingleSelect({
   useEffect(() => {
     if (!open) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!wrapperRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     window.addEventListener("mousedown", closeOnOutsideClick);
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
@@ -3278,9 +3343,63 @@ function LibrarySingleSelect({
     else if (!searchText.trim()) choose("");
   };
 
+  const menu = open ? (
+    <div className="bulk-multi-menu single-select-menu" ref={menuRef} role="listbox" style={menuStyle}>
+      <input
+        ref={searchRef}
+        className="select-search-input"
+        data-tooltip={`Type to filter ${placeholder.toLocaleLowerCase()} options; press Enter to choose the highlighted match.`}
+        onChange={(event) => setSearchText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setActiveIndex((index) => Math.min(Math.max(0, visibleOptions.length - 1), index + 1));
+          } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setActiveIndex((index) => Math.max(0, index - 1));
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            chooseActive();
+          }
+        }}
+        placeholder={searchPlaceholder}
+        value={searchText}
+      />
+      <button
+        aria-selected={!value}
+        className={!value && !searchText ? "selected" : ""}
+        data-tooltip={`Clear this filter back to ${placeholder}.`}
+        role="option"
+        type="button"
+        onClick={() => choose("")}
+      >
+        <span>{placeholder}</span>
+      </button>
+      {visibleOptions.length ? (
+        visibleOptions.map((option, index) => (
+          <button
+            aria-selected={value === option.id}
+            className={[value === option.id ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
+            data-tooltip={`Choose ${option.name} for this ${placeholder.toLocaleLowerCase()} filter.`}
+            key={option.id}
+            role="option"
+            type="button"
+            onClick={() => choose(option.id)}
+          >
+            <span>{option.name}</span>
+          </button>
+        ))
+      ) : (
+        <div className="bulk-multi-empty">{emptyLabel}</div>
+      )}
+      {hiddenOptionCount > 0 ? <div className="bulk-multi-note">Type to narrow {hiddenOptionCount} more</div> : null}
+    </div>
+  ) : null;
+
   return (
     <div className="bulk-multi-select library-single-select" ref={wrapperRef}>
       <button
+        ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="listbox"
         className={`bulk-multi-trigger ${selected ? "has-value" : ""}`}
@@ -3291,58 +3410,7 @@ function LibrarySingleSelect({
         <span>{selected?.name || placeholder}</span>
         <ChevronRight size={14} />
       </button>
-      {open ? (
-        <div className="bulk-multi-menu single-select-menu" role="listbox">
-          <input
-            ref={searchRef}
-            className="select-search-input"
-            data-tooltip={`Type to filter ${placeholder.toLocaleLowerCase()} options; press Enter to choose the highlighted match.`}
-            onChange={(event) => setSearchText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setActiveIndex((index) => Math.min(Math.max(0, visibleOptions.length - 1), index + 1));
-              } else if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setActiveIndex((index) => Math.max(0, index - 1));
-              } else if (event.key === "Enter") {
-                event.preventDefault();
-                chooseActive();
-              }
-            }}
-            placeholder={searchPlaceholder}
-            value={searchText}
-          />
-          <button
-            aria-selected={!value}
-            className={!value && !searchText ? "selected" : ""}
-            data-tooltip={`Clear this filter back to ${placeholder}.`}
-            role="option"
-            type="button"
-            onClick={() => choose("")}
-          >
-            <span>{placeholder}</span>
-          </button>
-          {visibleOptions.length ? (
-            visibleOptions.map((option, index) => (
-              <button
-                aria-selected={value === option.id}
-                className={[value === option.id ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
-                data-tooltip={`Choose ${option.name} for this ${placeholder.toLocaleLowerCase()} filter.`}
-                key={option.id}
-                role="option"
-                type="button"
-                onClick={() => choose(option.id)}
-              >
-                <span>{option.name}</span>
-              </button>
-            ))
-          ) : (
-            <div className="bulk-multi-empty">{emptyLabel}</div>
-          )}
-          {hiddenOptionCount > 0 ? <div className="bulk-multi-note">Type to narrow {hiddenOptionCount} more</div> : null}
-        </div>
-      ) : null}
+      {menu ? createPortal(menu, document.body) : null}
     </div>
   );
 }
@@ -3393,7 +3461,7 @@ function LibraryView({
   const [bulkPriority, setBulkPriority] = useState("");
   const [bulkTagIds, setBulkTagIds] = useState<string[]>([]);
   const [bulkCustomTag, setBulkCustomTag] = useState("");
-  const [bulkDomainId, setBulkDomainId] = useState("");
+  const [bulkDomainIds, setBulkDomainIds] = useState<string[]>([]);
   const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
   const [domainDropError, setDomainDropError] = useState<string | null>(null);
@@ -3423,15 +3491,35 @@ function LibraryView({
     },
   });
   const bulkUpdate = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const updates: Record<string, unknown> = {};
       if (bulkReadStatus) updates.read_status = bulkReadStatus;
       if (bulkPriority) updates.priority = bulkPriority;
       if (bulkTagIds.length) updates.tag_ids = bulkTagIds;
       if (bulkCustomTag.trim()) updates.tag_names = [bulkCustomTag.trim()];
-      if (bulkDomainId) updates.domain_ids = [bulkDomainId];
-      if (bulkProjectIds.length) updates.project_ids = bulkProjectIds;
-      return api.bulkUpdateDocuments(selectedIds, updates);
+      if (selectedIds.length !== 1) {
+        if (bulkDomainIds.length) updates.domain_ids = bulkDomainIds;
+        if (bulkProjectIds.length) updates.project_ids = bulkProjectIds;
+        return api.bulkUpdateDocuments(selectedIds, updates);
+      }
+
+      const documentId = selectedIds[0];
+      const selectedDocument = documents.find((item) => item.id === documentId);
+      const documentUpdates: DocumentUpdatePayload = {};
+      if (bulkReadStatus) documentUpdates.read_status = bulkReadStatus;
+      if (bulkPriority) documentUpdates.priority = bulkPriority;
+      if (selectedDocument && !sameStringValues(bulkDomainIds, selectedDocument.domains.map((domain) => domain.id))) {
+        documentUpdates.domain_ids = bulkDomainIds;
+      }
+      if (selectedDocument && !sameStringValues(bulkProjectIds, (selectedDocument.projects || []).map((project) => project.id))) {
+        documentUpdates.project_ids = bulkProjectIds;
+      }
+      const additiveUpdates: Record<string, unknown> = {};
+      if (bulkTagIds.length) additiveUpdates.tag_ids = bulkTagIds;
+      if (bulkCustomTag.trim()) additiveUpdates.tag_names = [bulkCustomTag.trim()];
+      if (Object.keys(documentUpdates).length) await api.updateDocument(documentId, documentUpdates);
+      if (Object.keys(additiveUpdates).length) await api.bulkUpdateDocuments(selectedIds, additiveUpdates);
+      return { updated: Object.keys(documentUpdates).length || Object.keys(additiveUpdates).length ? 1 : 0 };
     },
     onSuccess: () => {
       setSelectedIds([]);
@@ -3439,7 +3527,7 @@ function LibraryView({
       setBulkPriority("");
       setBulkTagIds([]);
       setBulkCustomTag("");
-      setBulkDomainId("");
+      setBulkDomainIds([]);
       setBulkProjectIds([]);
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document"] });
@@ -3491,6 +3579,12 @@ function LibraryView({
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const projectOptions = useMemo(() => sortedProjects.map(({ id, name }) => ({ id, name })), [sortedProjects]);
+  const selectedBulkDocument = useMemo(
+    () => (selectedIds.length === 1 ? sortedDocuments.find((item) => item.id === selectedIds[0]) : undefined),
+    [selectedIds, sortedDocuments],
+  );
+  const selectedBulkDomainIds = useMemo(() => selectedBulkDocument?.domains.map((domain) => domain.id) || [], [selectedBulkDocument]);
+  const selectedBulkProjectIds = useMemo(() => selectedBulkDocument?.projects?.map((project) => project.id) || [], [selectedBulkDocument]);
   const draggedDocument = useMemo(
     () => (draggedDocumentId ? sortedDocuments.find((item) => item.id === draggedDocumentId) : undefined),
     [draggedDocumentId, sortedDocuments],
@@ -3506,9 +3600,24 @@ function LibraryView({
     }),
     [domainOptions, tagOptions],
   );
-  const hasBulkUpdate = Boolean(
-    bulkReadStatus || bulkPriority || bulkTagIds.length || bulkCustomTag.trim() || bulkDomainId || bulkProjectIds.length,
-  );
+  useEffect(() => {
+    setBulkReadStatus("");
+    setBulkPriority("");
+    setBulkTagIds([]);
+    setBulkCustomTag("");
+    setBulkDomainIds(selectedBulkDomainIds);
+    setBulkProjectIds(selectedBulkProjectIds);
+  }, [selectedBulkDomainIds, selectedBulkProjectIds]);
+  const hasBulkUpdate = selectedBulkDocument
+    ? Boolean(
+        bulkReadStatus ||
+          bulkPriority ||
+          bulkTagIds.length ||
+          bulkCustomTag.trim() ||
+          !sameStringValues(bulkDomainIds, selectedBulkDomainIds) ||
+          !sameStringValues(bulkProjectIds, selectedBulkProjectIds),
+      )
+    : Boolean(bulkReadStatus || bulkPriority || bulkTagIds.length || bulkCustomTag.trim() || bulkDomainIds.length || bulkProjectIds.length);
 
   const setFilterValue = (key: keyof DocumentFilters, value: string) => {
     setFilters({ ...filters, [key]: value });
@@ -3776,12 +3885,13 @@ function LibraryView({
                 searchPlaceholder="Type tag text"
                 selectedIds={bulkTagIds}
               />
-              <LibrarySingleSelect
+              <BulkMultiSelect
                 emptyLabel="No domains"
-                onChange={setBulkDomainId}
+                label="Domain"
+                onChange={setBulkDomainIds}
                 options={domainOptions}
-                placeholder="Domain"
-                value={bulkDomainId}
+                searchPlaceholder="Type domain name"
+                selectedIds={bulkDomainIds}
               />
               <BulkMultiSelect
                 emptyLabel="No projects"
@@ -10869,6 +10979,7 @@ function BudgetView() {
         </div>
         <div className="budget-footnote">
           <span>{usage.data?.pricing.updated_at ? `Pricing ${usage.data.pricing.updated_at}` : "Pricing"}</span>
+          {usage.data?.pricing.openai_pricing_tier ? <span>OpenAI {usage.data.pricing.openai_pricing_tier}</span> : null}
           {usage.data?.pricing.source_url ? (
             <a data-tooltip="Open the OpenAI pricing source used for these local estimates in a new tab." href={usage.data.pricing.source_url} rel="noreferrer" target="_blank">
               OpenAI
@@ -12715,6 +12826,7 @@ function SettingsView({
                 ? `${formatMetric(modelPricingTrackedCount)} current model prices tracked`
                 : "No current model prices have been stored yet"}
               {modelPricingSourceUpdated ? `; source snapshot ${modelPricingSourceUpdated}` : ""}.
+              {modelPricing?.openai_pricing_tier ? ` OpenAI tier: ${modelPricing.openai_pricing_tier}.` : ""}
             </p>
           </div>
           <AsyncActionSlot
@@ -12738,7 +12850,9 @@ function SettingsView({
         {modelPricing?.stale ? (
           <p className="preference-warning model-pricing-warning">
             <AlertTriangle size={15} />
-            Model pricing is more than {modelPricing.stale_after_days} days old. Refresh before cost-sensitive imports or Concordance runs.
+            {modelPricing.missing_current_model_count
+              ? `${formatMetric(modelPricing.missing_current_model_count)} configured pricing rows are missing. Refresh before cost-sensitive imports or Concordance runs.`
+              : `Model pricing is more than ${modelPricing.stale_after_days} days old. Refresh before cost-sensitive imports or Concordance runs.`}
           </p>
         ) : null}
         </div>

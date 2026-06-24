@@ -460,6 +460,7 @@ class DocumentSummary(ApiModel):
     duplicate_count: int = 0
     tags: list[TagOut] = Field(default_factory=list)
     domains: list[DomainOut] = Field(default_factory=list)
+    projects: list[ProjectOut] = Field(default_factory=list)
 
     @field_validator("title", "journal", "rich_summary", "apa_citation", "apa_in_text_citation", mode="before")
     @classmethod
@@ -650,6 +651,7 @@ class DocumentPatch(BaseModel):
     tag_ids: list[str] | None = None
     tag_names: list[str] | None = None
     domain_ids: list[str] | None = None
+    project_ids: list[str] | None = None
     attribute_values: dict[str, Any] | None = None
 
 
@@ -1053,6 +1055,8 @@ class AnalysisModelTaskOut(BaseModel):
 
 class ModelPricingStatusOut(BaseModel):
     basis: str
+    price_basis: str = "standard"
+    openai_pricing_tier: str = "standard"
     source_url: str
     source_urls: dict[str, str] = Field(default_factory=dict)
     updated_at: str
@@ -1061,6 +1065,7 @@ class ModelPricingStatusOut(BaseModel):
     stale_after_days: int = 2
     model_count: int = 0
     current_model_count: int = 0
+    missing_current_model_count: int = 0
     provider_counts: dict[str, int] = Field(default_factory=dict)
     checked_count: int = 0
     inserted_count: int = 0

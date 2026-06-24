@@ -49,6 +49,7 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         validation_alias="OPENAI_EMBEDDING_MODEL",
     )
+    openai_pricing_tier: str = Field(default="standard", validation_alias="MEDUSA_OPENAI_PRICING_TIER")
     gemini_api_key: str | None = Field(default=None, validation_alias="GEMINI_API_KEY")
     google_genai_use_vertexai: bool = Field(default=False, validation_alias="GOOGLE_GENAI_USE_VERTEXAI")
     openai_send_pdf_file: bool = Field(default=True, validation_alias="MEDUSA_OPENAI_SEND_PDF")

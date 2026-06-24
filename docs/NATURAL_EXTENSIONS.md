@@ -1,6 +1,6 @@
 # Medusa Natural Feature Extensions
 
-Last updated: 2026-06-21
+Last updated: 2026-06-23
 
 This document collects feature ideas that feel like natural extensions of Medusa's current shape. It is a planning artifact, not an implementation commitment. Move individual ideas into `TODO.md` only after they become planned work with concrete acceptance criteria, and update `docs/ARCHITECTURE.md` only when a direction becomes a product or architecture decision.
 
@@ -20,7 +20,7 @@ The through-line is simple: Medusa should keep becoming a dependable research co
 If only one or two ideas move forward soon, the strongest candidates are:
 
 1. Activity And Work Ledger. This is the best infrastructure-shaped product improvement because it would make imports, Concordance, backups, OCR, recommendation fetches, Accessory Summaries, and future Recon runs feel like one coherent operating system. It supports performance work, background scheduling, and safer dogfooding without committing to a large new research feature first.
-2. Evidence Notebook. This is the best thesis-shaped user feature because it turns reading into reusable research material. It builds directly on documents, pages, annotations, figures, citations, notes, and projects, and it gives Medusa a natural bridge from library management to actual thesis synthesis.
+2. Research Notes for documents, topics, and ideas. This replaces the earlier separate Evidence Notebook concept with a fuller Notes direction: document-linked notes, standalone topic/idea notes, and explicit links between notes and documents. It is the best thesis-shaped user feature because it turns reading and thinking into reusable research material.
 
 The Library Related Documents expansion below is also a strong near-term candidate because the feature already exists in the document pane and can become much more valuable without inventing a new workspace.
 
@@ -84,19 +84,20 @@ Why it fits: This keeps the app from feeling like a pile of excellent parts. The
 
 ## Thesis Research Extensions
 
-### Evidence Notebook
+### Research Notes For Documents, Topics, And Ideas
 
-Projects currently organize sources and bibliographies. A natural thesis extension is an Evidence Notebook inside or beside Projects.
+Projects currently organize sources and bibliographies, and Medusa already has a Notes surface. The stronger thesis extension is not a separate Evidence Notebook brand, but a fully built-out Notes workspace that handles both document-grounded evidence and standalone topic or idea notes that can link back to documents.
 
 What it would add:
 
-- Saved evidence items linked to document, page, chunk, annotation, figure, table, or citation evidence.
-- Note types such as quote, paraphrase, method note, finding, definition, counterpoint, limitation, and "use in chapter."
-- Project section assignment so evidence can be grouped under thesis outline areas.
-- Copy/export formats that preserve citation context.
-- A review state such as candidate, used, checked, rejected, or needs verification.
+- Standalone notes for topics, concepts, questions, ideas, thesis sections, and research hunches.
+- Document-linked notes that can point to one or more documents, pages, annotations, figures, tables, citations, projects, domains, tags, or saved searches.
+- Note types such as general note, quote, paraphrase, method note, finding, definition, counterpoint, limitation, idea, question, and "use in chapter."
+- Backlinks so a document shows every linked note, and a note shows every linked source or organizing object.
+- Project section assignment so notes can be grouped under thesis outline areas without requiring every note to belong to a project.
+- Search, filters, status, reminders, soft delete/restore, and export formats that preserve linked citation context.
 
-Why it fits: This turns Medusa from a library manager into a research workbench without pretending to be a word processor.
+Why it fits: This turns Medusa from a library manager into a research workbench without pretending to be a word processor, and it preserves the existing Notes mental model instead of scattering research thinking across another surface.
 
 ### Literature Matrix
 
@@ -184,7 +185,7 @@ Implementation notes:
 
 What it would add:
 
-- Promote Recon findings into Evidence Notebook items.
+- Promote Recon findings into linked research notes.
 - Attach Recon runs to Projects and project sections.
 - Flag stale Recon answers when source documents, tags, domains, annotations, or saved-search scopes change.
 - Compare two Recon runs over time to show what changed in the corpus or answer.
@@ -366,7 +367,7 @@ Projects already generate bibliographies. A Project Export Pack would gather the
 What it would add:
 
 - Bibliography files in APA/BibTeX/RIS/CSL JSON.
-- Evidence Notebook export by section.
+- Linked notes export by section or topic.
 - Literature Matrix export.
 - Source list with read status, priority, used state, domains, tags, notes, and citation verification state.
 - Optional Markdown bundle for a thesis chapter folder.
@@ -382,7 +383,7 @@ What it would add:
 - Paste a claim or paragraph.
 - Search the project/library for supporting, contradicting, or contextual evidence.
 - Return source candidates with page/chunk links and citation text.
-- Let the user save the result as an Evidence Notebook item or project note.
+- Let the user save the result as a linked note or project note.
 
 Why it fits: It is a practical thesis-writing companion built on search, citations, and evidence, not a generic writing generator.
 
@@ -410,7 +411,7 @@ Start with features that make the existing app easier to trust and dogfood:
 3. UI Consistency Kit.
 4. Library Related Documents Discovery.
 5. Corpus Health Dashboard.
-6. Evidence Notebook.
+6. Research Notes for documents, topics, and ideas.
 
 ### Mid Term
 
@@ -437,7 +438,7 @@ Save broader synthesis and writing-adjacent features for after search, evidence,
 
 - Should Activity replace Queue, or should Queue remain import/review-focused while Activity becomes a separate workspace?
 - Should Corpus Health live in Settings, Library, or its own workbench?
-- Should Evidence Notebook be project-only at first, or available across the whole library?
+- Should Research Notes be project-only at first, or available across the whole library?
 - Should Related replace its current simple Hide Existing behavior with a default exclusion model plus an Already Known audit tab?
 - Which Related discovery mode should be the default: Closest, Newer, Foundational, Open PDF, or Diverse Set?
 - Should Recon findings be allowed to write notes automatically, or only propose notebook items for approval?

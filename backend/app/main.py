@@ -251,17 +251,17 @@ IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
     "failed",
     "restored_paused",
 )
-DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.01
+DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.04
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
 IMPORT_ESTIMATE_TASK_TOKEN_PROFILES: dict[str, dict[str, int]] = {
-    MODEL_METADATA: {"input_per_page": 650, "output_base": 900},
-    MODEL_SUMMARY: {"input_per_page": 650, "output_base": 750},
-    MODEL_APA_CITATION: {"input_per_page": 450, "output_base": 550},
-    MODEL_KEYWORDS_TOPICS: {"input_per_page": 500, "output_base": 350},
-    MODEL_PAGE_TEXT_NORMALIZATION: {"input_per_page": 650, "output_per_page": 500},
-    MODEL_TEXT_CHUNK_ENCODING: {"input_per_page": 650, "output_base": 0},
+    MODEL_METADATA: {"input_per_page": 2000, "output_base": 900},
+    MODEL_SUMMARY: {"input_per_page": 950, "output_base": 1000},
+    MODEL_APA_CITATION: {"input_per_page": 500, "output_base": 650},
+    MODEL_KEYWORDS_TOPICS: {"input_per_page": 1100, "output_base": 400},
+    MODEL_PAGE_TEXT_NORMALIZATION: {"input_per_page": 1200, "output_per_page": 900},
+    MODEL_TEXT_CHUNK_ENCODING: {"input_per_page": 950, "output_base": 0},
 }
 IMPORT_ESTIMATE_LOCAL_MODELS = {"", "local", "none", "marker", "pymupdf", "docling"}
 app.add_middleware(
@@ -398,6 +398,54 @@ def project_detail_out(project: Project) -> ProjectDetail:
     return ProjectDetail(**base, items=items)
 
 
+def unique_preserve_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def project_summaries_for_documents(db: Session, document_ids: list[str]) -> dict[str, list[ProjectOut]]:
+    unique_document_ids = unique_preserve_order(document_ids)
+    if not unique_document_ids:
+        return {}
+    items = (
+        db.query(ProjectItem)
+        .options(joinedload(ProjectItem.project))
+        .join(Project, Project.id == ProjectItem.project_id)
+        .filter(ProjectItem.document_id.in_(unique_document_ids), Project.deleted_at.is_(None))
+        .all()
+    )
+    project_ids = unique_preserve_order([item.project_id for item in items])
+    item_counts = (
+        {
+            project_id: int(count)
+            for project_id, count in db.query(ProjectItem.project_id, func.count(ProjectItem.id))
+            .filter(ProjectItem.project_id.in_(project_ids))
+            .group_by(ProjectItem.project_id)
+            .all()
+        }
+        if project_ids
+        else {}
+    )
+    summaries: dict[str, list[ProjectOut]] = {document_id: [] for document_id in unique_document_ids}
+    seen_pairs: set[tuple[str, str]] = set()
+    for item in sorted(items, key=lambda value: ((value.project.name or "").lower(), value.project.id)):
+        project = item.project
+        pair = (item.document_id, project.id)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        summaries.setdefault(item.document_id, []).append(
+            ProjectOut(
+                id=project.id,
+                name=project.name,
+                description=project.description,
+                status=project.status,
+                due_at=project.due_at,
+                item_count=item_counts.get(project.id, 0),
+            )
+        )
+    return summaries
+
+
 def apply_document_filters(
     query,
     *,
@@ -496,14 +544,15 @@ def duplicate_document_out(document: Document) -> ImportDuplicateDocumentOut:
     )
 
 
-def document_summary_out(document: Document, duplicate_count: int = 0) -> DocumentSummary:
-    return DocumentSummary.model_validate(document).model_copy(update={"duplicate_count": duplicate_count})
+def document_summary_out(document: Document, duplicate_count: int = 0, projects: list[ProjectOut] | None = None) -> DocumentSummary:
+    return DocumentSummary.model_validate(document).model_copy(update={"duplicate_count": duplicate_count, "projects": projects or []})
 
 
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     duplicate_ids = [item.id for item in visible_documents_for_checksum(db, document.checksum_sha256) if item.id != document.id]
+    projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
     return DocumentDetail.model_validate(document).model_copy(
-        update={"duplicate_count": len(duplicate_ids), "duplicate_document_ids": duplicate_ids}
+        update={"duplicate_count": len(duplicate_ids), "duplicate_document_ids": duplicate_ids, "projects": projects}
     )
 
 
@@ -2378,7 +2427,11 @@ def list_documents(
         query = query.limit(limit)
     documents = query.all()
     duplicate_counts = duplicate_count_by_checksum(db, [document.checksum_sha256 for document in documents])
-    return [document_summary_out(document, duplicate_counts.get(document.checksum_sha256, 0)) for document in documents]
+    project_map = project_summaries_for_documents(db, [document.id for document in documents])
+    return [
+        document_summary_out(document, duplicate_counts.get(document.checksum_sha256, 0), project_map.get(document.id, []))
+        for document in documents
+    ]
 
 
 @app.get("/api/documents/{document_id}", response_model=DocumentDetail)
@@ -3029,6 +3082,7 @@ def patch_document(
     tag_ids = data.pop("tag_ids", None)
     tag_names = data.pop("tag_names", None)
     domain_ids = data.pop("domain_ids", None)
+    project_ids = data.pop("project_ids", None)
     attribute_values = data.pop("attribute_values", None)
     before = document_correction_snapshot(document)
     changed_fields: set[str] = set()
@@ -3058,6 +3112,26 @@ def patch_document(
     if domain_ids is not None:
         document.domains = db.query(Domain).filter(Domain.id.in_(domain_ids)).all() if domain_ids else []
         changed_fields.add("domains")
+    if project_ids is not None:
+        requested_project_ids = unique_preserve_order([str(project_id) for project_id in project_ids])
+        current_items = (
+            db.query(ProjectItem)
+            .join(Project, Project.id == ProjectItem.project_id)
+            .filter(ProjectItem.document_id == document.id, Project.deleted_at.is_(None))
+            .all()
+        )
+        if set(requested_project_ids) != {item.project_id for item in current_items}:
+            requested_project_id_set = set(requested_project_ids)
+            for item in current_items:
+                if item.project_id not in requested_project_id_set:
+                    db.delete(item)
+            projects = (
+                db.query(Project).filter(Project.id.in_(requested_project_ids), Project.deleted_at.is_(None)).all()
+                if requested_project_ids
+                else []
+            )
+            apply_project_defaults(db, document, projects, document.priority)
+            changed_fields.add("projects")
     if attribute_values is not None:
         for key, value in attribute_values.items():
             definition = get_or_create_attribute_definition(db, key)

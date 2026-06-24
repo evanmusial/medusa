@@ -63,6 +63,18 @@ def test_openai_pricing_table_covers_enabled_embedding_models(monkeypatch, tmp_p
         assert round(cost, 6) == expected
 
 
+def test_openai_pricing_tier_changes_gpt_costs(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_OPENAI_PRICING_TIER", "priority")
+
+    from app.services.openai_usage import _estimated_cost_usd, current_openai_pricing_tier
+
+    assert current_openai_pricing_tier() == "priority"
+    assert round(_estimated_cost_usd("gpt-5.4", 1_000_000, 0, 100_000) or 0, 6) == 8.0
+    assert round(_estimated_cost_usd("gpt-5.5", 1_000_000, 0, 100_000) or 0, 6) == 20.0
+
+
 def test_openai_usage_summary_rolls_up_task_model_and_recent(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -274,6 +286,57 @@ def test_model_pricing_refresh_records_history_only_when_price_changes(monkeypat
             .count()
             == 1
         )
+
+
+def test_model_pricing_refresh_uses_configured_openai_tier(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_OPENAI_PRICING_TIER", "priority")
+
+    from app.database import Base
+    from app.models import ModelPricingRecord, OpenAIUsageRecord
+    from app.services import openai_usage
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    checked_at = datetime(2026, 6, 23, 12, tzinfo=timezone.utc)
+    with Session() as db:
+        status = openai_usage.refresh_model_pricing(db, checked_at=checked_at)
+        db.add(
+            OpenAIUsageRecord(
+                task_key="summary",
+                operation="medusa_document_summary",
+                endpoint="responses",
+                model="gpt-5.4",
+                status="success",
+                source="test",
+                input_tokens=1_000_000,
+                cached_input_tokens=0,
+                output_tokens=100_000,
+                total_tokens=1_100_000,
+                used_pdf_file=False,
+                usage_metadata={},
+            )
+        )
+        db.commit()
+
+        priority_row = (
+            db.query(ModelPricingRecord)
+            .filter(
+                ModelPricingRecord.model == "gpt-5.4",
+                ModelPricingRecord.price_basis == "priority",
+                ModelPricingRecord.superseded_at.is_(None),
+            )
+            .one()
+        )
+        summary = openai_usage.openai_usage_summary(db)
+
+    assert status["openai_pricing_tier"] == "priority"
+    assert float(priority_row.output_usd_per_million) == 30.0
+    assert summary["pricing"]["openai_pricing_tier"] == "priority"
+    assert summary["summary"]["estimated_cost_usd"] == 8.0
 
 
 def test_usage_summary_uses_historical_price_for_record_timestamp(monkeypatch, tmp_path):

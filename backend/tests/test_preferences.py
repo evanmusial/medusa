@@ -152,7 +152,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
 
         payload = get_app_preferences(db)
         assert len(payload["analysis_model_tasks"]) == 8
-        assert payload["model_pricing"]["updated_at"] == "2026-06-21"
+        assert payload["model_pricing"]["updated_at"] == "2026-06-23"
         assert payload["model_pricing"]["stale"] is True
         raw_text_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_RAW_TEXT_EXTRACTION)
         assert raw_text_task["default_model"] == "marker"

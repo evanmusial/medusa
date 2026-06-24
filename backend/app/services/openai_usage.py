@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -23,12 +24,31 @@ USAGE_PERIODS: dict[str, timedelta | None] = {
 }
 PRICE_SOURCE_URL = "https://developers.openai.com/api/docs/pricing"
 GOOGLE_PRICE_SOURCE_URL = "https://ai.google.dev/gemini-api/docs/pricing"
-PRICE_UPDATED_AT = "2026-06-21"
+PRICE_UPDATED_AT = "2026-06-23"
 PRICE_STALE_AFTER_DAYS = 2
+OPENAI_PRICING_TIER_ENV = "MEDUSA_OPENAI_PRICING_TIER"
+OPENAI_PRICING_STANDARD = "standard"
+OPENAI_PRICING_BATCH = "batch"
+OPENAI_PRICING_FLEX = "flex"
+OPENAI_PRICING_PRIORITY = "priority"
+SUPPORTED_OPENAI_PRICING_TIERS = {
+    OPENAI_PRICING_STANDARD,
+    OPENAI_PRICING_BATCH,
+    OPENAI_PRICING_FLEX,
+    OPENAI_PRICING_PRIORITY,
+}
+OPENAI_PRICING_TIER_ALIASES = {
+    "": OPENAI_PRICING_STANDARD,
+    "default": OPENAI_PRICING_STANDARD,
+    "std": OPENAI_PRICING_STANDARD,
+    "priority-processing": OPENAI_PRICING_PRIORITY,
+    "priority_processing": OPENAI_PRICING_PRIORITY,
+}
 PRICE_BASIS = (
-    "OpenAI standard API/model-page pricing for enabled GPT model families and embeddings plus Google Gemini "
-    "Developer API paid-tier standard text token pricing per 1M tokens; historical rows are used when available, "
-    "and unrecognized models are left unpriced."
+    "Official provider token pricing per 1M tokens. OpenAI GPT usage is priced with the configured "
+    f"{OPENAI_PRICING_TIER_ENV} tier when that tier publishes rates for the model; embeddings use their "
+    "published input-token rate; Google Gemini usage uses Developer API paid-tier standard text pricing. "
+    "Historical rows are used when available, and unrecognized models are left unpriced."
 )
 PRICE_RATE_KEYS = (
     "input",
@@ -68,6 +88,19 @@ CURRENT_MODEL_TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float | None]] =
     "gemini-2.5-flash": {"input": 0.3, "cached_input": 0.03, "output": 2.5},
     "gemini-2.5-flash-lite": {"input": 0.1, "cached_input": 0.01, "output": 0.4},
 }
+OPENAI_BATCH_FLEX_MODEL_TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float | None]] = {
+    "gpt-5.5": {"input": 2.5, "cached_input": 0.25, "output": 15.0, "input_over_200k": 5.0, "cached_input_over_200k": 0.5, "output_over_200k": 22.5},
+    "gpt-5.5-pro": {"input": 15.0, "cached_input": None, "output": 90.0},
+    "gpt-5.4": {"input": 1.25, "cached_input": 0.13, "output": 7.5, "input_over_200k": 2.5, "cached_input_over_200k": 0.25, "output_over_200k": 11.25},
+    "gpt-5.4-mini": {"input": 0.375, "cached_input": 0.0375, "output": 2.25},
+    "gpt-5.4-nano": {"input": 0.1, "cached_input": 0.01, "output": 0.625},
+    "gpt-5.4-pro": {"input": 15.0, "cached_input": None, "output": 90.0, "input_over_200k": 30.0, "cached_input_over_200k": None, "output_over_200k": 135.0},
+}
+OPENAI_PRIORITY_MODEL_TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float | None]] = {
+    "gpt-5.5": {"input": 12.5, "cached_input": 1.25, "output": 75.0},
+    "gpt-5.4": {"input": 5.0, "cached_input": 0.5, "output": 30.0},
+    "gpt-5.4-mini": {"input": 1.5, "cached_input": 0.15, "output": 9.0},
+}
 LEGACY_MODEL_TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float | None]] = {
     "gemini-3.5-flash": {"input": 1.5, "cached_input": 0.15, "output": 9.0},
     "gemini-2.0-flash": {"input": 0.1, "cached_input": 0.025, "output": 0.4},
@@ -84,6 +117,46 @@ MODEL_PRICE_ALIASES = {
     "gemini-flash-lite-latest": "gemini-3.1-flash-lite",
     "gemini-pro-latest": "gemini-2.5-pro",
 }
+
+
+def _normalized_openai_pricing_tier(value: str | None = None) -> str:
+    raw = (value if value is not None else os.getenv(OPENAI_PRICING_TIER_ENV, OPENAI_PRICING_STANDARD) or "").strip().lower()
+    normalized = OPENAI_PRICING_TIER_ALIASES.get(raw, raw)
+    return normalized if normalized in SUPPORTED_OPENAI_PRICING_TIERS else OPENAI_PRICING_STANDARD
+
+
+def current_openai_pricing_tier() -> str:
+    return _normalized_openai_pricing_tier()
+
+
+def _tier_override_prices(price_basis: str | None = None) -> dict[str, dict[str, float | None]]:
+    basis = _normalized_openai_pricing_tier(price_basis)
+    if basis in {OPENAI_PRICING_BATCH, OPENAI_PRICING_FLEX}:
+        return OPENAI_BATCH_FLEX_MODEL_TOKEN_PRICES_USD_PER_MILLION
+    if basis == OPENAI_PRICING_PRIORITY:
+        return OPENAI_PRIORITY_MODEL_TOKEN_PRICES_USD_PER_MILLION
+    return {}
+
+
+def _effective_price_basis_for_model(provider: str | None, model: str | None, price_basis: str | None = None) -> str:
+    normalized_provider = _provider_for_model(model, provider)
+    if normalized_provider != "openai":
+        return OPENAI_PRICING_STANDARD
+    basis = _normalized_openai_pricing_tier(price_basis)
+    canonical = _canonical_model_id(model)
+    if basis != OPENAI_PRICING_STANDARD and canonical in _tier_override_prices(basis):
+        return basis
+    return OPENAI_PRICING_STANDARD
+
+
+def _prices_for_basis(price_basis: str | None = None) -> dict[str, dict[str, float | None]]:
+    basis = _normalized_openai_pricing_tier(price_basis)
+    prices = {
+        model: dict(pricing)
+        for model, pricing in CURRENT_MODEL_TOKEN_PRICES_USD_PER_MILLION.items()
+    }
+    prices.update({model: dict(pricing) for model, pricing in _tier_override_prices(basis).items()})
+    return prices
 
 
 @dataclass(frozen=True)
@@ -164,6 +237,12 @@ def build_openai_usage_record(
     used_pdf_file: bool = False,
 ) -> dict[str, Any]:
     usage = _value(response, "usage")
+    usage_metadata = _usage_metadata(usage)
+    if provider == "openai":
+        usage_metadata = {
+            **usage_metadata,
+            "pricing_basis": current_openai_pricing_tier(),
+        }
     input_tokens = _int_value(usage, "input_tokens") or _int_value(usage, "prompt_tokens")
     output_tokens = _int_value(usage, "output_tokens") or _int_value(usage, "completion_tokens")
     total_tokens = _int_value(usage, "total_tokens")
@@ -196,7 +275,7 @@ def build_openai_usage_record(
         or _nested_int(usage, "completion_tokens_details", "reasoning_tokens"),
         "total_tokens": total_tokens,
         "error_message": str(error)[:2000] if error else None,
-        "usage_metadata": _usage_metadata(usage),
+        "usage_metadata": usage_metadata,
     }
 
 
@@ -300,10 +379,24 @@ def _canonical_model_id(model: str | None) -> str | None:
     return model_id
 
 
-def _pricing_for_model(model: str | None) -> dict[str, float | None] | None:
+def _price_basis_for_provider(provider: str | None, model: str | None = None, price_basis: str | None = None) -> str:
+    return _effective_price_basis_for_model(provider, model, price_basis)
+
+
+def _pricing_for_model(
+    model: str | None,
+    *,
+    provider: str | None = None,
+    price_basis: str | None = None,
+) -> dict[str, float | None] | None:
     canonical = _canonical_model_id(model)
     if not canonical:
         return None
+    normalized_provider = _provider_for_model(canonical, provider)
+    if normalized_provider == "openai":
+        pricing = _prices_for_basis(price_basis).get(canonical)
+        if pricing:
+            return pricing
     return MODEL_TOKEN_PRICES_USD_PER_MILLION.get(canonical)
 
 
@@ -343,6 +436,7 @@ def _model_pricing_record(
     *,
     provider: str,
     model: str,
+    price_basis: str,
     pricing: dict[str, float | None],
     checked_at: datetime,
     observed_at: datetime | None = None,
@@ -351,7 +445,7 @@ def _model_pricing_record(
     return ModelPricingRecord(
         provider=provider,
         model=model,
-        price_basis="standard",
+        price_basis=price_basis,
         currency="USD",
         input_usd_per_million=pricing.get("input"),
         cached_input_usd_per_million=pricing.get("cached_input"),
@@ -371,19 +465,23 @@ def _model_pricing_record(
 
 
 def _current_price_entries() -> list[dict[str, Any]]:
+    openai_pricing_tier = current_openai_pricing_tier()
     entries: list[dict[str, Any]] = []
-    for model, pricing in CURRENT_MODEL_TOKEN_PRICES_USD_PER_MILLION.items():
+    for model, pricing in _prices_for_basis(openai_pricing_tier).items():
         provider = _provider_for_model(model)
+        price_basis = _effective_price_basis_for_model(provider, model, openai_pricing_tier)
         entries.append(
             {
                 "provider": provider,
                 "model": model,
+                "price_basis": price_basis,
                 "pricing": pricing,
                 "source_url": _source_url_for_provider(provider),
                 "metadata": {
                     "source_updated_at": PRICE_UPDATED_AT,
                     "rates_per": "1M tokens",
                     "current_enabled_model": True,
+                    "openai_pricing_tier": openai_pricing_tier if provider == "openai" else None,
                 },
             }
         )
@@ -401,7 +499,7 @@ def refresh_model_pricing(db: Session, *, checked_at: datetime | None = None) ->
             .filter(
                 ModelPricingRecord.provider == entry["provider"],
                 ModelPricingRecord.model == entry["model"],
-                ModelPricingRecord.price_basis == "standard",
+                ModelPricingRecord.price_basis == entry["price_basis"],
                 ModelPricingRecord.superseded_at.is_(None),
             )
             .order_by(ModelPricingRecord.observed_at.desc(), ModelPricingRecord.created_at.desc())
@@ -413,6 +511,7 @@ def refresh_model_pricing(db: Session, *, checked_at: datetime | None = None) ->
                 _model_pricing_record(
                     provider=entry["provider"],
                     model=entry["model"],
+                    price_basis=entry["price_basis"],
                     pricing=pricing,
                     checked_at=now,
                     observed_at=now,
@@ -432,6 +531,7 @@ def refresh_model_pricing(db: Session, *, checked_at: datetime | None = None) ->
             _model_pricing_record(
                 provider=entry["provider"],
                 model=entry["model"],
+                price_basis=entry["price_basis"],
                 pricing=pricing,
                 checked_at=now,
                 observed_at=now,
@@ -458,15 +558,33 @@ def seed_model_pricing_if_empty(db: Session) -> dict[str, Any]:
 
 
 def model_pricing_status(db: Session) -> dict[str, Any]:
+    openai_pricing_tier = current_openai_pricing_tier()
     active_rows = db.query(ModelPricingRecord).filter(ModelPricingRecord.superseded_at.is_(None)).all()
-    last_refreshed_at = max((_as_utc(row.last_checked_at) for row in active_rows if row.last_checked_at), default=None)
+    expected_entries = _current_price_entries()
+    expected_keys = {
+        (entry["provider"], entry["model"], entry["price_basis"])
+        for entry in expected_entries
+    }
+    relevant_rows = [
+        row
+        for row in active_rows
+        if row.price_basis == (_price_basis_for_provider(row.provider, row.model, openai_pricing_tier))
+    ]
+    relevant_keys = {
+        (row.provider, row.model, row.price_basis)
+        for row in relevant_rows
+    }
+    missing_current_rows = expected_keys - relevant_keys
+    last_refreshed_at = max((_as_utc(row.last_checked_at) for row in relevant_rows if row.last_checked_at), default=None)
     now = datetime.now(timezone.utc)
-    stale = last_refreshed_at is None or now - last_refreshed_at > timedelta(days=PRICE_STALE_AFTER_DAYS)
+    stale = bool(missing_current_rows) or last_refreshed_at is None or now - last_refreshed_at > timedelta(days=PRICE_STALE_AFTER_DAYS)
     provider_counts: dict[str, int] = {}
-    for row in active_rows:
+    for row in relevant_rows:
         provider_counts[row.provider] = provider_counts.get(row.provider, 0) + 1
     return {
         "basis": PRICE_BASIS,
+        "price_basis": openai_pricing_tier,
+        "openai_pricing_tier": openai_pricing_tier,
         "source_url": PRICE_SOURCE_URL,
         "source_urls": {
             "OpenAI": PRICE_SOURCE_URL,
@@ -476,13 +594,14 @@ def model_pricing_status(db: Session) -> dict[str, Any]:
         "last_refreshed_at": last_refreshed_at,
         "stale": stale,
         "stale_after_days": PRICE_STALE_AFTER_DAYS,
-        "model_count": len(active_rows),
-        "current_model_count": len(CURRENT_MODEL_TOKEN_PRICES_USD_PER_MILLION),
+        "model_count": len(relevant_rows),
+        "current_model_count": len(expected_entries),
+        "missing_current_model_count": len(missing_current_rows),
         "provider_counts": provider_counts,
     }
 
 
-def _pricing_index(db: Session | None) -> dict[tuple[str, str], list[ModelPricingRecord]]:
+def _pricing_index(db: Session | None) -> dict[tuple[str, str, str], list[ModelPricingRecord]]:
     if db is None:
         return {}
     rows = (
@@ -490,9 +609,9 @@ def _pricing_index(db: Session | None) -> dict[tuple[str, str], list[ModelPricin
         .order_by(ModelPricingRecord.observed_at.desc(), ModelPricingRecord.created_at.desc())
         .all()
     )
-    index: dict[tuple[str, str], list[ModelPricingRecord]] = {}
+    index: dict[tuple[str, str, str], list[ModelPricingRecord]] = {}
     for row in rows:
-        index.setdefault((row.provider, row.model), []).append(row)
+        index.setdefault((row.provider, row.model, row.price_basis), []).append(row)
     return index
 
 
@@ -501,13 +620,16 @@ def _pricing_from_index(
     *,
     provider: str | None = None,
     at: datetime | None = None,
-    pricing_index: dict[tuple[str, str], list[ModelPricingRecord]] | None = None,
+    price_basis: str | None = None,
+    pricing_index: dict[tuple[str, str, str], list[ModelPricingRecord]] | None = None,
 ) -> dict[str, float | None] | None:
     canonical = _canonical_model_id(model)
     if not canonical or not pricing_index:
-        return _pricing_for_model(model)
+        return _pricing_for_model(model, provider=provider, price_basis=price_basis)
     normalized_at = _as_utc(at)
-    rows = pricing_index.get((_provider_for_model(canonical, provider), canonical), [])
+    normalized_provider = _provider_for_model(canonical, provider)
+    normalized_basis = _price_basis_for_provider(normalized_provider, canonical, price_basis)
+    rows = pricing_index.get((normalized_provider, canonical, normalized_basis), [])
     for row in rows:
         observed_at = _as_utc(row.observed_at)
         superseded_at = _as_utc(row.superseded_at)
@@ -520,7 +642,7 @@ def _pricing_from_index(
     active = next((row for row in rows if row.superseded_at is None), None)
     if active:
         return _pricing_from_record(active)
-    return _pricing_for_model(model)
+    return _pricing_for_model(model, provider=provider, price_basis=normalized_basis)
 
 
 def _estimated_cost_usd(
@@ -553,12 +675,15 @@ def _estimated_cost_usd(
 
 def _cost_for_record(
     record: OpenAIUsageRecord,
-    pricing_index: dict[tuple[str, str], list[ModelPricingRecord]] | None = None,
+    pricing_index: dict[tuple[str, str, str], list[ModelPricingRecord]] | None = None,
 ) -> float | None:
+    metadata = record.usage_metadata if isinstance(record.usage_metadata, dict) else {}
+    record_price_basis = metadata.get("pricing_basis") or metadata.get("openai_pricing_tier")
     pricing = _pricing_from_index(
         record.model,
         provider=record.provider,
         at=record.created_at,
+        price_basis=str(record_price_basis) if record_price_basis else None,
         pricing_index=pricing_index,
     )
     return _estimated_cost_usd(
@@ -601,7 +726,7 @@ def estimated_cost_usd_for_model_tokens(
 def _summary_from_query(
     query,
     records: list[OpenAIUsageRecord],
-    pricing_index: dict[tuple[str, str], list[ModelPricingRecord]] | None = None,
+    pricing_index: dict[tuple[str, str, str], list[ModelPricingRecord]] | None = None,
 ) -> dict[str, Any]:
     row = query.with_entities(
         func.count(OpenAIUsageRecord.id),
@@ -675,7 +800,7 @@ def _group_rows(
     *,
     limit: int = 12,
     document_titles: dict[str, str] | None = None,
-    pricing_index: dict[tuple[str, str], list[ModelPricingRecord]] | None = None,
+    pricing_index: dict[tuple[str, str, str], list[ModelPricingRecord]] | None = None,
 ) -> list[dict[str, Any]]:
     groups: dict[Any, dict[str, Any]] = {}
     for record in records:
