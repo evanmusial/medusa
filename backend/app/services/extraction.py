@@ -8,6 +8,7 @@ import tempfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 from app.config import get_settings
@@ -698,15 +699,25 @@ def _fallback_embedded_images(
     return figures
 
 
-def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80, min_bytes: int = 1500) -> list[ExtractedFigure]:
+def extract_pdf_figures(
+    path: Path,
+    *,
+    page_numbers: Iterable[int] | None = None,
+    min_width: int = 80,
+    min_height: int = 80,
+    min_bytes: int = 1500,
+) -> list[ExtractedFigure]:
     try:
         import fitz
     except Exception as exc:  # pragma: no cover - exercised only without optional dependency
         raise RuntimeError("PyMuPDF is required for figure extraction") from exc
 
     figures: list[ExtractedFigure] = []
+    selected_pages = {int(page_number) for page_number in page_numbers or [] if int(page_number) > 0}
     with fitz.open(path) as pdf:
         for page_index, page in enumerate(pdf, start=1):
+            if selected_pages and page_index not in selected_pages:
+                continue
             captions = _caption_candidates(page)
             image_candidates = [(bbox, "page_image") for bbox in _image_bboxes(page)]
             drawing_candidates = [(bbox, "vector_graphic") for bbox in _drawing_bboxes(page, min_width=min_width, min_height=min_height)]
@@ -751,6 +762,23 @@ def extract_pdf_figures(path: Path, *, min_width: int = 80, min_height: int = 80
                 )
             )
     return figures
+
+
+def extract_pdf_figures_for_page(
+    path: Path,
+    page_number: int,
+    *,
+    min_width: int = 80,
+    min_height: int = 80,
+    min_bytes: int = 1500,
+) -> list[ExtractedFigure]:
+    return extract_pdf_figures(
+        path,
+        page_numbers=[page_number],
+        min_width=min_width,
+        min_height=min_height,
+        min_bytes=min_bytes,
+    )
 
 
 def split_text_into_chunks(text: str, target_chars: int = 3200) -> list[str]:

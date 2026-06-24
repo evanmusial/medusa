@@ -14,8 +14,8 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - GCS storage adapter with local fallback when credentials are not configured
 - Raw text extraction preference with Local choices for Docling, Marker, and PyMuPDF; Marker is the default preference and PyMuPDF remains the bundled local fallback
 - Authenticated original PDF preview/open/download route in the document detail pane and expanded Reader mode
-- Parsed full-text reader with normalized one-page navigation, PDF/Text switching, side-by-side compare mode for editing extracted text beside the original PDF, and Scrub cleanup for repeated selected text
-- Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, and page geometry
+- Parsed full-text reader with normalized one-page navigation, PDF/Text switching, side-by-side compare mode for editing extracted text beside the original PDF, Scrub cleanup for repeated selected text, and page-scoped visual scans from the PDF preview footer
+- Cropped figure/chart/photo extraction into durable storage with authenticated asset preview, labels, captions, page geometry, and one-page Reader rescue scans
 - OpenAI adapter for structured metadata, visible author contact emails, summaries, tag suggestions, page text normalization, and embeddings
 - OpenAI usage ledger with Budget & Costs rollups for last day/month/3 months/all time, calls, tokens, estimated known-model costs, cached input tokens, PDF/file context bytes, recent errors, trend lines, pie charts, and task/model breakdowns
 - Utilities workspace with Database maintenance actions for compaction, table-statistics optimization, hidden import-cache cleanup with a live cleanup count, Docker/container footprint stats, runtime binary/package versions, HAProxy TLS/proxy stats, and backend-container restart with health polling
@@ -36,7 +36,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
 - Stored document annotations/highlights with page, color, note body, soft delete, and search indexing; Library creation controls are deferred for a quieter redesign
 - Notes and reminders attached to documents, domains, projects, or the general library
-- Full PostgreSQL database backup/restore from Settings, using GCS, zstd compression, likely backup-size estimates, total listed-backup size, SHA-256 upload verification, header progress, and mandatory pre-restore safety backups
+- Full PostgreSQL database backup/restore from Utilities, using GCS, zstd compression, likely backup-size estimates, total listed-backup size, SHA-256 upload verification, header progress, and mandatory pre-restore safety backups
 - Authenticated JSON backup exports for metadata and storage manifests, excluding secrets and session tokens
 - CLI restore tooling for metadata exports, with dry-run validation by default and parked restored job queues
 
@@ -152,11 +152,11 @@ MEDUSA_UNPAYWALL_EMAIL=
 SEMANTIC_SCHOLAR_API_KEY=
 ```
 
-Related-paper discovery uses OpenAlex, Semantic Scholar, and Crossref to find candidates. Unpaywall and arXiv enrich those candidates with open PDF links before they are queued for import; set `MEDUSA_UNPAYWALL_EMAIL` to a real contact email to enable Unpaywall lookups. The Library detail Recommendations panel defaults to a Discover view that suppresses library-held, queued-import, and DOI-wishlisted candidates while keeping an Already Known audit view, relation-family filters, compact evidence chips, wishlist actions, and manual Google Scholar links rather than automated Scholar scraping.
+Related-paper discovery uses OpenAlex, Semantic Scholar, and Crossref to find candidates. Unpaywall and arXiv enrich those candidates with open PDF links before they are queued for import; set `MEDUSA_UNPAYWALL_EMAIL` to a real contact email to enable Unpaywall lookups. The Library detail Recommendations panel defaults to a Discover view that suppresses library-held, queued-import, and already-stashed DOI candidates while keeping an Already Known audit view, relation-family filters, compact evidence chips, Stash actions, and manual Google Scholar links rather than automated Scholar scraping.
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
-The checkout and ignored `data/` directory are portable, but the default live PostgreSQL database is not stored inside the repo. Compose keeps it in Docker's `medusa-postgres` named volume, while `./data:/app/data` carries originals, processing cache files, managed secrets, home/cache directories, and local model weights. To move a library to another host, prefer the Settings full database backup/restore workflow. A portable live instance should use a deliberate Compose override that bind-mounts PostgreSQL onto a reliable external SSD; ordinary USB flash drives are better suited for carrying exports, backups, and local object snapshots than for hosting the active database.
+The checkout and ignored `data/` directory are portable, but the default live PostgreSQL database is not stored inside the repo. Compose keeps it in Docker's `medusa-postgres` named volume, while `./data:/app/data` carries originals, processing cache files, managed secrets, home/cache directories, and local model weights. To move a library to another host, prefer the Utilities full database backup/restore workflow. A portable live instance should use a deliberate Compose override that bind-mounts PostgreSQL onto a reliable external SSD; ordinary USB flash drives are better suited for carrying exports, backups, and local object snapshots than for hosting the active database.
 
 Gemini Developer API keys can be stored outside tracked files at `data/secrets/gemini.env`:
 
@@ -241,7 +241,7 @@ pytest
 
 Full database backup and restore:
 
-Use Settings at the bottom of the app for the normal backup workflow. Backup Database shows a likely compressed size, then creates a `pg_dump` custom-format snapshot, compresses it with zstd, uploads it to the active GCS bucket under `GCS_PREFIX/backups`, and verifies the uploaded checksum. Restore Database is shown beside the GCS backup selector, requires confirmation, and restores from a listed GCS backup only; it always completes and verifies a fresh safety backup before applying the restore. Settings also shows the count and total compressed size of all listed GCS backup dumps.
+Use Utilities for the normal backup workflow. Backup Database shows a likely compressed size, then creates a `pg_dump` custom-format snapshot, compresses it with zstd, uploads it to the active GCS bucket under `GCS_PREFIX/backups`, and verifies the uploaded checksum. Restore Database is shown beside the GCS backup selector, requires confirmation, and restores from a listed GCS backup only; it always completes and verifies a fresh safety backup before applying the restore. Utilities also shows the count and total compressed size of all listed GCS backup dumps.
 
 Legacy metadata JSON restore drill:
 
@@ -282,10 +282,10 @@ After a released import queue drains and no queued/running import jobs remain, t
 
 Concordance Runs and citation refreshes are also safe to leave in progress from the UI. Once the backend accepts the request, the durable database run continues through the worker queue independently of the currently open page, and the shell-level progress shelf reconciles with refreshed run/job state.
 
-Settings includes full database backup and restore controls. Backups are named with `YYYYMMDD-HHMMSS` plus the short hostname, compressed with zstd, uploaded to GCS, and checksum-verified after upload. The Backup Database control shows a likely backup size based on current PostgreSQL database size and the latest completed backup when available, Settings shows the total size of all listed GCS backups, and recent backup/restore run history remains visible instead of only the newest row. Browser restore uses a selected GCS backup, asks for confirmation, is gated by a fresh verified safety backup, then applies with `pg_restore` and runs migrations. A full database restore may replace session rows, so the browser may need to sign in again afterward.
+Utilities includes full database backup and restore controls. Backups are named with `YYYYMMDD-HHMMSS` plus the short hostname, compressed with zstd, uploaded to GCS, and checksum-verified after upload. The Backup Database control shows a likely backup size based on current PostgreSQL database size and the latest completed backup when available, Utilities shows the total size of all listed GCS backups, and recent backup/restore run history remains visible instead of only the newest row. Browser restore uses a selected GCS backup, asks for confirmation, is gated by a fresh verified safety backup, then applies with `pg_restore` and runs migrations. A full database restore may replace session rows, so the browser may need to sign in again afterward.
 
 For portability, treat those PostgreSQL backups as the supported way to move the system of record between machines. Copying the repo or `data/` directory alone does not copy the Docker named database volume; direct database-directory portability requires an explicit bind mount and storage hardware suitable for PostgreSQL writes.
 
-Settings also keeps legacy metadata export links. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. These JSON exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
+Utilities also keeps legacy metadata export links. The full metadata export captures research metadata, extracted text, organization state, notes, corrections, jobs, Concordance history, and a durable asset manifest. The storage manifest export lists original and derived asset URIs. These JSON exports intentionally omit API keys, service-account credentials, password hashes, and session tokens.
 
 Metadata exports can be restored with the CLI restore tool. Restores are dry-run by default, preserve export IDs by default, skip password/session state, restore document/storage URI references, and park active job queues so a fresh worker does not unexpectedly reprocess restored history.

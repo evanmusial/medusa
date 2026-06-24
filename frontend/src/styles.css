@@ -2551,13 +2551,53 @@ textarea {
 
 .pdf-preview-meta {
   min-height: 34px;
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 7px;
-  padding: 0 10px;
+  padding: 6px 10px;
   border-top: 1px solid var(--line);
   font-size: 12px;
   font-weight: 700;
+}
+
+.pdf-preview-count,
+.pdf-visual-scan,
+.pdf-visual-scan label {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pdf-preview-count,
+.pdf-visual-scan {
+  gap: 8px;
+}
+
+.pdf-visual-scan {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.pdf-visual-scan label {
+  gap: 6px;
+  color: var(--muted);
+}
+
+.pdf-visual-scan input {
+  width: 64px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 6px;
+}
+
+.pdf-visual-scan .async-action-slot {
+  display: inline-flex;
 }
 
 .text-reader {

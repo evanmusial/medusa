@@ -66,7 +66,7 @@ RECOMMENDATION_KNOWN_LABELS = {
     "new": "Outside library",
     "in_library": "In library",
     "active_import": "Queued import",
-    "stashed": "Wishlisted",
+    "stashed": "Stashed",
 }
 METHOD_TERMS = {
     "approach",

@@ -496,7 +496,7 @@ function recommendationFamilyLabel(value?: string | null) {
 function recommendationKnownLabel(value?: string | null) {
   if (value === "in_library") return "In library";
   if (value === "active_import") return "Queued import";
-  if (value === "stashed") return "Wishlisted";
+  if (value === "stashed") return "Stashed";
   return "New";
 }
 
@@ -516,7 +516,7 @@ function recommendationStatusPill(item: DocumentRecommendation) {
 
 function recommendationReasonChips(item: DocumentRecommendation) {
   const chips = item.reason_chips?.length ? item.reason_chips : [recommendationFamilyLabel(item.relation_family)];
-  return Array.from(new Set(chips.filter(Boolean))).slice(0, 7);
+  return Array.from(new Set(chips.map((chip) => (chip === "Wishlisted" ? "Stashed" : chip)).filter(Boolean))).slice(0, 7);
 }
 
 function citationText(document: DocumentDetail, kind: CitationKind) {
@@ -4204,7 +4204,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
       }),
     onSuccess: (_stash, item) => {
       stashFeedback.showSuccess(item.id);
-      setNotice(`Wishlisted DOI ${item.doi}`);
+      setNotice(`Stashed DOI ${item.doi}`);
       void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
       void queryClient.invalidateQueries({ queryKey: ["document-recommendations", document.id] });
     },
@@ -4483,14 +4483,20 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                     <AsyncActionSlot feedback={stashFeedback.feedbackFor(item.id)}>
                       <button
                         className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(item.id))}
-                        data-disabled-reason={stashDoi.isPending ? "a DOI stash request is already running." : "this recommendation does not include a DOI to stash."}
-                        data-tooltip="Save this DOI to Stashes as acquisition follow-up."
+                        data-disabled-reason={
+                          stashDoi.isPending
+                            ? "a DOI stash request is already running."
+                            : item.known_status === "stashed"
+                              ? "this DOI is already saved in Stashes."
+                              : "this recommendation does not include a DOI to stash."
+                        }
+                        data-tooltip="Save this DOI to Stashes for later follow-up."
                         disabled={!item.doi || stashDoi.isPending || item.known_status === "stashed"}
                         onClick={() => stashDoi.mutate(item)}
                         type="button"
                       >
                         <Bookmark size={15} />
-                        {item.known_status === "stashed" ? "Wishlisted" : "Wishlist"}
+                        {item.known_status === "stashed" ? "Stashed" : "Stash"}
                       </button>
                     </AsyncActionSlot>
                     <a
@@ -4784,6 +4790,7 @@ function DocumentPanelContent({
   const [pageTextDraft, setPageTextDraft] = useState("");
   const [pageTextError, setPageTextError] = useState<string | null>(null);
   const [pageTextSelection, setPageTextSelection] = useState("");
+  const [visualScanPageDraft, setVisualScanPageDraft] = useState("1");
   const [pdfScrollListenerTick, setPdfScrollListenerTick] = useState(0);
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
   const accessorySummaryTask = preferences?.analysis_model_tasks.find((task) => task.key === ACCESSORY_SUMMARIES_MODEL_KEY);
@@ -4828,6 +4835,7 @@ function DocumentPanelContent({
   const summaryRefreshFeedback = useAsyncActionFeedback();
   const tagRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
+  const visualPageScanFeedback = useAsyncActionFeedback();
   const composition = useQuery({
     queryKey: ["document-composition", document.id],
     queryFn: () => api.documentComposition(document.id),
@@ -4929,6 +4937,20 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setPageTextError(actionFailureMessage("Could not scrub extracted text", error)),
+  });
+  const scanVisualPage = useMutation({
+    mutationFn: (pageNumber: number) => api.scanDocumentVisualPage(document.id, pageNumber),
+    onSuccess: (updatedDocument) => {
+      visualPageScanFeedback.showSuccess();
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    },
+    onError: (error) => {
+      visualPageScanFeedback.showError(actionFailureMessage("Could not scan page visuals", error));
+    },
   });
   const restoreHistoryVersion = useMutation({
     mutationFn: (versionId: string) => api.restoreDocumentVersion(document.id, versionId),
@@ -5146,6 +5168,7 @@ function DocumentPanelContent({
     setPageTextDraft("");
     setPageTextError(null);
     setPageTextSelection("");
+    setVisualScanPageDraft("1");
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
     setCitationRefreshTarget(null);
@@ -5208,6 +5231,13 @@ function DocumentPanelContent({
         : "normalized"
       : currentPage.text_source
     : "";
+  const maxVisualScanPage = Math.max(document.page_count || 0, pages.length ? pages[pages.length - 1].page_number : 0, 1);
+  const parsedVisualScanPage = Number.parseInt(visualScanPageDraft, 10);
+  const visualScanPageNumber = Math.min(
+    maxVisualScanPage,
+    Math.max(1, Number.isFinite(parsedVisualScanPage) ? parsedVisualScanPage : currentPage?.page_number || 1),
+  );
+  const visualScanBusyReason = scanVisualPage.isPending ? "a page visual scan is already running for this document." : "";
   const pageTextBusy = updatePageText.isPending || scrubText.isPending;
   const scrubNeedle = pageTextSelection.trim() ? pageTextSelection : "";
   const scrubMatchCount = useMemo(
@@ -5343,6 +5373,10 @@ function DocumentPanelContent({
     ? "a tag update is already saving for this document."
     : "a tag refresh is already queued or running for this document.";
   const domainUpdateBusyReason = updateDocumentDomains.isPending ? "a domain assignment update is already saving for this document." : "";
+
+  useEffect(() => {
+    if (currentPage) setVisualScanPageDraft(String(currentPage.page_number));
+  }, [currentPage?.page_number]);
 
   useEffect(() => {
     if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
@@ -6362,8 +6396,19 @@ function DocumentPanelContent({
       </section>
     );
   };
+  const commitVisualScanPage = () => {
+    setVisualScanPageDraft(String(visualScanPageNumber));
+    const pageIndex = pages.findIndex((page) => page.page_number === visualScanPageNumber);
+    if (pageIndex >= 0) setReaderPageIndex(pageIndex);
+    return visualScanPageNumber;
+  };
+  const scanCurrentVisualPage = () => {
+    const pageNumber = commitVisualScanPage();
+    scanVisualPage.mutate(pageNumber);
+  };
   const renderPdfPreview = (compare = false) => {
-    const fragment = compare && currentPage ? `#page=${currentPage.page_number}&toolbar=0&navpanes=0` : "#toolbar=0&navpanes=0";
+    const previewPageNumber = compare && currentPage ? currentPage.page_number : visualScanPageNumber;
+    const fragment = previewPageNumber ? `#page=${previewPageNumber}&toolbar=0&navpanes=0` : "#toolbar=0&navpanes=0";
     return (
       <div className={`pdf-preview ${compare ? "compare-pane" : ""}`}>
         <iframe
@@ -6380,8 +6425,45 @@ function DocumentPanelContent({
           }
         />
         <div className="pdf-preview-meta">
-          <FileSearch size={16} />
-          <span>{document.page_count || "?"} pages</span>
+          <div className="pdf-preview-count">
+            <FileSearch size={16} />
+            <span>{document.page_count || "?"} pages</span>
+          </div>
+          <div className="pdf-visual-scan">
+            <label>
+              <span>Page</span>
+              <input
+                aria-label="Page to scan for visual assets"
+                disabled={scanVisualPage.isPending}
+                inputMode="numeric"
+                max={maxVisualScanPage}
+                min={1}
+                onBlur={commitVisualScanPage}
+                onChange={(event) => setVisualScanPageDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitVisualScanPage();
+                  }
+                }}
+                type="number"
+                value={visualScanPageDraft}
+              />
+            </label>
+            <AsyncActionSlot busy={scanVisualPage.isPending} feedback={visualPageScanFeedback.feedback} label="Page visual scan in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button compact", visualPageScanFeedback.feedback, scanVisualPage.isPending)}
+                data-disabled-reason={visualScanBusyReason}
+                data-tooltip="Try a local one-page scan for figures, tables, graphs, photos, diagrams, and other visual assets."
+                disabled={scanVisualPage.isPending}
+                onClick={scanCurrentVisualPage}
+                type="button"
+              >
+                <Image className={scanVisualPage.isPending ? "spin" : ""} size={14} />
+                {scanVisualPage.isPending ? "Scanning" : "Scan Page"}
+              </button>
+            </AsyncActionSlot>
+          </div>
         </div>
       </div>
     );
@@ -11111,7 +11193,288 @@ function BudgetView() {
   );
 }
 
-function UtilitiesView() {
+function DatabaseBackupRestorePanel({
+  backupRuns,
+  preferences,
+}: {
+  backupRuns: BackupRun[];
+  preferences?: AppPreferences;
+}) {
+  const queryClient = useQueryClient();
+  const [selectedBackupUri, setSelectedBackupUri] = useState("");
+  const completedBackupArtifactIdsRef = useRef<Set<string>>(new Set());
+  const completedBackupArtifactIdsInitializedRef = useRef(false);
+  const backupFeedback = useAsyncActionFeedback();
+  const restoreFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const activeBackupRun = backupRuns.find((run) => run.status === "queued" || run.status === "running");
+  const gcsBackupArtifacts = useQuery({
+    queryKey: ["gcs-backups"],
+    queryFn: api.gcsBackups,
+    enabled: Boolean(preferences?.gcs_bucket),
+    refetchInterval: 15000,
+    retry: false,
+  });
+  const backupEstimate = useQuery({
+    queryKey: ["backup-estimate"],
+    queryFn: api.backupEstimate,
+    enabled: Boolean(preferences),
+    refetchInterval: activeBackupRun ? 4000 : 30000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    const artifacts = gcsBackupArtifacts.data || [];
+    if (!artifacts.length && selectedBackupUri) setSelectedBackupUri("");
+    if (!selectedBackupUri && artifacts.length) setSelectedBackupUri(artifacts[0].gcs_uri);
+    if (selectedBackupUri && artifacts.length && !artifacts.some((artifact) => artifact.gcs_uri === selectedBackupUri)) {
+      setSelectedBackupUri(artifacts[0].gcs_uri);
+    }
+  }, [gcsBackupArtifacts.data, selectedBackupUri]);
+
+  useEffect(() => {
+    const completedBackupIds = backupRuns
+      .filter((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri)
+      .map((run) => run.id);
+    const seen = completedBackupArtifactIdsRef.current;
+    const hasNewCompletedBackup = completedBackupIds.some((id) => !seen.has(id));
+    completedBackupIds.forEach((id) => seen.add(id));
+    if (!completedBackupArtifactIdsInitializedRef.current) {
+      completedBackupArtifactIdsInitializedRef.current = true;
+      return;
+    }
+    if (hasNewCompletedBackup) {
+      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
+    }
+  }, [backupRuns, queryClient]);
+
+  const startBackup = useMutation({
+    mutationFn: api.startDatabaseBackup,
+    onSuccess: () => {
+      backupFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
+      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+    },
+    onError: (error) => {
+      backupFeedback.showError(actionFailureMessage("Could not start backup", error));
+    },
+  });
+  const startRestore = useMutation({
+    mutationFn: () => api.startDatabaseRestore(selectedBackupUri),
+    onSuccess: () => {
+      restoreFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
+      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+    },
+    onError: (error) => {
+      restoreFeedback.showError(actionFailureMessage("Could not start restore", error));
+    },
+  });
+
+  const backupArtifacts = gcsBackupArtifacts.data || [];
+  const latestBackupRun = backupRuns[0];
+  const backupHistoryRuns = backupRuns.slice(0, 10);
+  const latestVerifiedBackupRun = backupRuns.find((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri);
+  const verifiedBackupComplete = Boolean(latestVerifiedBackupRun);
+  const verifiedBackupFilename = verifiedBackupComplete ? latestVerifiedBackupRun?.filename || "Complete" : "Waiting";
+  const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestVerifiedBackupRun?.size_bytes) : "";
+  const backupArtifactTotalBytes = backupArtifacts.reduce((total, artifact) => total + Math.max(0, artifact.size_bytes || 0), 0);
+  const backupArtifactTotalSize = formatFileSize(backupArtifactTotalBytes) || "0 B";
+  const backupArtifactCountLabel = gcsBackupArtifacts.isFetching && !backupArtifacts.length
+    ? "Calculating"
+    : backupArtifacts.length
+      ? `${formatMetric(backupArtifacts.length)} ${backupArtifacts.length === 1 ? "backup" : "backups"}`
+      : preferences?.gcs_bucket
+        ? "No backups"
+        : "No bucket";
+  const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
+  const restoreDisabled = Boolean(activeBackupRun) || startRestore.isPending || !selectedBackupUri;
+  const backupDisabledReason = startBackup.isPending
+    ? "a database backup request is already starting."
+    : activeBackupRun
+      ? "a backup or restore is already running."
+      : !preferences?.gcs_bucket
+        ? "a GCS bucket must be saved before browser backups can start."
+        : "";
+  const restoreDisabledReason = startRestore.isPending
+    ? "a database restore request is already starting."
+    : activeBackupRun
+      ? "a backup or restore is already running."
+      : !selectedBackupUri
+        ? "a GCS backup must be selected."
+        : "";
+  const confirmDatabaseRestore = () => {
+    if (!selectedBackupUri) return;
+    const artifact = backupArtifacts.find((item) => item.gcs_uri === selectedBackupUri);
+    const restoreLabel = artifact ? backupArtifactLabel(artifact) : selectedBackupUri;
+    const ok = window.confirm(
+      `Restore the database from ${restoreLabel}?\n\nMedusa will first create and verify a fresh safety backup. The selected restore will only run after that safety backup succeeds.`,
+    );
+    if (ok) startRestore.mutate();
+  };
+
+  return (
+    <section className="utilities-section database-backup-panel">
+      <div className="panel-title-row utility-section-title">
+        <div>
+          <h3>Database Backup & Restore</h3>
+          <span>{activeBackupRun ? `${backupPhaseLabel(activeBackupRun.phase)} - ${activeBackupRun.progress}%` : "Full PostgreSQL backups in GCS"}</span>
+        </div>
+        <Archive size={19} />
+      </div>
+      <div className="backup-restore-grid">
+        <div className="backup-action-block">
+          <div>
+            <strong>Backup Database</strong>
+            <span>{preferences?.gcs_bucket ? `gs://${preferences.gcs_bucket}` : "Save a GCS bucket first"}</span>
+          </div>
+          <AsyncActionSlot busy={startBackup.isPending} feedback={backupFeedback.feedback} label="Database backup request in progress">
+            <button
+              className={asyncFeedbackClass("primary-button", backupFeedback.feedback, startBackup.isPending)}
+              data-disabled-reason={backupDisabledReason}
+              data-tooltip="Start a full PostgreSQL database backup, compress it, upload it to the configured GCS bucket, and verify the checksum."
+              disabled={backupDisabled}
+              onClick={() => startBackup.mutate()}
+              type="button"
+            >
+              <Archive className={startBackup.isPending ? "spin" : ""} size={16} />
+              {startBackup.isPending ? "Starting" : "Backup Database"}
+            </button>
+          </AsyncActionSlot>
+          <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isFetching)}</p>
+        </div>
+        <div className="restore-action-block">
+          <div className="restore-action-heading">
+            <strong>Restore Database</strong>
+            <span>{backupArtifacts.length ? `${backupArtifactCountLabel} in GCS` : preferences?.gcs_bucket ? "No GCS backups found" : "Save a GCS bucket first"}</span>
+          </div>
+          <div className="restore-source-grid">
+            <label>
+              GCS backup
+              <select
+                data-disabled-reason={startRestore.isPending ? "a database restore request is already starting." : "no GCS backup artifacts are available."}
+                data-tooltip="Choose the GCS backup artifact to restore from."
+                disabled={!backupArtifacts.length || startRestore.isPending}
+                onChange={(event) => setSelectedBackupUri(event.target.value)}
+                value={selectedBackupUri}
+              >
+                {backupArtifacts.length ? (
+                  backupArtifacts.map((artifact) => (
+                    <option key={artifact.gcs_uri} value={artifact.gcs_uri}>
+                      {backupArtifactLabel(artifact)}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">No GCS backups found</option>
+                )}
+              </select>
+            </label>
+            <AsyncActionSlot busy={startRestore.isPending} feedback={restoreFeedback.feedback} label="Database restore request in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, startRestore.isPending)}
+                data-disabled-reason={restoreDisabledReason}
+                data-tooltip="Restore the database from the selected GCS backup after Medusa first creates and verifies a fresh safety backup."
+                disabled={restoreDisabled}
+                onClick={confirmDatabaseRestore}
+                type="button"
+              >
+                <RotateCcw className={startRestore.isPending ? "spin" : ""} size={16} />
+                {startRestore.isPending ? "Starting" : "Restore Database"}
+              </button>
+            </AsyncActionSlot>
+          </div>
+        </div>
+      </div>
+      <div className="backup-status-grid">
+        <div>
+          <span>Latest run</span>
+          <strong>{latestBackupRun ? `${latestBackupRun.kind} - ${backupPhaseLabel(latestBackupRun.phase)}` : "None"}</strong>
+        </div>
+        <div>
+          <span>Status</span>
+          <strong>{latestBackupRun ? latestBackupRun.status.replaceAll("_", " ") : "Idle"}</strong>
+        </div>
+        <div>
+          <span>Verified backup</span>
+          <div className="verified-backup-value">
+            <strong>{verifiedBackupFilename}</strong>
+            {verifiedBackupSize ? <small>{verifiedBackupSize}</small> : null}
+          </div>
+        </div>
+        <div>
+          <span>GCS backups</span>
+          <div className="verified-backup-value">
+            <strong>{backupArtifactCountLabel}</strong>
+            <small>{backupArtifactTotalSize} total</small>
+          </div>
+        </div>
+      </div>
+      <div className="backup-history">
+        <div className="backup-history-head">
+          <strong>Recent history</strong>
+          <span>{backupRuns.length ? `${backupHistoryRuns.length} shown from ${backupRuns.length} tracked` : "No backup runs tracked"}</span>
+        </div>
+        <div className="backup-history-list">
+          <div className="backup-history-row header">
+            <span>Run</span>
+            <span>Status</span>
+            <span>When</span>
+            <span>Size</span>
+          </div>
+          {backupHistoryRuns.length ? (
+            backupHistoryRuns.map((run) => (
+              <div className="backup-history-row" key={run.id}>
+                <span className="backup-history-main">
+                  <strong>{backupRunLabel(run)}</strong>
+                  <small title={backupRunDetail(run)}>{backupRunDetail(run)}</small>
+                </span>
+                <StatusPill value={run.status} tone={run.status === "failed" ? "warn" : run.status === "complete" ? "good" : "blue"} />
+                <span>{backupRunTimestamp(run) || backupPhaseLabel(run.phase)}</span>
+                <span>{formatFileSize(run.size_bytes) || `${run.progress}%`}</span>
+              </div>
+            ))
+          ) : (
+            <div className="backup-history-row empty">
+              <span>No backup or restore runs yet</span>
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
+        </div>
+      </div>
+      {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}
+      <div className="legacy-export-actions">
+        <a
+          data-tooltip="Download an authenticated legacy metadata JSON export that omits secrets, password hashes, and session tokens."
+          href="/api/exports/metadata"
+          download
+        >
+          <Download size={15} />
+          Metadata JSON
+        </a>
+        <a
+          data-tooltip="Download an authenticated storage manifest JSON listing original files and derived asset URIs."
+          href="/api/exports/storage-manifest"
+          download
+        >
+          <Download size={15} />
+          Asset manifest
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function UtilitiesView({
+  backupRuns,
+  preferences,
+}: {
+  backupRuns: BackupRun[];
+  preferences?: AppPreferences;
+}) {
   const queryClient = useQueryClient();
   const [lastResult, setLastResult] = useState("");
   const [restartPhase, setRestartPhase] = useState<"idle" | "requesting" | "waiting" | "healthy" | "failed">("idle");
@@ -11458,6 +11821,7 @@ function UtilitiesView() {
             </div>
           </div>
         </section>
+        <DatabaseBackupRestorePanel backupRuns={backupRuns} preferences={preferences} />
         <section className="utilities-section">
           <div className="panel-title-row utility-section-title">
             <div>
@@ -11792,7 +12156,6 @@ function ConcordanceEstimatePanel({
 }
 
 function SettingsView({
-  backupRuns,
   capabilities,
   runs,
   jobs,
@@ -11807,7 +12170,6 @@ function SettingsView({
   onRegisterSave,
   query,
 }: {
-  backupRuns: BackupRun[];
   capabilities: ConcordanceCapability[];
   runs: ConcordanceRun[];
   jobs: ConcordanceJob[];
@@ -11849,32 +12211,12 @@ function SettingsView({
     preferences?.second_pass_processing_enabled ?? true,
   );
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
-  const [selectedBackupUri, setSelectedBackupUri] = useState("");
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
-  const completedBackupArtifactIdsRef = useRef<Set<string>>(new Set());
-  const completedBackupArtifactIdsInitializedRef = useRef(false);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
   const modelPricingFeedback = useAsyncActionFeedback();
   const serviceAccountUploadFeedback = useAsyncActionFeedback();
-  const backupFeedback = useAsyncActionFeedback();
-  const restoreFeedback = useAsyncActionFeedback({ errorMs: 9000 });
-  const activeBackupRun = backupRuns.find((run) => run.status === "queued" || run.status === "running");
-  const gcsBackupArtifacts = useQuery({
-    queryKey: ["gcs-backups"],
-    queryFn: api.gcsBackups,
-    enabled: Boolean(preferences?.gcs_bucket),
-    refetchInterval: 15000,
-    retry: false,
-  });
-  const backupEstimate = useQuery({
-    queryKey: ["backup-estimate"],
-    queryFn: api.backupEstimate,
-    enabled: Boolean(preferences),
-    refetchInterval: activeBackupRun ? 4000 : 30000,
-    retry: false,
-  });
   const documentCacheStatus = useQuery({
     queryKey: ["document-cache-status"],
     queryFn: api.documentCacheStatus,
@@ -11907,32 +12249,6 @@ function SettingsView({
   useEffect(() => {
     setSelectedCapabilityKeys((current) => (current.length ? current : capabilities.map((capability) => capability.key)));
   }, [capabilities]);
-
-  useEffect(() => {
-    const artifacts = gcsBackupArtifacts.data || [];
-    if (!artifacts.length && selectedBackupUri) setSelectedBackupUri("");
-    if (!selectedBackupUri && artifacts.length) setSelectedBackupUri(artifacts[0].gcs_uri);
-    if (selectedBackupUri && artifacts.length && !artifacts.some((artifact) => artifact.gcs_uri === selectedBackupUri)) {
-      setSelectedBackupUri(artifacts[0].gcs_uri);
-    }
-  }, [gcsBackupArtifacts.data, selectedBackupUri]);
-
-  useEffect(() => {
-    const completedBackupIds = backupRuns
-      .filter((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri)
-      .map((run) => run.id);
-    const seen = completedBackupArtifactIdsRef.current;
-    const hasNewCompletedBackup = completedBackupIds.some((id) => !seen.has(id));
-    completedBackupIds.forEach((id) => seen.add(id));
-    if (!completedBackupArtifactIdsInitializedRef.current) {
-      completedBackupArtifactIdsInitializedRef.current = true;
-      return;
-    }
-    if (hasNewCompletedBackup) {
-      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
-      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
-    }
-  }, [backupRuns, queryClient]);
 
   const concordanceScopeData = useMemo(() => {
     if (scopeType === "documents") return { document_ids: selectedDocument ? [selectedDocument.id] : [] };
@@ -12049,30 +12365,6 @@ function SettingsView({
       modelPricingFeedback.showError(actionFailureMessage("Could not refresh models and pricing", error));
     },
   });
-  const startBackup = useMutation({
-    mutationFn: api.startDatabaseBackup,
-    onSuccess: () => {
-      backupFeedback.showSuccess();
-      void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
-      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
-      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
-    },
-    onError: (error) => {
-      backupFeedback.showError(actionFailureMessage("Could not start backup", error));
-    },
-  });
-  const startRestore = useMutation({
-    mutationFn: () => api.startDatabaseRestore(selectedBackupUri),
-    onSuccess: () => {
-      restoreFeedback.showSuccess();
-      void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
-      void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
-      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
-    },
-    onError: (error) => {
-      restoreFeedback.showError(actionFailureMessage("Could not start restore", error));
-    },
-  });
   const latestRun = runs[0];
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
   const progressTotal = latestRun?.total_jobs || 0;
@@ -12181,24 +12473,6 @@ function SettingsView({
     preferences?.google_service_account_name || "None, please upload a service account JSON";
   const serviceAccountStatus =
     preferences?.google_service_account_source === "uploaded" ? "Uploaded" : "Missing";
-  const backupArtifacts = gcsBackupArtifacts.data || [];
-  const latestBackupRun = backupRuns[0];
-  const backupHistoryRuns = backupRuns.slice(0, 10);
-  const latestVerifiedBackupRun = backupRuns.find((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri);
-  const verifiedBackupComplete = Boolean(latestVerifiedBackupRun);
-  const verifiedBackupFilename = verifiedBackupComplete ? latestVerifiedBackupRun?.filename || "Complete" : "Waiting";
-  const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestVerifiedBackupRun?.size_bytes) : "";
-  const backupArtifactTotalBytes = backupArtifacts.reduce((total, artifact) => total + Math.max(0, artifact.size_bytes || 0), 0);
-  const backupArtifactTotalSize = formatFileSize(backupArtifactTotalBytes) || "0 B";
-  const backupArtifactCountLabel = gcsBackupArtifacts.isFetching && !backupArtifacts.length
-    ? "Calculating"
-    : backupArtifacts.length
-      ? `${formatMetric(backupArtifacts.length)} ${backupArtifacts.length === 1 ? "backup" : "backups"}`
-      : preferences?.gcs_bucket
-        ? "No backups"
-        : "No bucket";
-  const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
-  const restoreDisabled = Boolean(activeBackupRun) || startRestore.isPending || !selectedBackupUri;
   const savePreferencesDisabledReason = !preferences
     ? "preferences are still loading."
     : savePreferences.isPending
@@ -12221,32 +12495,9 @@ function SettingsView({
               ? "the selected scope is already current or same-model no-op."
         : "";
   const createRunDisabled = Boolean(createRunDisabledReason);
-  const backupDisabledReason = startBackup.isPending
-    ? "a database backup request is already starting."
-    : activeBackupRun
-      ? "a backup or restore is already running."
-      : !preferences?.gcs_bucket
-        ? "a GCS bucket must be saved before browser backups can start."
-        : "";
-  const restoreDisabledReason = startRestore.isPending
-    ? "a database restore request is already starting."
-    : activeBackupRun
-      ? "a backup or restore is already running."
-      : !selectedBackupUri
-        ? "a GCS backup must be selected."
-        : "";
   const handleServiceAccountUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) uploadServiceAccount.mutate(file);
-  };
-  const confirmDatabaseRestore = () => {
-    if (!selectedBackupUri) return;
-    const artifact = backupArtifacts.find((item) => item.gcs_uri === selectedBackupUri);
-    const restoreLabel = artifact ? backupArtifactLabel(artifact) : selectedBackupUri;
-    const ok = window.confirm(
-      `Restore the database from ${restoreLabel}?\n\nMedusa will first create and verify a fresh safety backup. The selected restore will only run after that safety backup succeeds.`,
-    );
-    if (ok) startRestore.mutate();
   };
   const renderSaveAllButton = (placement: "top" | "bottom") => (
     <AsyncActionSlot feedback={savePreferencesFeedback.feedback}>
@@ -13205,155 +13456,6 @@ function SettingsView({
           )}
         </div>
       </div>
-      <div className="database-backup-panel">
-        <div className="panel-title-row">
-          <div>
-            <h2>Database Backup & Restore</h2>
-            <span>{activeBackupRun ? `${backupPhaseLabel(activeBackupRun.phase)} - ${activeBackupRun.progress}%` : "Full PostgreSQL backups in GCS"}</span>
-          </div>
-          <Archive size={20} />
-        </div>
-        <div className="backup-restore-grid">
-          <div className="backup-action-block">
-            <div>
-              <strong>Backup Database</strong>
-              <span>{preferences?.gcs_bucket ? `gs://${preferences.gcs_bucket}` : "Save a GCS bucket first"}</span>
-            </div>
-            <AsyncActionSlot busy={startBackup.isPending} feedback={backupFeedback.feedback} label="Database backup request in progress">
-              <button
-                className={asyncFeedbackClass("primary-button", backupFeedback.feedback, startBackup.isPending)}
-                data-disabled-reason={backupDisabledReason}
-                data-tooltip="Start a full PostgreSQL database backup, compress it, upload it to the configured GCS bucket, and verify the checksum."
-                disabled={backupDisabled}
-                onClick={() => startBackup.mutate()}
-                type="button"
-              >
-                <Archive className={startBackup.isPending ? "spin" : ""} size={16} />
-                {startBackup.isPending ? "Starting" : "Backup Database"}
-              </button>
-            </AsyncActionSlot>
-            <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isFetching)}</p>
-          </div>
-          <div className="restore-action-block">
-            <div className="restore-action-heading">
-              <strong>Restore Database</strong>
-              <span>{backupArtifacts.length ? `${backupArtifactCountLabel} in GCS` : preferences?.gcs_bucket ? "No GCS backups found" : "Save a GCS bucket first"}</span>
-            </div>
-            <div className="restore-source-grid">
-              <label>
-                GCS backup
-                <select
-                  data-disabled-reason={startRestore.isPending ? "a database restore request is already starting." : "no GCS backup artifacts are available."}
-                  data-tooltip="Choose the GCS backup artifact to restore from."
-                  disabled={!backupArtifacts.length || startRestore.isPending}
-                  onChange={(event) => setSelectedBackupUri(event.target.value)}
-                  value={selectedBackupUri}
-                >
-                  {backupArtifacts.length ? (
-                    backupArtifacts.map((artifact) => (
-                      <option key={artifact.gcs_uri} value={artifact.gcs_uri}>
-                        {backupArtifactLabel(artifact)}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">No GCS backups found</option>
-                  )}
-                </select>
-              </label>
-              <AsyncActionSlot busy={startRestore.isPending} feedback={restoreFeedback.feedback} label="Database restore request in progress">
-                <button
-                  className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, startRestore.isPending)}
-                  data-disabled-reason={restoreDisabledReason}
-                  data-tooltip="Restore the database from the selected GCS backup after Medusa first creates and verifies a fresh safety backup."
-                  disabled={restoreDisabled}
-                  onClick={confirmDatabaseRestore}
-                  type="button"
-                >
-                  <RotateCcw className={startRestore.isPending ? "spin" : ""} size={16} />
-                  {startRestore.isPending ? "Starting" : "Restore Database"}
-                </button>
-              </AsyncActionSlot>
-            </div>
-          </div>
-        </div>
-        <div className="backup-status-grid">
-          <div>
-            <span>Latest run</span>
-            <strong>{latestBackupRun ? `${latestBackupRun.kind} - ${backupPhaseLabel(latestBackupRun.phase)}` : "None"}</strong>
-          </div>
-          <div>
-            <span>Status</span>
-            <strong>{latestBackupRun ? latestBackupRun.status.replaceAll("_", " ") : "Idle"}</strong>
-          </div>
-          <div>
-            <span>Verified backup</span>
-            <div className="verified-backup-value">
-              <strong>{verifiedBackupFilename}</strong>
-              {verifiedBackupSize ? <small>{verifiedBackupSize}</small> : null}
-            </div>
-          </div>
-          <div>
-            <span>GCS backups</span>
-            <div className="verified-backup-value">
-              <strong>{backupArtifactCountLabel}</strong>
-              <small>{backupArtifactTotalSize} total</small>
-            </div>
-          </div>
-        </div>
-        <div className="backup-history">
-          <div className="backup-history-head">
-            <strong>Recent history</strong>
-            <span>{backupRuns.length ? `${backupHistoryRuns.length} shown from ${backupRuns.length} tracked` : "No backup runs tracked"}</span>
-          </div>
-          <div className="backup-history-list">
-            <div className="backup-history-row header">
-              <span>Run</span>
-              <span>Status</span>
-              <span>When</span>
-              <span>Size</span>
-            </div>
-            {backupHistoryRuns.length ? (
-              backupHistoryRuns.map((run) => (
-                <div className="backup-history-row" key={run.id}>
-                  <span className="backup-history-main">
-                    <strong>{backupRunLabel(run)}</strong>
-                    <small title={backupRunDetail(run)}>{backupRunDetail(run)}</small>
-                  </span>
-                  <StatusPill value={run.status} tone={run.status === "failed" ? "warn" : run.status === "complete" ? "good" : "blue"} />
-                  <span>{backupRunTimestamp(run) || backupPhaseLabel(run.phase)}</span>
-                  <span>{formatFileSize(run.size_bytes) || `${run.progress}%`}</span>
-                </div>
-              ))
-            ) : (
-              <div className="backup-history-row empty">
-                <span>No backup or restore runs yet</span>
-                <span />
-                <span />
-                <span />
-              </div>
-            )}
-          </div>
-        </div>
-        {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}
-        <div className="legacy-export-actions">
-          <a
-            data-tooltip="Download an authenticated legacy metadata JSON export that omits secrets, password hashes, and session tokens."
-            href="/api/exports/metadata"
-            download
-          >
-            <Download size={15} />
-            Metadata JSON
-          </a>
-          <a
-            data-tooltip="Download an authenticated storage manifest JSON listing original files and derived asset URIs."
-            href="/api/exports/storage-manifest"
-            download
-          >
-            <Download size={15} />
-            Asset manifest
-          </a>
-        </div>
-      </div>
       <footer className="settings-save-row bottom">{renderSaveAllButton("bottom")}</footer>
     </section>
   );
@@ -13768,7 +13870,7 @@ export default function App() {
           />
         ) : null}
         {activeView === "budget" ? <BudgetView /> : null}
-        {activeView === "utilities" ? <UtilitiesView /> : null}
+        {activeView === "utilities" ? <UtilitiesView backupRuns={backupRuns.data || []} preferences={preferences.data} /> : null}
         {activeView === "settings" ? (
           <SettingsView
             capabilities={concordanceCapabilities.data || []}
@@ -13776,7 +13878,6 @@ export default function App() {
             jobs={concordanceJobs.data || []}
             openaiUsage={openaiUsage.data}
             preferences={preferences.data}
-            backupRuns={backupRuns.data || []}
             projects={projects.data || []}
             query={query}
             runs={concordanceRuns.data || []}

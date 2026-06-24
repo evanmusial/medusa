@@ -668,6 +668,10 @@ class DocumentTextScrub(BaseModel):
     text: str = Field(min_length=1)
 
 
+class DocumentVisualPageScanCreate(BaseModel):
+    page_number: int = Field(ge=1)
+
+
 class ImportBatchOut(ApiModel):
     id: str
     label: str | None = None

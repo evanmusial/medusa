@@ -198,6 +198,11 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${documentId}/pages/${pageId}`, { method: "PATCH", body: JSON.stringify(body) }),
   scrubDocumentText: (documentId: string, body: DocumentTextScrubPayload) =>
     request<DocumentDetail>(`/api/documents/${documentId}/pages/scrub`, { method: "POST", body: JSON.stringify(body) }),
+  scanDocumentVisualPage: (documentId: string, pageNumber: number) =>
+    request<DocumentDetail>(`/api/documents/${documentId}/figures/page-scan`, {
+      method: "POST",
+      body: JSON.stringify({ page_number: pageNumber }),
+    }),
   restoreDocumentVersion: (documentId: string, versionId: string) =>
     request<DocumentDetail>(`/api/documents/${documentId}/versions/${versionId}/restore`, { method: "POST" }),
   refreshDocumentCitation: (id: string) =>

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Document, Figure
 from app.services.extraction import normalize_extracted_text
-from app.services.extraction import extract_pdf_figures
+from app.services.extraction import ExtractedFigure, extract_pdf_figures, extract_pdf_figures_for_page
 from app.services.storage import get_storage_service
 
 
@@ -67,41 +67,103 @@ def enrich_figure_context(document: Document) -> dict[str, int]:
     return {"figures_with_context": context_count, "explicit_mentions": explicit_mentions}
 
 
-def process_document_figures(db: Session, document: Document, pdf_path: Path) -> dict[str, int | list[dict[str, str]]]:
+def _figure_payload(figure: Figure) -> dict[str, object]:
+    return {
+        "id": figure.id,
+        "page_number": figure.page_number,
+        "figure_label": figure.figure_label,
+        "caption": figure.caption,
+        "gist": figure.gist,
+        "asset_uri": figure.asset_uri,
+        "geometry": figure.geometry or {},
+    }
+
+
+def _store_extracted_figures(
+    db: Session,
+    document: Document,
+    extracted: list[ExtractedFigure],
+    *,
+    extraction_scope: str,
+) -> list[Figure]:
     storage = get_storage_service()
-    extracted = extract_pdf_figures(pdf_path)
-    document.figures.clear()
-    db.flush()
+    stored_figures: list[Figure] = []
     for index, figure in enumerate(extracted, start=1):
         key = figure_asset_key(document, figure.page_number, index, figure.extension)
         stored = storage.put_bytes(key, figure.data, figure.content_type)
         label = figure.label or f"Figure {index}"
         caption = figure.caption
         gist = caption or f"Extracted {figure.source.replace('_', ' ')} on page {figure.page_number} ({figure.width}x{figure.height})."
-        db.add(
-            Figure(
-                document_id=document.id,
-                page_number=figure.page_number,
-                figure_label=label,
-                caption=caption,
-                gist=gist,
-                asset_uri=stored.uri,
-                geometry={
-                    "source": figure.source,
-                    "bbox": list(figure.bbox or []),
-                    "width": figure.width,
-                    "height": figure.height,
-                    "content_type": figure.content_type,
-                    "orientation": "landscape" if figure.width >= figure.height else "portrait",
-                },
-            )
+        stored_figure = Figure(
+            document_id=document.id,
+            page_number=figure.page_number,
+            figure_label=label,
+            caption=caption,
+            gist=gist,
+            asset_uri=stored.uri,
+            geometry={
+                "source": figure.source,
+                "bbox": list(figure.bbox or []),
+                "width": figure.width,
+                "height": figure.height,
+                "content_type": figure.content_type,
+                "orientation": "landscape" if figure.width >= figure.height else "portrait",
+                "extraction_scope": extraction_scope,
+            },
         )
+        document.figures.append(stored_figure)
+        stored_figures.append(stored_figure)
+    return stored_figures
+
+
+def process_document_figures(db: Session, document: Document, pdf_path: Path) -> dict[str, int | list[dict[str, str]]]:
+    extracted = extract_pdf_figures(pdf_path)
+    document.figures.clear()
+    db.flush()
+    _store_extracted_figures(db, document, extracted, extraction_scope="document")
     db.flush()
     context = enrich_figure_context(document)
     warnings: list[dict[str, str]] = []
     if not extracted and document.page_count:
         warnings.append({"code": "no_visual_assets_found", "message": "No extractable figure, chart, photo, or diagram regions were found."})
     return {"figures": len(extracted), **context, "audit_warnings": warnings}
+
+
+def process_document_figures_page(db: Session, document: Document, pdf_path: Path, page_number: int) -> dict[str, object]:
+    extracted = extract_pdf_figures_for_page(pdf_path, page_number)
+    existing_page_figures = [figure for figure in document.figures if figure.page_number == page_number]
+    before = [_figure_payload(figure) for figure in existing_page_figures]
+    replaced = 0
+    if extracted:
+        for figure in existing_page_figures:
+            document.figures.remove(figure)
+            db.delete(figure)
+        replaced = len(existing_page_figures)
+        db.flush()
+        stored = _store_extracted_figures(db, document, extracted, extraction_scope="page_scan")
+        db.flush()
+        created = [_figure_payload(figure) for figure in stored]
+    else:
+        created = []
+    context = enrich_figure_context(document)
+    warnings: list[dict[str, str]] = []
+    if not extracted:
+        warnings.append(
+            {
+                "code": "no_visual_assets_found_on_page",
+                "message": f"No extractable figure, chart, photo, diagram, or table-like visual regions were found on page {page_number}.",
+            }
+        )
+    return {
+        "page_number": page_number,
+        "figures": len(extracted),
+        "replaced_figures": replaced,
+        "preserved_existing": bool(existing_page_figures and not extracted),
+        "created_figures": created,
+        "replaced_page_figures": before if replaced else [],
+        **context,
+        "audit_warnings": warnings,
+    }
 
 
 def process_document_figures_from_storage(db: Session, document: Document) -> dict[str, int | list[dict[str, str]]]:
@@ -113,3 +175,20 @@ def process_document_figures_from_storage(db: Session, document: Document) -> di
         handle.write(data)
         handle.flush()
         return process_document_figures(db, document, Path(handle.name))
+
+
+def process_document_figures_page_from_storage(db: Session, document: Document, page_number: int) -> dict[str, object]:
+    if not document.gcs_uri:
+        return {
+            "page_number": page_number,
+            "figures": 0,
+            "replaced_figures": 0,
+            "preserved_existing": False,
+            "audit_warnings": [{"code": "original_unavailable", "message": "The original PDF is unavailable for page visual scanning."}],
+        }
+    storage = get_storage_service()
+    data = storage.get_bytes(document.gcs_uri)
+    with NamedTemporaryFile(suffix=".pdf") as handle:
+        handle.write(data)
+        handle.flush()
+        return process_document_figures_page(db, document, Path(handle.name), page_number)

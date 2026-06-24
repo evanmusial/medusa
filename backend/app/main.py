@@ -88,6 +88,7 @@ from app.schemas import (
     DocumentRecommendationOut,
     DocumentRecommendationRefreshOut,
     DocumentTextScrub,
+    DocumentVisualPageScanCreate,
     DoiStashCreate,
     DoiStashImportOut,
     DoiStashOut,
@@ -179,9 +180,11 @@ from app.services.haproxy_stats import haproxy_stats_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.import_sources import ImportSourceError, prepare_import_source, probe_import_source
 from app.services.ai import get_ai_service
+from app.services.figures import process_document_figures_page_from_storage
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
+    log_event,
     refresh_import_batch_progress,
 )
 from app.services.preferences import (
@@ -3074,6 +3077,79 @@ def figure_asset(
         raise HTTPException(status_code=404, detail="Figure asset is unavailable") from exc
     content_type = mimetypes.guess_type(figure.asset_uri)[0] or "application/octet-stream"
     return FastAPIResponse(content=data, media_type=content_type)
+
+
+@app.post("/api/documents/{document_id}/figures/page-scan", response_model=DocumentDetail)
+def scan_document_page_visuals(
+    document_id: str,
+    payload: DocumentVisualPageScanCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    max_page = document.page_count or max((page.page_number for page in document.pages), default=0)
+    if max_page and payload.page_number > max_page:
+        raise HTTPException(status_code=400, detail=f"Page {payload.page_number} is outside this document's {max_page} pages.")
+
+    before = document_correction_snapshot(document)
+    try:
+        result = process_document_figures_page_from_storage(db, document, payload.page_number)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Could not scan page {payload.page_number} for visuals: {exc}") from exc
+
+    evidence = dict(document.metadata_evidence or {})
+    visual_scans = list(evidence.get("visual_page_scans") or [])
+    visual_scans.append(
+        {
+            "page_number": payload.page_number,
+            "figures": result.get("figures", 0),
+            "replaced_figures": result.get("replaced_figures", 0),
+            "preserved_existing": result.get("preserved_existing", False),
+            "warnings": result.get("audit_warnings", []),
+            "scanned_at": utc_now().isoformat(),
+            "source": "reader_page_scan",
+        }
+    )
+    evidence["visual_page_scans"] = visual_scans[-25:]
+    document.metadata_evidence = evidence
+    document.search_text = rebuild_document_search_text(document)
+    log_event(
+        db,
+        job=None,
+        document=document,
+        event_type="visual_page_scan",
+        message=f"Scanned page {payload.page_number} for figures, tables, graphs, photos, and other visual assets.",
+        payload=result,
+    )
+    db.flush()
+    record_document_version(
+        db,
+        document=document,
+        change_note=f"Scanned page {payload.page_number} for visuals",
+        changed_fields={"figures", "metadata_evidence", "search_text"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"visual_page_scan": result},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=f"Scanned page {payload.page_number} for visuals",
+        metadata={
+            "operation": "visual_page_scan",
+            "page_number": payload.page_number,
+            "figures": result.get("figures", 0),
+            "replaced_figures": result.get("replaced_figures", 0),
+            "preserved_existing": result.get("preserved_existing", False),
+        },
+    )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
 
 
 @app.patch("/api/documents/{document_id}", response_model=DocumentDetail)
