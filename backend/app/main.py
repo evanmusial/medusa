@@ -88,11 +88,14 @@ from app.schemas import (
     DocumentRecommendationOut,
     DocumentRecommendationRefreshOut,
     DocumentTextScrub,
+    DocumentVisualPageScanApplyCreate,
     DocumentVisualPageScanCreate,
+    DocumentVisualPageScanReviewOut,
     DoiStashCreate,
     DoiStashImportOut,
     DoiStashOut,
     DocumentSummary,
+    FigurePatch,
     DomainCreate,
     DomainDeleteOut,
     DomainOut,
@@ -186,7 +189,7 @@ from app.services.haproxy_stats import haproxy_stats_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.import_sources import ImportSourceError, prepare_import_source, probe_import_source
 from app.services.ai import get_ai_service
-from app.services.figures import process_document_figures_page_from_storage
+from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
@@ -3108,6 +3111,12 @@ def delete_annotation(
     return {"status": "deleted"}
 
 
+def _clean_figure_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.strip() or None
+
+
 @app.get("/api/figures/{figure_id}/asset")
 def figure_asset(
     figure_id: str,
@@ -3125,10 +3134,161 @@ def figure_asset(
     return FastAPIResponse(content=data, media_type=content_type)
 
 
-@app.post("/api/documents/{document_id}/figures/page-scan", response_model=DocumentDetail)
+@app.patch("/api/figures/{figure_id}", response_model=DocumentDetail)
+def patch_figure(
+    figure_id: str,
+    payload: FigurePatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    figure = db.get(Figure, figure_id)
+    document = db.get(Document, figure.document_id) if figure else None
+    if not figure or not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Figure not found")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        return document_detail_out(document, db)
+
+    before = document_correction_snapshot(document)
+    changed = False
+    for field in ("figure_label", "caption", "gist"):
+        if field not in updates:
+            continue
+        next_value = _clean_figure_text(updates[field])
+        if getattr(figure, field) != next_value:
+            setattr(figure, field, next_value)
+            changed = True
+
+    if not changed:
+        return document_detail_out(document, db)
+
+    document.search_text = rebuild_document_search_text(document)
+    log_event(
+        db,
+        job=None,
+        document=document,
+        event_type="figure_update",
+        message=f"Updated extracted figure {figure.figure_label or figure.id}.",
+        payload={
+            "figure_id": figure.id,
+            "page_number": figure.page_number,
+            "figure_label": figure.figure_label,
+            "caption": figure.caption,
+            "gist": figure.gist,
+        },
+    )
+    db.flush()
+    record_document_version(
+        db,
+        document=document,
+        change_note=f"Updated extracted figure {figure.figure_label or figure.id}",
+        changed_fields={"figures", "search_text"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"figure_update": {"figure_id": figure.id}},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=f"Updated extracted figure {figure.figure_label or figure.id}",
+        metadata={"operation": "figure_update", "figure_id": figure.id, "page_number": figure.page_number},
+    )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.delete("/api/figures/{figure_id}", response_model=DocumentDetail)
+def delete_figure(
+    figure_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    figure = db.get(Figure, figure_id)
+    document = db.get(Document, figure.document_id) if figure else None
+    if not figure or not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Figure not found")
+
+    before = document_correction_snapshot(document)
+    deleted_figure = {
+        "id": figure.id,
+        "page_number": figure.page_number,
+        "figure_label": figure.figure_label,
+        "caption": figure.caption,
+        "gist": figure.gist,
+        "asset_uri": figure.asset_uri,
+        "geometry": figure.geometry,
+    }
+    asset_uri = figure.asset_uri
+    label = figure.figure_label or f"Page {figure.page_number or '?'} figure"
+    if figure in document.figures:
+        document.figures.remove(figure)
+    db.delete(figure)
+    db.flush()
+    document.search_text = rebuild_document_search_text(document)
+    log_event(
+        db,
+        job=None,
+        document=document,
+        event_type="figure_delete",
+        message=f"Deleted extracted figure {label}.",
+        payload={"figure": deleted_figure},
+    )
+    db.flush()
+    record_document_version(
+        db,
+        document=document,
+        change_note=f"Deleted extracted figure {label}",
+        changed_fields={"figures", "search_text"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"figure_delete": {"figure": deleted_figure}},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=f"Deleted extracted figure {label}",
+        metadata={"operation": "figure_delete", "figure": deleted_figure},
+    )
+    db.commit()
+    if asset_uri:
+        try:
+            get_storage_service().delete_uri(asset_uri)
+        except Exception:
+            pass
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.post("/api/documents/{document_id}/figures/page-scan", response_model=DocumentVisualPageScanReviewOut)
 def scan_document_page_visuals(
     document_id: str,
     payload: DocumentVisualPageScanCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    max_page = document.page_count or max((page.page_number for page in document.pages), default=0)
+    if max_page and payload.page_number > max_page:
+        raise HTTPException(status_code=400, detail=f"Page {payload.page_number} is outside this document's {max_page} pages.")
+
+    try:
+        result = preview_document_figures_page_from_storage(db, document, payload.page_number)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Could not scan page {payload.page_number} for visuals: {exc}") from exc
+
+    return {"document_id": document.id, **result}
+
+
+@app.post("/api/documents/{document_id}/figures/page-scan/apply", response_model=DocumentDetail)
+def apply_document_page_visual_scan(
+    document_id: str,
+    payload: DocumentVisualPageScanApplyCreate,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentDetail:
@@ -3140,12 +3300,16 @@ def scan_document_page_visuals(
     if max_page and payload.page_number > max_page:
         raise HTTPException(status_code=400, detail=f"Page {payload.page_number} is outside this document's {max_page} pages.")
 
+    candidates = [candidate.model_dump() for candidate in payload.candidates if candidate.page_number == payload.page_number]
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Select at least one visual candidate to keep.")
+
     before = document_correction_snapshot(document)
     try:
-        result = process_document_figures_page_from_storage(db, document, payload.page_number)
+        result = apply_document_figures_page_candidates(db, document, payload.page_number, candidates)
     except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail=f"Could not scan page {payload.page_number} for visuals: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Could not keep page {payload.page_number} visual candidates: {exc}") from exc
 
     evidence = dict(document.metadata_evidence or {})
     visual_scans = list(evidence.get("visual_page_scans") or [])
@@ -3158,6 +3322,7 @@ def scan_document_page_visuals(
             "warnings": result.get("audit_warnings", []),
             "scanned_at": utc_now().isoformat(),
             "source": "reader_page_scan",
+            "review_status": "kept",
         }
     )
     evidence["visual_page_scans"] = visual_scans[-25:]

@@ -37,6 +37,7 @@ import type {
   DomainReorderItem,
   DomainUpdatePayload,
   DuplicateImportStrategy,
+  FigurePatchPayload,
   HAProxyStatsStatus,
   ImportDuplicateCheck,
   ImportJob,
@@ -59,6 +60,8 @@ import type {
   TagOptimizationResult,
   TagOperationResult,
   User,
+  VisualScanCandidate,
+  VisualScanReview,
 } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -199,10 +202,18 @@ export const api = {
   scrubDocumentText: (documentId: string, body: DocumentTextScrubPayload) =>
     request<DocumentDetail>(`/api/documents/${documentId}/pages/scrub`, { method: "POST", body: JSON.stringify(body) }),
   scanDocumentVisualPage: (documentId: string, pageNumber: number) =>
-    request<DocumentDetail>(`/api/documents/${documentId}/figures/page-scan`, {
+    request<VisualScanReview>(`/api/documents/${documentId}/figures/page-scan`, {
       method: "POST",
       body: JSON.stringify({ page_number: pageNumber }),
     }),
+  applyDocumentVisualPageScan: (documentId: string, pageNumber: number, candidates: VisualScanCandidate[]) =>
+    request<DocumentDetail>(`/api/documents/${documentId}/figures/page-scan/apply`, {
+      method: "POST",
+      body: JSON.stringify({ page_number: pageNumber, candidates }),
+    }),
+  updateFigure: (figureId: string, body: FigurePatchPayload) =>
+    request<DocumentDetail>(`/api/figures/${figureId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteFigure: (figureId: string) => request<DocumentDetail>(`/api/figures/${figureId}`, { method: "DELETE" }),
   restoreDocumentVersion: (documentId: string, versionId: string) =>
     request<DocumentDetail>(`/api/documents/${documentId}/versions/${versionId}/restore`, { method: "POST" }),
   refreshDocumentCitation: (id: string) =>

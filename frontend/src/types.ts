@@ -646,6 +646,33 @@ export type Figure = {
   geometry: Record<string, unknown>;
 };
 
+export type FigurePatchPayload = {
+  figure_label?: string | null;
+  caption?: string | null;
+  gist?: string | null;
+};
+
+export type VisualScanCandidate = {
+  candidate_id: string;
+  page_number: number;
+  figure_label?: string | null;
+  caption?: string | null;
+  gist?: string | null;
+  geometry: Record<string, unknown>;
+  image_data_url: string;
+};
+
+export type VisualScanReview = {
+  document_id: string;
+  page_number: number;
+  figures: number;
+  replaced_figures: number;
+  preserved_existing: boolean;
+  candidates: VisualScanCandidate[];
+  replaced_page_figures: Figure[];
+  audit_warnings: Array<Record<string, unknown>>;
+};
+
 export type DocumentPage = {
   id: string;
   page_number: number;

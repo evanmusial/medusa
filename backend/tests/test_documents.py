@@ -592,6 +592,103 @@ def test_figure_asset_uses_fast_storage_read(monkeypatch, tmp_path):
     assert calls == [("gs://bucket/figures/figure-1.png", {"timeout": 5, "retry": None})]
 
 
+def test_patch_figure_updates_search_and_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import patch_figure
+    from app.models import Document, DocumentVersion, Figure
+    from app.schemas import FigurePatch
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Paper with figure corrections",
+            original_filename="paper.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.flush()
+        figure = Figure(
+            document_id=document.id,
+            page_number=2,
+            figure_label="Figure 9",
+            caption="Wrong caption.",
+            gist="Wrong description.",
+            asset_uri="gs://bucket/figures/figure-9.png",
+        )
+        db.add(figure)
+        db.commit()
+
+        updated = patch_figure(
+            figure.id,
+            FigurePatch(figure_label="Figure 2", caption="Corrected caption.", gist="Corrected chart description."),
+            object(),
+            db,
+        )
+        versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).all()
+
+        assert updated.figures[0].figure_label == "Figure 2"
+        assert updated.figures[0].caption == "Corrected caption."
+        assert updated.figures[0].gist == "Corrected chart description."
+        assert "Corrected chart description" in (document.search_text or "")
+        assert len(versions) == 1
+        assert versions[0].change_note == "Updated extracted figure Figure 2"
+        assert "figures" in versions[0].metadata_snapshot["changed_fields"]
+        assert versions[0].metadata_snapshot["before"]["figures"][0]["figure_label"] == "Figure 9"
+        assert versions[0].metadata_snapshot["after"]["figures"][0]["figure_label"] == "Figure 2"
+
+
+def test_delete_figure_removes_row_and_records_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import delete_figure
+    from app.models import Document, DocumentVersion, Figure
+
+    deleted_assets = []
+
+    class FakeStorage:
+        def delete_uri(self, uri):
+            deleted_assets.append(uri)
+            return True
+
+    monkeypatch.setattr("app.main.get_storage_service", lambda: FakeStorage())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Paper with disposable figures",
+            original_filename="paper.pdf",
+            checksum_sha256="b" * 64,
+            search_text="Paper with disposable figures Figure 4 Extra extraction.",
+            processing_status="ready",
+        )
+        db.add(document)
+        db.flush()
+        figure = Figure(
+            document_id=document.id,
+            page_number=4,
+            figure_label="Figure 4",
+            caption="Extra extraction.",
+            asset_uri="gs://bucket/figures/figure-4.png",
+        )
+        db.add(figure)
+        db.commit()
+
+        updated = delete_figure(figure.id, object(), db)
+        versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).all()
+
+        assert updated.figures == []
+        assert db.query(Figure).count() == 0
+        assert deleted_assets == ["gs://bucket/figures/figure-4.png"]
+        assert "Extra extraction" not in (document.search_text or "")
+        assert len(versions) == 1
+        assert versions[0].change_note == "Deleted extracted figure Figure 4"
+        assert versions[0].metadata_snapshot["figure_delete"]["figure"]["figure_label"] == "Figure 4"
+
+
 def test_document_detail_schema_includes_parsed_pages(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

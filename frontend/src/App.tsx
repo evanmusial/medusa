@@ -122,6 +122,7 @@ import type {
   DuplicateImportStrategy,
   HAProxyServiceStat,
   HAProxyStatsStatus,
+  Figure as FigureRecord,
   ImportDuplicateCheck,
   ImportDuplicateFile,
   ImportJob,
@@ -144,6 +145,8 @@ import type {
   TagRelationshipSuggestion,
   TagStatusSuggestion,
   TagOptimizationSuggestion,
+  VisualScanCandidate,
+  VisualScanReview,
 } from "./types";
 
 type View = "library" | "domains" | "projects" | "tags" | "queue" | "notes" | "import" | "stashes" | "budget" | "utilities" | "settings";
@@ -4059,6 +4062,12 @@ type DocumentDraft = {
   attributes: AttributeDraft[];
 };
 
+type FigureEditDraft = {
+  figure_label: string;
+  caption: string;
+  gist: string;
+};
+
 type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
 type CitationRefreshTarget = CitationKind | "doi";
@@ -4100,6 +4109,14 @@ function draftFromDocument(document: DocumentDetail): DocumentDraft {
       key: attribute.definition.name,
       value: attributeDisplayValue(attribute.value),
     })),
+  };
+}
+
+function figureDraftFromFigure(figure: FigureRecord): FigureEditDraft {
+  return {
+    figure_label: figure.figure_label || "",
+    caption: figure.caption || "",
+    gist: figure.gist || "",
   };
 }
 
@@ -4793,6 +4810,8 @@ function DocumentPanelContent({
   const [pageTextSelection, setPageTextSelection] = useState("");
   const [visualScanPageDraft, setVisualScanPageDraft] = useState("1");
   const [pdfPreviewPageTarget, setPdfPreviewPageTarget] = useState(1);
+  const [visualScanReview, setVisualScanReview] = useState<VisualScanReview | null>(null);
+  const [selectedVisualScanCandidateIds, setSelectedVisualScanCandidateIds] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState<DocumentDraft>(() => draftFromDocument(document));
   const accessorySummaryTask = preferences?.analysis_model_tasks.find((task) => task.key === ACCESSORY_SUMMARIES_MODEL_KEY);
   const accessorySummaryDefaultModel =
@@ -4803,6 +4822,9 @@ function DocumentPanelContent({
   const [trackedAccessorySummaryId, setTrackedAccessorySummaryId] = useState<string | null>(null);
   const [accessoryTitleDrafts, setAccessoryTitleDrafts] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [editingFigureId, setEditingFigureId] = useState<string | null>(null);
+  const [figureDrafts, setFigureDrafts] = useState<Record<string, FigureEditDraft>>({});
+  const [figureEditError, setFigureEditError] = useState<string | null>(null);
   const [editingDoi, setEditingDoi] = useState(false);
   const [doiDraft, setDoiDraft] = useState(document.doi || "");
   const [doiEditError, setDoiEditError] = useState<string | null>(null);
@@ -4941,8 +4963,24 @@ function DocumentPanelContent({
   });
   const scanVisualPage = useMutation({
     mutationFn: (pageNumber: number) => api.scanDocumentVisualPage(document.id, pageNumber),
+    onSuccess: (review) => {
+      visualPageScanFeedback.showSuccess();
+      setVisualScanReview(review);
+      setSelectedVisualScanCandidateIds(new Set(review.candidates.map((candidate) => candidate.candidate_id)));
+    },
+    onError: (error) => {
+      setVisualScanReview(null);
+      setSelectedVisualScanCandidateIds(new Set());
+      visualPageScanFeedback.showError(actionFailureMessage("Could not scan page visuals", error));
+    },
+  });
+  const applyVisualScan = useMutation({
+    mutationFn: ({ pageNumber, candidates }: { pageNumber: number; candidates: VisualScanCandidate[] }) =>
+      api.applyDocumentVisualPageScan(document.id, pageNumber, candidates),
     onSuccess: (updatedDocument) => {
       visualPageScanFeedback.showSuccess();
+      setVisualScanReview(null);
+      setSelectedVisualScanCandidateIds(new Set());
       queryClient.setQueryData(["document", document.id], updatedDocument);
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
@@ -4950,7 +4988,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
     },
     onError: (error) => {
-      visualPageScanFeedback.showError(actionFailureMessage("Could not scan page visuals", error));
+      visualPageScanFeedback.showError(actionFailureMessage("Could not keep page visuals", error));
     },
   });
   const restoreHistoryVersion = useMutation({
@@ -5118,6 +5156,39 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
   });
+  const updateFigure = useMutation({
+    mutationFn: ({ figureId, draft }: { figureId: string; draft: FigureEditDraft }) =>
+      api.updateFigure(figureId, {
+        figure_label: draft.figure_label.trim() || null,
+        caption: draft.caption.trim() || null,
+        gist: draft.gist.trim() || null,
+      }),
+    onSuccess: (updatedDocument) => {
+      setEditingFigureId(null);
+      setFigureDrafts({});
+      setFigureEditError(null);
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    },
+    onError: (error) => setFigureEditError(actionFailureMessage("Could not save figure", error)),
+  });
+  const deleteFigure = useMutation({
+    mutationFn: (figureId: string) => api.deleteFigure(figureId),
+    onSuccess: (updatedDocument) => {
+      setEditingFigureId(null);
+      setFigureDrafts({});
+      setFigureEditError(null);
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    },
+    onError: (error) => setFigureEditError(actionFailureMessage("Could not delete figure", error)),
+  });
   const createAccessorySummary = useMutation({
     mutationFn: () =>
       api.createAccessorySummary(document.id, {
@@ -5154,6 +5225,9 @@ function DocumentPanelContent({
     setAccessoryTitleDrafts({});
     setTrackedAccessorySummaryId(null);
     setSaveError(null);
+    setEditingFigureId(null);
+    setFigureDrafts({});
+    setFigureEditError(null);
     setEditingDoi(false);
     setDoiDraft(document.doi || "");
     setDoiEditError(null);
@@ -5171,6 +5245,8 @@ function DocumentPanelContent({
     setPageTextSelection("");
     setVisualScanPageDraft("1");
     setPdfPreviewPageTarget(1);
+    setVisualScanReview(null);
+    setSelectedVisualScanCandidateIds(new Set());
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
     setCitationRefreshTarget(null);
@@ -5240,7 +5316,11 @@ function DocumentPanelContent({
     Math.max(1, Number.isFinite(parsedVisualScanPage) ? parsedVisualScanPage : currentPage?.page_number || 1),
   );
   const pdfPageNumbers = useMemo(() => Array.from({ length: maxVisualScanPage }, (_, index) => index + 1), [maxVisualScanPage]);
-  const visualScanBusyReason = scanVisualPage.isPending ? "a page visual scan is already running for this document." : "";
+  const visualScanBusyReason = scanVisualPage.isPending
+    ? "a page visual scan is already running for this document."
+    : applyVisualScan.isPending
+      ? "selected page visual candidates are already being kept."
+      : "";
   const pageTextBusy = updatePageText.isPending || scrubText.isPending;
   const scrubNeedle = pageTextSelection.trim() ? pageTextSelection : "";
   const scrubMatchCount = useMemo(
@@ -5612,6 +5692,10 @@ function DocumentPanelContent({
     window.requestAnimationFrame(syncVisualScanPageFromPdf);
   }, [document.id, pdfPreviewPageTarget, readerMode, syncVisualScanPageFromPdf]);
 
+  useEffect(() => {
+    if (readerMode === "compare" && currentPage) setPdfPreviewPageTarget(currentPage.page_number);
+  }, [currentPage?.page_number, readerMode]);
+
   const copyFullText = () => {
     if (fullText) void copyToClipboard("full-text", fullText);
   };
@@ -5826,6 +5910,38 @@ function DocumentPanelContent({
     }));
   };
 
+  const figureEditBusy = updateFigure.isPending || deleteFigure.isPending;
+  const startFigureEdit = (figure: FigureRecord) => {
+    if (figureEditBusy) return;
+    setFigureEditError(null);
+    setEditingFigureId(figure.id);
+    setFigureDrafts((current) => ({ ...current, [figure.id]: figureDraftFromFigure(figure) }));
+  };
+  const cancelFigureEdit = () => {
+    if (figureEditBusy) return;
+    setEditingFigureId(null);
+    setFigureEditError(null);
+  };
+  const updateFigureDraft = (figureId: string, field: keyof FigureEditDraft, value: string) => {
+    setFigureDrafts((current) => ({
+      ...current,
+      [figureId]: {
+        ...(current[figureId] || { figure_label: "", caption: "", gist: "" }),
+        [field]: value,
+      },
+    }));
+  };
+  const saveFigureEdit = (figure: FigureRecord) => {
+    if (figureEditBusy) return;
+    updateFigure.mutate({ figureId: figure.id, draft: figureDrafts[figure.id] || figureDraftFromFigure(figure) });
+  };
+  const deleteExtractedFigure = (figure: FigureRecord) => {
+    if (figureEditBusy) return;
+    const label = figure.figure_label || `page ${figure.page_number || "?"} figure`;
+    if (!window.confirm(`Delete extracted ${label}?`)) return;
+    deleteFigure.mutate(figure.id);
+  };
+
   const submitAccessorySummary = () => {
     if (!accessoryPrompt.trim() || accessorySummaryBusy) return;
     createAccessorySummary.mutate();
@@ -5839,6 +5955,7 @@ function DocumentPanelContent({
   useEscapeLayer(editing && !updateDocument.isPending, () => setEditing(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(pageTextEditing && !pageTextBusy, cancelPageTextEdit, ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(Boolean(editingCitation) && !updateCitation.isPending, cancelCitationEdit, ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(Boolean(editingFigureId) && !figureEditBusy, cancelFigureEdit, ESCAPE_PRIORITY_EXPANDED);
 
   const saveAccessorySummaryTitle = (summary: AccessorySummary) => {
     const title = accessoryTitleDrafts[summary.id] ?? summary.title ?? "";
@@ -6443,6 +6560,145 @@ function DocumentPanelContent({
       </section>
     );
   };
+  const selectedVisualScanCandidates = visualScanReview
+    ? visualScanReview.candidates.filter((candidate) => selectedVisualScanCandidateIds.has(candidate.candidate_id))
+    : [];
+  const selectedVisualScanCount = selectedVisualScanCandidates.length;
+  const visualScanCandidateBoxStyle = (candidate: VisualScanCandidate): CSSProperties | undefined => {
+    const bbox = candidate.geometry.bbox;
+    const pageWidth = Number(candidate.geometry.page_width || 0);
+    const pageHeight = Number(candidate.geometry.page_height || 0);
+    if (!Array.isArray(bbox) || bbox.length < 4 || pageWidth <= 0 || pageHeight <= 0) return undefined;
+    const [x0, y0, x1, y1] = bbox.map((value) => Number(value));
+    if (![x0, y0, x1, y1].every(Number.isFinite)) return undefined;
+    return {
+      left: `${Math.max(0, Math.min(100, (x0 / pageWidth) * 100))}%`,
+      top: `${Math.max(0, Math.min(100, (y0 / pageHeight) * 100))}%`,
+      width: `${Math.max(0, Math.min(100, ((x1 - x0) / pageWidth) * 100))}%`,
+      height: `${Math.max(0, Math.min(100, ((y1 - y0) / pageHeight) * 100))}%`,
+    };
+  };
+  const toggleVisualScanCandidate = (candidateId: string) => {
+    setSelectedVisualScanCandidateIds((current) => {
+      const next = new Set(current);
+      if (next.has(candidateId)) next.delete(candidateId);
+      else next.add(candidateId);
+      return next;
+    });
+  };
+  const keepSelectedVisualScanCandidates = () => {
+    if (!visualScanReview || selectedVisualScanCandidates.length <= 0 || applyVisualScan.isPending) return;
+    applyVisualScan.mutate({ pageNumber: visualScanReview.page_number, candidates: selectedVisualScanCandidates });
+  };
+  const discardVisualScanReview = () => {
+    if (applyVisualScan.isPending) return;
+    setVisualScanReview(null);
+    setSelectedVisualScanCandidateIds(new Set());
+  };
+  const renderVisualScanReview = () => {
+    if (!visualScanReview) return null;
+    const warnings = visualScanReview.audit_warnings
+      .map((warning) => String(warning.message || warning.code || "Page scan warning"))
+      .filter(Boolean);
+    return (
+      <section className="visual-scan-review">
+        <div className="visual-scan-review-header">
+          <div>
+            <h3>Page {visualScanReview.page_number} visual candidates</h3>
+            <p>
+              {visualScanReview.candidates.length
+                ? `${visualScanReview.candidates.length} candidate${visualScanReview.candidates.length === 1 ? "" : "s"} found. Keeping selected candidates replaces existing page ${visualScanReview.page_number} figures.`
+                : "No new visual candidates were found."}
+            </p>
+          </div>
+          <div className="visual-scan-review-actions">
+            <button
+              className="secondary-button compact"
+              data-disabled-reason={
+                applyVisualScan.isPending
+                  ? "selected page visual candidates are already being kept."
+                  : selectedVisualScanCount <= 0
+                    ? "select at least one candidate to keep."
+                    : ""
+              }
+              data-tooltip="Keep the selected candidates as this page's extracted figures and discard the rest."
+              disabled={applyVisualScan.isPending || selectedVisualScanCount <= 0}
+              onClick={keepSelectedVisualScanCandidates}
+              type="button"
+            >
+              <CheckCircle2 className={applyVisualScan.isPending ? "spin" : ""} size={14} />
+              {applyVisualScan.isPending ? "Keeping" : `Keep selected (${selectedVisualScanCount})`}
+            </button>
+            <button
+              className="secondary-button compact"
+              data-disabled-reason="selected page visual candidates are already being kept."
+              data-tooltip="Discard these scan candidates without changing the document."
+              disabled={applyVisualScan.isPending}
+              onClick={discardVisualScanReview}
+              type="button"
+            >
+              <X size={14} />
+              Discard
+            </button>
+          </div>
+        </div>
+        {warnings.length ? (
+          <div className="visual-scan-warnings">
+            {warnings.map((warning) => (
+              <span key={warning}>{warning}</span>
+            ))}
+          </div>
+        ) : null}
+        {visualScanReview.candidates.length ? (
+          <div className="visual-scan-review-body">
+            <div className="visual-scan-page-map">
+              <img
+                alt={`Page ${visualScanReview.page_number} visual scan map`}
+                src={`/api/documents/${document.id}/pages/${visualScanReview.page_number}/image`}
+              />
+              {visualScanReview.candidates.map((candidate) => {
+                const boxStyle = visualScanCandidateBoxStyle(candidate);
+                if (!boxStyle) return null;
+                const selected = selectedVisualScanCandidateIds.has(candidate.candidate_id);
+                return (
+                  <button
+                    aria-label={`Toggle ${candidate.figure_label || candidate.candidate_id}`}
+                    className={`visual-scan-box${selected ? " selected" : ""}`}
+                    key={candidate.candidate_id}
+                    onClick={() => toggleVisualScanCandidate(candidate.candidate_id)}
+                    style={boxStyle}
+                    type="button"
+                  />
+                );
+              })}
+            </div>
+            <div className="visual-scan-candidate-list">
+              {visualScanReview.candidates.map((candidate, index) => {
+                const selected = selectedVisualScanCandidateIds.has(candidate.candidate_id);
+                const source = String(candidate.geometry.source || "visual region").replaceAll("_", " ");
+                return (
+                  <label className={`visual-scan-candidate${selected ? " selected" : ""}`} key={candidate.candidate_id}>
+                    <input
+                      checked={selected}
+                      disabled={applyVisualScan.isPending}
+                      onChange={() => toggleVisualScanCandidate(candidate.candidate_id)}
+                      type="checkbox"
+                    />
+                    <img alt={candidate.figure_label || `Candidate ${index + 1}`} src={candidate.image_data_url} />
+                    <span>
+                      <strong>{candidate.figure_label || `Candidate ${index + 1}`}</strong>
+                      <small>{candidate.caption || candidate.gist || source}</small>
+                      <em>{source}</em>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </section>
+    );
+  };
   const commitVisualScanPage = () => {
     setVisualScanPageDraft(String(visualScanPageNumber));
     setPdfPreviewPageTarget(visualScanPageNumber);
@@ -6452,11 +6708,19 @@ function DocumentPanelContent({
   };
   const scanCurrentVisualPage = () => {
     const pageNumber = commitVisualScanPage();
+    setVisualScanReview(null);
+    setSelectedVisualScanCandidateIds(new Set());
     scanVisualPage.mutate(pageNumber);
   };
   const renderPdfPreview = (compare = false) => {
+    const renderPageStack = readerExpanded;
+    const focusedPreviewPage = Math.min(
+      maxVisualScanPage,
+      Math.max(1, compare && currentPage ? currentPage.page_number : pdfPreviewPageTarget),
+    );
+    const renderedPageNumbers = renderPageStack ? pdfPageNumbers : [focusedPreviewPage];
     return (
-      <div className={`pdf-preview ${compare ? "compare-pane" : ""}`}>
+      <div className={`pdf-preview ${compare ? "compare-pane" : ""} ${renderPageStack ? "pdf-preview-stack" : "pdf-preview-single"}`}>
         <div
           className="pdf-page-scroll"
           onScroll={handleComparePdfScroll}
@@ -6464,11 +6728,11 @@ function DocumentPanelContent({
           role="region"
           aria-label={`PDF pages for ${document.title}`}
         >
-          {pdfPageNumbers.map((pageNumber) => (
+          {renderedPageNumbers.map((pageNumber) => (
             <figure className="pdf-page-render" data-page-number={pageNumber} key={pageNumber}>
               <img
                 alt={`Page ${pageNumber} of ${document.title}`}
-                loading={pageNumber <= 2 ? "eager" : "lazy"}
+                loading={renderPageStack && pageNumber > 2 ? "lazy" : "eager"}
                 src={`/api/documents/${document.id}/pages/${pageNumber}/image`}
               />
               <figcaption>Page {pageNumber}</figcaption>
@@ -6486,7 +6750,7 @@ function DocumentPanelContent({
               <input
                 ref={visualScanPageInputRef}
                 aria-label="Page to scan for visual assets"
-                disabled={scanVisualPage.isPending}
+                disabled={scanVisualPage.isPending || applyVisualScan.isPending}
                 inputMode="numeric"
                 max={maxVisualScanPage}
                 min={1}
@@ -6507,7 +6771,7 @@ function DocumentPanelContent({
                 className={asyncFeedbackClass("secondary-button compact", visualPageScanFeedback.feedback, scanVisualPage.isPending)}
                 data-disabled-reason={visualScanBusyReason}
                 data-tooltip="Try a local one-page scan for figures, tables, graphs, photos, diagrams, and other visual assets."
-                disabled={scanVisualPage.isPending}
+                disabled={scanVisualPage.isPending || applyVisualScan.isPending}
                 onClick={scanCurrentVisualPage}
                 type="button"
               >
@@ -6902,6 +7166,7 @@ function DocumentPanelContent({
           ) : (
             renderTextReader()
           )}
+          {renderVisualScanReview()}
         </div>
       </div>
       {editing ? (
@@ -7196,24 +7461,119 @@ function DocumentPanelContent({
         <h3>Figures</h3>
         {document.figures.length ? (
           <div className="figure-grid">
-            {document.figures.map((figure) => (
-              <a
-                key={figure.id}
-                data-tooltip="Open this extracted figure asset in a new browser tab."
-                href={`/api/figures/${figure.id}/asset`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <img
-                  alt={figure.figure_label || "Extracted figure"}
-                  decoding="async"
-                  loading="lazy"
-                  src={`/api/figures/${figure.id}/asset`}
-                />
-                <span>{figure.figure_label || `Page ${figure.page_number || "?"}`}</span>
-                <small>{figure.caption || figure.gist || "Extracted figure"}</small>
-              </a>
-            ))}
+            {document.figures.map((figure) => {
+              const editingThisFigure = editingFigureId === figure.id;
+              const figureDraft = figureDrafts[figure.id] || figureDraftFromFigure(figure);
+              return (
+                <article className={`figure-card${editingThisFigure ? " editing" : ""}`} key={figure.id}>
+                  <a
+                    className="figure-thumb"
+                    data-tooltip="Open this extracted figure asset in a new browser tab."
+                    href={`/api/figures/${figure.id}/asset`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <img
+                      alt={figure.figure_label || "Extracted figure"}
+                      decoding="async"
+                      loading="lazy"
+                      src={`/api/figures/${figure.id}/asset`}
+                    />
+                  </a>
+                  <div className="figure-card-body">
+                    <header>
+                      <div>
+                        <span>{figure.figure_label || `Page ${figure.page_number || "?"}`}</span>
+                        <small>{figure.page_number ? `Page ${figure.page_number}` : "Page unknown"}</small>
+                      </div>
+                      <div className="figure-card-actions">
+                        <button
+                          className="icon-button compact"
+                          data-disabled-reason="a figure edit is already running."
+                          data-tooltip="Edit this figure label, caption, and searchable description."
+                          disabled={figureEditBusy}
+                          onClick={() => startFigureEdit(figure)}
+                          type="button"
+                        >
+                          <Edit3 size={14} />
+                        </button>
+                        <button
+                          className="icon-button compact"
+                          data-disabled-reason="a figure edit is already running."
+                          data-tooltip="Delete this extracted figure from the document."
+                          disabled={figureEditBusy}
+                          onClick={() => deleteExtractedFigure(figure)}
+                          type="button"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </header>
+                    {editingThisFigure ? (
+                      <div className="figure-editor">
+                        <label>
+                          <span>Label</span>
+                          <input
+                            disabled={figureEditBusy}
+                            onChange={(event) => updateFigureDraft(figure.id, "figure_label", event.target.value)}
+                            placeholder="Figure 1"
+                            value={figureDraft.figure_label}
+                          />
+                        </label>
+                        <label>
+                          <span>Caption</span>
+                          <textarea
+                            disabled={figureEditBusy}
+                            onChange={(event) => updateFigureDraft(figure.id, "caption", event.target.value)}
+                            placeholder="Caption visible in the paper"
+                            value={figureDraft.caption}
+                          />
+                        </label>
+                        <label>
+                          <span>Description</span>
+                          <textarea
+                            disabled={figureEditBusy}
+                            onChange={(event) => updateFigureDraft(figure.id, "gist", event.target.value)}
+                            placeholder="Searchable description"
+                            value={figureDraft.gist}
+                          />
+                        </label>
+                        <div className="figure-editor-actions">
+                          <button
+                            className="secondary-button compact"
+                            data-disabled-reason="a figure edit is already running."
+                            data-tooltip="Save this figure correction and refresh document search."
+                            disabled={figureEditBusy}
+                            onClick={() => saveFigureEdit(figure)}
+                            type="button"
+                          >
+                            <Save className={updateFigure.isPending ? "spin" : ""} size={14} />
+                            {updateFigure.isPending ? "Saving" : "Save"}
+                          </button>
+                          <button
+                            className="secondary-button compact"
+                            data-disabled-reason="a figure edit is already running."
+                            data-tooltip="Cancel this figure correction."
+                            disabled={figureEditBusy}
+                            onClick={cancelFigureEdit}
+                            type="button"
+                          >
+                            <X size={14} />
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p>{figure.caption || figure.gist || "Extracted figure"}</p>
+                        {figure.caption && figure.gist && figure.caption !== figure.gist ? <small>{figure.gist}</small> : null}
+                      </>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+            {figureEditError ? <p className="field-error">{figureEditError}</p> : null}
           </div>
         ) : (
           <div className="empty-inline">

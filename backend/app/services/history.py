@@ -8,6 +8,21 @@ from sqlalchemy.orm import Session
 from app.models import Document, DocumentPage, DocumentVersion
 
 
+def _figure_snapshot(document: Document) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": figure.id,
+            "page_number": figure.page_number,
+            "figure_label": figure.figure_label,
+            "caption": figure.caption,
+            "gist": figure.gist,
+            "asset_uri": figure.asset_uri,
+            "geometry": figure.geometry,
+        }
+        for figure in sorted(document.figures, key=lambda item: (item.page_number or 0, item.figure_label or "", item.id))
+    ]
+
+
 def document_correction_snapshot(document: Document) -> dict[str, Any]:
     return {
         "title": document.title,
@@ -36,6 +51,7 @@ def document_correction_snapshot(document: Document) -> dict[str, Any]:
         "tags": [tag.name for tag in document.tags],
         "domains": [domain.id for domain in document.domains],
         "attributes": {value.definition.name: value.value for value in document.attributes if value.definition},
+        "figures": _figure_snapshot(document),
     }
 
 

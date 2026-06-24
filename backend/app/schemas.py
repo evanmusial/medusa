@@ -364,6 +364,12 @@ class FigureOut(ApiModel):
     geometry: dict[str, Any] = Field(default_factory=dict)
 
 
+class FigurePatch(BaseModel):
+    figure_label: str | None = Field(default=None, max_length=120)
+    caption: str | None = None
+    gist: str | None = None
+
+
 class DocumentPageOut(ApiModel):
     id: str
     page_number: int
@@ -670,6 +676,32 @@ class DocumentTextScrub(BaseModel):
 
 class DocumentVisualPageScanCreate(BaseModel):
     page_number: int = Field(ge=1)
+
+
+class VisualScanCandidateOut(ApiModel):
+    candidate_id: str
+    page_number: int
+    figure_label: str | None = None
+    caption: str | None = None
+    gist: str | None = None
+    geometry: dict[str, Any] = Field(default_factory=dict)
+    image_data_url: str
+
+
+class DocumentVisualPageScanReviewOut(ApiModel):
+    document_id: str
+    page_number: int
+    figures: int
+    replaced_figures: int = 0
+    preserved_existing: bool = False
+    candidates: list[VisualScanCandidateOut] = Field(default_factory=list)
+    replaced_page_figures: list[FigureOut] = Field(default_factory=list)
+    audit_warnings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DocumentVisualPageScanApplyCreate(BaseModel):
+    page_number: int = Field(ge=1)
+    candidates: list[VisualScanCandidateOut] = Field(default_factory=list)
 
 
 class ImportBatchOut(ApiModel):
