@@ -54,6 +54,7 @@ from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
     crossref_lookup,
     crossref_to_citation_metadata,
+    discover_doi_from_title,
     enough_metadata_for_verified_citation,
     extract_doi_from_text,
 )
@@ -896,6 +897,13 @@ class DocumentProcessor:
             document.doi = extract_doi_from_text(document.search_text)
 
         crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year)
+        doi_discovery: dict[str, Any] | None = None
+        if not crossref and not document.doi:
+            doi_discovery = discover_doi_from_title(document.title, document.authors, document.publication_year)
+            if doi_discovery:
+                document.doi = doi_discovery["doi"]
+                document.metadata_evidence["doi_discovery"] = doi_discovery
+                crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year)
         crossref_metadata: dict[str, Any] = {}
         if crossref:
             document.metadata_evidence["crossref"] = crossref
@@ -1012,6 +1020,7 @@ class DocumentProcessor:
                 },
                 "citation_status": document.citation_status,
                 "crossref_used": bool(crossref),
+                "doi_discovery_source": doi_discovery.get("source") if doi_discovery else None,
                 "tag_governance": tag_governance,
             },
         )

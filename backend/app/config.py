@@ -118,6 +118,11 @@ class Settings(BaseSettings):
         validation_alias="MEDUSA_RECOMMENDATIONS_ARXIV_TITLE_LOOKUPS",
     )
     semantic_scholar_api_key: str | None = Field(default=None, validation_alias="SEMANTIC_SCHOLAR_API_KEY")
+    citation_title_web_search: bool = Field(default=True, validation_alias="MEDUSA_CITATION_TITLE_WEB_SEARCH")
+    citation_title_web_search_timeout_seconds: float = Field(
+        default=8.0,
+        validation_alias="MEDUSA_CITATION_TITLE_WEB_SEARCH_TIMEOUT_SECONDS",
+    )
 
     enable_google_vision: bool = Field(default=True, validation_alias="MEDUSA_ENABLE_GOOGLE_VISION")
     low_text_page_threshold: int = 120

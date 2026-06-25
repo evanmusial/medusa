@@ -66,6 +66,7 @@ from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
     crossref_lookup,
     crossref_to_citation_metadata,
+    discover_doi_from_title,
     enough_metadata_for_verified_citation,
     extract_doi_from_text,
 )
@@ -1298,6 +1299,13 @@ class ConcordanceProcessor:
         if not document.doi:
             document.doi = extract_doi_from_text(document.search_text)
         crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year) or evidence.get("crossref")
+        doi_discovery: dict[str, Any] | None = None
+        if not crossref and not document.doi:
+            doi_discovery = discover_doi_from_title(document.title, document.authors, document.publication_year)
+            if doi_discovery:
+                document.doi = doi_discovery["doi"]
+                evidence["doi_discovery"] = doi_discovery
+                crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year)
         filled_fields: list[str] = []
         crossref_metadata: dict[str, Any] = {}
         if crossref:
@@ -1381,6 +1389,7 @@ class ConcordanceProcessor:
         return {
             "verified": verified,
             "crossref_evidence": bool(crossref),
+            "doi_discovery_source": doi_discovery.get("source") if doi_discovery else None,
             "filled_fields": filled_fields,
             "citation_model": document.apa_citation_model,
             "citation_source": document.apa_citation_source,

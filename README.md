@@ -21,7 +21,7 @@ Medusa stands for **Mapped Evidence for Discovery, Understanding, Synthesis, and
 - Utilities workspace with Database maintenance actions for compaction, table-statistics optimization, hidden import-cache cleanup with a live cleanup count, Docker/container footprint stats, runtime binary/package versions, HAProxy TLS/proxy stats, and backend-container restart with health polling
 - Per-document Cost Composition tracking for imports, including persisted pre-processing estimates, estimate-vs-actual comparison, stage timings, provider/model spend, local processing duration, processing issues, and the exact pipeline/method/model path used to generate the document
 - Citation generation in Markdown APA 7 reference-list and in-text forms, with model/provenance tracking, plus BibTeX, RIS, and CSL JSON
-- Live document-level DOI, citation, summary, bibliography, and tag refresh controls backed by durable Concordance jobs
+- Live document-level DOI, citation, summary, bibliography, tag, and formula-capture controls backed by durable Concordance jobs
 - Related-paper recommendations with default hidden-existing filtering, extracted Bibliography reference-list seeds, Unpaywall/arXiv PDF availability enrichment, Google Scholar search links, DOI/title copy actions, DOI stashing, a sortable Stashes view with DOI copy, title-copying manual Sci-Hub DOI links, resolver-backed DOI imports, stash PDF uploads that enter the normal import queue, and DOI/title-match cleanup for already-imported stash targets
 - Reserved header progress control for imports, Concordance, and citation-refresh work, so job feedback continues after navigating away from the page that started the work without shifting the header actions
 - Async action feedback: job-starting buttons turn soft blue with the button icon spinning and a slim progress bar while work is in flight, blend through green on success, flash red on failure, and show a concise error popover when startup or completion fails
@@ -151,9 +151,13 @@ MEDUSA_RECOMMENDATION_DOWNLOAD_MAX_MB=80
 MEDUSA_OPENALEX_MAILTO=
 MEDUSA_UNPAYWALL_EMAIL=
 SEMANTIC_SCHOLAR_API_KEY=
+MEDUSA_CITATION_TITLE_WEB_SEARCH=true
+MEDUSA_CITATION_TITLE_WEB_SEARCH_TIMEOUT_SECONDS=8
 ```
 
 Related-paper discovery uses OpenAlex, Semantic Scholar, Crossref, and any extracted source Bibliography on the document to find candidates. Bibliography references are parsed locally into DOI/title candidates, then the normal enrichment and duplicate-suppression passes can add open PDF evidence or mark library/stash/import matches. Unpaywall and arXiv enrich those candidates with open PDF links before they are queued for import; set `MEDUSA_UNPAYWALL_EMAIL` to a real contact email to enable Unpaywall lookups. The Library detail Related modal defaults to a Discover view that suppresses library-held, queued-import, and already-stashed DOI candidates while keeping an Already Known audit view, relation-family filters, compact evidence chips, Stash actions, and manual Google Scholar links rather than automated Scholar scraping. It groups provider-discovered Other Related Articles beside Bibliography Sources, preserving raw extracted citation text and attaching recommendation actions when a bibliography source has been parsed into an enriched candidate.
+
+Citation DOI discovery also uses Semantic Scholar title lookup and, when enabled, a targeted `"paper title" DOI` static web-search fallback after local text and Crossref title matching fail. Any DOI found this way is stored in document metadata evidence before the normal citation refresh path tries Crossref again and generates APA output.
 
 If cloud credentials are absent, Medusa still boots and stores originals under `data/originals`. If `OPENAI_API_KEY` is absent, imports still create records and extract text, but AI metadata is marked for review.
 
@@ -182,7 +186,7 @@ Document Composition is available from the Library detail actions when a documen
 
 Before broad Concordance starts, Settings estimates the selected scope and capabilities, including planned jobs, same-model no-ops, already queued work, current-version skips, unpriced routes, and estimated cloud spend. The document-level Concord button fetches the same estimate before confirmation. Concordance skips model-backed fields when document evidence or usage history shows the field already used the currently selected model, while changed model routes can still queue even if the capability version is otherwise current.
 
-Async document work is started from the app shell, not only from the page-level component that owns the button. DOI, citation, summary, bibliography, and Concordance refresh actions immediately turn soft blue with their own icon spinning and a slim in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green success blend or red result flash; failures also surface a concise error message.
+Async document work is started from the app shell, not only from the page-level component that owns the button. DOI, citation, summary, bibliography, Formula Capture, and Concordance refresh actions immediately turn soft blue with their own icon spinning and a slim in-button progress bar, then the reserved header progress control follows active durable imports and background runs even if the user switches views. Page-local buttons still give a short green success blend or red result flash; failures also surface a concise error message.
 
 Worker recovery:
 

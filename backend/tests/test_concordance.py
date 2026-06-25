@@ -139,6 +139,78 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"
 
 
+def test_citation_refresh_discovers_missing_doi_from_title(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    class FakeAiService:
+        def generate_apa_citation_candidate(
+            self,
+            filename,
+            text,
+            metadata,
+            *,
+            model=None,
+            usage_context=None,
+            prompt_cache_key=None,
+            crossref_candidates=None,
+        ):
+            return {
+                "apa_citation": None,
+                "apa_in_text_citation": None,
+                "citation_warnings": [],
+                "confidence": 0.75,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "configured": False},
+            }
+
+    monkeypatch.setattr(concordance_service, "crossref_lookup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        concordance_service,
+        "discover_doi_from_title",
+        lambda *args, **kwargs: {
+            "source": "title_web_search",
+            "doi": "10.5555/1218112.1218218",
+            "query": '"Modeling the Emergence of Insider Threat Vulnerabilities" DOI',
+        },
+    )
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Modeling the Emergence of Insider Threat Vulnerabilities",
+            original_filename="insider-threat.pdf",
+            checksum_sha256="d" * 64,
+            authors=[{"given": "Ignacio J.", "family": "Martinez-Moyano"}],
+            publication_year=2006,
+            processing_status="ready",
+            search_text="No visible DOI here.",
+            metadata_evidence={},
+        )
+        run = ConcordanceRun(scope_type="documents", scope_data={}, capability_keys=["citation_refresh"], total_jobs=1)
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="citation_refresh",
+            target_version=CAPABILITY_BY_KEY["citation_refresh"].version,
+        )
+        db.add_all([document, run, job])
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert document.doi == "10.5555/1218112.1218218"
+        assert document.metadata_evidence["doi_discovery"]["source"] == "title_web_search"
+        assert document.citation_status == "verified"
+        assert "https://doi.org/10.5555/1218112.1218218" in document.apa_citation
+        assert job.status == "complete"
+
+
 def test_concordance_estimate_marks_same_model_summary_noop(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
