@@ -21,6 +21,8 @@
   --action-error: #b4232d;
   --button-font-size: 14px;
   --button-font-weight: 400;
+  --button-control-height: 38px;
+  --button-compact-height: 34px;
   --library-row-alt: #f6f8fb;
   --library-row-selected: #dceafe;
   --library-row-selected-hover: #d2e3ff;
@@ -6425,7 +6427,7 @@ pre {
 }
 
 .account-save-button {
-  min-height: 42px;
+  min-height: var(--button-control-height);
   align-self: end;
   white-space: nowrap;
 }
@@ -8711,14 +8713,14 @@ button.history-row,
 .bibliography-tabs button,
 .stash-upload-button,
 .stash-upload-drop {
-  min-height: 42px;
+  min-height: var(--button-control-height);
 }
 
 .icon-button,
 .icon-button.compact {
-  width: 42px;
-  min-width: 42px;
-  min-height: 42px;
+  width: var(--button-control-height);
+  min-width: var(--button-control-height);
+  min-height: var(--button-control-height);
 }
 
 .secondary-button.compact,
@@ -8730,15 +8732,15 @@ button.history-row,
 .saved-search-list button,
 .tags-table-row > button,
 .project-list button {
-  min-height: 42px;
+  min-height: var(--button-compact-height);
 }
 
 .selected-chips button {
-  min-height: 34px;
+  min-height: var(--button-compact-height);
 }
 
 .select-all-row {
-  min-height: 42px;
+  min-height: var(--button-control-height);
   font-size: var(--button-font-size);
   font-weight: var(--button-font-weight);
   letter-spacing: 0;
@@ -8761,7 +8763,7 @@ button.history-row,
 .bulk-bar .primary-button,
 .bulk-bar .secondary-button,
 .select-search-input {
-  min-height: 42px;
+  min-height: var(--button-control-height);
 }
 
 @media (max-width: 1180px) {

@@ -27,7 +27,7 @@ Medusa should feel like a serious research cockpit: dense, calm, polished, and f
 
 Typography should reserve compact, heavier treatment for controls, interaction chips, and button-adjacent metadata. Section subtitles, metric labels, table headers, usage ledgers, and ordinary panel copy should use sentence/title case or source text casing with moderate weight so repeated operational surfaces remain readable. Normal UI text should not drop below 12px; smaller treatment should be avoided unless it is icon-only-adjacent decoration that remains legible under browser zoom.
 
-Workspace navigation and ordinary action buttons share the same regular-weight control typography and 42px control height so commands do not read smaller, bolder, or visually weaker than the main Library/Domains/Projects navigation.
+Workspace navigation and ordinary action buttons share the same regular-weight control typography so commands do not read smaller, bolder, or visually weaker than the main Library/Domains/Projects navigation. Navigation keeps a generous hit area, while ordinary action buttons use leaner padding and a 38px control height so dense work surfaces do not feel puffy.
 
 Domain references in dropdowns, picker lists, checklists, chips, saved-search summaries, note links, Settings scopes, and other non-tree lists should render the full hierarchy path such as `Parent / Child / Topic`; dedicated tree views may use indentation, quiet connector elbows, and the selected path detail.
 
