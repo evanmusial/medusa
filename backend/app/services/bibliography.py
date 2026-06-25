@@ -10,11 +10,27 @@ from app.services.extraction import normalize_extracted_text, sanitize_extracted
 
 REFERENCE_HEADING_RE = re.compile(r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\s*$", re.IGNORECASE)
 REFERENCE_HEADING_INLINE_RE = re.compile(r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\b[:\s-]*", re.IGNORECASE)
-STOP_HEADING_RE = re.compile(r"^\s*(?:appendix|appendices|acknowledg(?:e)?ments?|notes?|index|about\s+the\s+author)\b", re.IGNORECASE)
+STOP_HEADING_RE = re.compile(r"^\s*(?:appendix|appendices|acknowledg(?:e)?ments?|notes?|about\s+the\s+author)\b", re.IGNORECASE)
 REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:\[\d+\]|\d+\.|[A-Z][A-Za-z'`-]+,\s+[A-Z]|(?:[A-Z]\.\s*){1,5}[A-Z][A-Za-z'`-]+)")
+REFERENCE_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)])\s+")
 REFERENCE_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)])\s+")
 REFERENCE_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*]|\u2013|\u2014|\u2022|\u2023|\u2043|\u25e6)\s+")
 ITALIC_FONT_RE = re.compile(r"(?:italic|oblique|kursiv)", re.IGNORECASE)
+AUTHOR_BIO_START_RE = re.compile(
+    r"^[A-Z][A-Za-z'`.-]+(?:\s+[A-Z][A-Za-z'`.-]+){1,4}\s+"
+    r"(?:is|was|received|obtained|currently|has\s+worked|joined)\b",
+)
+PAGE_FURNITURE_RE = re.compile(
+    r"^(?:"
+    r"\d{4}-\d{3,4}X\s+\(c\)|"
+    r"This article has been accepted for publication|"
+    r"Citation information:\s*DOI|"
+    r"Communications Surveys\s*&\s*Tutorials|"
+    r"IEEE COMMUNICATIONS SURVEY\s*&\s*TUTORIALS"
+    r")",
+    re.IGNORECASE,
+)
+PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
 
 
 def _strip_markdown(value: str) -> str:
@@ -34,6 +50,11 @@ def _line_starts_reference_entry(line: str) -> bool:
     return bool(REFERENCE_ENTRY_RE.match(plain))
 
 
+def _line_starts_reference_marker(line: str) -> bool:
+    plain = _strip_markdown(_strip_reference_list_marker(line)).strip()
+    return bool(REFERENCE_ENTRY_MARKER_RE.match(plain))
+
+
 def _line_is_reference_heading(line: str) -> bool:
     plain = _strip_markdown(line).strip()
     return bool(REFERENCE_HEADING_RE.match(plain))
@@ -46,7 +67,14 @@ def _line_starts_reference_section(line: str) -> bool:
 
 def _line_stops_reference_section(line: str) -> bool:
     plain = _strip_markdown(line).strip()
-    return bool(STOP_HEADING_RE.match(plain)) and len(plain.split()) <= 8
+    if bool(STOP_HEADING_RE.match(plain)) and len(plain.split()) <= 8:
+        return True
+    return bool(AUTHOR_BIO_START_RE.match(plain))
+
+
+def _line_is_page_furniture(line: str) -> bool:
+    plain = _strip_markdown(line).strip()
+    return bool(PAGE_FURNITURE_RE.match(plain) or PAGE_NUMBER_RE.match(plain))
 
 
 def _extract_reference_lines(lines: list[str]) -> tuple[list[str], int | None, int | None]:
@@ -180,8 +208,7 @@ def _entry_count(text: str | None) -> int:
     if not text:
         return 0
     lines = [line for line in text.splitlines() if line.strip()]
-    matches = sum(1 for line in lines if _line_starts_reference_entry(line))
-    return matches or len(lines) or max(1, len([part for part in re.split(r"\n\s*\n+", text) if part.strip()]))
+    return len(lines)
 
 
 def _clean_reference_line(raw_line: str) -> str:
@@ -199,11 +226,15 @@ def _normalize_reference_entry(parts: list[str]) -> str:
 def _format_reference_lines(lines: list[str]) -> str:
     entries: list[str] = []
     current: list[str] = []
+    marker_bounded = any(_line_starts_reference_marker(_clean_reference_line(raw_line)) for raw_line in lines)
     for raw_line in lines:
         line = _clean_reference_line(raw_line)
         if not line:
             continue
-        if _line_starts_reference_entry(line) and current:
+        if _line_is_page_furniture(line):
+            continue
+        starts_entry = _line_starts_reference_marker(line) if marker_bounded else _line_starts_reference_entry(line)
+        if starts_entry and current:
             entry = _normalize_reference_entry(current)
             if entry:
                 entries.append(entry)
