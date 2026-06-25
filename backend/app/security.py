@@ -6,6 +6,7 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -98,6 +99,13 @@ def ensure_admin_user(db: Session) -> User:
         password_hash=hash_password(settings.admin_password),
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(User).filter(User.email == settings.admin_email).one_or_none()
+        if existing:
+            return existing
+        raise
     db.refresh(user)
     return user
