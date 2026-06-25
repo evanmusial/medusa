@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy import create_engine
 
@@ -24,7 +25,43 @@ def is_postgres() -> bool:
     return settings.database_url.startswith("postgresql")
 
 
-def create_schema_from_metadata() -> None:
+def _create_postgres_supporting_objects(conn: Connection) -> None:
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_documents_search_text_gin
+            ON documents USING gin (to_tsvector('english', coalesce(search_text, '')))
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_documents_title_trgm
+            ON documents USING gin (title gin_trgm_ops)
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_text_chunks_embedding
+            ON text_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+            """
+        )
+    )
+
+
+def create_schema_from_metadata(bind: Connection | None = None) -> None:
+    if bind is not None:
+        if is_postgres():
+            bind.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            bind.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        Base.metadata.create_all(bind=bind)
+        if is_postgres():
+            _create_postgres_supporting_objects(bind)
+        return
+
     if is_postgres():
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
@@ -32,30 +69,25 @@ def create_schema_from_metadata() -> None:
     Base.metadata.create_all(bind=engine)
     if is_postgres():
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    CREATE INDEX IF NOT EXISTS ix_documents_search_text_gin
-                    ON documents USING gin (to_tsvector('english', coalesce(search_text, '')))
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    CREATE INDEX IF NOT EXISTS ix_documents_title_trgm
-                    ON documents USING gin (title gin_trgm_ops)
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    CREATE INDEX IF NOT EXISTS ix_text_chunks_embedding
-                    ON text_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
-                    """
-                )
-            )
+            _create_postgres_supporting_objects(conn)
+
+
+def _postgres_has_alembic_version(conn: Connection) -> bool:
+    return bool(conn.execute(text("SELECT to_regclass('public.alembic_version') IS NOT NULL")).scalar())
+
+
+def _postgres_has_application_tables(conn: Connection) -> bool:
+    count = conn.execute(
+        text(
+            """
+            SELECT count(*)
+            FROM pg_tables
+            WHERE schemaname = 'public'
+              AND tablename != 'alembic_version'
+            """
+        )
+    ).scalar_one()
+    return bool(count)
 
 
 def run_migrations() -> None:
@@ -75,9 +107,16 @@ def run_migrations() -> None:
     if is_postgres():
         with engine.connect() as conn:
             conn.execute(text("SELECT pg_advisory_lock(37370001)"))
+            conn.commit()
             try:
-                command.upgrade(config, "head")
+                config.attributes["connection"] = conn
+                if not _postgres_has_alembic_version(conn) and not _postgres_has_application_tables(conn):
+                    create_schema_from_metadata(bind=conn)
+                    command.stamp(config, "head")
+                else:
+                    command.upgrade(config, "head")
             finally:
+                config.attributes.pop("connection", None)
                 conn.execute(text("SELECT pg_advisory_unlock(37370001)"))
                 conn.commit()
         return
