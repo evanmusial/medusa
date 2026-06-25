@@ -65,9 +65,12 @@ The agent fetches the configured upstream, refuses to deploy from a dirty checko
 
 A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
 
-Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. Copy them to `/etc/systemd/system/`, edit paths if carrot uses a different checkout location, then enable:
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if carrot uses a different checkout location, then enable:
 
 ```bash
+sudo systemctl enable --now medusa.service
 sudo systemctl enable --now medusa-release-check.timer
 sudo systemctl enable --now medusa-release-apply.path
 ```
+
+For a checkout at `~/git/medusa`, replace `/opt/medusa` with the absolute home path before enabling. If Docker is installed from Snap, keep `/snap/bin` in the unit `PATH` or point `ExecStart` directly at the Snap `docker` binary.

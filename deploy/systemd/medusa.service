@@ -1,0 +1,19 @@
+[Unit]
+Description=Medusa Docker Compose stack
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/medusa
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+ExecStart=/usr/bin/env docker compose up -d --build
+ExecReload=/usr/bin/env docker compose up -d --build
+ExecStop=/usr/bin/env docker compose stop
+RemainAfterExit=yes
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -206,6 +206,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [x] Make Utilities database maintenance visible during long runs.
   - Acceptance: Compact Database and Optimize Database start backend-owned maintenance work, return immediately, report active operation/detail/elapsed time through database maintenance status, prevent overlapping maintenance operations, and keep the Utilities page responsive while PostgreSQL runs `VACUUM (FULL, ANALYZE)` or `ANALYZE`.
 
+- [x] Add systemd templates for portable server operation.
+  - Acceptance: the repo includes a `medusa.service` template for the Docker Compose app stack plus release checker/apply units, and portable deployment docs describe enabling them on a server checkout such as carrot.
+
 - [ ] Add backup scheduling, retention, and drill automation.
   - Acceptance: full database backups can run on a schedule, old GCS backups can be pruned by a visible retention policy, and a dry restore drill can validate the latest backup without replacing the live database.
 
