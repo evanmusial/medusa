@@ -1180,7 +1180,8 @@ textarea {
 
 .domain-manager-row-text small,
 .domain-manager-row > small,
-.domain-document-row span {
+.domain-document-row span,
+.domain-document-row small {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -1303,6 +1304,39 @@ textarea {
   padding: 9px;
   display: grid;
   gap: 4px;
+}
+
+.domain-document-list h3 {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.domain-document-list h3:first-child {
+  margin-top: 0;
+}
+
+.domain-suggestion-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.domain-suggestion-row > div,
+.domain-suggestion-row > small {
+  min-width: 0;
+}
+
+.domain-suggestion-row > small {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.domain-suggestion-row .secondary-button {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .tag-cloud {

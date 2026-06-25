@@ -3035,6 +3035,54 @@ function descendantDomainIds(domainId: string, domains: Domain[]) {
   return ids;
 }
 
+type DomainDocumentSuggestion = {
+  document: DocumentSummary;
+  matchedTags: string[];
+  matchedTerms: string[];
+  score: number;
+};
+
+function domainSuggestionTokens(domain: Domain | null) {
+  if (!domain) return [];
+  return uniqueValues(
+    [domain.name, domain.description, ...domain.tags.flatMap((tag) => [tag.name, tag.definition, tag.use_guidance])]
+      .join(" ")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4),
+  ).slice(0, 24);
+}
+
+function domainDocumentSuggestionText(document: DocumentSummary) {
+  return [document.title, document.journal, document.rich_summary, document.apa_citation, ...document.tags.map((tag) => tag.name)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function domainDocumentSuggestions(domain: Domain | null, documents: DocumentSummary[], scopeDomainIds: Set<string>): DomainDocumentSuggestion[] {
+  if (!domain) return [];
+  const domainTagIds = new Set(domain.tags.map((tag) => tag.id));
+  const tokens = domainSuggestionTokens(domain);
+  return documents
+    .filter((document) => !document.domains.some((assignedDomain) => scopeDomainIds.has(assignedDomain.id)))
+    .map((document) => {
+      const matchedTags = document.tags.filter((tag) => domainTagIds.has(tag.id)).map((tag) => tag.name);
+      const haystack = domainDocumentSuggestionText(document);
+      const matchedTerms = tokens.filter((token) => haystack.includes(token)).slice(0, 5);
+      const score = matchedTags.length * 4 + matchedTerms.length;
+      return { document, matchedTags, matchedTerms, score };
+    })
+    .filter((suggestion) => suggestion.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.document.title.localeCompare(right.document.title, undefined, { numeric: true, sensitivity: "base" }),
+    )
+    .slice(0, 12);
+}
+
 function DomainTree({
   assigningDomainId,
   draggedDocumentAssignedDomainIds,
@@ -3164,6 +3212,14 @@ function DomainsView({
     () => (selected ? documents.filter((document) => document.domains.some((domain) => domain.id === selected.id)) : []),
     [documents, selected],
   );
+  const selectedScopeDomainIds = useMemo(() => {
+    if (!selected) return new Set<string>();
+    return new Set([selected.id, ...descendantDomainIds(selected.id, domains)]);
+  }, [domains, selected]);
+  const suggestedDocuments = useMemo(
+    () => domainDocumentSuggestions(selected, documents, selectedScopeDomainIds),
+    [documents, selected, selectedScopeDomainIds],
+  );
   const matchingDomains = useMemo(() => {
     const normalized = searchText.trim().toLowerCase();
     if (!normalized) return [];
@@ -3211,6 +3267,20 @@ function DomainsView({
       refreshDomainManagementData(queryClient);
     },
     onError: (mutationError) => setError(actionFailureMessage("Could not delete domain", mutationError)),
+  });
+  const assignSuggestion = useMutation({
+    mutationFn: ({ document, domainId }: { document: DocumentSummary; domainId: string }) => {
+      const currentDomainIds = uniqueValues(document.domains.map((domain) => domain.id));
+      if (currentDomainIds.includes(domainId)) return Promise.resolve(null);
+      return api.updateDocument(document.id, { domain_ids: [...currentDomainIds, domainId] });
+    },
+    onSuccess: () => {
+      setNotice("Assigned suggested document");
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      refreshDomainManagementData(queryClient);
+    },
+    onError: (mutationError) => setError(actionFailureMessage("Could not assign suggested document", mutationError)),
   });
 
   useEffect(() => {
@@ -3499,11 +3569,12 @@ function DomainsView({
         <div className="panel-title-row">
           <div>
             <h2>Documents</h2>
-            <span>{selected ? `${selectedDocuments.length} direct matches` : "No domain selected"}</span>
+            <span>{selected ? `${selectedDocuments.length} assigned / ${suggestedDocuments.length} suggested` : "No domain selected"}</span>
           </div>
           <FileText size={20} />
         </div>
         <div className="domain-document-list">
+          {selected ? <h3>Assigned</h3> : null}
           {selectedDocuments.map((document) => (
             <article key={document.id} className="domain-document-row">
               <strong>{document.title}</strong>
@@ -3514,6 +3585,33 @@ function DomainsView({
             </article>
           ))}
           {selected && !selectedDocuments.length ? <p className="empty-note">No documents are directly assigned to this domain.</p> : null}
+          {selected ? <h3>Suggested Filing</h3> : null}
+          {suggestedDocuments.map((suggestion) => (
+            <article key={suggestion.document.id} className="domain-document-row domain-suggestion-row">
+              <div>
+                <strong>{suggestion.document.title}</strong>
+                <span>
+                  {authorLine(suggestion.document)}
+                  {suggestion.document.publication_year ? ` / ${suggestion.document.publication_year}` : ""}
+                </span>
+              </div>
+              <small>
+                {[...suggestion.matchedTags.map((tag) => `Tag: ${tag}`), ...suggestion.matchedTerms.map((term) => `Term: ${term}`)].join(" / ")}
+              </small>
+              <button
+                className="secondary-button compact"
+                data-disabled-reason="a suggested document assignment is already saving."
+                data-tooltip={`Assign ${suggestion.document.title} to ${selected?.name || "this domain"}.`}
+                disabled={!selected || assignSuggestion.isPending}
+                onClick={() => selected && assignSuggestion.mutate({ document: suggestion.document, domainId: selected.id })}
+                type="button"
+              >
+                <FolderPlus size={15} />
+                Assign
+              </button>
+            </article>
+          ))}
+          {selected && !suggestedDocuments.length ? <p className="empty-note">No outside-domain suggestions.</p> : null}
           {!selected ? <p className="empty-note">Select a domain to inspect assigned documents.</p> : null}
         </div>
       </aside>
