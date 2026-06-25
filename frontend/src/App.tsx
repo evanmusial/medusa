@@ -5959,6 +5959,7 @@ function DocumentPanelContent({
 
   useEffect(() => {
     if (readerMode !== "pdf" && readerMode !== "compare") return;
+    if (pdfDrivenReaderPageRef.current) return;
     const scroller = pdfPreviewScrollRef.current;
     const pageNode = scroller?.querySelector<HTMLElement>(`.pdf-page-render[data-page-number="${pdfPreviewPageTarget}"]`);
     if (!scroller || !pageNode) return;
