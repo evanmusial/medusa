@@ -7669,7 +7669,7 @@ pre {
 
 .status-metric-card {
   min-width: 0;
-  min-height: 118px;
+  min-height: 126px;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   align-items: start;
@@ -8836,6 +8836,177 @@ pre {
 
 .database-size-readout strong {
   font-size: 21px;
+}
+
+.status-panel .panel-title-row span,
+.status-acronym-panel span:not(.pill),
+.status-metric-card span:not(.status-metric-icon),
+.status-metric-card em,
+.status-fact-row span {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.status-metric-card em,
+.status-fact-row > div span {
+  font-weight: 400;
+}
+
+.status-title-row h2,
+.status-detail-panel h3 {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.status-acronym-panel h3 {
+  font-size: 21px;
+  font-weight: 500;
+}
+
+.status-metric-card strong {
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.22;
+}
+
+.status-fact-row strong,
+.status-fact-row > span {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.utilities-panel .panel-title-row span,
+.settings-grid .panel-title-row span,
+.utilities-status-grid span,
+.database-size-readout span,
+.utility-action-block span,
+.container-footprint-card span,
+.container-footprint-card em,
+.container-control-row span,
+.container-path-row span,
+.container-version-row span,
+.container-path-empty,
+.haproxy-stat-row span,
+.backup-action-block span,
+.restore-action-heading span,
+.backup-size-estimate,
+.restore-source-grid label,
+.restore-source-grid select,
+.backup-status-grid span,
+.verified-backup-value small,
+.backup-history-head span,
+.backup-history-main small,
+.backup-history-row > span:not(.pill),
+.legacy-export-actions a,
+.preference-control label,
+.citation-convention-control legend,
+.radio-row,
+.accent-settings label,
+.models-note,
+.model-task-label,
+.model-pricing-status span,
+.model-pricing-status p,
+.usage-metric-grid span,
+.usage-row,
+.concordance-estimate-summary span,
+.concordance-estimate-detail,
+.concordance-estimate-route,
+.import-processing-step-row.header,
+.import-processing-step-row small,
+.import-preset-grid legend,
+.model-options-group-label,
+.scope-summary,
+.capability-picker label,
+.run-row,
+.run-row.header {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-grid p,
+.container-footprint-card em,
+.container-control-row span,
+.container-path-row span,
+.container-version-row span,
+.haproxy-stat-row span,
+.backup-action-block span,
+.restore-action-heading span,
+.backup-size-estimate,
+.backup-history-head span,
+.backup-history-main small,
+.backup-history-row > span:not(.pill),
+.model-pricing-status p,
+.import-processing-step-row small,
+.model-route-note {
+  font-weight: 400;
+}
+
+.settings-grid p,
+.capability-grid p {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.utility-section-title h3,
+.settings-grid h2 {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.utilities-status-grid strong,
+.container-footprint-card strong,
+.usage-metric-grid strong {
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.database-size-readout strong {
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.database-maintenance-progress span,
+.database-maintenance-progress strong,
+.utility-action-block strong,
+.container-control-row strong,
+.container-path-row strong,
+.container-version-row strong,
+.haproxy-stat-row strong,
+.backup-action-block strong,
+.restore-action-heading strong,
+.backup-history-head strong,
+.backup-history-main strong,
+.backup-status-grid strong,
+.verified-backup-value strong,
+.model-pricing-status strong,
+.model-task-label,
+.capability-grid strong,
+.concordance-estimate-route span:first-child,
+.concordance-estimate-summary strong,
+.run-row span:first-child,
+.import-route-model {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.concordance-estimate-summary strong {
+  font-size: 16px;
+}
+
+.preference-warning {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
 }
 
 .preference-warning,

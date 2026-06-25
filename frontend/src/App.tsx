@@ -1188,13 +1188,9 @@ function modelPricingDateLabel(value?: string | null) {
 }
 
 function backupArtifactLabel(artifact: BackupArtifact) {
-  const pieces = [
-    artifact.filename,
-    backupDateLabel(artifact.completed_at || artifact.created_at),
-    artifact.hostname || "",
-    formatFileSize(artifact.size_bytes),
-  ].filter(Boolean);
-  return pieces.join(" - ");
+  const timestamp = backupDateLabel(artifact.completed_at || artifact.created_at) || "Unknown timestamp";
+  const size = formatFileSize(artifact.size_bytes) || "Size unknown";
+  return `${timestamp} - ${size}`;
 }
 
 function backupRunLabel(run: BackupRun) {
@@ -5832,7 +5828,8 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const selectedDownloadable = rows.filter((item) => selectedIds.includes(item.id) && item.has_pdf).length;
   const rowDownloadable = rows.filter((item) => item.has_pdf).length;
   const newDownloadable = newRows.filter((item) => item.has_pdf).length;
-  const summaryText = recommendations.isFetching
+  const recommendationsLoading = recommendations.isFetching && recommendations.data === undefined;
+  const summaryText = recommendationsLoading
     ? "Loading related papers"
     : view === "known"
       ? `${rows.length} known / ${rowDownloadable} with open PDFs`
@@ -6253,7 +6250,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
               ) : (
                 <div className="empty-inline">
                   <Sparkles size={17} />
-                  <span>{refresh.isPending || recommendations.isFetching ? "Finding related papers." : "No other related articles shown."}</span>
+                  <span>{refresh.isPending || recommendationsLoading ? "Finding related papers." : "No other related articles shown."}</span>
                 </div>
               )}
             </section>
@@ -13403,7 +13400,7 @@ function BudgetView() {
           <div className="panel-title-row">
             <div>
               <h2>Budget & Costs</h2>
-              <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isFetching ? "Loading usage" : "No recorded calls"}</span>
+              <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isLoading ? "Loading usage" : "No recorded calls"}</span>
             </div>
             <CircleDollarSign size={20} />
           </div>
@@ -13695,7 +13692,7 @@ function DatabaseBackupRestorePanel({
   const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestVerifiedBackupRun?.size_bytes) : "";
   const backupArtifactTotalBytes = backupArtifacts.reduce((total, artifact) => total + Math.max(0, artifact.size_bytes || 0), 0);
   const backupArtifactTotalSize = formatFileSize(backupArtifactTotalBytes) || "0 B";
-  const backupArtifactCountLabel = gcsBackupArtifacts.isFetching && !backupArtifacts.length
+  const backupArtifactCountLabel = gcsBackupArtifacts.isLoading && !backupArtifacts.length
     ? "Calculating"
     : backupArtifacts.length
       ? `${formatMetric(backupArtifacts.length)} ${backupArtifacts.length === 1 ? "backup" : "backups"}`
@@ -13756,7 +13753,7 @@ function DatabaseBackupRestorePanel({
               {startBackup.isPending ? "Starting" : "Backup Database"}
             </button>
           </AsyncActionSlot>
-          <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isFetching)}</p>
+          <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isLoading)}</p>
         </div>
         <div className="restore-action-block">
           <div className="restore-action-heading">
@@ -14077,10 +14074,26 @@ function UtilitiesView({
   const busy = databaseBusy || restartBusy;
   const importCacheCount = status?.import_cache_count ?? 0;
   const missingHashCount = status?.document_hash_missing_count ?? 0;
-  const cacheCountLabel = maintenanceStatus.isFetching && !status ? "..." : formatMetric(importCacheCount);
-  const missingHashCountLabel = maintenanceStatus.isFetching && !status ? "..." : formatMetric(missingHashCount);
-  const databaseSizeLabel = maintenanceStatus.isFetching && !status ? "..." : formatDatabaseSize(status?.database_size_bytes);
-  const utilitiesRefreshing = maintenanceStatus.isFetching || containerStatus.isFetching || haproxyStatus.isFetching;
+  const maintenanceLoading = maintenanceStatus.isFetching && !status;
+  const containerLoading = containerStatus.isFetching && !container;
+  const haproxyLoading = haproxyStatus.isFetching && !haproxy;
+  const utilitiesLoading = maintenanceLoading || containerLoading || haproxyLoading;
+  const cacheCountLabel = maintenanceLoading ? "..." : formatMetric(importCacheCount);
+  const hiddenProjectRowsLabel = maintenanceLoading ? "..." : formatMetric(status?.hidden_project_item_count);
+  const terminalJobsLabel = maintenanceLoading
+    ? "..."
+    : formatMetric((status?.terminal_import_job_count || 0) + (status?.orphan_import_job_count || 0));
+  const missingHashCountLabel = maintenanceLoading ? "..." : formatMetric(missingHashCount);
+  const databaseSizeLabel = maintenanceLoading ? "..." : formatDatabaseSize(status?.database_size_bytes);
+  const maintenanceStatisticsLabel = maintenanceLoading ? "Loading statistics" : "Statistics";
+  const containerStatusLine = containerLoading
+    ? "Loading runtime stats"
+    : container
+      ? container.containerized
+        ? "Docker runtime"
+        : "Local runtime"
+      : "Runtime stats unavailable";
+  const haproxyStatusLine = haproxyLoading ? "Loading proxy stats" : haproxy?.message || "Proxy stats unavailable";
   const activeMaintenanceLabel = status?.active_operation_label || (activeMaintenanceOperation ? activeMaintenanceOperation.replaceAll("_", " ") : "");
   const activeMaintenanceElapsed =
     status?.active_operation_elapsed_seconds !== undefined && status?.active_operation_elapsed_seconds !== null
@@ -14158,7 +14171,7 @@ function UtilitiesView({
   const proxyVisibleRows = proxyRows
     .filter((row) => ["medusa_mux", "medusa_https", "medusa_http_redirect", "medusa_frontend"].includes(row.proxy_name))
     .slice(0, 8);
-  const proxyStatusLabel = haproxyStatus.isFetching && !haproxy ? "Refreshing" : haproxy?.available ? "Online" : "Unavailable";
+  const proxyStatusLabel = haproxyLoading ? "Loading" : haproxy?.available ? "Online" : "Unavailable";
   const proxyRouteDetail = proxyServer
     ? `${proxyServer.proxy_name}/${proxyServer.service_name}`
     : proxyBackend
@@ -14207,7 +14220,7 @@ function UtilitiesView({
         <div className="panel-title-row">
           <div>
             <h2>Utilities</h2>
-            <span>{utilitiesRefreshing ? "Refreshing utility status" : "Database and container"}</span>
+            <span>{utilitiesLoading ? "Loading utility status" : "Database and container"}</span>
           </div>
           <Wrench size={20} />
         </div>
@@ -14226,11 +14239,11 @@ function UtilitiesView({
             </div>
             <div>
               <span>Hidden project rows</span>
-              <strong>{formatMetric(status?.hidden_project_item_count)}</strong>
+              <strong>{hiddenProjectRowsLabel}</strong>
             </div>
             <div>
               <span>Terminal jobs</span>
-              <strong>{formatMetric((status?.terminal_import_job_count || 0) + (status?.orphan_import_job_count || 0))}</strong>
+              <strong>{terminalJobsLabel}</strong>
             </div>
             <div>
               <span>MD5 pending</span>
@@ -14270,7 +14283,7 @@ function UtilitiesView({
             <div className="utility-action-block">
               <div>
                 <strong>Optimize Database</strong>
-                <span>{maintenanceStatus.isFetching ? "Refreshing" : "Statistics"}</span>
+                <span>{maintenanceStatisticsLabel}</span>
               </div>
               <AsyncActionSlot busy={optimizeRunning} feedback={optimizeFeedback.feedback} label="Database optimization in progress">
                 <button
@@ -14331,7 +14344,7 @@ function UtilitiesView({
           <div className="panel-title-row utility-section-title">
             <div>
               <h3>Container Footprint</h3>
-              <span>{containerStatus.isFetching ? "Refreshing runtime stats" : container?.containerized ? "Docker runtime" : "Local runtime"}</span>
+              <span>{containerStatusLine}</span>
             </div>
             <Server size={19} />
           </div>
@@ -14479,7 +14492,7 @@ function UtilitiesView({
           <div className="panel-title-row utility-section-title">
             <div>
               <h3>HAProxy Statistics</h3>
-              <span>{haproxyStatus.isFetching ? "Refreshing proxy stats" : haproxy?.message || "Waiting for proxy stats"}</span>
+              <span>{haproxyStatusLine}</span>
             </div>
             <Gauge size={19} />
           </div>
@@ -14660,7 +14673,11 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
   const database = databaseStatus.data;
   const haproxy = haproxyStatus.data;
   const release = releaseStatus.data;
-  const refreshing = containerStatus.isFetching || databaseStatus.isFetching || haproxyStatus.isFetching || releaseStatus.isFetching;
+  const statusLoading =
+    (containerStatus.isFetching && !container) ||
+    (databaseStatus.isFetching && !database) ||
+    (haproxyStatus.isFetching && !haproxy) ||
+    (releaseStatus.isFetching && !release);
   const memoryPercent =
     container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null && container?.memory_limit_bytes
       ? (container.memory_current_bytes / container.memory_limit_bytes) * 100
@@ -14723,7 +14740,7 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
     container?.process_count !== undefined && container?.process_count !== null
       ? `${formatMetric(container.process_count)} processes / ${formatMetric(container?.thread_count)} threads`
       : "Process counts unavailable";
-  const statusPillLabel = haproxy?.available ? "online" : refreshing && !haproxy ? "refreshing" : "unavailable";
+  const statusPillLabel = haproxy?.available ? "online" : statusLoading && !haproxy ? "loading" : "unavailable";
 
   return (
     <section className="workbench status-workbench">
@@ -14731,7 +14748,7 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
         <div className="panel-title-row status-title-row">
           <div>
             <h2>Status</h2>
-            <span>{refreshing ? "Refreshing Medusa status" : "Runtime, storage, and build identity"}</span>
+            <span>{statusLoading ? "Loading Medusa status" : "Runtime, storage, and build identity"}</span>
           </div>
           <Info size={20} />
         </div>
