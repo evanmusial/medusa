@@ -3276,6 +3276,163 @@ textarea {
   margin-bottom: 0;
 }
 
+.math-formula {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: baseline;
+  gap: 0.03em;
+  overflow-x: auto;
+  padding: 0 2px;
+  color: var(--ink);
+  font-family: "Cambria Math", "STIX Two Math", "Times New Roman", Times, serif;
+  font-size: 1.03em;
+  line-height: 1.25;
+  white-space: nowrap;
+  vertical-align: -0.12em;
+}
+
+.math-formula.display {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-2) 56%, transparent);
+  font-size: 1.08em;
+}
+
+.math-variable {
+  font-style: italic;
+}
+
+.math-symbol,
+.math-command,
+.math-operator,
+.math-text {
+  font-style: normal;
+}
+
+.math-command,
+.math-operator {
+  padding: 0 0.08em;
+}
+
+.math-text {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+.math-bold {
+  font-weight: 750;
+}
+
+.math-bb {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.math-cal {
+  font-style: italic;
+}
+
+.math-it {
+  font-style: italic;
+}
+
+.math-accent {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+  padding-top: 0.15em;
+}
+
+.math-accent::before {
+  position: absolute;
+  top: -0.28em;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.82em;
+  line-height: 1;
+}
+
+.math-accent-hat::before {
+  content: "^";
+}
+
+.math-accent-bar::before {
+  content: "¯";
+}
+
+.math-accent-vec::before {
+  content: "→";
+}
+
+.math-scripted {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  margin: 0 0.03em;
+  vertical-align: middle;
+}
+
+.math-base {
+  grid-row: 1 / 3;
+}
+
+.math-sup,
+.math-sub {
+  grid-column: 2;
+  font-size: 0.68em;
+  line-height: 1;
+}
+
+.math-sup {
+  grid-row: 1;
+  align-self: end;
+}
+
+.math-sub {
+  grid-row: 2;
+  align-self: start;
+}
+
+.math-fraction {
+  display: inline-grid;
+  grid-template-rows: auto auto;
+  align-items: center;
+  margin: 0 0.2em;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.math-fraction > span:first-child {
+  padding: 0 0.22em 1px;
+}
+
+.math-fraction > span:last-child {
+  border-top: 1px solid currentColor;
+  padding: 1px 0.22em 0;
+}
+
+.math-root {
+  display: inline-flex;
+  align-items: stretch;
+  margin: 0 0.08em;
+  vertical-align: middle;
+}
+
+.math-root-symbol {
+  padding-right: 1px;
+  font-size: 1.12em;
+  line-height: 1;
+}
+
+.math-radicand {
+  border-top: 1px solid currentColor;
+  padding: 0 0.18em;
+}
+
 .markdown-table-scroll {
   min-width: 0;
   max-width: 100%;

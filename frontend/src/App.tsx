@@ -2643,7 +2643,344 @@ function openSciHubAfterCopy(stash: DoiStash, copyTitle: () => Promise<void>) {
     });
 }
 
-function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+type InlineMathSegment =
+  | {
+      kind: "text";
+      text: string;
+    }
+  | {
+      display: boolean;
+      kind: "math";
+      latex: string;
+    };
+
+const LATEX_SYMBOLS: Record<string, string> = {
+  alpha: "α",
+  beta: "β",
+  gamma: "γ",
+  delta: "δ",
+  epsilon: "ε",
+  varepsilon: "ε",
+  zeta: "ζ",
+  eta: "η",
+  theta: "θ",
+  vartheta: "ϑ",
+  iota: "ι",
+  kappa: "κ",
+  lambda: "λ",
+  mu: "μ",
+  nu: "ν",
+  xi: "ξ",
+  pi: "π",
+  varpi: "ϖ",
+  rho: "ρ",
+  sigma: "σ",
+  tau: "τ",
+  upsilon: "υ",
+  phi: "φ",
+  varphi: "ϕ",
+  chi: "χ",
+  psi: "ψ",
+  omega: "ω",
+  Gamma: "Γ",
+  Delta: "Δ",
+  Theta: "Θ",
+  Lambda: "Λ",
+  Xi: "Ξ",
+  Pi: "Π",
+  Sigma: "Σ",
+  Upsilon: "Υ",
+  Phi: "Φ",
+  Psi: "Ψ",
+  Omega: "Ω",
+  cdot: "·",
+  times: "×",
+  div: "÷",
+  pm: "±",
+  mp: "∓",
+  leq: "≤",
+  le: "≤",
+  geq: "≥",
+  ge: "≥",
+  neq: "≠",
+  ne: "≠",
+  approx: "≈",
+  sim: "∼",
+  equiv: "≡",
+  propto: "∝",
+  infty: "∞",
+  partial: "∂",
+  nabla: "∇",
+  sum: "∑",
+  prod: "∏",
+  int: "∫",
+  oint: "∮",
+  lim: "lim",
+  to: "→",
+  rightarrow: "→",
+  leftarrow: "←",
+  leftrightarrow: "↔",
+  in: "∈",
+  notin: "∉",
+  subset: "⊂",
+  subseteq: "⊆",
+  superset: "⊃",
+  supseteq: "⊇",
+  cup: "∪",
+  cap: "∩",
+  forall: "∀",
+  exists: "∃",
+  emptyset: "∅",
+};
+
+const LATEX_UPRIGHT_OPERATORS = new Set(["sin", "cos", "tan", "log", "ln", "exp", "min", "max", "arg", "det"]);
+
+function isEscapedAt(text: string, index: number) {
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) slashCount += 1;
+  return slashCount % 2 === 1;
+}
+
+function findUnescaped(text: string, marker: string, startIndex: number) {
+  let cursor = startIndex;
+  while (cursor < text.length) {
+    const index = text.indexOf(marker, cursor);
+    if (index < 0) return -1;
+    if (!isEscapedAt(text, index)) return index;
+    cursor = index + marker.length;
+  }
+  return -1;
+}
+
+function findInlineDollarEnd(text: string, startIndex: number) {
+  for (let cursor = startIndex; cursor < text.length; cursor += 1) {
+    if (text[cursor] === "$" && text[cursor + 1] !== "$" && !isEscapedAt(text, cursor)) return cursor;
+  }
+  return -1;
+}
+
+function looksLikeInlineMath(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || /^\d+(?:\.\d+)?$/.test(trimmed)) return false;
+  return /\\[A-Za-z]+|[_^=<>±×÷∑∫√]|[A-Za-z]\s*[+\-*/]\s*[A-Za-z0-9]|\d\s*[+\-*/=]\s*[A-Za-z]/.test(trimmed);
+}
+
+function splitMathSegments(text: string): InlineMathSegment[] {
+  const segments: InlineMathSegment[] = [];
+  let cursor = 0;
+
+  const pushText = (endIndex: number) => {
+    if (endIndex > cursor) segments.push({ kind: "text", text: text.slice(cursor, endIndex) });
+  };
+
+  while (cursor < text.length) {
+    if (text.startsWith("\\(", cursor)) {
+      const endIndex = findUnescaped(text, "\\)", cursor + 2);
+      if (endIndex >= 0) {
+        pushText(cursor);
+        segments.push({ display: false, kind: "math", latex: text.slice(cursor + 2, endIndex).trim() });
+        cursor = endIndex + 2;
+        continue;
+      }
+    }
+    if (text.startsWith("\\[", cursor)) {
+      const endIndex = findUnescaped(text, "\\]", cursor + 2);
+      if (endIndex >= 0) {
+        pushText(cursor);
+        segments.push({ display: true, kind: "math", latex: text.slice(cursor + 2, endIndex).trim() });
+        cursor = endIndex + 2;
+        continue;
+      }
+    }
+    if (text.startsWith("$$", cursor) && !isEscapedAt(text, cursor)) {
+      const endIndex = findUnescaped(text, "$$", cursor + 2);
+      if (endIndex >= 0) {
+        pushText(cursor);
+        segments.push({ display: true, kind: "math", latex: text.slice(cursor + 2, endIndex).trim() });
+        cursor = endIndex + 2;
+        continue;
+      }
+    }
+    if (text[cursor] === "$" && text[cursor + 1] !== "$" && !isEscapedAt(text, cursor)) {
+      const endIndex = findInlineDollarEnd(text, cursor + 1);
+      if (endIndex >= 0) {
+        const latex = text.slice(cursor + 1, endIndex).trim();
+        if (looksLikeInlineMath(latex)) {
+          pushText(cursor);
+          segments.push({ display: false, kind: "math", latex });
+          cursor = endIndex + 1;
+          continue;
+        }
+      }
+    }
+    cursor += 1;
+  }
+  pushText(text.length);
+  return segments.length ? segments : [{ kind: "text", text }];
+}
+
+function renderLatexExpression(latex: string, keyPrefix: string): ReactNode[] {
+  let cursor = 0;
+  let keyIndex = 0;
+  const nextKey = (suffix: string) => `${keyPrefix}-${suffix}-${keyIndex++}`;
+
+  const skipSpaces = () => {
+    while (cursor < latex.length && /\s/.test(latex[cursor])) cursor += 1;
+  };
+
+  const renderTextNode = (value: string): ReactNode => {
+    if (/^[A-Za-z]$/.test(value)) return <span key={nextKey("var")} className="math-variable">{value}</span>;
+    if (/^[=+\-*/<>|(),.;:[\]]$/.test(value)) return <span key={nextKey("op")} className="math-operator">{value}</span>;
+    return value;
+  };
+
+  const parseSequence = (stopChar?: string): ReactNode[] => {
+    const nodes: ReactNode[] = [];
+    while (cursor < latex.length) {
+      if (stopChar && latex[cursor] === stopChar) {
+        cursor += 1;
+        break;
+      }
+      const atom = readAtom();
+      if (atom === null) continue;
+      nodes.push(readScripts(atom));
+    }
+    return nodes;
+  };
+
+  const parseRequiredGroup = (): ReactNode[] => {
+    skipSpaces();
+    if (latex[cursor] === "{") {
+      cursor += 1;
+      return parseSequence("}");
+    }
+    const atom = readAtom();
+    return atom === null ? [] : [readScripts(atom)];
+  };
+
+  const readScriptValue = (): ReactNode[] => {
+    skipSpaces();
+    if (latex[cursor] === "{") {
+      cursor += 1;
+      return parseSequence("}");
+    }
+    const atom = readAtom();
+    return atom === null ? [] : [atom];
+  };
+
+  const readScripts = (base: ReactNode): ReactNode => {
+    let sup: ReactNode[] | null = null;
+    let sub: ReactNode[] | null = null;
+    while (cursor < latex.length && (latex[cursor] === "^" || latex[cursor] === "_")) {
+      const marker = latex[cursor];
+      cursor += 1;
+      const script = readScriptValue();
+      if (marker === "^") sup = script;
+      else sub = script;
+    }
+    if (!sup && !sub) return base;
+    return (
+      <span key={nextKey("scripted")} className="math-scripted">
+        <span className="math-base">{base}</span>
+        {sup ? <span className="math-sup">{sup}</span> : null}
+        {sub ? <span className="math-sub">{sub}</span> : null}
+      </span>
+    );
+  };
+
+  const readCommand = (): ReactNode => {
+    let command = "";
+    while (cursor < latex.length && /[A-Za-z]/.test(latex[cursor])) {
+      command += latex[cursor];
+      cursor += 1;
+    }
+    if (!command) {
+      const literal = latex[cursor] || "";
+      cursor += 1;
+      return renderTextNode(literal);
+    }
+    if (command === "frac" || command === "dfrac" || command === "tfrac") {
+      const numerator = parseRequiredGroup();
+      const denominator = parseRequiredGroup();
+      return (
+        <span key={nextKey("fraction")} className="math-fraction">
+          <span>{numerator}</span>
+          <span>{denominator}</span>
+        </span>
+      );
+    }
+    if (command === "sqrt") {
+      const radicand = parseRequiredGroup();
+      return (
+        <span key={nextKey("root")} className="math-root">
+          <span className="math-root-symbol">√</span>
+          <span className="math-radicand">{radicand}</span>
+        </span>
+      );
+    }
+    if (command === "text" || command === "textrm" || command === "mathrm" || command === "operatorname") {
+      return (
+        <span key={nextKey("text")} className="math-text">
+          {parseRequiredGroup()}
+        </span>
+      );
+    }
+    if (command === "mathbf" || command === "boldsymbol") {
+      return (
+        <span key={nextKey("bold")} className="math-bold">
+          {parseRequiredGroup()}
+        </span>
+      );
+    }
+    if (command === "mathbb" || command === "mathcal" || command === "mathit") {
+      return (
+        <span key={nextKey(command)} className={`math-${command.slice(4)}`}>
+          {parseRequiredGroup()}
+        </span>
+      );
+    }
+    if (command === "hat" || command === "bar" || command === "vec") {
+      return (
+        <span key={nextKey("accent")} className={`math-accent math-accent-${command}`}>
+          {parseRequiredGroup()}
+        </span>
+      );
+    }
+    if (command === "left" || command === "right") {
+      skipSpaces();
+      const literal = latex[cursor] || "";
+      cursor += 1;
+      return renderTextNode(literal === "." ? "" : literal);
+    }
+    const symbol = LATEX_SYMBOLS[command];
+    if (symbol) return <span key={nextKey("symbol")} className="math-symbol">{symbol}</span>;
+    if (LATEX_UPRIGHT_OPERATORS.has(command)) return <span key={nextKey("operator")} className="math-command">{command}</span>;
+    return <span key={nextKey("unknown")} className="math-command">{command}</span>;
+  };
+
+  function readAtom(): ReactNode | null {
+    if (cursor >= latex.length) return null;
+    const char = latex[cursor];
+    cursor += 1;
+    if (char === "{") return <span key={nextKey("group")}>{parseSequence("}")}</span>;
+    if (char === "}") return null;
+    if (char === "\\") return readCommand();
+    if (/\s/.test(char)) return " ";
+    return renderTextNode(char);
+  }
+
+  return parseSequence();
+}
+
+function MathFormula({ display = false, latex, mathKey }: { display?: boolean; latex: string; mathKey: string }) {
+  return (
+    <span className={`math-formula ${display ? "display" : ""}`} role="math" aria-label={latex}>
+      {renderLatexExpression(latex, mathKey)}
+    </span>
+  );
+}
+
+function renderInlineMarkdownText(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(<u>.*?<\/u>|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
   let lastIndex = 0;
@@ -2659,6 +2996,16 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
     lastIndex = pattern.lastIndex;
   }
   if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  splitMathSegments(text).forEach((segment, index) => {
+    const key = `${keyPrefix}-math-${index}`;
+    if (segment.kind === "math") nodes.push(<MathFormula display={segment.display} key={key} latex={segment.latex} mathKey={key} />);
+    else nodes.push(...renderInlineMarkdownText(segment.text, `${keyPrefix}-text-${index}`));
+  });
   return nodes;
 }
 
@@ -6943,12 +7290,15 @@ function DocumentPanelContent({
     setVisualScanPageDraft((current) => (current === String(pageNumber) ? current : String(pageNumber)));
     if (readerMode === "compare") {
       const pageIndex = pages.findIndex((page) => page.page_number === pageNumber);
-      if (pageIndex >= 0 && pageIndex !== currentPageIndex) {
-        pdfDrivenReaderPageRef.current = true;
-        setReaderPageIndex(pageIndex);
+      if (pageIndex >= 0) {
+        setReaderPageIndex((currentIndex) => {
+          if (pageIndex === currentIndex) return currentIndex;
+          pdfDrivenReaderPageRef.current = true;
+          return pageIndex;
+        });
       }
     }
-  }, [currentPageIndex, currentPdfPreviewPage, pages, readerMode]);
+  }, [currentPdfPreviewPage, pages, readerMode]);
 
   const releaseScrollSync = () => {
     window.requestAnimationFrame(() => {
