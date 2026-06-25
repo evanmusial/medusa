@@ -5687,6 +5687,7 @@ pre {
 
 .export-panel h2,
 .database-backup-panel h2,
+.account-settings-panel h2,
 .preferences-panel h2,
 .storage-settings-panel h2,
 .import-processing-panel h2,
@@ -5700,6 +5701,7 @@ pre {
 
 .export-panel p,
 .database-backup-panel p,
+.account-settings-panel p,
 .preferences-panel p,
 .storage-settings-panel p,
 .import-processing-panel p,
@@ -5714,6 +5716,25 @@ pre {
   grid-column: span 2;
   display: grid;
   gap: 12px;
+}
+
+.account-settings-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+
+.account-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) repeat(3, minmax(150px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.account-save-button {
+  min-height: 42px;
+  align-self: end;
+  white-space: nowrap;
 }
 
 .import-processing-panel {
@@ -7756,6 +7777,7 @@ pre {
   .project-workbench,
   .workbench.split,
   .settings-grid,
+  .account-settings-grid,
 	  .editor-grid,
 	  .scope-grid,
 	  .reader-compare,
@@ -7803,6 +7825,7 @@ pre {
   }
 
   .preferences-panel,
+  .account-settings-panel,
   .storage-settings-panel,
   .model-settings-panel,
   .openai-usage-panel,

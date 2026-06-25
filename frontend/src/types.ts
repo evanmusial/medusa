@@ -4,6 +4,13 @@ export type User = {
   display_name: string;
 };
 
+export type AccountUpdatePayload = {
+  email?: string | null;
+  current_password: string;
+  new_password?: string | null;
+  new_password_confirmation?: string | null;
+};
+
 export type RuntimeLocation = {
   app_name: string;
   expansion: string;

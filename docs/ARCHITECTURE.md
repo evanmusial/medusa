@@ -327,6 +327,8 @@ Authentication:
 - Single-user password login.
 - Session cookies are HTTP-only and backed by hashed session tokens in PostgreSQL.
 - Default dev credentials exist only so a fresh local stack is usable. Real use should set `MEDUSA_PASSWORD` in `.env`.
+- `MEDUSA_ADMIN_EMAIL` and `MEDUSA_PASSWORD` seed the first admin account only. Once the user row exists, the live login email and password are PostgreSQL account state, and Settings > Account is the supported in-app rotation path.
+- Account credential changes require the current password. Password changes hash the new password and revoke other active sessions while preserving the browser session that made the change.
 
 Secrets:
 

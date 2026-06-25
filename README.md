@@ -78,7 +78,7 @@ https://medusa.home.musial.io:3737
 
 Plain HTTP requests on port `3737` redirect to `https://medusa.home.musial.io:3737` on the same port. The bundled deployment expects a certificate that covers `*.home.musial.io`; change `MEDUSA_PUBLIC_HOST`, the HAProxy redirect/check host, and the certificate files together for another local domain.
 
-The default email is `admin@medusa.local` unless changed in `.env`.
+The login email defaults to `admin@medusa.local` and the first admin password comes from `MEDUSA_PASSWORD` in `.env`. Those `.env` values seed the account when Medusa creates it for the first time; after that, change the live login email or password from Settings > Account.
 
 ## TLS And HAProxy
 

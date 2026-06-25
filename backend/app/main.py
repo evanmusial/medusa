@@ -55,6 +55,7 @@ from app.schemas import (
     AccessorySummaryCreate,
     AccessorySummaryOut,
     AccessorySummaryPatch,
+    AccountUpdateRequest,
     AnnotationCreate,
     AnnotationOut,
     AnnotationPatch,
@@ -145,7 +146,7 @@ from app.schemas import (
     TagRename,
     UserOut,
 )
-from app.security import create_session, ensure_admin_user, revoke_session, user_for_token, verify_password
+from app.security import create_session, ensure_admin_user, hash_password, revoke_other_sessions, revoke_session, user_for_token, verify_password
 from app.services.accessory_summaries import create_accessory_summary
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
@@ -1128,6 +1129,46 @@ def logout(
 
 @app.get("/api/me", response_model=UserOut)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
+    return user
+
+
+@app.patch("/api/me", response_model=UserOut)
+def update_me(
+    payload: AccountUpdateRequest,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> User:
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+
+    next_email = payload.email.strip().lower() if payload.email is not None else user.email
+    if not next_email or "@" not in next_email or len(next_email) > 320:
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    if next_email != user.email:
+        existing = (
+            db.query(User)
+            .filter(func.lower(User.email) == next_email.lower())
+            .filter(User.id != user.id)
+            .one_or_none()
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Email is already in use")
+        user.email = next_email
+
+    password_change_requested = payload.new_password is not None or payload.new_password_confirmation is not None
+    if password_change_requested:
+        next_password = payload.new_password or ""
+        if next_password != (payload.new_password_confirmation or ""):
+            raise HTTPException(status_code=400, detail="New passwords do not match")
+        if len(next_password) < 8:
+            raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+        user.password_hash = hash_password(next_password)
+        revoke_other_sessions(db, user, token)
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 

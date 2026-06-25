@@ -60,6 +60,7 @@ import {
   Image,
   Inbox,
   Italic,
+  KeyRound,
   Library,
   HardDrive,
   ListChecks,
@@ -145,6 +146,7 @@ import type {
   TagRelationshipSuggestion,
   TagStatusSuggestion,
   TagOptimizationSuggestion,
+  User,
   VisualScanCandidate,
   VisualScanReview,
 } from "./types";
@@ -2677,7 +2679,7 @@ function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; 
 
 function Login() {
   const [email, setEmail] = useState("admin@medusa.local");
-  const [password, setPassword] = useState("medusa");
+  const [password, setPassword] = useState("");
   const queryClient = useQueryClient();
   const login = useMutation({
     mutationFn: () => api.login(email, password),
@@ -2698,6 +2700,7 @@ function Login() {
           <label>
             Email
             <input
+              autoComplete="username"
               data-tooltip="Enter the Medusa account email for this local instance."
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -2706,7 +2709,8 @@ function Login() {
           <label>
             Password
             <input
-              data-tooltip="Enter the Medusa password for this local instance."
+              autoComplete="current-password"
+              data-tooltip="Enter the password set with MEDUSA_PASSWORD on first boot or changed later in Settings."
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -2714,10 +2718,10 @@ function Login() {
           </label>
           <button
             className="primary-button"
-            data-disabled-reason="the sign-in request is already running."
+            data-disabled-reason={login.isPending ? "the sign-in request is already running." : "email and password are required."}
             data-tooltip="Sign in to Medusa with the email and password in this form."
             type="submit"
-            disabled={login.isPending}
+            disabled={login.isPending || !email.trim() || !password}
           >
             <CheckCircle2 size={17} />
             Sign in
@@ -12817,6 +12821,7 @@ function ConcordanceEstimatePanel({
 
 function SettingsView({
   capabilities,
+  currentUser,
   runs,
   jobs,
   preferences,
@@ -12831,6 +12836,7 @@ function SettingsView({
   query,
 }: {
   capabilities: ConcordanceCapability[];
+  currentUser?: User;
   runs: ConcordanceRun[];
   jobs: ConcordanceJob[];
   preferences?: AppPreferences;
@@ -12870,10 +12876,15 @@ function SettingsView({
   const [secondPassProcessingEnabled, setSecondPassProcessingEnabled] = useState(
     preferences?.second_pass_processing_enabled ?? true,
   );
+  const [accountEmail, setAccountEmail] = useState(currentUser?.email || "");
+  const [accountCurrentPassword, setAccountCurrentPassword] = useState("");
+  const [accountNewPassword, setAccountNewPassword] = useState("");
+  const [accountNewPasswordConfirmation, setAccountNewPasswordConfirmation] = useState("");
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
+  const accountUpdateFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
   const modelPricingFeedback = useAsyncActionFeedback();
   const serviceAccountUploadFeedback = useAsyncActionFeedback();
@@ -12905,6 +12916,10 @@ function SettingsView({
       setSecondPassProcessingEnabled(preferences.second_pass_processing_enabled ?? true);
     }
   }, [preferences]);
+
+  useEffect(() => {
+    setAccountEmail(currentUser?.email || "");
+  }, [currentUser?.email]);
 
   useEffect(() => {
     setSelectedCapabilityKeys((current) => (current.length ? current : capabilities.map((capability) => capability.key)));
@@ -12963,6 +12978,26 @@ function SettingsView({
     },
     onError: (error) => {
       createRunFeedback.showError(actionFailureMessage("Could not start Concordance Run", error));
+    },
+  });
+  const updateAccount = useMutation({
+    mutationFn: () =>
+      api.updateMe({
+        email: accountEmail.trim(),
+        current_password: accountCurrentPassword,
+        new_password: accountNewPassword || null,
+        new_password_confirmation: accountNewPasswordConfirmation || null,
+      }),
+    onSuccess: (updatedUser) => {
+      accountUpdateFeedback.showSuccess();
+      queryClient.setQueryData(["me"], updatedUser);
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+      setAccountCurrentPassword("");
+      setAccountNewPassword("");
+      setAccountNewPasswordConfirmation("");
+    },
+    onError: (error) => {
+      accountUpdateFeedback.showError(actionFailureMessage("Could not update account", error));
     },
   });
   const savePreferences = useMutation({
@@ -13128,6 +13163,28 @@ function SettingsView({
   const currentDocumentCacheSizeMb = documentCacheStatus.data?.current_size_mb;
   const currentDocumentCacheSizeLabel =
     typeof currentDocumentCacheSizeMb === "number" ? `${formatMetric(currentDocumentCacheSizeMb)} MB` : "... MB";
+  const accountEmailValue = accountEmail.trim();
+  const accountPasswordChangeRequested = Boolean(accountNewPassword || accountNewPasswordConfirmation);
+  const accountDirty = Boolean(
+    currentUser &&
+      (accountEmailValue !== currentUser.email || accountPasswordChangeRequested),
+  );
+  const accountUpdateDisabledReason = !currentUser
+    ? "the current account is still loading."
+    : updateAccount.isPending
+      ? "account update is already running."
+      : !accountDirty
+        ? "there are no account changes to save."
+        : !accountCurrentPassword
+          ? "current password is required to change account credentials."
+          : !accountEmailValue
+            ? "account email is required."
+            : accountPasswordChangeRequested && accountNewPassword.length < 8
+              ? "new password must be at least 8 characters."
+              : accountPasswordChangeRequested && accountNewPassword !== accountNewPasswordConfirmation
+                ? "new password confirmation must match."
+                : "";
+  const accountUpdateDisabled = Boolean(accountUpdateDisabledReason);
   const savePreferencesDisabled = !preferences || !preferenceDirty || savePreferences.isPending;
   const serviceAccountName =
     preferences?.google_service_account_name || "None, please upload a service account JSON";
@@ -13179,6 +13236,88 @@ function SettingsView({
   return (
     <section className="workbench settings-grid">
       <header className="settings-save-row">{renderSaveAllButton("top")}</header>
+      <div className="account-settings-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Account</h2>
+            <span>{currentUser?.display_name || "Signed in user"}</span>
+          </div>
+          <KeyRound size={20} />
+        </div>
+        <form
+          className="account-settings-grid"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!accountUpdateDisabled) updateAccount.mutate();
+          }}
+        >
+          <div className="preference-control">
+            <label htmlFor="account-email">
+              <span>Email</span>
+              <strong>{currentUser?.email || "Loading"}</strong>
+            </label>
+            <input
+              autoComplete="username"
+              data-tooltip="Update the email used at the Medusa login screen."
+              id="account-email"
+              onChange={(event) => setAccountEmail(event.target.value)}
+              type="email"
+              value={accountEmail}
+            />
+          </div>
+          <div className="preference-control">
+            <label htmlFor="account-current-password">
+              <span>Current password</span>
+            </label>
+            <input
+              autoComplete="current-password"
+              data-tooltip="Enter the current password before saving account credential changes."
+              id="account-current-password"
+              onChange={(event) => setAccountCurrentPassword(event.target.value)}
+              type="password"
+              value={accountCurrentPassword}
+            />
+          </div>
+          <div className="preference-control">
+            <label htmlFor="account-new-password">
+              <span>New password</span>
+            </label>
+            <input
+              autoComplete="new-password"
+              data-tooltip="Enter a new password only when you want to rotate the login password."
+              id="account-new-password"
+              onChange={(event) => setAccountNewPassword(event.target.value)}
+              type="password"
+              value={accountNewPassword}
+            />
+          </div>
+          <div className="preference-control">
+            <label htmlFor="account-new-password-confirmation">
+              <span>Confirm password</span>
+            </label>
+            <input
+              autoComplete="new-password"
+              data-tooltip="Repeat the new password before saving a password change."
+              id="account-new-password-confirmation"
+              onChange={(event) => setAccountNewPasswordConfirmation(event.target.value)}
+              type="password"
+              value={accountNewPasswordConfirmation}
+            />
+          </div>
+          <AsyncActionSlot feedback={accountUpdateFeedback.feedback}>
+            <button
+              className={asyncFeedbackClass("primary-button account-save-button", accountUpdateFeedback.feedback, updateAccount.isPending)}
+              data-disabled-reason={accountUpdateDisabledReason}
+              data-tooltip="Save account email or password changes after verifying the current password."
+              disabled={accountUpdateDisabled}
+              type="submit"
+            >
+              <Save className={updateAccount.isPending ? "spin" : ""} size={16} />
+              {updateAccount.isPending ? "Saving" : "Save Account"}
+            </button>
+          </AsyncActionSlot>
+        </form>
+      </div>
       <div className="storage-settings-panel">
         <div className="panel-title-row">
           <div>
@@ -14534,6 +14673,7 @@ export default function App() {
         {activeView === "settings" ? (
           <SettingsView
             capabilities={concordanceCapabilities.data || []}
+            currentUser={me.data}
             domains={domains.data || []}
             jobs={concordanceJobs.data || []}
             openaiUsage={openaiUsage.data}

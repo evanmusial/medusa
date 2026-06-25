@@ -20,6 +20,13 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AccountUpdateRequest(BaseModel):
+    email: str | None = None
+    current_password: str
+    new_password: str | None = None
+    new_password_confirmation: str | None = None
+
+
 class UserOut(ApiModel):
     id: str
     email: str

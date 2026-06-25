@@ -226,6 +226,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add production-password guardrails.
   - Acceptance: default password use is visibly warned in UI and can be disabled through `.env`.
+  - Partial: Settings > Account now rotates the live login email/password after current-password verification, password changes revoke other sessions, and the login form no longer prefills the default password. Remaining work is the visible default-password warning/control.
 
 ## Testing And QA
 

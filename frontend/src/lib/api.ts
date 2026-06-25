@@ -1,6 +1,7 @@
 import type {
   AccessorySummary,
   AccessorySummaryPayload,
+  AccountUpdatePayload,
   Annotation,
   AnnotationPayload,
   AppPreferences,
@@ -82,6 +83,8 @@ export const api = {
     request<User>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   logout: () => request<{ status: string }>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/me"),
+  updateMe: (body: AccountUpdatePayload) =>
+    request<User>("/api/me", { method: "PATCH", body: JSON.stringify(body) }),
   runtimeLocation: (browserHost: string) =>
     request<RuntimeLocation>(`/api/runtime-location?browser_host=${encodeURIComponent(browserHost)}`),
   dashboard: () => request<Dashboard>("/api/dashboard"),

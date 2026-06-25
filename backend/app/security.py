@@ -58,6 +58,17 @@ def revoke_session(db: Session, token: str) -> None:
         db.commit()
 
 
+def revoke_other_sessions(db: Session, user: User, token: str | None) -> None:
+    query = (
+        db.query(SessionToken)
+        .filter(SessionToken.user_id == user.id)
+        .filter(SessionToken.revoked_at.is_(None))
+    )
+    if token:
+        query = query.filter(SessionToken.token_hash != hash_token(token))
+    query.update({"revoked_at": utc_now()}, synchronize_session=False)
+
+
 def user_for_token(db: Session, token: str | None) -> User | None:
     if not token:
         return None
