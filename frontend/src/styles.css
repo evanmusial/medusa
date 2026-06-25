@@ -19,6 +19,8 @@
   --danger-soft: #fde7e9;
   --action-success: #0f766e;
   --action-error: #b4232d;
+  --button-font-size: 13px;
+  --button-font-weight: 400;
   --library-row-alt: #f6f8fb;
   --library-row-selected: #dceafe;
   --library-row-selected-hover: #d2e3ff;
@@ -75,6 +77,21 @@ textarea {
 
 button {
   cursor: pointer;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
+}
+
+button :where(span, strong, b, small, em),
+.primary-button :where(span, strong, b, small, em),
+.secondary-button :where(span, strong, b, small, em),
+.icon-button :where(span, strong, b, small, em),
+.text-button :where(span, strong, b, small, em),
+.bulk-multi-trigger :where(span, strong, b, small, em),
+.model-select-trigger :where(span, strong, b, small, em),
+.stash-upload-button :where(span, strong, b, small, em),
+.stash-upload-drop :where(span, strong, b, small, em) {
+  font-size: inherit !important;
+  font-weight: inherit !important;
 }
 
 .loading-screen,
@@ -229,6 +246,8 @@ textarea {
   min-height: 38px;
   padding: 0 12px;
   color: var(--ink);
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
 }
 
 .primary-button svg,
@@ -277,8 +296,6 @@ textarea {
   min-height: 38px;
   padding: 0 12px;
   white-space: nowrap;
-  font-size: 0.9rem;
-  font-weight: 700;
 }
 
 .release-upgrade-button.pending {
@@ -579,7 +596,6 @@ textarea {
   background: transparent;
   color: var(--blue);
   padding: 0 4px;
-  font-weight: 750;
 }
 
 .text-button:hover {
@@ -997,8 +1013,8 @@ textarea {
 
 .saved-search-apply small {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .pane-heading {
@@ -1629,8 +1645,8 @@ textarea {
   background: var(--panel);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   padding: 0 8px;
   text-align: left;
 }
@@ -1710,8 +1726,8 @@ textarea {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
-  font-weight: 750;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   padding: 0 8px;
   text-align: left;
 }
@@ -2655,8 +2671,8 @@ textarea {
   background: var(--panel-2);
   color: var(--ink);
   padding: 0 12px;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   line-height: 1;
 }
 
@@ -3689,8 +3705,8 @@ textarea {
   background: var(--panel-2);
   color: var(--ink);
   padding: 0 9px;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
 }
 
 .recommendation-view-tabs button.selected,
@@ -4318,6 +4334,18 @@ button.history-row {
   gap: 6px;
 }
 
+.history-section-title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.history-section-title span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .history-current {
   min-height: 32px;
   display: inline-flex;
@@ -4331,6 +4359,15 @@ button.history-row {
   font-weight: 800;
 }
 
+.history-compact-summary {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 8px;
+}
+
 .history-preview {
   display: grid;
   gap: 3px;
@@ -4341,7 +4378,9 @@ button.history-row {
 }
 
 .history-preview span,
-.history-preview small {
+.history-preview small,
+.history-compact-summary span,
+.history-compact-summary small {
   color: var(--muted);
   line-height: 1.4;
 }
@@ -4555,8 +4594,8 @@ pre {
   background: var(--blue-soft);
   color: var(--ink);
   padding: 0 8px;
-  font-size: 12px;
-  font-weight: 750;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
 }
 
 .selected-chips button span {
@@ -4603,7 +4642,12 @@ pre {
   white-space: nowrap;
 }
 
-.picker-options button small,
+.picker-options button small {
+  color: var(--muted);
+  font-size: inherit;
+  font-weight: inherit;
+}
+
 .picker-empty {
   color: var(--muted);
   font-size: 12px;
@@ -4828,8 +4872,8 @@ pre {
   gap: 7px;
   padding: 0 10px;
   color: var(--ink);
-  font-size: 12px;
-  font-weight: 750;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   line-height: 1;
   cursor: pointer;
   user-select: none;
@@ -5329,6 +5373,8 @@ pre {
   justify-content: flex-start;
   gap: 6px;
   font: inherit;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   text-align: left;
 }
 
@@ -5753,8 +5799,8 @@ pre {
   background: var(--panel-2);
   color: var(--ink);
   padding: 0 10px;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
 }
 
 .bibliography-tabs button.selected {
@@ -7307,8 +7353,8 @@ pre {
   background: var(--panel);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   padding: 0 10px;
   text-align: left;
 }
@@ -7366,8 +7412,8 @@ pre {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
   padding: 0 8px;
   text-align: left;
 }
@@ -7379,7 +7425,7 @@ pre {
 
 .model-default-marker {
   color: var(--muted);
-  font-weight: 500;
+  font-weight: inherit;
   white-space: nowrap;
 }
 

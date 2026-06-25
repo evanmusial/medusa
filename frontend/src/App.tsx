@@ -9,7 +9,7 @@ import type {
   RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   Background,
   Controls,
@@ -1790,6 +1790,15 @@ function PriorityPill({ value }: { value?: string | null }) {
 
 function MissingDoiPill() {
   return <span className="pill warn doi-gap-pill">No DOI</span>;
+}
+
+function patchCachedDocumentSummaries(
+  queryClient: QueryClient,
+  patch: Partial<DocumentSummary> & Pick<DocumentSummary, "id">,
+) {
+  queryClient.setQueriesData<DocumentSummary[]>({ queryKey: ["documents"] }, (current) =>
+    current?.map((item) => (item.id === patch.id ? { ...item, ...patch } : item)),
+  );
 }
 
 function showLibraryPriorityPill(value?: string | null) {
@@ -5625,6 +5634,7 @@ function DocumentPanelContent({
   });
   const [citationEditError, setCitationEditError] = useState<string | null>(null);
   const [selectedHistoryVersionId, setSelectedHistoryVersionId] = useState<string | null>(null);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [historyRestoreError, setHistoryRestoreError] = useState<string | null>(null);
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
@@ -5644,9 +5654,22 @@ function DocumentPanelContent({
   });
   const updateDocument = useMutation({
     mutationFn: (body: DocumentUpdatePayload) => api.updateDocument(document.id, body),
-    onSuccess: () => {
+    onSuccess: (updatedDocument) => {
       setEditing(false);
       setSaveError(null);
+      setDraft(draftFromDocument(updatedDocument));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      patchCachedDocumentSummaries(queryClient, {
+        id: updatedDocument.id,
+        apa_citation: updatedDocument.apa_citation,
+        apa_in_text_citation: updatedDocument.apa_in_text_citation,
+        citation_status: updatedDocument.citation_status,
+        doi: updatedDocument.doi,
+        priority: updatedDocument.priority,
+        read_status: updatedDocument.read_status,
+        rich_summary: updatedDocument.rich_summary,
+        title: updatedDocument.title,
+      });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["tags"] });
@@ -5693,6 +5716,7 @@ function DocumentPanelContent({
       setDoiEditError(null);
       setDraft(draftFromDocument(updatedDocument));
       queryClient.setQueryData(["document", document.id], updatedDocument);
+      patchCachedDocumentSummaries(queryClient, { id: updatedDocument.id, doi: updatedDocument.doi });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -6064,6 +6088,7 @@ function DocumentPanelContent({
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
     setCitationEditError(null);
     setSelectedHistoryVersionId(null);
+    setHistoryExpanded(false);
     setHistoryRestoreError(null);
   }, [document.id]);
 
@@ -6150,6 +6175,9 @@ function DocumentPanelContent({
   const selectedHistoryChangedFields = selectedHistoryVersion ? changedFieldsForVersion(selectedHistoryVersion) : [];
   const selectedHistoryPreviewLines = selectedHistoryVersion ? versionPreviewLines(selectedHistoryVersion) : [];
   const selectedHistoryRestorable = selectedHistoryVersion ? versionIsRestorable(selectedHistoryVersion) : false;
+  const latestHistoryVersion = historyRows[0];
+  const latestHistoryChangedFields = latestHistoryVersion ? changedFieldsForVersion(latestHistoryVersion) : [];
+  const latestHistoryPreviewLines = latestHistoryVersion ? versionPreviewLines(latestHistoryVersion) : [];
   const citationRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && isActiveConcordanceStatus(job.status),
   );
@@ -8502,99 +8530,129 @@ function DocumentPanelContent({
           <p>No custom attributes.</p>
         )}
       </section>
-      <section className="detail-section">
-        <h3>History</h3>
+      <section className={`detail-section history-section ${historyExpanded ? "expanded" : "compact"}`}>
+        <div className="detail-section-title-row history-section-head">
+          <div className="history-section-title">
+            <h3>History</h3>
+            <span>{historyRows.length ? `${historyRows.length} snapshot${historyRows.length === 1 ? "" : "s"}` : "No edit history yet"}</span>
+          </div>
+          {historyRows.length ? (
+            <button
+              className="secondary-button compact"
+              data-tooltip={historyExpanded ? "Compact the document history section." : "Expand the document history section."}
+              onClick={() => {
+                setHistoryExpanded((value) => !value);
+                setHistoryRestoreError(null);
+              }}
+              type="button"
+            >
+              {historyExpanded ? <ArrowDown size={14} /> : <ChevronRight size={14} />}
+              {historyExpanded ? "Compact" : "Expand"}
+            </button>
+          ) : null}
+        </div>
         {historyRows.length ? (
-          <div className="history-browser">
-            {selectedHistoryVersion ? (
-              <div className="history-toolbar">
-                <button
-                  className="secondary-button compact"
-                  data-disabled-reason={
-                    restoreHistoryVersion.isPending
-                      ? "a history restore is already running."
-                      : "this is the newest available history snapshot."
-                  }
-                  data-tooltip="Step to the next newer document history snapshot."
-                  disabled={selectedHistoryIndex <= 0 || restoreHistoryVersion.isPending}
-                  onClick={() => selectHistoryOffset(-1)}
-                  type="button"
-                >
-                  <ChevronLeft size={14} />
-                  Newer
-                </button>
-                <span className="history-current">v{selectedHistoryVersion.version_number}</span>
-                <button
-                  className="secondary-button compact"
-                  data-disabled-reason={
-                    restoreHistoryVersion.isPending
-                      ? "a history restore is already running."
-                      : "this is the oldest available history snapshot."
-                  }
-                  data-tooltip="Step to the next older document history snapshot."
-                  disabled={selectedHistoryIndex >= historyRows.length - 1 || restoreHistoryVersion.isPending}
-                  onClick={() => selectHistoryOffset(1)}
-                  type="button"
-                >
-                  Older
-                  <ChevronRight size={14} />
-                </button>
-                <button
-                  className="primary-button compact"
-                  data-disabled-reason={
-                    restoreHistoryVersion.isPending
-                      ? "a history restore is already running."
-                      : "the selected history snapshot has no restorable document or page fields."
-                  }
-                  data-tooltip="Restore the selected history snapshot as the current document state and append a new history entry."
-                  disabled={!selectedHistoryRestorable || restoreHistoryVersion.isPending}
-                  onClick={restoreSelectedHistoryVersion}
-                  type="button"
-                >
-                  <RotateCcw size={14} />
-                  Restore as Current
-                </button>
-              </div>
-            ) : null}
-            {selectedHistoryVersion ? (
-              <div className="history-preview">
-                <strong>{selectedHistoryVersion.change_note || "Snapshot"}</strong>
-                <span>
-                  {selectedHistoryPreviewLines.length
-                    ? selectedHistoryPreviewLines.join(" / ")
-                    : selectedHistoryRestorable
-                      ? `v${selectedHistoryVersion.version_number}`
-                      : "No restorable fields"}
-                </span>
-                {selectedHistoryChangedFields.length ? <small>{selectedHistoryChangedFields.join(", ")}</small> : null}
-              </div>
-            ) : null}
-            {historyRestoreError ? <p className="form-error">{historyRestoreError}</p> : null}
-            <div className="history-list">
-              {historyRows.map((version) => {
-                const changedFields = changedFieldsForVersion(version);
-                const selected = selectedHistoryVersion?.id === version.id;
-                return (
+          historyExpanded ? (
+            <div className="history-browser">
+              {selectedHistoryVersion ? (
+                <div className="history-toolbar">
                   <button
-                    key={version.id}
-                    className={`history-row ${selected ? "selected" : ""}`}
-                    data-tooltip={`Select history snapshot v${version.version_number} for preview and possible restore.`}
-                    onClick={() => {
-                      setSelectedHistoryVersionId(version.id);
-                      setHistoryRestoreError(null);
-                    }}
+                    className="secondary-button compact"
+                    data-disabled-reason={
+                      restoreHistoryVersion.isPending
+                        ? "a history restore is already running."
+                        : "this is the newest available history snapshot."
+                    }
+                    data-tooltip="Step to the next newer document history snapshot."
+                    disabled={selectedHistoryIndex <= 0 || restoreHistoryVersion.isPending}
+                    onClick={() => selectHistoryOffset(-1)}
                     type="button"
                   >
-                    <strong>v{version.version_number}</strong>
-                    <span>
-                      {version.change_note || "Snapshot"}
-                      {changedFields.length ? ` / ${changedFields.join(", ")}` : ""}
-                    </span>
+                    <ChevronLeft size={14} />
+                    Newer
                   </button>
-                );
-              })}
+                  <span className="history-current">v{selectedHistoryVersion.version_number}</span>
+                  <button
+                    className="secondary-button compact"
+                    data-disabled-reason={
+                      restoreHistoryVersion.isPending
+                        ? "a history restore is already running."
+                        : "this is the oldest available history snapshot."
+                    }
+                    data-tooltip="Step to the next older document history snapshot."
+                    disabled={selectedHistoryIndex >= historyRows.length - 1 || restoreHistoryVersion.isPending}
+                    onClick={() => selectHistoryOffset(1)}
+                    type="button"
+                  >
+                    Older
+                    <ChevronRight size={14} />
+                  </button>
+                  <button
+                    className="primary-button compact"
+                    data-disabled-reason={
+                      restoreHistoryVersion.isPending
+                        ? "a history restore is already running."
+                        : "the selected history snapshot has no restorable document or page fields."
+                    }
+                    data-tooltip="Restore the selected history snapshot as the current document state and append a new history entry."
+                    disabled={!selectedHistoryRestorable || restoreHistoryVersion.isPending}
+                    onClick={restoreSelectedHistoryVersion}
+                    type="button"
+                  >
+                    <RotateCcw size={14} />
+                    Restore as Current
+                  </button>
+                </div>
+              ) : null}
+              {selectedHistoryVersion ? (
+                <div className="history-preview">
+                  <strong>{selectedHistoryVersion.change_note || "Snapshot"}</strong>
+                  <span>
+                    {selectedHistoryPreviewLines.length
+                      ? selectedHistoryPreviewLines.join(" / ")
+                      : selectedHistoryRestorable
+                        ? `v${selectedHistoryVersion.version_number}`
+                        : "No restorable fields"}
+                  </span>
+                  {selectedHistoryChangedFields.length ? <small>{selectedHistoryChangedFields.join(", ")}</small> : null}
+                </div>
+              ) : null}
+              {historyRestoreError ? <p className="form-error">{historyRestoreError}</p> : null}
+              <div className="history-list">
+                {historyRows.map((version) => {
+                  const changedFields = changedFieldsForVersion(version);
+                  const selected = selectedHistoryVersion?.id === version.id;
+                  return (
+                    <button
+                      key={version.id}
+                      className={`history-row ${selected ? "selected" : ""}`}
+                      data-tooltip={`Select history snapshot v${version.version_number} for preview and possible restore.`}
+                      onClick={() => {
+                        setSelectedHistoryVersionId(version.id);
+                        setHistoryRestoreError(null);
+                      }}
+                      type="button"
+                    >
+                      <strong>v{version.version_number}</strong>
+                      <span>
+                        {version.change_note || "Snapshot"}
+                        {changedFields.length ? ` / ${changedFields.join(", ")}` : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ) : latestHistoryVersion ? (
+            <div className="history-compact-summary">
+              <strong>Latest v{latestHistoryVersion.version_number}</strong>
+              <span>
+                {latestHistoryVersion.change_note || "Snapshot"}
+                {latestHistoryPreviewLines.length ? ` / ${latestHistoryPreviewLines.join(" / ")}` : ""}
+              </span>
+              {latestHistoryChangedFields.length ? <small>{latestHistoryChangedFields.join(", ")}</small> : null}
+            </div>
+          ) : null
         ) : (
           <p>No edit history yet.</p>
         )}
@@ -15005,6 +15063,13 @@ export default function App() {
     enabled: Boolean(me.data && selectedId),
     refetchInterval: 4000,
   });
+  useEffect(() => {
+    if (!selectedDocument.data) return;
+    patchCachedDocumentSummaries(queryClient, {
+      id: selectedDocument.data.id,
+      doi: selectedDocument.data.doi,
+    });
+  }, [queryClient, selectedDocument.data?.doi, selectedDocument.data?.id]);
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: Boolean(me.data), refetchInterval: 4000 });
   const concordanceCapabilities = useQuery({
     queryKey: ["concordance-capabilities"],
