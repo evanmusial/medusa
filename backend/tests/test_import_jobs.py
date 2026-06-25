@@ -340,6 +340,99 @@ def test_import_estimates_reflect_processing_preset_steps(monkeypatch, tmp_path)
     assert deep_estimate["estimated_cost_usd"] > strict_estimate["estimated_cost_usd"]
 
 
+def test_import_exemplar_estimates_keep_per_document_model_floor(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import estimate_import_job_cost
+    from app.models import Document, ImportBatch, ImportJob
+    from app.services.analysis_models import MODEL_METADATA, MODEL_PAGE_TEXT_NORMALIZATION
+    from app.services.preferences import built_in_import_processing_presets, get_analysis_models
+
+    presets = {preset["id"]: preset for preset in built_in_import_processing_presets()}
+    tiny_rate = 0.000001
+
+    with Session() as db:
+        model_preferences = get_analysis_models(db)
+        rates = {
+            "task_model_rates": {
+                (task_key, model): tiny_rate
+                for task_key, model in model_preferences.items()
+                if model
+            },
+            "task_rates": {},
+            "estimate_calibration_factor": 0.25,
+            "estimate_calibration_sample_count": 12,
+        }
+        batch = ImportBatch(total_files=1, shared_defaults={"processing_preset_snapshot": presets["balanced"]})
+        document = Document(
+            title="Short staged paper",
+            original_filename="short.pdf",
+            checksum_sha256="3" * 64,
+            page_count=1,
+            metadata_evidence={"import_processing_preset": presets["balanced"]},
+        )
+        job = ImportJob(batch=batch, document=document, status="staged", current_step="staged")
+        db.add_all([batch, document, job])
+        db.commit()
+
+        estimate = estimate_import_job_cost(job, model_preferences=model_preferences, rates=rates, db=db)
+
+    steps = {step["task_key"]: step for step in estimate["steps"]}
+    assert steps[MODEL_METADATA]["basis"] == "task_model_exemplar_model_floor"
+    assert steps[MODEL_METADATA]["estimated_cost_usd"] > steps[MODEL_METADATA]["exemplar_cost_usd"]
+    assert steps[MODEL_PAGE_TEXT_NORMALIZATION]["estimated_cost_usd"] > 0
+    assert estimate["basis"] == "calibrated_preset_steps_model_floor"
+    assert estimate["estimated_cost_usd"] > 0.07
+    assert estimate["minimum_cloud_call_cost_usd"] == estimate["estimated_cost_usd"]
+
+
+def test_list_import_jobs_repairs_missing_staged_pdf_page_estimates(monkeypatch, tmp_path):
+    import fitz
+
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import list_import_jobs
+    from app.models import Document, ImportBatch, ImportJob
+
+    pdf = fitz.open()
+    for index in range(3):
+        page = pdf.new_page()
+        page.insert_text((72, 72), f"Page {index + 1}")
+    cache_path = tmp_path / "staged.pdf"
+    cache_path.write_bytes(pdf.tobytes())
+    pdf.close()
+
+    with Session() as db:
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        document = Document(
+            title="Needs page repair",
+            original_filename="staged.pdf",
+            checksum_sha256="4" * 64,
+            page_count=0,
+            processing_status="staged",
+            metadata_evidence={
+                "document_cache_path": str(cache_path),
+                "source_import": {"kind": "pdf", "estimated_page_count": None},
+                "upload_cost_estimate": {
+                    "estimated_cost_usd": 0.01,
+                    "estimated_page_count": 1,
+                    "basis": "stale_one_page_estimate",
+                },
+            },
+        )
+        job = ImportJob(batch=batch, document=document, status="staged", current_step="staged")
+        db.add_all([batch, document, job])
+        db.commit()
+
+        rows = list_import_jobs(object(), db)
+
+    row = next(item for item in rows if item["id"] == job.id)
+    assert document.page_count == 3
+    assert document.metadata_evidence["source_import"]["estimated_page_count"] == 3
+    assert document.metadata_evidence["upload_cost_estimate"]["estimated_page_count"] == 3
+    assert document.metadata_evidence["upload_cost_estimate"]["estimated_cost_usd"] > 0.01
+    assert row["document_page_count"] == 3
+    assert row["estimated_cost_page_count"] == 3
+
+
 def test_cancel_import_job_clears_queued_row(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import cancel_import_job

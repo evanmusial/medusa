@@ -2394,19 +2394,22 @@ function importJobEstimatePrefix(job: ImportJob) {
 function importJobEstimateTitle(job: ImportJob) {
   if (job.estimated_cost_basis === "actual") return "Known cost recorded so far.";
   const calibrated = job.estimated_cost_basis.startsWith("calibrated_");
-  const basis = calibrated ? job.estimated_cost_basis.replace(/^calibrated_/, "") : job.estimated_cost_basis;
+  const rawBasis = calibrated ? job.estimated_cost_basis.replace(/^calibrated_/, "") : job.estimated_cost_basis;
+  const modelFloor = rawBasis.endsWith("_model_floor");
+  const basis = modelFloor ? rawBasis.replace(/_model_floor$/, "") : rawBasis;
   const pageCount = job.estimated_cost_page_count || job.document_page_count;
   const pageText = pageCount ? ` across about ${pageCount} page${pageCount === 1 ? "" : "s"}` : "";
   const calibrationText = calibrated ? " and calibrated by prior estimate accuracy" : "";
+  const modelFloorText = modelFloor ? ", with a per-document model-call floor" : "";
   if (basis === "none") return "No model-cost estimate is available yet.";
-  if (basis === "default") return `Rough estimate from the default per-page import cost${pageText}${calibrationText}.`;
-  if (basis === "preset_steps") return `Rough estimate from the selected import preset, model prices, and prior task exemplars${pageText}${calibrationText}.`;
-  if (basis === "preset_task_model_exemplar") return `Rough estimate from selected import preset steps and prior task/model exemplars${pageText}${calibrationText}.`;
-  if (basis === "library_exemplar") return `Rough estimate from prior import costs per page${pageText}${calibrationText}.`;
-  if (basis === "task_exemplar") return `Rough estimate from prior import task costs per page${pageText}${calibrationText}.`;
-  if (basis === "mixed_exemplar") return `Rough estimate from prior task/model exemplars and task fallbacks${pageText}${calibrationText}.`;
-  if (basis === "persisted_estimate") return `Persisted rough estimate captured when this upload was staged${pageText}${calibrationText}.`;
-  return `Rough estimate from prior task/model exemplars${pageText}${calibrationText}.`;
+  if (basis === "default") return `Rough estimate from the default per-page import cost${pageText}${calibrationText}${modelFloorText}.`;
+  if (basis === "preset_steps") return `Rough estimate from the selected import preset, model prices, and prior task exemplars${pageText}${calibrationText}${modelFloorText}.`;
+  if (basis === "preset_task_model_exemplar") return `Rough estimate from selected import preset steps and prior task/model exemplars${pageText}${calibrationText}${modelFloorText}.`;
+  if (basis === "library_exemplar") return `Rough estimate from prior import costs per page${pageText}${calibrationText}${modelFloorText}.`;
+  if (basis === "task_exemplar") return `Rough estimate from prior import task costs per page${pageText}${calibrationText}${modelFloorText}.`;
+  if (basis === "mixed_exemplar") return `Rough estimate from prior task/model exemplars and task fallbacks${pageText}${calibrationText}${modelFloorText}.`;
+  if (basis === "persisted_estimate") return `Persisted rough estimate captured when this upload was staged${pageText}${calibrationText}${modelFloorText}.`;
+  return `Rough estimate from prior task/model exemplars${pageText}${calibrationText}${modelFloorText}.`;
 }
 
 function ImportJobStatusDetail({ job }: { job: ImportJob }) {

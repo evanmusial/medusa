@@ -106,6 +106,11 @@ def estimate_pdf_page_count(data: bytes) -> int | None:
         import fitz
     except Exception:
         return None
+    try:
+        with fitz.open(stream=data, filetype="pdf") as document:
+            return max(0, int(document.page_count or 0)) or None
+    except Exception:
+        return None
 
 
 def pdf_metadata_title(data: bytes) -> str | None:
@@ -117,11 +122,6 @@ def pdf_metadata_title(data: bytes) -> str | None:
         with fitz.open(stream=data, filetype="pdf") as document:
             title = _clean_text((document.metadata or {}).get("title"))
             return title or None
-    except Exception:
-        return None
-    try:
-        with fitz.open(stream=data, filetype="pdf") as document:
-            return max(0, int(document.page_count or 0)) or None
     except Exception:
         return None
 

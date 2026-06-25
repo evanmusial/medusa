@@ -207,7 +207,7 @@ from app.services.duplicates import (
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.haproxy_stats import haproxy_stats_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
-from app.services.import_sources import ImportSourceError, prepare_import_source
+from app.services.import_sources import ImportSourceError, estimate_pdf_page_count, prepare_import_source
 from app.services.ai import get_ai_service
 from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage
 from app.services.processing import (
@@ -4478,6 +4478,7 @@ async def create_import_batch(
             "estimated_page_count": estimate_page_count,
             "basis": estimate_basis,
             "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+            "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
             "step_estimates": cost_estimate.get("steps", []),
             "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
             "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
@@ -4502,6 +4503,7 @@ async def create_import_batch(
                 "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
                 "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
                 "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+                "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
                 "step_estimates": cost_estimate.get("steps", []),
                 "processing_preset": {
                     "id": preset_snapshot["id"],
@@ -4785,6 +4787,55 @@ def import_estimate_tokens(task_key: str, page_count: int) -> tuple[int, int]:
     return max(0, input_tokens), max(0, output_tokens)
 
 
+def apply_import_estimate_model_floor(
+    *,
+    step: dict[str, Any],
+    task_key: str,
+    model: str | None,
+    exemplar_cost: float,
+    db: Session | None,
+) -> None:
+    input_tokens, output_tokens = import_estimate_tokens(task_key, 1)
+    priced_floor = estimated_cost_usd_for_model_tokens(
+        model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        db=db,
+    )
+    if priced_floor is None or priced_floor <= exemplar_cost:
+        step["estimated_cost_usd"] = round(max(0.0, exemplar_cost), 6)
+        return
+    original_basis = str(step.get("basis") or "exemplar")
+    step["estimated_cost_usd"] = round(priced_floor, 6)
+    step["basis"] = f"{original_basis}_model_floor"
+    step["exemplar_cost_usd"] = round(max(0.0, exemplar_cost), 6)
+    step["model_pricing_floor_usd"] = round(priced_floor, 6)
+    step["estimated_input_tokens"] = input_tokens
+    step["estimated_output_tokens"] = output_tokens
+
+
+def import_estimate_step_model_floor(step: dict[str, Any], db: Session | None) -> float:
+    page_count = step.get("estimated_page_count")
+    if not isinstance(page_count, int) or page_count <= 0:
+        return 0.0
+    model = str(step.get("model") or "")
+    if not import_estimate_model_is_cloud(model):
+        return 0.0
+    task_key = str(step.get("task_key") or "")
+    input_tokens, output_tokens = import_estimate_tokens(task_key, 1)
+    priced_floor = estimated_cost_usd_for_model_tokens(
+        model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        db=db,
+    )
+    return round(max(0.0, float(priced_floor or 0.0)), 6)
+
+
+def import_estimate_cloud_call_floor(steps: list[dict[str, Any]], db: Session | None) -> float:
+    return round(sum(import_estimate_step_model_floor(step, db) for step in steps), 6)
+
+
 def import_estimate_step_cost(
     *,
     task_key: str,
@@ -4817,13 +4868,27 @@ def import_estimate_step_cost(
     task_rates: dict[str, float] = rates.get("task_rates", {})
     exact_rate = task_model_rates.get((task_key, model or ""))
     if exact_rate is not None:
-        step["estimated_cost_usd"] = round(max(0.0, float(exact_rate)) * page_count, 6)
+        exemplar_cost = max(0.0, float(exact_rate)) * page_count
         step["basis"] = "task_model_exemplar"
+        apply_import_estimate_model_floor(
+            step=step,
+            task_key=task_key,
+            model=model,
+            exemplar_cost=exemplar_cost,
+            db=db,
+        )
         return step
     fallback_rate = task_rates.get(task_key)
     if fallback_rate is not None:
-        step["estimated_cost_usd"] = round(max(0.0, float(fallback_rate)) * page_count, 6)
+        exemplar_cost = max(0.0, float(fallback_rate)) * page_count
         step["basis"] = "task_exemplar"
+        apply_import_estimate_model_floor(
+            step=step,
+            task_key=task_key,
+            model=model,
+            exemplar_cost=exemplar_cost,
+            db=db,
+        )
         return step
 
     input_tokens, output_tokens = import_estimate_tokens(task_key, page_count)
@@ -5010,6 +5075,7 @@ def estimate_import_job_cost(
     )
     priced_steps = [step for step in steps if float(step.get("estimated_cost_usd") or 0) > 0]
     uncalibrated_amount = round(sum(float(step.get("estimated_cost_usd") or 0) for step in priced_steps), 6)
+    cloud_call_floor = import_estimate_cloud_call_floor(steps, db)
     if uncalibrated_amount > 0:
         exact_rate_count = sum(1 for step in priced_steps if step.get("basis") == "task_model_exemplar")
         fallback_rate_count = sum(1 for step in priced_steps if step.get("basis") == "task_exemplar")
@@ -5021,11 +5087,15 @@ def estimate_import_job_cost(
         else:
             basis = "preset_steps"
         amount, basis = apply_import_estimate_calibration(uncalibrated_amount, basis, rates)
+        if cloud_call_floor > amount:
+            amount = cloud_call_floor
+            basis = f"{basis}_model_floor"
         return {
             "estimated_cost_usd": amount,
             "basis": basis,
             "estimated_page_count": page_count,
             "uncalibrated_cost_usd": uncalibrated_amount,
+            "minimum_cloud_call_cost_usd": cloud_call_floor,
             "steps": steps,
             "processing_preset": (
                 {
@@ -5042,20 +5112,28 @@ def estimate_import_job_cost(
     overall_rate = float(rates.get("overall_rate") or 0.0)
     if overall_rate > 0:
         amount, basis = apply_import_estimate_calibration(round(overall_rate * page_count, 6), "library_exemplar", rates)
+        if cloud_call_floor > amount:
+            amount = cloud_call_floor
+            basis = f"{basis}_model_floor"
         return {
             "estimated_cost_usd": amount,
             "basis": basis,
             "estimated_page_count": page_count,
             "uncalibrated_cost_usd": round(overall_rate * page_count, 6),
+            "minimum_cloud_call_cost_usd": cloud_call_floor,
             "steps": steps,
             "processing_preset": None,
         }
     amount, basis = apply_import_estimate_calibration(round(DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE * page_count, 6), "default", rates)
+    if cloud_call_floor > amount:
+        amount = cloud_call_floor
+        basis = f"{basis}_model_floor"
     return {
         "estimated_cost_usd": amount,
         "basis": basis,
         "estimated_page_count": page_count,
         "uncalibrated_cost_usd": round(DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE * page_count, 6),
+        "minimum_cloud_call_cost_usd": cloud_call_floor,
         "steps": steps,
         "processing_preset": None,
     }
@@ -5196,6 +5274,93 @@ def import_job_out(
     }
 
 
+def staged_import_cache_path(document: Document | None) -> Path | None:
+    if not document:
+        return None
+    evidence = document.metadata_evidence or {}
+    for key in ("document_cache_path", "local_cache_path"):
+        raw_path = evidence.get(key)
+        if isinstance(raw_path, str) and raw_path.strip():
+            return Path(raw_path)
+    return None
+
+
+def repair_missing_staged_page_estimates(
+    db: Session,
+    jobs: list[ImportJob],
+    *,
+    model_preferences: dict[str, str],
+    estimate_rates: dict[str, Any],
+) -> None:
+    repaired = False
+    for job in jobs:
+        if job.status not in {STAGED_IMPORT_STATUS, "queued"} or not job.document:
+            continue
+        document = job.document
+        if document.page_count and document.page_count > 0:
+            continue
+        cache_path = staged_import_cache_path(document)
+        if not cache_path or not cache_path.exists():
+            continue
+        try:
+            page_count = estimate_pdf_page_count(cache_path.read_bytes())
+        except OSError:
+            continue
+        if not page_count or page_count <= 0:
+            continue
+
+        document.page_count = page_count
+        evidence = dict(document.metadata_evidence or {})
+        source_import = dict(evidence.get("source_import") or {})
+        source_import["estimated_page_count"] = page_count
+        evidence["source_import"] = source_import
+        cost_estimate = estimate_import_job_cost(
+            job,
+            model_preferences=model_preferences,
+            rates=estimate_rates,
+            db=db,
+        )
+        estimated_cost_usd = float(cost_estimate.get("estimated_cost_usd") or 0.0)
+        estimate_basis = str(cost_estimate.get("basis") or "none")
+        upload_estimate = dict(evidence.get("upload_cost_estimate") or {})
+        upload_estimate.update(
+            {
+                "estimated_cost_usd": estimated_cost_usd,
+                "estimated_page_count": page_count,
+                "basis": estimate_basis,
+                "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+                "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
+                "step_estimates": cost_estimate.get("steps", []),
+                "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+                "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+                "model_preferences": model_preferences,
+                "repaired_page_count_at": utc_now().isoformat(),
+            }
+        )
+        evidence["upload_cost_estimate"] = upload_estimate
+        document.metadata_evidence = evidence
+        record_import_cost_estimate(
+            db,
+            document=document,
+            job=job,
+            estimated_cost_usd=estimated_cost_usd,
+            estimate_basis=estimate_basis,
+            estimated_page_count=page_count,
+            model_preferences=model_preferences,
+            metadata={
+                "repaired_page_count": True,
+                "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+                "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+                "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+                "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
+                "step_estimates": cost_estimate.get("steps", []),
+            },
+        )
+        repaired = True
+    if repaired:
+        db.commit()
+
+
 @app.get("/api/imports/jobs", response_model=list[ImportJobOut])
 def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
     query = db.query(ImportJob).options(joinedload(ImportJob.document), selectinload(ImportJob.events))
@@ -5213,8 +5378,14 @@ def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Se
     )
     jobs = dedupe_import_jobs(queue_jobs, recent_jobs)
     model_preferences = get_analysis_models(db)
-    costs = import_job_costs_usd(db, [job.id for job in jobs])
     estimate_rates = import_cost_exemplar_rates(db)
+    repair_missing_staged_page_estimates(
+        db,
+        jobs,
+        model_preferences=model_preferences,
+        estimate_rates=estimate_rates,
+    )
+    costs = import_job_costs_usd(db, [job.id for job in jobs])
     return [
         import_job_out(
             job,
