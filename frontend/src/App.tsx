@@ -2307,6 +2307,146 @@ function stripMarkdownFormatting(value: string) {
     .join("\n");
 }
 
+type MarkdownTableAlignment = "left" | "center" | "right";
+
+type MarkdownTable = {
+  headers: string[];
+  alignments: MarkdownTableAlignment[];
+  rows: string[][];
+};
+
+function splitMarkdownTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+  let body = trimmed;
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|")) body = body.slice(0, -1);
+  const cells = body.split("|").map((cell) => cell.trim());
+  return cells.length > 1 ? cells : null;
+}
+
+function markdownTableAlignment(cell: string): MarkdownTableAlignment | null {
+  const compact = cell.replace(/\s+/g, "");
+  if (!/^:?-{3,}:?$/.test(compact)) return null;
+  if (compact.startsWith(":") && compact.endsWith(":")) return "center";
+  if (compact.endsWith(":")) return "right";
+  return "left";
+}
+
+function readMarkdownTable(lines: string[], startIndex: number): { table: MarkdownTable; nextIndex: number } | null {
+  const headers = splitMarkdownTableRow(lines[startIndex] || "");
+  const dividerCells = splitMarkdownTableRow(lines[startIndex + 1] || "");
+  if (!headers || !dividerCells) return null;
+  const dividerAlignments = dividerCells.map(markdownTableAlignment);
+  if (!dividerAlignments.length || dividerAlignments.some((alignment) => !alignment)) return null;
+
+  const rows: string[][] = [];
+  let nextIndex = startIndex + 2;
+  while (nextIndex < lines.length) {
+    const cells = splitMarkdownTableRow(lines[nextIndex]);
+    if (!cells) break;
+    rows.push(cells);
+    nextIndex += 1;
+  }
+
+  const width = Math.max(headers.length, dividerCells.length, ...rows.map((row) => row.length));
+  const fitCells = (row: string[]) => [...row, ...Array(Math.max(0, width - row.length)).fill("")].slice(0, width);
+  const fitAlignments = (row: MarkdownTableAlignment[]) => {
+    const padding: MarkdownTableAlignment[] = Array(Math.max(0, width - row.length)).fill("left");
+    return [...row, ...padding].slice(0, width);
+  };
+  return {
+    table: {
+      headers: fitCells(headers),
+      alignments: fitAlignments(dividerAlignments as MarkdownTableAlignment[]),
+      rows: rows.map(fitCells),
+    },
+    nextIndex,
+  };
+}
+
+function markdownCellStyle(alignment: MarkdownTableAlignment | undefined): CSSProperties | undefined {
+  return alignment && alignment !== "left" ? { textAlign: alignment } : undefined;
+}
+
+function renderInlineMarkdownWithBreaks(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  text.split("\n").forEach((line, index) => {
+    if (index > 0) nodes.push(<br key={`${keyPrefix}-break-${index}`} />);
+    nodes.push(...renderInlineMarkdown(line, `${keyPrefix}-line-${index}`));
+  });
+  return nodes;
+}
+
+function renderMarkdownTable(table: MarkdownTable, keyPrefix: string) {
+  return (
+    <div className="markdown-table-scroll" key={`${keyPrefix}-table`}>
+      <table className="markdown-table">
+        <thead>
+          <tr>
+            {table.headers.map((header, index) => (
+              <th key={`${keyPrefix}-head-${index}`} style={markdownCellStyle(table.alignments[index])}>
+                {renderInlineMarkdown(header, `${keyPrefix}-head-${index}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={`${keyPrefix}-row-${rowIndex}`}>
+              {row.map((cell, cellIndex) => (
+                <td key={`${keyPrefix}-row-${rowIndex}-cell-${cellIndex}`} style={markdownCellStyle(table.alignments[cellIndex])}>
+                  {renderInlineMarkdown(cell, `${keyPrefix}-row-${rowIndex}-cell-${cellIndex}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReaderPageMarkdown({ content, empty }: { content?: string | null; empty: string }) {
+  const source = decodeHtmlEntities(content || "")
+    .replace(/\r/g, "")
+    .trim();
+  if (!source) return <p className="markdown-empty reader-page-empty">{empty}</p>;
+
+  const lines = source.split("\n");
+  const blocks: ReactNode[] = [];
+  let textLines: string[] = [];
+
+  const flushText = () => {
+    const text = textLines.join("\n").trim();
+    if (text) {
+      const key = `reader-text-${blocks.length}`;
+      blocks.push(
+        <p className="reader-page-text-block" key={key}>
+          {renderInlineMarkdownWithBreaks(text, key)}
+        </p>,
+      );
+    }
+    textLines = [];
+  };
+
+  let index = 0;
+  while (index < lines.length) {
+    const tableMatch = readMarkdownTable(lines, index);
+    if (tableMatch) {
+      flushText();
+      blocks.push(renderMarkdownTable(tableMatch.table, `reader-table-${blocks.length}`));
+      index = tableMatch.nextIndex;
+      continue;
+    }
+    textLines.push(lines[index]);
+    index += 1;
+  }
+  flushText();
+
+  return <div className="reader-page-markdown">{blocks}</div>;
+}
+
 function markdownExcerpt(markdown: string, maxChars = 360): string {
   const paragraphLines: string[] = [];
   const lines = decodeHtmlEntities(markdown)
@@ -7044,7 +7184,7 @@ function DocumentPanelContent({
               {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
             </div>
           ) : (
-            <pre>{currentPageText.trim() || "No extracted text."}</pre>
+            <ReaderPageMarkdown content={currentPageText} empty="No extracted text." />
           )}
         </article>
       ) : (
