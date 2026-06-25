@@ -12,6 +12,7 @@ DEFAULT_SUMMARY_MODEL = "gpt-5.4"
 DEFAULT_KEYWORDS_TOPICS_MODEL = "gpt-5.4-mini"
 DEFAULT_BIBLIOGRAPHY_CLEANUP_MODEL = "gpt-5.4-nano"
 DEFAULT_ACCESSORY_SUMMARIES_MODEL = "gpt-5.4"
+DEFAULT_FORMULA_CAPTURE_MODEL = "gpt-5.4"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_RAW_TEXT_EXTRACTOR = "marker"
 
@@ -24,6 +25,7 @@ MODEL_PAGE_TEXT_NORMALIZATION = "page_text_normalization"
 MODEL_TEXT_CHUNK_ENCODING = "text_chunk_encoding"
 MODEL_BIBLIOGRAPHY_CLEANUP = "bibliography_cleanup"
 MODEL_ACCESSORY_SUMMARIES = "accessory_summaries"
+MODEL_FORMULA_CAPTURE = "formula_capture"
 MODEL_CORE_DOCUMENT_INTELLIGENCE = "core_document_intelligence"
 
 GPT_MODEL_OPTIONS = (
@@ -122,6 +124,12 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default.",
     ),
     AnalysisModelTask(
+        key=MODEL_FORMULA_CAPTURE,
+        label="Formula Capture",
+        model_kind="gpt",
+        description="Runs a manual refinement pass that captures visible mathematical formulas as LaTeX/MathJax-compatible text, stores page-scoped evidence, and can append audited formula notes to parsed page text.",
+    ),
+    AnalysisModelTask(
         key=MODEL_TEXT_CHUNK_ENCODING,
         label="Text Chunk Encoding",
         model_kind="embedding",
@@ -168,6 +176,8 @@ def default_model_for_task(task_key: str) -> str:
         return DEFAULT_BIBLIOGRAPHY_CLEANUP_MODEL
     if task_key == MODEL_ACCESSORY_SUMMARIES:
         return DEFAULT_ACCESSORY_SUMMARIES_MODEL
+    if task_key == MODEL_FORMULA_CAPTURE:
+        return DEFAULT_FORMULA_CAPTURE_MODEL
     return normalize_model_id(settings.openai_model, DEFAULT_GPT_MODEL)
 
 

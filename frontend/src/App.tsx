@@ -255,6 +255,11 @@ type SelectMenuOption = { id: string; name: string };
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
 const RELEASE_POLL_INTERVAL_MS = 1500;
 const RELEASE_RELOAD_DELAY_MS = 900;
+const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
+const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
+const IDLE_RELEASE_REFETCH_INTERVAL_MS = 60000;
+const WORKSPACE_REFETCH_INTERVAL_MS = 15000;
+const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -276,6 +281,7 @@ const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
 const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
+const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
@@ -673,6 +679,21 @@ function formatNavCount(value: number | undefined) {
 
 function isQueueImportJob(job: ImportJob) {
   return QUEUE_IMPORT_JOB_STATUSES.has(job.status);
+}
+
+function dashboardHasActiveWork(dashboard?: Dashboard | null) {
+  return Boolean(
+    dashboard &&
+      (dashboard.active_import_jobs > 0 || dashboard.active_concordance_jobs > 0 || dashboard.active_accessory_summary_jobs > 0),
+  );
+}
+
+function backupRunsHaveActiveWork(runs?: BackupRun[] | null) {
+  return Boolean(runs?.some((run) => run.status === "queued" || run.status === "running"));
+}
+
+function backgroundJobsHaveActiveWork(jobs: BackgroundJob[]) {
+  return jobs.some((job) => !isTerminalBackgroundStatus(job.status));
 }
 
 function importDuplicateSourceLabel(file: ImportDuplicateFile) {
@@ -13680,7 +13701,9 @@ function SettingsView({
   }, [currentUser?.email]);
 
   useEffect(() => {
-    setSelectedCapabilityKeys((current) => (current.length ? current : capabilities.map((capability) => capability.key)));
+    setSelectedCapabilityKeys((current) =>
+      current.length ? current : capabilities.filter((capability) => !MANUAL_REFINEMENT_CAPABILITIES.has(capability.key)).map((capability) => capability.key),
+    );
   }, [capabilities]);
 
   const concordanceScopeData = useMemo(() => {
@@ -14712,7 +14735,7 @@ function SettingsView({
         <div className="panel-title-row">
           <div>
             <h2>Shared Model Defaults</h2>
-            <span>{preferences?.analysis_model_tasks.length || 9} import, Concordance, and ad hoc tasks</span>
+            <span>{preferences?.analysis_model_tasks.length || 10} import, Concordance, and ad hoc tasks</span>
           </div>
           <Sparkles size={20} />
         </div>
@@ -15038,30 +15061,56 @@ export default function App() {
     localStorage.setItem("medusa-theme", theme);
   }, [theme]);
 
+  const needsDocumentList = activeView === "library" || activeView === "domains" || activeView === "projects" || activeView === "notes";
+  const needsDomains = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "notes" || activeView === "settings";
+  const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
+  const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
+  const needsSavedSearches = activeView === "library" || activeView === "settings";
+  const needsImportJobs = activeView === "import" || activeView === "queue";
+  const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
+  const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
+
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
-  const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard, enabled: Boolean(me.data), refetchInterval: 4000 });
+  const dashboard = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: api.dashboard,
+    enabled: Boolean(me.data),
+    refetchInterval: (query) =>
+      dashboardHasActiveWork(query.state.data as Dashboard | undefined) ? ACTIVE_WORK_REFETCH_INTERVAL_MS : IDLE_SHELL_REFETCH_INTERVAL_MS,
+  });
+  const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
+  const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
+  const needsConcordanceData = activeView === "settings" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
   const backupRuns = useQuery({
     queryKey: ["backup-runs"],
     queryFn: api.backupRuns,
     enabled: Boolean(me.data),
-    refetchInterval: 4000,
+    refetchInterval: (query) => {
+      if (backupRunsHaveActiveWork(query.state.data as BackupRun[] | undefined)) return ACTIVE_WORK_REFETCH_INTERVAL_MS;
+      return activeView === "utilities" ? WORKSPACE_REFETCH_INTERVAL_MS : false;
+    },
   });
-  const openaiUsage = useQuery({ queryKey: ["openai-usage"], queryFn: () => api.openaiUsage(), enabled: Boolean(me.data), refetchInterval: 10000 });
-  const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data), refetchInterval: 10000 });
-  const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data) });
-  const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data) });
+  const openaiUsage = useQuery({
+    queryKey: ["openai-usage"],
+    queryFn: () => api.openaiUsage(),
+    enabled: Boolean(me.data && activeView === "settings"),
+    refetchInterval: activeView === "settings" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
+  });
+  const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data && needsDomains) });
+  const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data && needsTags) });
+  const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data && needsSavedSearches) });
   const documents = useQuery({
     queryKey: ["documents", query, filters],
     queryFn: () => api.documents(query, filters),
-    enabled: Boolean(me.data),
-    refetchInterval: 10000,
+    enabled: Boolean(me.data && needsDocumentList),
+    refetchInterval: needsDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
   const selectedDocument = useQuery({
     queryKey: ["document", selectedId],
     queryFn: () => api.document(selectedId!),
-    enabled: Boolean(me.data && selectedId),
-    refetchInterval: 4000,
+    enabled: Boolean(me.data && needsSelectedDocument),
+    refetchInterval: needsSelectedDocument && activeDocumentWork ? ACTIVE_WORK_REFETCH_INTERVAL_MS : false,
   });
   useEffect(() => {
     if (!selectedDocument.data) return;
@@ -15070,28 +15119,55 @@ export default function App() {
       doi: selectedDocument.data.doi,
     });
   }, [queryClient, selectedDocument.data?.doi, selectedDocument.data?.id]);
-  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: Boolean(me.data), refetchInterval: 4000 });
+  const jobs = useQuery({
+    queryKey: ["jobs"],
+    queryFn: api.jobs,
+    enabled: Boolean(me.data && needsImportJobs),
+    refetchInterval: needsImportJobs
+      ? (dashboard.data?.queue_import_jobs ?? 0) > 0
+        ? ACTIVE_WORK_REFETCH_INTERVAL_MS
+        : WORKSPACE_REFETCH_INTERVAL_MS
+      : false,
+  });
   const concordanceCapabilities = useQuery({
     queryKey: ["concordance-capabilities"],
     queryFn: api.concordanceCapabilities,
-    enabled: Boolean(me.data),
+    enabled: Boolean(me.data && activeView === "settings"),
   });
   const concordanceRuns = useQuery({
     queryKey: ["concordance-runs"],
     queryFn: api.concordanceRuns,
-    enabled: Boolean(me.data),
-    refetchInterval: 4000,
+    enabled: Boolean(me.data && needsConcordanceData),
+    refetchInterval: needsConcordanceData
+      ? (dashboard.data?.active_concordance_jobs ?? 0) > 0 || activeLocalBackgroundJobs
+        ? ACTIVE_WORK_REFETCH_INTERVAL_MS
+        : WORKSPACE_REFETCH_INTERVAL_MS
+      : false,
   });
   const concordanceJobs = useQuery({
     queryKey: ["concordance-jobs"],
     queryFn: api.concordanceJobs,
-    enabled: Boolean(me.data),
-    refetchInterval: 4000,
+    enabled: Boolean(me.data && needsConcordanceData),
+    refetchInterval: needsConcordanceData
+      ? (dashboard.data?.active_concordance_jobs ?? 0) > 0 || activeLocalBackgroundJobs
+        ? ACTIVE_WORK_REFETCH_INTERVAL_MS
+        : WORKSPACE_REFETCH_INTERVAL_MS
+      : false,
   });
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, enabled: Boolean(me.data), refetchInterval: 10000 });
-  const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data), refetchInterval: 10000 });
-  const review = useQuery({ queryKey: ["review"], queryFn: api.reviewQueue, enabled: Boolean(me.data), refetchInterval: 10000 });
-  const stashes = useQuery({ queryKey: ["doi-stashes"], queryFn: api.doiStashes, enabled: Boolean(me.data), refetchInterval: 4000 });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, enabled: Boolean(me.data && needsProjects) });
+  const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data && activeView === "notes") });
+  const review = useQuery({
+    queryKey: ["review"],
+    queryFn: api.reviewQueue,
+    enabled: Boolean(me.data && activeView === "queue"),
+    refetchInterval: activeView === "queue" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
+  });
+  const stashes = useQuery({
+    queryKey: ["doi-stashes"],
+    queryFn: api.doiStashes,
+    enabled: Boolean(me.data && activeView === "stashes"),
+    refetchInterval: activeView === "stashes" ? (activeDashboardWork ? ACTIVE_WORK_REFETCH_INTERVAL_MS : WORKSPACE_REFETCH_INTERVAL_MS) : false,
+  });
   const releaseUpgradeLocked = Boolean(releaseUpgradeLock && releaseUpgradeLock.stage !== "failed");
   const releaseUpgradePollActive = Boolean(
     releaseUpgradeLock && releaseUpgradeLock.stage !== "failed" && releaseUpgradeLock.stage !== "reloading",
@@ -15100,7 +15176,7 @@ export default function App() {
     queryKey: ["release-status", MEDUSA_BUILD_VERSION],
     queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
     enabled: Boolean(me.data),
-    refetchInterval: releaseUpgradeLocked ? RELEASE_POLL_INTERVAL_MS : 15000,
+    refetchInterval: releaseUpgradeLocked ? RELEASE_POLL_INTERVAL_MS : IDLE_RELEASE_REFETCH_INTERVAL_MS,
   });
   const logout = useMutation({
     mutationFn: api.logout,
@@ -15460,8 +15536,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedId && documents.data?.[0]) setSelectedId(documents.data[0].id);
-  }, [documents.data, selectedId]);
+    if (activeView === "library" && !selectedId && documents.data?.[0]) setSelectedId(documents.data[0].id);
+  }, [activeView, documents.data, selectedId]);
 
   useEffect(() => {
     const runs = concordanceRuns.data || [];
@@ -15540,13 +15616,13 @@ export default function App() {
   } as CSSProperties;
   const navCounts: NavCounts = {
     library: dashboard.data?.documents ?? 0,
-    domains: domains.data?.length ?? 0,
-    projects: projects.data?.length ?? dashboard.data?.projects ?? 0,
-    tags: tags.data?.length ?? 0,
-    queue: (jobs.data || []).filter(isQueueImportJob).length + (review.data || []).length,
-    notes: notes.data?.length ?? 0,
+    domains: dashboard.data?.domains ?? domains.data?.length ?? 0,
+    projects: dashboard.data?.projects ?? projects.data?.length ?? 0,
+    tags: dashboard.data?.tags ?? tags.data?.length ?? 0,
+    queue: (dashboard.data?.queue_import_jobs ?? 0) + (dashboard.data?.review_items ?? review.data?.length ?? 0),
+    notes: dashboard.data?.notes ?? notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
-    stashes: stashes.data?.length ?? 0,
+    stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
   };
   const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
   const activeServerBackgroundJobs = (concordanceRuns.data || [])

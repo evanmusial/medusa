@@ -874,7 +874,13 @@ class DashboardOut(BaseModel):
     documents: int
     unread: int
     needs_review: int
+    domains: int
+    tags: int
+    notes: int
+    review_items: int
+    stashes: int
     queued_jobs: int
+    queue_import_jobs: int
     active_import_jobs: int
     import_queued_jobs: int
     import_running_jobs: int

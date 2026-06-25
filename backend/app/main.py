@@ -1233,6 +1233,7 @@ def update_me(
 def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> DashboardOut:
     import_queued_jobs = db.query(ImportJob).filter(ImportJob.status == "queued").count()
     import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
+    queue_import_jobs = db.query(ImportJob).filter(ImportJob.status.in_(IMPORT_JOB_QUEUE_STATUSES)).count()
     active_import_jobs = import_queued_jobs + import_running_jobs
     active_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status.in_(["queued", "running"])).count()
     active_accessory_summary_jobs = (
@@ -1268,7 +1269,13 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
         documents=visible_documents.count(),
         unread=filter_library_visible_documents(db.query(Document)).filter(Document.read_status == "unread").count(),
         needs_review=filter_library_visible_documents(db.query(Document)).filter(Document.citation_status == "needs_review").count(),
+        domains=db.query(Domain).filter(Domain.deleted_at.is_(None)).count(),
+        tags=db.query(Tag).count(),
+        notes=db.query(Note).filter(Note.deleted_at.is_(None)).count(),
+        review_items=db.query(CitationCandidate).filter(CitationCandidate.status == "needs_review").count(),
+        stashes=doi_stash_query(db).count(),
         queued_jobs=active_import_jobs + active_concordance_jobs + active_accessory_summary_jobs,
+        queue_import_jobs=queue_import_jobs,
         active_import_jobs=active_import_jobs,
         import_queued_jobs=import_queued_jobs,
         import_running_jobs=import_running_jobs,

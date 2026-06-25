@@ -22,6 +22,7 @@ from app.services.analysis_models import (
     MODEL_ACCESSORY_SUMMARIES,
     MODEL_BIBLIOGRAPHY_CLEANUP,
     MODEL_CORE_DOCUMENT_INTELLIGENCE,
+    MODEL_FORMULA_CAPTURE,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
@@ -294,6 +295,43 @@ BIBLIOGRAPHY_CLEANUP_SCHEMA: dict[str, Any] = {
         "notes": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["references", "confidence", "notes"],
+}
+
+FORMULA_CAPTURE_PROMPT = (
+    "Capture visible mathematical formulas from a scholarly document for a research-library refinement pass. "
+    "Use only the supplied original PDF context and extracted page text. Return formulas as LaTeX/MathJax-compatible "
+    "source without surrounding dollar delimiters. Preserve symbols, operators, fractions, Greek letters, subscripts, "
+    "superscripts, matrices, constraints, and equation labels when visible. Prefer exact visible formulas over "
+    "interpretation. Do not invent equations, derivations, values, variables, or labels that are not present in the "
+    "document context. If the extraction text is garbled, use the PDF context when available to recover the visible "
+    "formula cautiously. Include page_number, optional label, nearby context text, whether the formula should be "
+    "display math, and confidence for each formula."
+)
+
+FORMULA_CAPTURE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "formulas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "page_number": {"type": "integer"},
+                    "latex": {"type": "string"},
+                    "display": {"type": "boolean"},
+                    "label": {"type": ["string", "null"]},
+                    "surrounding_text": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["page_number", "latex", "display", "label", "surrounding_text", "confidence"],
+            },
+        },
+        "confidence": {"type": "number"},
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["formulas", "confidence", "notes"],
 }
 
 PAGE_TEXT_NORMALIZATION_SCHEMA: dict[str, Any] = {
@@ -1087,6 +1125,62 @@ class AiService:
             },
         }
 
+    def capture_formulas(
+        self,
+        filename: str,
+        text: str,
+        pdf_bytes: bytes | None = None,
+        *,
+        model: str | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, Any]:
+        selected_model = model or default_analysis_models()[MODEL_FORMULA_CAPTURE]
+        normalized_text = normalize_extracted_text(text)
+        if not normalized_text and not pdf_bytes:
+            return {
+                "formulas": [],
+                "confidence": 1.0,
+                "notes": ["No document text or PDF context was supplied."],
+                "_openai": {"model": selected_model, "configured": False},
+            }
+        if not self._can_call_text_model(selected_model):
+            return {
+                "formulas": [],
+                "confidence": 0.0,
+                "notes": ["AI formula capture is not configured for the selected model."],
+                "_openai": {"model": selected_model, "configured": False},
+            }
+        input_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
+            filename,
+            normalized_text,
+            pdf_bytes,
+            max_text_chars=90_000,
+        )
+        result = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_formula_capture",
+            schema=FORMULA_CAPTURE_SCHEMA,
+            prompt=FORMULA_CAPTURE_PROMPT,
+            input_content=input_content,
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_FORMULA_CAPTURE,
+            input_text_characters=input_text_characters,
+            input_file_bytes=input_file_bytes,
+            used_pdf_file=used_pdf_file,
+            prompt_cache_key=prompt_cache_key,
+        )
+        result["formulas"] = self._normalize_formula_entries(result.get("formulas"))
+        result["_openai"] = {
+            "model": selected_model,
+            "configured": True,
+            "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+            "used_pdf_file": used_pdf_file,
+            "pdf_file_bytes": input_file_bytes,
+        }
+        return result
+
     def generate_document_summary(
         self,
         filename: str,
@@ -1132,6 +1226,38 @@ class AiService:
             "pdf_file_bytes": 0,
         }
         return result
+
+    @staticmethod
+    def _normalize_formula_entries(entries: Any) -> list[dict[str, Any]]:
+        if not isinstance(entries, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            latex = normalize_extracted_text(str(item.get("latex") or "")).strip()
+            latex = re.sub(r"^\${1,2}\s*", "", latex)
+            latex = re.sub(r"\s*\${1,2}$", "", latex).strip()
+            if not latex:
+                continue
+            try:
+                page_number = max(1, int(item.get("page_number") or 1))
+            except (TypeError, ValueError):
+                page_number = 1
+            confidence = item.get("confidence")
+            if not isinstance(confidence, (int, float)):
+                confidence = 0.0
+            normalized.append(
+                {
+                    "page_number": page_number,
+                    "latex": latex[:3000],
+                    "display": bool(item.get("display")),
+                    "label": normalize_extracted_text(str(item.get("label") or "")).strip()[:120] or None,
+                    "surrounding_text": normalize_extracted_text(str(item.get("surrounding_text") or "")).strip()[:1000] or None,
+                    "confidence": float(confidence),
+                }
+            )
+        return normalized[:200]
 
     def generate_tag_optimization_suggestions(
         self,

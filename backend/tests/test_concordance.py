@@ -319,6 +319,124 @@ def test_concordance_estimate_queues_current_capability_when_model_changed(monke
         assert run.total_jobs == 1
 
 
+def test_concordance_formula_capture_is_manual_refinement(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentPage, DocumentVersion
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor, estimate_concordance_run
+
+    calls: list[dict[str, object]] = []
+
+    class FakeAiService:
+        def capture_formulas(self, filename, text, pdf_bytes=None, *, model=None, usage_context=None, prompt_cache_key=None):
+            calls.append(
+                {
+                    "filename": filename,
+                    "text": text,
+                    "pdf_bytes": pdf_bytes,
+                    "model": model,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
+                "formulas": [
+                    {
+                        "page_number": 1,
+                        "latex": "E = mc^2",
+                        "display": True,
+                        "label": "Equation 1",
+                        "surrounding_text": "Mass-energy relation.",
+                        "confidence": 0.94,
+                    },
+                    {
+                        "page_number": 2,
+                        "latex": "a^2 + b^2 = c^2",
+                        "display": True,
+                        "label": None,
+                        "surrounding_text": "Manual page formula.",
+                        "confidence": 0.9,
+                    },
+                ],
+                "confidence": 0.92,
+                "notes": [],
+                "_openai": {"model": model, "configured": True, "used_pdf_file": False, "pdf_file_bytes": 0},
+            }
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Formula Target",
+            original_filename="formula-target.pdf",
+            checksum_sha256="f" * 64,
+            processing_status="ready",
+            page_count=2,
+        )
+        document.pages.append(DocumentPage(page_number=1, normalized_text="The paper states an equation.", text_source="pymupdf"))
+        document.pages.append(DocumentPage(page_number=2, normalized_text="Manual correction text.", text_source="manual"))
+        db.add(document)
+        db.flush()
+
+        estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["formula_capture"],
+        )
+        assert estimate["planned_jobs"] == 1
+        assert estimate["items"][0]["requirements"][0]["model"] == "gpt-5.4"
+        default_estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+        )
+        assert "formula_capture" not in default_estimate["capability_keys"]
+
+        run = ConcordanceRun(scope_type="documents", scope_data={}, capability_keys=["formula_capture"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="formula_capture",
+            target_version=CAPABILITY_BY_KEY["formula_capture"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+        db.refresh(document)
+
+        version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+        page_one = next(page for page in document.pages if page.page_number == 1)
+        page_two = next(page for page in document.pages if page.page_number == 2)
+
+        assert job.status == "complete"
+        assert document.metadata_evidence["formula_capture"]["status"] == "captured"
+        assert document.metadata_evidence["formula_capture"]["model"] == "gpt-5.4"
+        assert document.metadata_evidence["formula_capture"]["formula_count"] == 2
+        assert document.metadata_evidence["formula_capture"]["manual_pages_protected"] == 1
+        assert "Formula capture:" in (page_one.normalized_text or "")
+        assert "\\(E = mc^2\\)" in (page_one.normalized_text or "")
+        assert page_two.normalized_text == "Manual correction text."
+        assert "a^2 + b^2 = c^2" in (document.search_text or "")
+        assert version.change_note == "Concordance formula capture"
+        assert "pages" in version.metadata_snapshot["changed_fields"]
+        assert calls == [
+            {
+                "filename": "formula-target.pdf",
+                "text": "[Page 1]\nThe paper states an equation.\n\n[Page 2]\nManual correction text.",
+                "pdf_bytes": None,
+                "model": "gpt-5.4",
+                "capability_key": "formula_capture",
+                "prompt_cache_key": f"medusa-doc:{'f' * 64}:formulas",
+            }
+        ]
+
+
 def test_concordance_worker_completes_same_model_noop_without_model_call(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

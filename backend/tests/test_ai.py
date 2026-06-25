@@ -178,6 +178,68 @@ def test_bibliography_sort_fallback_uses_surname_for_initials_first_entries():
     ]
 
 
+def test_formula_capture_returns_latex_entries(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import FORMULA_CAPTURE_PROMPT, AiService
+    from app.services.analysis_models import MODEL_FORMULA_CAPTURE
+    from app.services.openai_usage import OpenAIUsageContext
+
+    class FakeResponses:
+        def __init__(self):
+            self.calls = []
+            self.system_prompt = ""
+
+        def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
+            del text, timeout, prompt_cache_retention
+            self.calls.append((model, prompt_cache_key, input[1]["content"][0]["text"]))
+            self.system_prompt = input[0]["content"]
+            return SimpleNamespace(
+                id="resp_formula_capture",
+                output_text=json.dumps(
+                    {
+                        "formulas": [
+                            {
+                                "page_number": 2,
+                                "latex": "$$E = mc^2$$",
+                                "display": True,
+                                "label": "Equation 1",
+                                "surrounding_text": "Mass-energy relation.",
+                                "confidence": 0.94,
+                            }
+                        ],
+                        "confidence": 0.94,
+                        "notes": [],
+                    }
+                ),
+                usage=SimpleNamespace(input_tokens=20, output_tokens=15, total_tokens=35),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service.capture_formulas(
+        "physics.pdf",
+        "[Page 2]\nThe paper states E = mc^2.",
+        model="gpt-5.4",
+        usage_context=OpenAIUsageContext(document_id="doc-1", source="test"),
+        prompt_cache_key="medusa-doc:abc123:formulas",
+    )
+
+    assert "LaTeX/MathJax-compatible" in FORMULA_CAPTURE_PROMPT
+    assert result["formulas"][0]["latex"] == "E = mc^2"
+    assert result["formulas"][0]["page_number"] == 2
+    assert result["_openai"]["model"] == "gpt-5.4"
+    assert responses.calls[0][0] == "gpt-5.4"
+    assert responses.calls[0][1] == "medusa-doc:abc123:formulas"
+    assert MODEL_FORMULA_CAPTURE == "formula_capture"
+
+
 def test_ai_prompt_cache_key_uses_api_safe_length_for_document_checksums(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -5,6 +5,7 @@ from typing import Any
 
 from app.models import Document
 from app.services.extraction import sanitize_extracted_text
+from app.services.formulas import formula_capture_search_text
 from app.services.processing import author_search_text, document_reading_text, figure_search_text
 
 
@@ -43,6 +44,7 @@ def rebuild_document_search_text(document: Document) -> str:
                 document.apa_citation,
                 document.apa_in_text_citation,
                 page_text,
+                formula_capture_search_text(document),
                 figure_search_text(document.figures),
                 accessory_summary_search_text(document),
                 notes,

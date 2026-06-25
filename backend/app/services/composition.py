@@ -11,6 +11,7 @@ from app.models import Document, DocumentCompositionRecord, ImportJob, OpenAIUsa
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
     MODEL_CORE_DOCUMENT_INTELLIGENCE,
+    MODEL_FORMULA_CAPTURE,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
@@ -28,6 +29,7 @@ STAGE_SEQUENCE = {
     "structured_tables": 14,
     "page_text_normalization": 16,
     "bibliography_extraction": 18,
+    "formula_capture": 19,
     "visual_asset_extraction": 20,
     "figure_assets": 20,
     "visual_asset_context": 22,
@@ -50,6 +52,7 @@ STAGE_LABELS = {
     "structured_tables": "Structured tables",
     "page_text_normalization": "Page text normalization",
     "bibliography_extraction": "Bibliography extraction",
+    "formula_capture": "Formula capture",
     "visual_asset_extraction": "Visual asset extraction",
     "figure_assets": "Figure extraction",
     "visual_asset_context": "Visual asset context",
@@ -71,6 +74,7 @@ CAPABILITY_STAGE = {
     "structured_tables": "structured_tables",
     "page_text_normalization": "page_text_normalization",
     "bibliography_extraction": "bibliography_extraction",
+    "formula_capture": "formula_capture",
     "visual_asset_extraction": "visual_asset_extraction",
     "visual_asset_context": "visual_asset_context",
     "figure_assets": "visual_asset_extraction",
@@ -90,6 +94,7 @@ PIPELINE_TASK_OFFSETS = {
     MODEL_SUMMARY: 0.2,
     MODEL_KEYWORDS_TOPICS: 0.3,
     MODEL_APA_CITATION: 0.1,
+    MODEL_FORMULA_CAPTURE: 0.2,
     MODEL_TEXT_CHUNK_ENCODING: 0.1,
 }
 
@@ -100,6 +105,7 @@ PIPELINE_LOCAL_OFFSETS = {
     "structured_tables": 0.0,
     "page_text_normalization": 0.0,
     "bibliography_extraction": 0.0,
+    "formula_capture": 0.0,
     "visual_asset_extraction": 0.0,
     "figure_assets": 0.0,
     "visual_asset_context": 0.0,
@@ -119,6 +125,7 @@ ESTIMATE_FALLBACK_TASK_KEYS = {
     "structured_tables",
     MODEL_PAGE_TEXT_NORMALIZATION,
     "bibliography_extraction",
+    "formula_capture",
     "visual_asset_extraction",
     "visual_asset_context",
 }

@@ -48,7 +48,13 @@ export type Dashboard = {
   documents: number;
   unread: number;
   needs_review: number;
+  domains: number;
+  tags: number;
+  notes: number;
+  review_items: number;
+  stashes: number;
   queued_jobs: number;
+  queue_import_jobs: number;
   active_import_jobs: number;
   import_queued_jobs: number;
   import_running_jobs: number;

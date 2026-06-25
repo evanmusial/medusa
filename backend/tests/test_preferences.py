@@ -113,6 +113,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
     from app.services.analysis_models import (
         MODEL_ACCESSORY_SUMMARIES,
         MODEL_BIBLIOGRAPHY_CLEANUP,
+        MODEL_FORMULA_CAPTURE,
         MODEL_KEYWORDS_TOPICS,
         MODEL_METADATA,
         MODEL_PAGE_TEXT_NORMALIZATION,
@@ -150,11 +151,12 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert preferences["analysis_models"][MODEL_SUMMARY] == "gpt-5.4"
         assert preferences["analysis_models"][MODEL_KEYWORDS_TOPICS] == "gpt-5.4"
         assert preferences["analysis_models"][MODEL_ACCESSORY_SUMMARIES] == "gpt-5.4"
+        assert preferences["analysis_models"][MODEL_FORMULA_CAPTURE] == "gpt-5.4"
         assert preferences["analysis_models"][MODEL_BIBLIOGRAPHY_CLEANUP] == "gemini-3.1-flash-lite"
         assert preferences["analysis_models"][MODEL_PAGE_TEXT_NORMALIZATION] == "gpt-5.4-nano"
 
         payload = get_app_preferences(db)
-        assert len(payload["analysis_model_tasks"]) == 9
+        assert len(payload["analysis_model_tasks"]) == 10
         assert payload["model_pricing"]["updated_at"] == "2026-06-23"
         assert payload["model_pricing"]["stale"] is True
         raw_text_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_RAW_TEXT_EXTRACTION)
@@ -185,6 +187,9 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         bibliography_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_BIBLIOGRAPHY_CLEANUP)
         assert bibliography_task["default_model"] == "gpt-5.4-nano"
         assert bibliography_task["selected_model"] == "gemini-3.1-flash-lite"
+        formula_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_FORMULA_CAPTURE)
+        assert formula_task["default_model"] == "gpt-5.4"
+        assert formula_task["selected_model"] == "gpt-5.4"
 
 
 def test_import_processing_presets_and_steps_are_persisted(monkeypatch, tmp_path):

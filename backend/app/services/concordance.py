@@ -25,6 +25,7 @@ from app.services.ai import get_ai_service
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
     MODEL_BIBLIOGRAPHY_CLEANUP,
+    MODEL_FORMULA_CAPTURE,
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
@@ -37,6 +38,7 @@ from app.services.composition import elapsed_ms, record_concordance_stage, recor
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.document_visibility import filter_library_visible_documents
 from app.services.figures import process_document_figures_from_storage
+from app.services.formulas import capture_document_formulas
 from app.services.history import (
     changed_snapshot_fields,
     document_correction_snapshot,
@@ -136,6 +138,12 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
         description="Extract the source document's own reference list into the Bibliography field, preserving Markdown italics from PDF span evidence when available.",
     ),
     CapabilityDefinition(
+        key="formula_capture",
+        label="Formula capture",
+        version=1,
+        description="Manual refinement pass that captures visible equations and mathematical expressions as page-scoped LaTeX evidence and searchable parsed-text notes.",
+    ),
+    CapabilityDefinition(
         key="visual_asset_extraction",
         label="Visual asset extraction",
         version=2,
@@ -180,6 +188,7 @@ CAPABILITY_BY_KEY = {
     capability.key: capability
     for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY, TAG_REFRESH_CAPABILITY, LEGACY_FIGURE_ASSETS_CAPABILITY)
 }
+MANUAL_REFINEMENT_CAPABILITIES = {"formula_capture"}
 
 CONCORDANCE_LOCAL_MODELS = {
     "",
@@ -197,6 +206,7 @@ CONCORDANCE_TOKEN_PROFILES: dict[str, dict[str, int]] = {
     MODEL_APA_CITATION: {"input_base": 4_000, "input_per_page": 450, "output_base": 900},
     MODEL_KEYWORDS_TOPICS: {"input_base": 900, "input_per_page": 1_000, "output_base": 850},
     MODEL_PAGE_TEXT_NORMALIZATION: {"input_base": 150, "input_per_page": 1_600, "output_base": 350, "output_per_page": 900},
+    MODEL_FORMULA_CAPTURE: {"input_base": 1_000, "input_per_page": 1_800, "output_base": 800, "output_per_page": 250},
 }
 
 
@@ -252,6 +262,8 @@ def concordance_stage_model(db: Session, capability_key: str) -> str | None:
         return get_analysis_model(db, MODEL_APA_CITATION)
     if capability_key == "bibliography_extraction":
         return get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
+    if capability_key == "formula_capture":
+        return get_analysis_model(db, MODEL_FORMULA_CAPTURE)
     return None
 
 
@@ -335,6 +347,13 @@ def _metadata_models(document: Document, task_key: str) -> set[str]:
             section_models = section.get("models")
             if isinstance(section_models, dict):
                 models.update(str(model) for model in section_models if isinstance(model, str) and model)
+    if task_key == MODEL_FORMULA_CAPTURE:
+        section = evidence.get("formula_capture")
+        if isinstance(section, dict) and section.get("status") in {"captured", "no_formulas"}:
+            if isinstance(section.get("model"), str):
+                models.add(str(section["model"]))
+            if isinstance(section.get("_openai"), dict) and isinstance(section["_openai"].get("model"), str):
+                models.add(str(section["_openai"]["model"]))
     return models
 
 
@@ -456,6 +475,15 @@ def concordance_model_requirements(
                 field_key="apa_citation",
                 label="APA citation",
                 model=model_preferences.get(MODEL_APA_CITATION),
+            )
+        ]
+    if capability_key == "formula_capture":
+        return [
+            ConcordanceModelRequirement(
+                task_key=MODEL_FORMULA_CAPTURE,
+                field_key="formulas",
+                label="Formula capture",
+                model=model_preferences.get(MODEL_FORMULA_CAPTURE),
             )
         ]
     return []
@@ -620,7 +648,7 @@ def plan_concordance_run(
     force: bool = False,
 ) -> dict[str, Any]:
     scope_data = scope_data or {}
-    selected_keys = capability_keys or [capability.key for capability in CURRENT_CAPABILITIES]
+    selected_keys = capability_keys or [capability.key for capability in CURRENT_CAPABILITIES if capability.key not in MANUAL_REFINEMENT_CAPABILITIES]
     unknown_keys = sorted(set(selected_keys) - set(CAPABILITY_BY_KEY))
     if unknown_keys:
         raise ValueError(f"Unknown Concordance capability: {', '.join(unknown_keys)}")
@@ -917,6 +945,8 @@ class ConcordanceProcessor:
                 evidence = self._refresh_summary_topics(db, document, job)
             elif job.capability_key == "bibliography_extraction":
                 evidence = self._extract_bibliography(db, document, job)
+            elif job.capability_key == "formula_capture":
+                evidence = self._capture_formulas(db, document, job)
             elif job.capability_key == "figure_assets":
                 evidence = self._extract_figures(db, document)
             elif job.capability_key == "visual_asset_extraction":
@@ -1189,6 +1219,57 @@ class ConcordanceProcessor:
         metadata_evidence = dict(document.metadata_evidence or {})
         metadata_evidence["bibliography_extraction"] = evidence
         document.metadata_evidence = metadata_evidence
+        return evidence
+
+    def _capture_formulas(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        before = document_correction_snapshot(document)
+        page_before = {page.id: document_page_snapshot(page) for page in document.pages}
+        prior_search_text = document.search_text or ""
+        ai = get_ai_service()
+        formula_model = get_analysis_model(db, MODEL_FORMULA_CAPTURE)
+        evidence = capture_document_formulas(
+            document,
+            ai=ai,
+            model=formula_model,
+            pdf_bytes=self._document_pdf_bytes(db, document),
+            usage_context=self._usage_context(document, job, "formula_capture"),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:formulas",
+            append_to_page_text=True,
+            protect_manual=True,
+        )
+        metadata_evidence = dict(document.metadata_evidence or {})
+        metadata_evidence["formula_capture"] = evidence
+        document.metadata_evidence = metadata_evidence
+        document.search_text = rebuild_document_search_text(document)
+        changed_pages = [
+            {
+                "before": page_before[page.id],
+                "after": document_page_snapshot(page),
+            }
+            for page in document.pages
+            if page.id in page_before and page_before[page.id] != document_page_snapshot(page)
+        ]
+        after = document_correction_snapshot(document)
+        changed_fields = set(changed_snapshot_fields(before, after))
+        if changed_pages:
+            changed_fields.add("pages")
+        if document.search_text != prior_search_text:
+            changed_fields.add("search_text")
+        if changed_fields:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance formula capture",
+                changed_fields=changed_fields,
+                before=before,
+                after=after,
+                extra={
+                    "run_id": job.run_id,
+                    "concordance_job_id": job.id,
+                    "pages": changed_pages,
+                    "manual_pages_protected": evidence.get("manual_pages_protected", 0),
+                },
+            )
         return evidence
 
     def _extract_figures(self, db: Session, document: Document) -> dict[str, Any]:
