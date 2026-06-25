@@ -1,0 +1,9 @@
+[Unit]
+Description=Check Medusa upstream release status
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/medusa
+ExecStart=/opt/medusa/scripts/medusa-release-agent.py check --repo /opt/medusa --data-dir /opt/medusa/data

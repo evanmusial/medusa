@@ -30,6 +30,12 @@ services:
       TORCH_HOME: /app/data/model-cache/torch
       MPLCONFIGDIR: /app/data/model-cache/matplotlib
       MEDUSA_DOCKER_SOCKET_PATH: ${MEDUSA_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+      MEDUSA_BUILD_VERSION: ${MEDUSA_BUILD_VERSION:-}
+      MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
+      MEDUSA_BUILD_HASH: ${MEDUSA_BUILD_HASH:-}
+      MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
+      MEDUSA_RELEASE_STATUS_PATH: ${MEDUSA_RELEASE_STATUS_PATH:-/app/data/deploy/release-status.json}
+      MEDUSA_RELEASE_REQUEST_PATH: ${MEDUSA_RELEASE_REQUEST_PATH:-/app/data/deploy/release-request.json}
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
@@ -53,6 +59,12 @@ services:
       HF_HOME: /app/data/model-cache/huggingface
       TORCH_HOME: /app/data/model-cache/torch
       MPLCONFIGDIR: /app/data/model-cache/matplotlib
+      MEDUSA_BUILD_VERSION: ${MEDUSA_BUILD_VERSION:-}
+      MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
+      MEDUSA_BUILD_HASH: ${MEDUSA_BUILD_HASH:-}
+      MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
+      MEDUSA_RELEASE_STATUS_PATH: ${MEDUSA_RELEASE_STATUS_PATH:-/app/data/deploy/release-status.json}
+      MEDUSA_RELEASE_REQUEST_PATH: ${MEDUSA_RELEASE_REQUEST_PATH:-/app/data/deploy/release-request.json}
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
@@ -66,8 +78,10 @@ services:
       context: ./frontend
     environment:
       MEDUSA_API_PROXY: http://backend:8000
+      MEDUSA_BUILD_VERSION: ${MEDUSA_BUILD_VERSION:-}
       MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
       MEDUSA_BUILD_HASH: ${MEDUSA_BUILD_HASH:-}
+      MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
       MEDUSA_ALLOWED_HOSTS: ${MEDUSA_ALLOWED_HOSTS:-medusa.home.musial.io}
     expose:
       - "3737"

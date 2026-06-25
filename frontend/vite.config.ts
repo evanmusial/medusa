@@ -75,7 +75,7 @@ function buildContentHash() {
 const buildInstant = new Date();
 const buildDate = normalizeBuildDate(process.env.MEDUSA_BUILD_DATE, buildDateStamp(buildInstant));
 const buildHash = normalizeBuildHash(process.env.MEDUSA_BUILD_HASH) || buildContentHash();
-const buildVersion = `${buildDate} (${buildHash})`;
+const buildVersion = (process.env.MEDUSA_BUILD_VERSION || "").trim() || `${buildDate} (${buildHash})`;
 const frontendNodeVersion = process.version;
 const frontendViteVersion = vitePackage.version || "unknown";
 const allowedHosts = (process.env.MEDUSA_ALLOWED_HOSTS || "medusa.home.musial.io")

@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import json
+import secrets
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from app.config import get_settings
+from app.schemas import ReleaseStatusOut, ReleaseVersionOut
+
+
+STATUS_SCHEMA_VERSION = 1
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _release_status_path() -> Path:
+    settings = get_settings()
+    return settings.release_status_path or settings.data_dir / "deploy" / "release-status.json"
+
+
+def _release_request_path() -> Path:
+    settings = get_settings()
+    return settings.release_request_path or settings.data_dir / "deploy" / "release-request.json"
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temp_path.replace(path)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _version_from_payload(value: Any, *, fallback_source: str = "status-file") -> ReleaseVersionOut | None:
+    if not isinstance(value, dict):
+        return None
+    git_sha = value.get("git_sha")
+    git_sha = git_sha if isinstance(git_sha, str) and git_sha else None
+    git_sha_short = value.get("git_sha_short")
+    git_sha_short = git_sha_short if isinstance(git_sha_short, str) and git_sha_short else (git_sha[:12] if git_sha else None)
+    version = value.get("version")
+    version = version if isinstance(version, str) and version else None
+    branch = value.get("branch")
+    branch = branch if isinstance(branch, str) and branch else None
+    built_at = value.get("built_at") or value.get("commit_date")
+    built_at = built_at if isinstance(built_at, str) and built_at else None
+    source = value.get("source")
+    source = source if isinstance(source, str) and source else fallback_source
+    if not any([version, git_sha, branch, built_at]):
+        return None
+    return ReleaseVersionOut(
+        version=version,
+        git_sha=git_sha,
+        git_sha_short=git_sha_short,
+        branch=branch,
+        built_at=built_at,
+        source=source,
+    )
+
+
+def _runtime_version() -> ReleaseVersionOut:
+    settings = get_settings()
+    git_sha = (settings.git_sha or "").strip() or None
+    git_sha_short = git_sha[:12] if git_sha else None
+    build_version = (settings.build_version or "").strip()
+    if not build_version and settings.build_date and settings.build_hash:
+        build_version = f"{settings.build_date.strip()} ({settings.build_hash.strip()[:12]})"
+    return ReleaseVersionOut(
+        version=build_version or None,
+        git_sha=git_sha,
+        git_sha_short=git_sha_short,
+        branch=None,
+        built_at=None,
+        source="runtime-env" if build_version or git_sha else "runtime-default",
+    )
+
+
+def _request_summary() -> tuple[datetime | None, str | None]:
+    payload = _read_json(_release_request_path())
+    if not payload:
+        return None, None
+    request_id = payload.get("request_id")
+    return _parse_datetime(payload.get("requested_at")), request_id if isinstance(request_id, str) else None
+
+
+def release_status(client_version: str | None = None) -> ReleaseStatusOut:
+    status_path = _release_status_path()
+    payload = _read_json(status_path)
+    request_path = _release_request_path()
+    request_exists = request_path.exists()
+    requested_at, request_id = _request_summary()
+
+    runtime = _runtime_version()
+    running = _version_from_payload(payload.get("running") if payload else None) if payload else None
+    running = running or runtime
+    available = _version_from_payload(payload.get("available") if payload else None) if payload else None
+
+    checked_at = _parse_datetime(payload.get("checked_at") if payload else None) or _now()
+    dirty = bool(payload.get("dirty")) if payload else False
+    raw_update_available = payload.get("update_available") if payload else None
+    if isinstance(raw_update_available, bool):
+        update_available = raw_update_available
+    elif available and running.git_sha and available.git_sha:
+        update_available = running.git_sha != available.git_sha
+    else:
+        update_available = False
+
+    raw_apply_available = payload.get("apply_available") if payload else None
+    apply_available = bool(raw_apply_available) and update_available and not dirty
+    raw_phase = payload.get("phase") if payload else None
+    phase = raw_phase if isinstance(raw_phase, str) and raw_phase else "current"
+    if request_exists and phase in {"current", "update_available"}:
+        phase = "requested"
+
+    raw_message = payload.get("message") if payload else None
+    message = raw_message if isinstance(raw_message, str) and raw_message else "Release status has not been checked by the host agent yet."
+    last_error = payload.get("last_error") if payload else None
+    last_error = last_error if isinstance(last_error, str) and last_error else None
+
+    normalized_client_version = (client_version or "").strip()
+    browser_reload_recommended = bool(
+        normalized_client_version
+        and running.version
+        and normalized_client_version != running.version
+        and running.source != "runtime-default"
+    )
+    if browser_reload_recommended and not update_available and phase == "current":
+        message = "A newer Medusa build is already running. Reload the browser to use it."
+        phase = "reload_ready"
+
+    return ReleaseStatusOut(
+        checked_at=checked_at,
+        running=running,
+        available=available,
+        update_available=update_available,
+        apply_available=apply_available,
+        browser_reload_recommended=browser_reload_recommended,
+        phase=phase,
+        message=message,
+        status_source=str(status_path),
+        requested_at=requested_at,
+        request_id=request_id,
+        last_error=last_error,
+        dirty=dirty,
+    )
+
+
+def request_release_upgrade(client_version: str | None = None, requested_by: str | None = None) -> ReleaseStatusOut:
+    status = release_status(client_version=client_version)
+    if status.browser_reload_recommended:
+        return status
+    if not status.update_available:
+        raise ValueError("No newer Medusa release is available.")
+    if not status.apply_available:
+        raise RuntimeError(status.last_error or "Medusa release upgrade requests are not available in this runtime.")
+    request_id = secrets.token_urlsafe(12)
+    payload = {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "request_id": request_id,
+        "requested_at": _now().isoformat(),
+        "requested_by": requested_by,
+        "client_version": (client_version or "").strip() or None,
+        "target": status.available.model_dump() if status.available else None,
+    }
+    _atomic_write_json(_release_request_path(), payload)
+    return release_status(client_version=client_version)

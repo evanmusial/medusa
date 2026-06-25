@@ -1,0 +1,73 @@
+# Portable Deployment
+
+Medusa can run from a normal Ubuntu server checkout, including carrot, as long as database state, ignored runtime files, and release refreshes are treated as separate concerns.
+
+## Move A Library To Another Host
+
+1. Stop or pause active imports, Concordance Runs, backups, and restores on the source machine.
+2. Create a full PostgreSQL backup from Utilities and verify it completed.
+3. Clone the repository on the target server.
+4. Copy ignored runtime files from the source:
+   - `.env`
+   - `data/secrets/`
+   - `data/managed-secrets/`
+   - `data/haproxy/fullchain.pem`
+   - `data/haproxy/privatekey.pem`
+   - optionally all of `data/` to preserve local originals, processing cache files, model weights, and local home/cache data.
+5. Start Medusa on the target:
+
+```bash
+docker compose up -d --build
+```
+
+6. Restore the full PostgreSQL backup from Utilities on the target.
+7. Confirm health:
+
+```bash
+curl -kfsS https://medusa.home.musial.io:3737/api/health
+```
+
+The default `medusa-postgres` Docker named volume is host-local and is not copied by moving the checkout or `data/`. Use the full database backup/restore workflow as the system-of-record move.
+
+## Cache Portability
+
+`data/processing-cache` can be copied to avoid rehydrating recent PDFs, and `data/model-cache` can be copied to avoid first-run local model downloads. These caches are useful but not authoritative. Originals remain in GCS or `data/originals`; when a document cache file is missing, Medusa can recreate it from the durable original URI when storage credentials and objects are available.
+
+## Release Status And Upgrade Requests
+
+Medusa reads release state from:
+
+```text
+data/deploy/release-status.json
+```
+
+When the authenticated user clicks `Upgrade Now`, Medusa writes:
+
+```text
+data/deploy/release-request.json
+```
+
+The web backend does not run `git`, `docker`, or arbitrary host scripts. A host-side agent on the server owns those operations.
+
+Check for newer pushed code:
+
+```bash
+scripts/medusa-release-agent.py check --repo /path/to/medusa --data-dir /path/to/medusa/data
+```
+
+Apply a requested upgrade:
+
+```bash
+scripts/medusa-release-agent.py apply --repo /path/to/medusa --data-dir /path/to/medusa/data
+```
+
+The agent fetches the configured upstream, refuses to deploy from a dirty checkout, fast-forwards only, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with `docker compose up -d --build`, then waits for `/api/health`.
+
+A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
+
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. Copy them to `/etc/systemd/system/`, edit paths if carrot uses a different checkout location, then enable:
+
+```bash
+sudo systemctl enable --now medusa-release-check.timer
+sudo systemctl enable --now medusa-release-apply.path
+```

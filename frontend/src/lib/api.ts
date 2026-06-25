@@ -53,6 +53,7 @@ import type {
   ProjectItem,
   RecommendationFamily,
   RecommendationView,
+  ReleaseStatus,
   RuntimeLocation,
   SavedSearch,
   Tag,
@@ -87,6 +88,10 @@ export const api = {
     request<User>("/api/me", { method: "PATCH", body: JSON.stringify(body) }),
   runtimeLocation: (browserHost: string) =>
     request<RuntimeLocation>(`/api/runtime-location?browser_host=${encodeURIComponent(browserHost)}`),
+  releaseStatus: (clientVersion: string) =>
+    request<ReleaseStatus>(`/api/release/status?client_version=${encodeURIComponent(clientVersion)}`),
+  requestReleaseUpgrade: (clientVersion: string) =>
+    request<ReleaseStatus>(`/api/release/upgrade?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
   documentCacheStatus: () => request<DocumentCacheStatus>("/api/document-cache/status"),

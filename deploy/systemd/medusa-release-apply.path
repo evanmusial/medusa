@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Medusa release upgrade requests
+
+[Path]
+PathExists=/opt/medusa/data/deploy/release-request.json
+Unit=medusa-release-apply.service
+
+[Install]
+WantedBy=multi-user.target

@@ -76,6 +76,7 @@ import {
   RefreshCw,
   RemoveFormatting,
   RotateCcw,
+  Rocket,
   Save,
   Search,
   Server,
@@ -138,6 +139,7 @@ import type {
   ProjectItem,
   RecommendationFamily,
   RecommendationView,
+  ReleaseStatus,
   SavedSearch,
   Tag,
   TagOrphanPruneSuggestion,
@@ -240,6 +242,8 @@ type ConcordanceRunRequest = {
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
 type SettingsSaveHandler = () => Promise<boolean>;
 type SelectMenuOption = { id: string; name: string };
+
+const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -1253,6 +1257,47 @@ function HeaderWorkProgress({
         </span>
       </button>
     </div>
+  );
+}
+
+function ReleaseUpgradeButton({
+  busy,
+  onUpgrade,
+  status,
+}: {
+  busy: boolean;
+  onUpgrade: () => void;
+  status?: ReleaseStatus;
+}) {
+  if (!status) return null;
+  const phaseBusy = RELEASE_BUSY_PHASES.has(status.phase);
+  const visible = status.browser_reload_recommended || status.update_available || phaseBusy;
+  if (!visible) return null;
+  const disabledReason = busy
+    ? "upgrade request is already being sent."
+    : phaseBusy
+      ? status.message || "upgrade is already in progress."
+      : status.browser_reload_recommended
+        ? undefined
+        : !status.apply_available
+          ? status.last_error || status.message || "automatic upgrade is not available from this Medusa runtime."
+          : undefined;
+  const target = status.browser_reload_recommended ? status.running.version : status.available?.version;
+  const tooltip = target
+    ? `${status.message}\nTarget: ${target}`
+    : status.message || "Upgrade Medusa to the newest available release.";
+  return (
+    <button
+      className={`primary-button release-upgrade-button${busy || phaseBusy ? " pending" : ""}`}
+      data-disabled-reason={disabledReason}
+      data-tooltip={tooltip}
+      disabled={Boolean(disabledReason)}
+      onClick={onUpgrade}
+      type="button"
+    >
+      <Rocket className={busy || phaseBusy ? "spin" : ""} size={15} />
+      Upgrade Now
+    </button>
   );
 }
 
@@ -2835,7 +2880,10 @@ function Header({
   backgroundJobs,
   dashboard,
   onOpenQueue,
+  onReleaseUpgrade,
   query,
+  releaseStatus,
+  releaseUpgradeBusy,
   setQuery,
   theme,
   setTheme,
@@ -2844,7 +2892,10 @@ function Header({
   backgroundJobs: BackgroundJob[];
   dashboard?: Dashboard;
   onOpenQueue: () => void;
+  onReleaseUpgrade: () => void;
   query: string;
+  releaseStatus?: ReleaseStatus;
+  releaseUpgradeBusy: boolean;
   setQuery: (query: string) => void;
   theme: "day" | "night";
   setTheme: (theme: "day" | "night") => void;
@@ -2866,6 +2917,7 @@ function Header({
       </label>
       <div className="topbar-actions">
         <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
+        <ReleaseUpgradeButton busy={releaseUpgradeBusy} status={releaseStatus} onUpgrade={onReleaseUpgrade} />
         <button
           className="icon-button"
           data-tooltip={theme === "day" ? "Switch Medusa to night mode." : "Switch Medusa to day mode."}
@@ -14659,9 +14711,31 @@ export default function App() {
   const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data), refetchInterval: 10000 });
   const review = useQuery({ queryKey: ["review"], queryFn: api.reviewQueue, enabled: Boolean(me.data), refetchInterval: 10000 });
   const stashes = useQuery({ queryKey: ["doi-stashes"], queryFn: api.doiStashes, enabled: Boolean(me.data), refetchInterval: 4000 });
+  const releaseStatus = useQuery({
+    queryKey: ["release-status", MEDUSA_BUILD_VERSION],
+    queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
+    enabled: Boolean(me.data),
+    refetchInterval: 15000,
+  });
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => queryClient.clear(),
+  });
+  const confirmReleaseReload = useCallback(() => {
+    return window.confirm(
+      settingsDirty
+        ? "You have unsaved changes. Reloading Medusa will discard them. Continue?"
+        : "Reload Medusa to finish the upgrade? Unsaved page edits will be discarded.",
+    );
+  }, [settingsDirty]);
+  const releaseUpgrade = useMutation({
+    mutationFn: () => api.requestReleaseUpgrade(MEDUSA_BUILD_VERSION),
+    onSuccess: (status) => {
+      queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], status);
+      void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
+      if (status.browser_reload_recommended && confirmReleaseReload()) window.location.reload();
+    },
+    onError: (error) => window.alert(actionFailureMessage("Could not request Medusa upgrade", error)),
   });
 
   const updateViewTitleSubject = useCallback((view: View, subject: string | null) => {
@@ -14695,6 +14769,26 @@ export default function App() {
   useEffect(() => {
     document.title = browserTitle;
   }, [browserTitle]);
+
+  useEffect(() => {
+    if (!settingsDirty) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [settingsDirty]);
+
+  const handleReleaseUpgrade = useCallback(() => {
+    const status = releaseStatus.data;
+    if (!status) return;
+    if (status.browser_reload_recommended) {
+      if (confirmReleaseReload()) window.location.reload();
+      return;
+    }
+    releaseUpgrade.mutate();
+  }, [confirmReleaseReload, releaseStatus.data, releaseUpgrade]);
 
   useEffect(() => {
     const route = routeFromCurrentLocation();
@@ -14925,7 +15019,10 @@ export default function App() {
         backgroundJobs={visibleBackgroundJobs}
         dashboard={dashboard.data}
         onOpenQueue={() => void requestActiveViewChange("queue")}
+        onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
+        releaseStatus={releaseStatus.data}
+        releaseUpgradeBusy={releaseUpgrade.isPending}
         setQuery={setQuery}
         theme={theme}
         setTheme={setTheme}

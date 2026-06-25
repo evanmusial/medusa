@@ -1044,6 +1044,31 @@ class ContainerRestartOut(BaseModel):
     poll_after_seconds: float = 2.0
 
 
+class ReleaseVersionOut(BaseModel):
+    version: str | None = None
+    git_sha: str | None = None
+    git_sha_short: str | None = None
+    branch: str | None = None
+    built_at: str | None = None
+    source: str = "unknown"
+
+
+class ReleaseStatusOut(BaseModel):
+    checked_at: datetime
+    running: ReleaseVersionOut
+    available: ReleaseVersionOut | None = None
+    update_available: bool = False
+    apply_available: bool = False
+    browser_reload_recommended: bool = False
+    phase: str = "unknown"
+    message: str
+    status_source: str
+    requested_at: datetime | None = None
+    request_id: str | None = None
+    last_error: str | None = None
+    dirty: bool = False
+
+
 class HAProxyServiceStatOut(BaseModel):
     proxy_name: str
     service_name: str

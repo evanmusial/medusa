@@ -19,6 +19,31 @@ export type RuntimeLocation = {
   title: string;
 };
 
+export type ReleaseVersion = {
+  version?: string | null;
+  git_sha?: string | null;
+  git_sha_short?: string | null;
+  branch?: string | null;
+  built_at?: string | null;
+  source: string;
+};
+
+export type ReleaseStatus = {
+  checked_at: string;
+  running: ReleaseVersion;
+  available?: ReleaseVersion | null;
+  update_available: boolean;
+  apply_available: boolean;
+  browser_reload_recommended: boolean;
+  phase: string;
+  message: string;
+  status_source: string;
+  requested_at?: string | null;
+  request_id?: string | null;
+  last_error?: string | null;
+  dirty: boolean;
+};
+
 export type Dashboard = {
   documents: number;
   unread: number;

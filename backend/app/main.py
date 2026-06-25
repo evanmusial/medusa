@@ -122,6 +122,7 @@ from app.schemas import (
     ProjectItemOut,
     ProjectItemPatch,
     ProjectOut,
+    ReleaseStatusOut,
     RestoreDatabaseCreate,
     RuntimeLocationOut,
     SavedSearchCreate,
@@ -223,6 +224,7 @@ from app.services.recommendations import (
     queue_recommendation_imports,
     refresh_document_recommendations,
 )
+from app.services.release_status import release_status, request_release_upgrade
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import rebuild_document_search_text
 from app.services.verifier import normalized_title_similarity
@@ -1142,6 +1144,27 @@ def logout(
 @app.get("/api/me", response_model=UserOut)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
     return user
+
+
+@app.get("/api/release/status", response_model=ReleaseStatusOut)
+def read_release_status(
+    _: Annotated[User, Depends(current_user)],
+    client_version: str | None = Query(default=None, max_length=120),
+) -> ReleaseStatusOut:
+    return release_status(client_version=client_version)
+
+
+@app.post("/api/release/upgrade", response_model=ReleaseStatusOut)
+def start_release_upgrade(
+    user: Annotated[User, Depends(current_user)],
+    client_version: str | None = Query(default=None, max_length=120),
+) -> ReleaseStatusOut:
+    try:
+        return request_release_upgrade(client_version=client_version, requested_by=user.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.patch("/api/me", response_model=UserOut)

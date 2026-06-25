@@ -33,6 +33,12 @@ class Settings(BaseSettings):
 
     data_dir: Path = Field(default=Path("./data"), validation_alias="MEDUSA_DATA_DIR")
     local_storage_dir: Path = Field(default=Path("./data/originals"), validation_alias="MEDUSA_LOCAL_STORAGE_DIR")
+    build_version: str | None = Field(default=None, validation_alias="MEDUSA_BUILD_VERSION")
+    build_date: str | None = Field(default=None, validation_alias="MEDUSA_BUILD_DATE")
+    build_hash: str | None = Field(default=None, validation_alias="MEDUSA_BUILD_HASH")
+    git_sha: str | None = Field(default=None, validation_alias="MEDUSA_GIT_SHA")
+    release_status_path: Path | None = Field(default=None, validation_alias="MEDUSA_RELEASE_STATUS_PATH")
+    release_request_path: Path | None = Field(default=None, validation_alias="MEDUSA_RELEASE_REQUEST_PATH")
 
     gcs_bucket: str | None = Field(default=None, validation_alias="GCS_BUCKET")
     gcs_prefix: str = Field(default="medusa", validation_alias="GCS_PREFIX")
