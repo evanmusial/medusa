@@ -254,11 +254,11 @@ type SettingsSaveHandler = () => Promise<boolean>;
 type SelectMenuOption = { id: string; name: string };
 
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
-const RELEASE_POLL_INTERVAL_MS = 1500;
+const RELEASE_POLL_INTERVAL_MS = 1000;
 const RELEASE_RELOAD_DELAY_MS = 900;
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
-const IDLE_RELEASE_REFETCH_INTERVAL_MS = 60000;
+const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
 const WORKSPACE_REFETCH_INTERVAL_MS = 15000;
 const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
 
