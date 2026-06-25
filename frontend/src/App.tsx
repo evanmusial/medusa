@@ -3008,6 +3008,14 @@ function domainSubtreeDocumentCounts(domains: Domain[], children: Record<string,
   return counts;
 }
 
+function domainDocumentCountLabel(domain: Domain, children: Record<string, Domain[]>, subtreeCounts: Record<string, number>) {
+  const directCount = domain.document_count || 0;
+  const childCount = (children[domain.id] || []).length;
+  if (!childCount) return String(directCount);
+  const descendantCount = Math.max(0, (subtreeCounts[domain.id] ?? directCount) - directCount);
+  return `${directCount} (${descendantCount})`;
+}
+
 function domainPathLabel(domain: Domain, domains: Domain[]) {
   const byId = new Map(domains.map((item) => [item.id, item]));
   const parts: string[] = [];
@@ -3104,8 +3112,8 @@ function DomainTree({
   const dropReady = Boolean(draggedDocumentId && onAssignDocumentToDomain);
 
   const render = (domain: Domain, depth = 0) => {
-    const count = subtreeCounts[domain.id] ?? domain.document_count ?? 0;
-    const label = `${domain.name} (${count})`;
+    const countLabel = domainDocumentCountLabel(domain, children, subtreeCounts);
+    const label = `${domain.name} ${countLabel}`;
     const alreadyAssigned = Boolean(dropReady && draggedDocumentAssignedDomainIds?.has(domain.id));
     const assigning = assigningDomainId === domain.id;
     const depthStep = 14;
@@ -3161,7 +3169,7 @@ function DomainTree({
           <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
           <span className="domain-label">
             <span className="domain-name">{domain.name}</span>
-            <span className="domain-count">({count})</span>
+            <span className="domain-count">{countLabel}</span>
           </span>
         </div>
         {(children[domain.id] || []).map((child) => render(child, depth + 1))}
@@ -3201,6 +3209,7 @@ function DomainsView({
   const [error, setError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
+  const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const selected = domains.find((domain) => domain.id === selectedId) || null;
   const selectedDescendants = useMemo(() => (selected ? descendantDomainIds(selected.id, domains) : new Set<string>()), [domains, selected]);
   const parentOptions = useMemo(
@@ -3324,6 +3333,7 @@ function DomainsView({
   };
   const renderDomainButton = (domain: Domain, depth: number, pathOverride?: string) => {
     const childCount = (children[domain.id] || []).length;
+    const countLabel = domainDocumentCountLabel(domain, children, subtreeCounts);
     const selectedRow = selected?.id === domain.id;
     return (
       <button
@@ -3337,9 +3347,9 @@ function DomainsView({
         <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
         <span className="domain-manager-row-text">
           <strong>{domain.name}</strong>
-          <small>{pathOverride || `${childCount} child${childCount === 1 ? "" : "ren"} / ${domain.document_count} documents`}</small>
+          <small>{pathOverride || `${childCount} child${childCount === 1 ? "" : "ren"} / ${countLabel} documents`}</small>
         </span>
-        <small>{domain.document_count}</small>
+        <small>{countLabel}</small>
       </button>
     );
   };
