@@ -1748,6 +1748,18 @@ function PriorityPill({ value }: { value?: string | null }) {
   return <span className={`priority-pill ${priorityClass(value)}`}>{priorityLabel(value)}</span>;
 }
 
+function MissingDoiPill() {
+  return <span className="pill warn doi-gap-pill">No DOI</span>;
+}
+
+function showLibraryPriorityPill(value?: string | null) {
+  return value === "urgent" || value === "high";
+}
+
+function showLibraryStatusPill(value: string | null | undefined, normalValue: string) {
+  return Boolean(value && value !== normalValue);
+}
+
 function savedSearchSummary(savedSearch: SavedSearch, lookup: { domains: Map<string, string>; tags: Map<string, string> }) {
   const filters = savedSearch.filters || {};
   const pieces = [
@@ -4554,10 +4566,11 @@ function LibraryView({
                 </span>
               </a>
               <div className="row-meta">
-                <PriorityPill value={item.priority} />
+                {showLibraryPriorityPill(item.priority) ? <PriorityPill value={item.priority} /> : null}
+                {!item.doi ? <MissingDoiPill /> : null}
                 {item.duplicate_count > 0 ? <StatusPill value={`Duplicate ${item.duplicate_count + 1}`} tone="warn" /> : null}
-                <StatusPill value={item.processing_status} tone={item.processing_status === "ready" ? "good" : "blue"} />
-                <StatusPill value={item.citation_status} tone={item.citation_status === "verified" ? "good" : "warn"} />
+                {showLibraryStatusPill(item.processing_status, "ready") ? <StatusPill value={item.processing_status} tone="blue" /> : null}
+                {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
               </div>
               <div className="doc-row-summary">
                 <MarkdownBlock compact content={markdownExcerpt(item.rich_summary || "", 320)} empty="Summary pending." />

@@ -2478,6 +2478,10 @@ textarea {
   border-color: transparent;
 }
 
+.doi-gap-pill {
+  text-transform: none;
+}
+
 .pill.blue {
   color: var(--blue);
   background: var(--blue-soft);
