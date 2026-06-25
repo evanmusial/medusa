@@ -263,10 +263,16 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "Clean and format an extracted scholarly reference section for a research library. APA 7-style formatting, "
     "intelligent source grouping, and one source per output item are paramount. First infer which wrapped, indented, "
     "blank-separated, numbered, or bulleted lines belong to the same source. Then return one Markdown-compatible "
-    "APA-style reference-list entry per source, alphabetized by first significant author, group-author, or title text "
-    "in APA reference-list style. Remove leading source prefixes such as numbers, bracketed numbers, bullets, and "
-    "list markers. Start each entry with the visible author or group author when present; when no author is visible, "
-    "start with the title. Use Markdown italics where APA requires italics, such as book, "
+    "APA-style reference-list entry per source. Normalize personal author names into APA reference-list order: "
+    "Surname, Initials. If the extracted text shows initials before a surname, invert it (for example, "
+    "'S. Jakobwitz' becomes 'Jakobwitz, S.' and 'S. R. Band' becomes 'Band, S. R.'). Preserve the work's original "
+    "coauthor order; do not alphabetize coauthors within a source. Sort the returned references in APA reference-list "
+    "order: first author surname, then group author when there is no personal author, then title when there is no "
+    "author, ignoring leading A, An, or The. Do not sort by author initials or by the raw extracted line prefix. "
+    "For repeated first authors, use APA-style secondary sorting by the remaining authors and year when evident. "
+    "Remove leading source prefixes such as numbers, bracketed numbers, bullets, and list markers. Start each entry "
+    "with the visible author or group author when present; when no author is visible, start with the title. Use "
+    "Markdown italics where APA requires italics, such as book, "
     "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Preserve DOI "
     "links, stable URLs, retrieval notes, edition/series details, page ranges, publishers, and years when visible. "
     "Do not invent missing authors, years, titles, venues, publishers, pages, DOI links, URLs, or access dates. If "
@@ -367,6 +373,9 @@ _STANDALONE_SUMMARY_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\s+")
+_BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE = re.compile(
+    r"^\s*(?P<initials>(?:[A-Z]\.\s*){1,5})(?P<surname>[A-Z][A-Za-z'.-]+)\b"
+)
 _BIBLIOGRAPHY_SORT_LEADING_RE = re.compile(r"^[\s*_`\"'(\[]+")
 _BIBLIOGRAPHY_SORT_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+", re.IGNORECASE)
 _BIBLIOGRAPHY_SORT_KEY_RE = re.compile(r"[^a-z0-9]+")
@@ -430,7 +439,14 @@ def normalize_model_bibliography_entry(value: Any) -> str:
 
 def bibliography_entry_sort_key(value: Any) -> tuple[str, str]:
     entry = normalize_model_bibliography_entry(value)
-    key = _BIBLIOGRAPHY_SORT_LEADING_RE.sub("", entry).casefold()
+    raw_key = _BIBLIOGRAPHY_SORT_LEADING_RE.sub("", entry)
+    initials_first_match = _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE.match(raw_key)
+    if initials_first_match:
+        raw_key = (
+            f"{initials_first_match.group('surname')} {initials_first_match.group('initials')} "
+            f"{raw_key[initials_first_match.end():]}"
+        )
+    key = raw_key.casefold()
     key = _BIBLIOGRAPHY_SORT_ARTICLE_RE.sub("", key)
     key = _BIBLIOGRAPHY_SORT_KEY_RE.sub(" ", key).strip()
     return (key or entry.casefold(), entry.casefold())

@@ -127,13 +127,36 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
         model="gpt-5.4-nano",
     )
 
-    assert "alphabetized" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "Sort the returned references in APA reference-list order" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "Surname, Initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "first author surname" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "Do not sort by author initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert result["bibliography"].splitlines() == [
         "Adams, A. (2022). *Alpha methods*. Press.",
         "Brown, B. (2023). *Beta analysis*. Journal.",
         "Zed, Z. (2024). *Zeta systems*. Journal.",
     ]
     assert responses.system_prompt == BIBLIOGRAPHY_CLEANUP_PROMPT
+
+
+def test_bibliography_sort_fallback_uses_surname_for_initials_first_entries():
+    from app.services.ai import sorted_bibliography_entries
+
+    entries = [
+        "S. Jakobwitz, & V. Egan. (2006). The dark triad and normal personality traits.",
+        "T. Buchanan, J. A. Johnson, & L. R. Goldberg. (2005). Implementing a five-factor inventory.",
+        "W. H. Hendrix, N. K. Ovalle, & R. G. Troxler. (1985). Behavioral consequences of stress.",
+        "S. S. Russell, M. J. Cullen, & M. J. Bosshardt. (2009). Cyber behavior and personnel security.",
+        "S. R. Band, D. M. Cappelli, & L. F. Fischer. (1995). A typology of deviant workplace behaviors.",
+    ]
+
+    assert sorted_bibliography_entries(entries) == [
+        "S. R. Band, D. M. Cappelli, & L. F. Fischer. (1995). A typology of deviant workplace behaviors.",
+        "T. Buchanan, J. A. Johnson, & L. R. Goldberg. (2005). Implementing a five-factor inventory.",
+        "W. H. Hendrix, N. K. Ovalle, & R. G. Troxler. (1985). Behavioral consequences of stress.",
+        "S. Jakobwitz, & V. Egan. (2006). The dark triad and normal personality traits.",
+        "S. S. Russell, M. J. Cullen, & M. J. Bosshardt. (2009). Cyber behavior and personnel security.",
+    ]
 
 
 def test_ai_prompt_cache_key_uses_api_safe_length_for_document_checksums(monkeypatch, tmp_path):
