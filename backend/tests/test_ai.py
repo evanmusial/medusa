@@ -57,7 +57,7 @@ def test_normalize_obfuscated_email_variants():
 
 
 def test_strip_standalone_summary_heading():
-    from app.services.ai import strip_standalone_summary_heading
+    from app.services.ai import strip_standalone_summary_heading, strip_summary_schema_trailer
 
     assert strip_standalone_summary_heading("Summary\n\nThis paper studies access control.") == (
         "This paper studies access control."
@@ -66,6 +66,19 @@ def test_strip_standalone_summary_heading():
     assert strip_standalone_summary_heading("Summary statistics are central to the method.") == (
         "Summary statistics are central to the method."
     )
+    leaked_schema_fields = """This paper evaluates a document parsing method.
+
+confidence: 0.77 needs_review_reasons:
+
+Structural equations are partially corrupted in the extracted text.
+Figures are cited, but their visual content is unavailable."""
+    assert strip_standalone_summary_heading(leaked_schema_fields) == (
+        "This paper evaluates a document parsing method."
+    )
+    assert strip_summary_schema_trailer(leaked_schema_fields) == "This paper evaluates a document parsing method."
+    assert strip_standalone_summary_heading(
+        "This paper reports confidence intervals as part of the method."
+    ) == "This paper reports confidence intervals as part of the method."
 
 
 def test_summary_prompts_default_to_plain_technical_paragraphs():
@@ -86,6 +99,8 @@ def test_summary_prompts_default_to_plain_technical_paragraphs():
         assert "Do not use bold, italics, bullet points" in prompt
         assert "em dashes" in prompt
         assert "curly or fancy quotes" in prompt
+        assert "Return confidence and needs_review_reasons only through the structured response fields" in prompt
+        assert "metadata trailers inside the summary body" in prompt
         assert "unless the user explicitly requests another format" in normalized_prompt
         assert "labeled bullets" not in prompt
 

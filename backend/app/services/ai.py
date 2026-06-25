@@ -69,7 +69,9 @@ SUMMARY_STYLE_HINT = (
     "heading. The first paragraph should state the paper's broad facts and purpose. Subsequent paragraphs should "
     "summarize the main points, ideas, methods, findings, and concepts "
     "introduced in the paper. Do not use bold, italics, bullet points, em dashes, curly or fancy quotes, or "
-    "decorative Markdown by default. Use plain ASCII punctuation."
+    "decorative Markdown by default. Use plain ASCII punctuation. Return confidence and needs_review_reasons only "
+    "through the structured response fields; do not include schema labels, review reasons, confidence scores, JSON "
+    "keys, or metadata trailers inside the summary body."
 )
 
 DOCUMENT_SUMMARY_PROMPT = (
@@ -375,6 +377,12 @@ _STANDALONE_SUMMARY_HEADING_RE = re.compile(
     r"\s*[:.\-–—]?\s*(?:\*\*)?$",
     re.IGNORECASE,
 )
+_SUMMARY_SCHEMA_TRAILER_LABEL_RE = re.compile(
+    r"(?im)(?:^|\n)\s*(?:[-*]\s*)?(?:`{1,3}|\*\*)?"
+    r"(confidence|needs_review_reasons)"
+    r"(?:`{1,3}|\*\*)?\s*:",
+)
+_SUMMARY_CONFIDENCE_VALUE_RE = re.compile(r"(?i)\bconfidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\b")
 _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\s+")
 _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE = re.compile(
     r"^\s*(?P<initials>(?:[A-Z]\.\s*){1,5})(?P<surname>[A-Z][A-Za-z'.-]+)\b"
@@ -417,9 +425,7 @@ def normalize_author_contact_details(authors: Any) -> list[dict[str, Any]]:
 
 
 def strip_standalone_summary_heading(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = value.strip()
+    text = strip_summary_schema_trailer(value)
     if not text:
         return ""
     lines = text.splitlines()
@@ -428,7 +434,23 @@ def strip_standalone_summary_heading(value: Any) -> str:
         return ""
     first_line = lines[first_content_index].strip()
     if _STANDALONE_SUMMARY_HEADING_RE.match(first_line):
-        return "\n".join(lines[first_content_index + 1 :]).strip()
+        text = "\n".join(lines[first_content_index + 1 :]).strip()
+    return strip_summary_schema_trailer(text)
+
+
+def strip_summary_schema_trailer(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    for match in _SUMMARY_SCHEMA_TRAILER_LABEL_RE.finditer(text):
+        trailer = text[match.start() :]
+        label = match.group(1).lower()
+        if label == "needs_review_reasons" or "needs_review_reasons" in trailer.lower():
+            return text[: match.start()].rstrip()
+        if _SUMMARY_CONFIDENCE_VALUE_RE.search(trailer):
+            return text[: match.start()].rstrip()
     return text
 
 
@@ -1198,6 +1220,7 @@ class AiService:
             used_pdf_file=used_pdf_file,
             prompt_cache_key=prompt_cache_key,
         )
+        result["summary"] = strip_summary_schema_trailer(result.get("summary"))
         result["_openai"] = {
             "model": selected_model,
             "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
