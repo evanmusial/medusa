@@ -4912,7 +4912,7 @@ function LibraryView({
   );
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
   const libraryPageCount = sortedDocuments.reduce((total, item) => total + Math.max(0, item.page_count || 0), 0);
-  const libraryCountLabel = `${formatWholeNumber(sortedDocuments.length)} document${sortedDocuments.length === 1 ? "" : "s"} (${formatWholeNumber(libraryPageCount)} page${libraryPageCount === 1 ? "" : "s"})`;
+  const libraryCountLabel = `Browsing ${formatWholeNumber(sortedDocuments.length)} document${sortedDocuments.length === 1 ? "" : "s"} (${formatWholeNumber(libraryPageCount)} page${libraryPageCount === 1 ? "" : "s"})`;
   const domainOptions = useMemo(() => domainPickerItems(domains).map(({ id, name }) => ({ id, name })), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
