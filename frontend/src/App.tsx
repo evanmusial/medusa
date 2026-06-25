@@ -54,6 +54,7 @@ import {
   FolderPlus,
   FolderTree,
   Gauge,
+  GitCommit,
   IndentDecrease,
   IndentIncrease,
   Info,
@@ -154,7 +155,19 @@ import type {
   VisualScanReview,
 } from "./types";
 
-type View = "library" | "domains" | "projects" | "tags" | "queue" | "notes" | "import" | "stashes" | "budget" | "utilities" | "settings";
+type View =
+  | "library"
+  | "domains"
+  | "projects"
+  | "tags"
+  | "queue"
+  | "notes"
+  | "import"
+  | "stashes"
+  | "budget"
+  | "utilities"
+  | "status"
+  | "settings";
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
@@ -279,7 +292,7 @@ const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local
 const MEDUSA_FRONTEND_NODE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_NODE_VERSION || "unknown";
 const MEDUSA_FRONTEND_VITE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_VITE_VERSION || "unknown";
 const MEDUSA_APP_NAME = "medusa";
-const MEDUSA_EXPANSION = "Mapped Evidence for Discovery, Understanding, Synthesis, and Analysis";
+const MEDUSA_EXPANSION = "Metadata-Enhanced Document Understanding, Search, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
 const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
 const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
@@ -375,6 +388,7 @@ const VIEW_PATHS: Record<View, string> = {
   stashes: "/stashes",
   budget: "/budget",
   utilities: "/utilities",
+  status: "/status",
   settings: "/settings",
 };
 const VIEW_TITLE_LABELS: Record<View, string> = {
@@ -388,6 +402,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   stashes: "DOI Stashes",
   budget: "Budget & Costs",
   utilities: "Utilities",
+  status: "Status",
   settings: "Settings",
 };
 
@@ -3096,11 +3111,13 @@ function Header({
   backgroundJobs,
   dashboard,
   onOpenQueue,
+  onOpenStatus,
   onReleaseUpgrade,
   query,
   releaseStatus,
   releaseUpgradeBusy,
   setQuery,
+  statusActive,
   theme,
   setTheme,
   onLogout,
@@ -3108,11 +3125,13 @@ function Header({
   backgroundJobs: BackgroundJob[];
   dashboard?: Dashboard;
   onOpenQueue: () => void;
+  onOpenStatus: () => void;
   onReleaseUpgrade: () => void;
   query: string;
   releaseStatus?: ReleaseStatus;
   releaseUpgradeBusy: boolean;
   setQuery: (query: string) => void;
+  statusActive: boolean;
   theme: "day" | "night";
   setTheme: (theme: "day" | "night") => void;
   onLogout: () => void;
@@ -3135,13 +3154,23 @@ function Header({
         <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
         <ReleaseUpgradeButton busy={releaseUpgradeBusy} status={releaseStatus} onUpgrade={onReleaseUpgrade} />
         <button
+          aria-label="Open Medusa status"
+          className={`icon-button topbar-status-button${statusActive ? " active" : ""}`}
+          data-tooltip="Open Medusa status, version, storage, memory, uptime, and runtime details."
+          onClick={onOpenStatus}
+          type="button"
+        >
+          <Info size={18} />
+        </button>
+        <button
           className="icon-button"
           data-tooltip={theme === "day" ? "Switch Medusa to night mode." : "Switch Medusa to day mode."}
           onClick={() => setTheme(theme === "day" ? "night" : "day")}
+          type="button"
         >
           {theme === "day" ? <Moon size={18} /> : <Sun size={18} />}
         </button>
-        <button className="icon-button" data-tooltip="Sign out of this Medusa session." onClick={onLogout}>
+        <button className="icon-button" data-tooltip="Sign out of this Medusa session." onClick={onLogout} type="button">
           <LogOut size={18} />
         </button>
       </div>
@@ -13879,6 +13908,241 @@ function HAProxyStatRow({ row }: { row: HAProxyServiceStat }) {
   );
 }
 
+function releaseCommitLabel(status?: ReleaseStatus) {
+  if (status?.running.git_sha) return status.running.git_sha;
+  if (status?.running.git_sha_short) return status.running.git_sha_short;
+  const stampHash = MEDUSA_BUILD_VERSION.match(/\(([^)]+)\)/)?.[1];
+  return stampHash || "Unavailable";
+}
+
+function StatusMetricCard({
+  detail,
+  icon,
+  label,
+  value,
+}: {
+  detail?: string;
+  icon: ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="status-metric-card">
+      <span className="status-metric-icon">{icon}</span>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        {detail ? <em>{detail}</em> : null}
+      </div>
+    </div>
+  );
+}
+
+function StatusFactRow({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="status-fact-row">
+      <div>
+        <strong>{label}</strong>
+        {detail ? <span>{detail}</span> : null}
+      </div>
+      <span>{value}</span>
+    </div>
+  );
+}
+
+function StatusView({ dashboard }: { dashboard?: Dashboard }) {
+  const containerStatus = useQuery({
+    queryKey: ["container-footprint-status"],
+    queryFn: api.containerFootprintStatus,
+    refetchInterval: 30000,
+  });
+  const databaseStatus = useQuery({
+    queryKey: ["database-maintenance-status"],
+    queryFn: api.databaseMaintenanceStatus,
+    refetchInterval: 30000,
+  });
+  const haproxyStatus = useQuery({
+    queryKey: ["haproxy-status"],
+    queryFn: api.haproxyStatus,
+    refetchInterval: 30000,
+  });
+  const releaseStatus = useQuery({
+    queryKey: ["release-status", MEDUSA_BUILD_VERSION],
+    queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
+    refetchInterval: 30000,
+  });
+
+  const container = containerStatus.data;
+  const database = databaseStatus.data;
+  const haproxy = haproxyStatus.data;
+  const release = releaseStatus.data;
+  const refreshing = containerStatus.isFetching || databaseStatus.isFetching || haproxyStatus.isFetching || releaseStatus.isFetching;
+  const memoryPercent =
+    container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null && container?.memory_limit_bytes
+      ? (container.memory_current_bytes / container.memory_limit_bytes) * 100
+      : null;
+  const memoryDetail = [
+    container?.memory_limit_bytes
+      ? `${memoryPercent !== null ? `${formatPercent(memoryPercent)} of ` : ""}${formatDatabaseSize(container.memory_limit_bytes)} limit`
+      : "No cgroup limit",
+    container?.memory_peak_bytes ? `Peak ${formatDatabaseSize(container.memory_peak_bytes)}` : "",
+    container?.process_rss_bytes ? `RSS ${formatDatabaseSize(container.process_rss_bytes)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+  const dataFilesystemDetail = container?.data_filesystem
+    ? `${formatDatabaseSize(container.data_filesystem.free_bytes)} free of ${formatDatabaseSize(container.data_filesystem.total_bytes)}`
+    : "Filesystem unavailable";
+  const databaseDetail = [
+    database?.active_operation_label || database?.active_operation?.replaceAll("_", " ") || "",
+    database?.active_operation_elapsed_seconds ? `running ${formatDuration(database.active_operation_elapsed_seconds)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+  const dockerImage = container?.docker_image;
+  const dockerImageName =
+    dockerImage?.repo_tags?.[0] ||
+    (dockerImage?.id ? dockerImage.id.replace(/^sha256:/, "").slice(0, 12) : "") ||
+    "Image unavailable";
+  const dockerImageSize = dockerImage
+    ? formatDatabaseSize(dockerImage.unique_size_bytes ?? dockerImage.size_bytes ?? dockerImage.virtual_size_bytes)
+    : "Unavailable";
+  const proxyRows = haproxy?.services || [];
+  const proxyServer = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.kind === "server");
+  const proxyBackend = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.service_name === "BACKEND");
+  const runtimeVersionRows: ContainerRuntimeVersion[] = [
+    ...(container?.runtime_versions || []),
+    {
+      name: "Frontend Node.js",
+      version: MEDUSA_FRONTEND_NODE_VERSION,
+      source: "frontend image node:26-slim",
+      status: "reported",
+    },
+    {
+      name: "Vite",
+      version: MEDUSA_FRONTEND_VITE_VERSION,
+      source: "frontend package vite",
+      status: "reported",
+    },
+    {
+      name: "Frontend build",
+      version: MEDUSA_BUILD_VERSION,
+      source: "Vite build stamp",
+      status: "reported",
+    },
+  ];
+  const pathRows = (container?.paths || []).slice(0, 8);
+  const runningVersion = release?.running.version || release?.running.git_sha_short || MEDUSA_BUILD_VERSION;
+  const commitHash = releaseCommitLabel(release);
+  const builtAt = releaseDateLabel(release?.running.built_at);
+  const processCountDetail =
+    container?.process_count !== undefined && container?.process_count !== null
+      ? `${formatMetric(container.process_count)} processes / ${formatMetric(container?.thread_count)} threads`
+      : "Process counts unavailable";
+  const statusPillLabel = haproxy?.available ? "online" : refreshing && !haproxy ? "refreshing" : "unavailable";
+
+  return (
+    <section className="workbench status-workbench">
+      <div className="status-panel">
+        <div className="panel-title-row status-title-row">
+          <div>
+            <h2>Status</h2>
+            <span>{refreshing ? "Refreshing Medusa status" : "Runtime, storage, and build identity"}</span>
+          </div>
+          <Info size={20} />
+        </div>
+        <section className="status-acronym-panel">
+          <div>
+            <span>medusa</span>
+            <h3>{MEDUSA_EXPANSION}</h3>
+          </div>
+          <StatusPill value={statusPillLabel} tone={haproxy?.available ? "good" : "neutral"} />
+        </section>
+        <div className="status-metric-grid">
+          <StatusMetricCard
+            icon={<Sparkles size={17} />}
+            label="Version"
+            value={runningVersion}
+            detail={builtAt ? `Built ${builtAt}` : `Browser ${MEDUSA_BUILD_VERSION}`}
+          />
+          <StatusMetricCard icon={<GitCommit size={17} />} label="Commit hash" value={commitHash} detail={release?.running.branch ? `Branch ${release.running.branch}` : "Current build identity"} />
+          <StatusMetricCard
+            icon={<Timer size={17} />}
+            label="Uptime"
+            value={formatDuration(container?.process_uptime_seconds) || "0s"}
+            detail={container?.hostname || "Hostname unavailable"}
+          />
+          <StatusMetricCard icon={<Activity size={17} />} label="Memory footprint" value={formatDatabaseSize(container?.memory_current_bytes)} detail={memoryDetail} />
+          <StatusMetricCard icon={<HardDrive size={17} />} label="Disk footprint" value={formatDatabaseSize(container?.data_dir_size_bytes)} detail={dataFilesystemDetail} />
+          <StatusMetricCard icon={<Database size={17} />} label="Database size" value={formatDatabaseSize(database?.database_size_bytes)} detail={databaseDetail || "PostgreSQL"} />
+          <StatusMetricCard
+            icon={<Cpu size={17} />}
+            label="CPU / processes"
+            value={formatCpuLimit(container?.cpu_limit_cores)}
+            detail={processCountDetail}
+          />
+          <StatusMetricCard
+            icon={<Server size={17} />}
+            label="Proxy"
+            value={haproxy?.available ? "Online" : "Unavailable"}
+            detail={proxyServer?.status || proxyBackend?.status || haproxy?.message || "HAProxy status"}
+          />
+          <StatusMetricCard icon={<Archive size={17} />} label="Backend image" value={dockerImageSize} detail={dockerImageName} />
+          <StatusMetricCard
+            icon={<Library size={17} />}
+            label="Library"
+            value={`${formatMetric(dashboard?.documents)} documents`}
+            detail={`${formatMetric(dashboard?.queue_import_jobs)} queue items / ${formatMetric(dashboard?.review_items)} review items`}
+          />
+        </div>
+        <div className="status-detail-grid">
+          <section className="status-detail-panel">
+            <div className="panel-title-row">
+              <div>
+                <h3>Runtime Versions</h3>
+                <span>{runtimeVersionRows.length ? `${formatMetric(runtimeVersionRows.length)} reported components` : "Waiting for runtime inventory"}</span>
+              </div>
+              <Cpu size={18} />
+            </div>
+            <div className="status-fact-list">
+              {runtimeVersionRows.length ? (
+                runtimeVersionRows.map((row) => (
+                  <StatusFactRow key={`${row.name}-${row.source}`} label={row.name} value={row.version} detail={row.note || row.source} />
+                ))
+              ) : (
+                <div className="container-path-empty">Loading runtime versions</div>
+              )}
+            </div>
+          </section>
+          <section className="status-detail-panel">
+            <div className="panel-title-row">
+              <div>
+                <h3>Storage Paths</h3>
+                <span>{pathRows.length ? `${formatMetric(pathRows.length)} tracked paths` : "Waiting for path footprint"}</span>
+              </div>
+              <HardDrive size={18} />
+            </div>
+            <div className="status-fact-list">
+              {pathRows.length ? (
+                pathRows.map((path) => (
+                  <StatusFactRow
+                    key={`${path.label}-${path.path}`}
+                    label={path.label}
+                    value={formatDatabaseSize(path.size_bytes)}
+                    detail={path.exists ? `${path.path} / ${formatMetric(path.file_count)} files` : `${path.path} not present`}
+                  />
+                ))
+              ) : (
+                <div className="container-path-empty">Loading storage footprint</div>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function concordanceEstimateItemModel(item: ConcordanceRunEstimate["items"][number]) {
   const requirement = item.requirements.find((row) => typeof row.model === "string");
   if (requirement && typeof requirement.model === "string") return requirement.model;
@@ -16000,11 +16264,13 @@ export default function App() {
         backgroundJobs={visibleBackgroundJobs}
         dashboard={dashboard.data}
         onOpenQueue={() => void requestActiveViewChange("queue")}
+        onOpenStatus={() => void requestActiveViewChange("status")}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
         releaseStatus={releaseStatus.data}
         releaseUpgradeBusy={releaseUpgrade.isPending}
         setQuery={setQuery}
+        statusActive={activeView === "status"}
         theme={theme}
         setTheme={setTheme}
         onLogout={() => logout.mutate()}
@@ -16083,6 +16349,7 @@ export default function App() {
         ) : null}
         {activeView === "budget" ? <BudgetView /> : null}
         {activeView === "utilities" ? <UtilitiesView backupRuns={backupRuns.data || []} preferences={preferences.data} /> : null}
+        {activeView === "status" ? <StatusView dashboard={dashboard.data} /> : null}
         {activeView === "settings" ? (
           <SettingsView
             capabilities={concordanceCapabilities.data || []}
