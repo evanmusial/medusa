@@ -1701,8 +1701,8 @@ function parseAuthorText(value: string) {
 
 function splitCommaList(value: string) {
   return value
-    .split(",")
-    .map((item) => item.trim())
+    .split(/[,;\n\r]+/)
+    .map((item) => item.trim().replace(/^["']+|["']+$/g, ""))
     .filter(Boolean);
 }
 
@@ -1726,6 +1726,33 @@ function sortByName<T extends { name: string }>(values: T[]) {
 
 function normalizeTagInputName(name: string) {
   return name.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).join(" ");
+}
+
+function normalizeTagLookupKey(name: string) {
+  return name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+function tokenListForText(values: Array<string | null | undefined>, limit = 24) {
+  return uniqueValues(
+    values
+      .filter(Boolean)
+      .join(" ")
+      .toLocaleLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4),
+  ).slice(0, limit);
+}
+
+function hasDelimitedListInput(value: string) {
+  return /[,;\n\r]/.test(value);
 }
 
 function emptyFilters(): DocumentFilters {
@@ -3239,16 +3266,21 @@ type DomainDocumentSuggestion = {
   score: number;
 };
 
+type DomainTagSuggestion = {
+  tag: Tag;
+  score: number;
+  reasons: string[];
+};
+
+type DomainTagPasteReview = {
+  matches: Array<{ input: string; tag: Tag; basis: "exact" | "close" }>;
+  skipped: Array<{ input: string; reason: string; tag?: Tag }>;
+  unmatched: string[];
+};
+
 function domainSuggestionTokens(domain: Domain | null) {
   if (!domain) return [];
-  return uniqueValues(
-    [domain.name, domain.description, ...domain.tags.flatMap((tag) => [tag.name, tag.definition, tag.use_guidance])]
-      .join(" ")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 4),
-  ).slice(0, 24);
+  return tokenListForText([domain.name, domain.description, ...domain.tags.flatMap((tag) => [tag.name, tag.definition, tag.use_guidance])]);
 }
 
 function domainDocumentSuggestionText(document: DocumentSummary) {
@@ -3278,6 +3310,97 @@ function domainDocumentSuggestions(domain: Domain | null, documents: DocumentSum
         left.document.title.localeCompare(right.document.title, undefined, { numeric: true, sensitivity: "base" }),
     )
     .slice(0, 12);
+}
+
+function tagSearchText(tag: Tag) {
+  return normalizeTagLookupKey([tag.name, tag.definition, tag.use_guidance].filter(Boolean).join(" "));
+}
+
+function domainTagSuggestions(
+  domain: Domain | null,
+  draftDescription: string,
+  tags: Tag[],
+  suggestedDocuments: DomainDocumentSuggestion[],
+  selectedTagIds: string[],
+): DomainTagSuggestion[] {
+  if (!domain) return [];
+  const selectedIds = new Set(selectedTagIds);
+  const domainText = [domain.name, draftDescription || domain.description || ""].filter(Boolean).join(" ");
+  const normalizedDomainText = normalizeTagLookupKey(domainText);
+  const domainTokens = tokenListForText([domainText], 36);
+  const suggestedDocumentTagCounts = new Map<string, number>();
+  suggestedDocuments.forEach((suggestion) => {
+    suggestion.document.tags.forEach((tag) => {
+      if (!selectedIds.has(tag.id)) suggestedDocumentTagCounts.set(tag.id, (suggestedDocumentTagCounts.get(tag.id) || 0) + 1);
+    });
+  });
+
+  return tags
+    .filter((tag) => !selectedIds.has(tag.id))
+    .map((tag) => {
+      const suggestedDocumentCount = suggestedDocumentTagCounts.get(tag.id) || 0;
+      const tagKey = normalizeTagLookupKey(tag.name);
+      const nameMatchesDescription = Boolean(tagKey.length >= 4 && normalizedDomainText.includes(tagKey));
+      const matchedDescriptionTokens = domainTokens.filter((token) => tagSearchText(tag).includes(token)).slice(0, 5);
+      const score = suggestedDocumentCount * 5 + (nameMatchesDescription ? 8 : 0) + matchedDescriptionTokens.length * 2;
+      const reasons = uniqueValues([
+        suggestedDocumentCount ? `${suggestedDocumentCount} suggested item${suggestedDocumentCount === 1 ? "" : "s"}` : "",
+        nameMatchesDescription || matchedDescriptionTokens.length ? "description match" : "",
+      ]);
+      return { tag, score, reasons };
+    })
+    .filter((suggestion) => suggestion.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        right.tag.document_count - left.tag.document_count ||
+        left.tag.name.localeCompare(right.tag.name, undefined, { numeric: true, sensitivity: "base" }),
+    )
+    .slice(0, 8);
+}
+
+function domainTagPasteReview(text: string, tags: Tag[], selectedTagIds: string[]): DomainTagPasteReview {
+  const tagByName = new Map<string, Tag>();
+  tags.forEach((tag) => {
+    const key = normalizeTagLookupKey(tag.name);
+    if (key && !tagByName.has(key)) tagByName.set(key, tag);
+  });
+  const selectedIds = new Set(selectedTagIds);
+  const seenInputKeys = new Set<string>();
+  const seenMatchIds = new Set<string>();
+  const review: DomainTagPasteReview = { matches: [], skipped: [], unmatched: [] };
+  splitCommaList(text).forEach((input) => {
+    const inputKey = normalizeTagLookupKey(input);
+    if (!inputKey || seenInputKeys.has(inputKey)) return;
+    seenInputKeys.add(inputKey);
+    let basis: "exact" | "close" = "exact";
+    let tag = tagByName.get(inputKey);
+    if (!tag && inputKey.length >= 4) {
+      const closeMatches = tags.filter((candidate) => {
+        const tagKey = normalizeTagLookupKey(candidate.name);
+        return tagKey.length >= 4 && (tagKey.includes(inputKey) || inputKey.includes(tagKey));
+      });
+      if (closeMatches.length === 1) {
+        tag = closeMatches[0];
+        basis = "close";
+      }
+    }
+    if (!tag) {
+      review.unmatched.push(input);
+      return;
+    }
+    if (selectedIds.has(tag.id)) {
+      review.skipped.push({ input, reason: "already selected", tag });
+      return;
+    }
+    if (seenMatchIds.has(tag.id)) {
+      review.skipped.push({ input, reason: "duplicate match", tag });
+      return;
+    }
+    seenMatchIds.add(tag.id);
+    review.matches.push({ input, tag, basis });
+  });
+  return review;
 }
 
 function DomainTree({
@@ -3397,6 +3520,7 @@ function DomainsView({
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [tagPasteReview, setTagPasteReview] = useState<DomainTagPasteReview | null>(null);
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
   const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const selected = domains.find((domain) => domain.id === selectedId) || null;
@@ -3433,6 +3557,10 @@ function DomainsView({
       .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
       .map((tag) => tag.name);
   }, [draft.tag_ids, tags]);
+  const suggestedDomainTags = useMemo(
+    () => domainTagSuggestions(selected, String(draft.description || ""), tags, suggestedDocuments, draft.tag_ids || []),
+    [draft.description, draft.tag_ids, selected, suggestedDocuments, tags],
+  );
   const canSave = Boolean(selected && String(draft.name || "").trim());
   const createDomain = useMutation({
     mutationFn: () => api.createDomain(newName.trim(), newParentId || null, newColor),
@@ -3500,6 +3628,7 @@ function DomainsView({
       tag_ids: selected.tags.map((tag) => tag.id),
     });
     setConfirmingDeleteId(null);
+    setTagPasteReview(null);
   }, [selected]);
 
   useEffect(() => {
@@ -3519,6 +3648,33 @@ function DomainsView({
         tag_ids: draft.tag_ids || [],
       },
     });
+  };
+  const addDomainTagIds = (tagIds: string[], message: string) => {
+    if (!tagIds.length) return;
+    setDraft((current) => ({ ...current, tag_ids: uniqueValues([...(current.tag_ids || []), ...tagIds]) }));
+    setTagPasteReview(null);
+    setNotice(message);
+  };
+  const reviewPastedDomainTags = (text: string) => {
+    const review = domainTagPasteReview(text, tags, draft.tag_ids || []);
+    setTagPasteReview(review);
+    setNotice(review.matches.length ? `${review.matches.length} pasted tag match${review.matches.length === 1 ? "" : "es"} ready to apply.` : "No pasted tags matched existing tags.");
+  };
+  const applyPastedDomainTags = () => {
+    if (!tagPasteReview?.matches.length) return;
+    addDomainTagIds(
+      tagPasteReview.matches.map((match) => match.tag.id),
+      `Added ${tagPasteReview.matches.length} pasted tag${tagPasteReview.matches.length === 1 ? "" : "s"}.`,
+    );
+  };
+  const addSuggestedDomainTag = (suggestion: DomainTagSuggestion) => {
+    addDomainTagIds([suggestion.tag.id], `Added suggested tag ${suggestion.tag.name}.`);
+  };
+  const addAllSuggestedDomainTags = () => {
+    addDomainTagIds(
+      suggestedDomainTags.map((suggestion) => suggestion.tag.id),
+      `Added ${suggestedDomainTags.length} suggested tag${suggestedDomainTags.length === 1 ? "" : "s"}.`,
+    );
   };
   const renderDomainButton = (domain: Domain, depth: number, pathOverride?: string) => {
     const childCount = (children[domain.id] || []).length;
@@ -3658,18 +3814,106 @@ function DomainsView({
                   placeholder="Optional scope note"
                 />
               </label>
-              <label className="domain-tags-field">
-                Domain Tags
+              <div className="domain-tags-field">
+                <span>Domain Tags</span>
                 <BulkMultiSelect
                   emptyLabel="No tags"
                   label="Tags"
                   onChange={(ids) => setDraft((current) => ({ ...current, tag_ids: ids }))}
+                  onPasteText={reviewPastedDomainTags}
                   options={tagOptions}
-                  searchPlaceholder="Type tag name"
+                  searchPlaceholder="Type or paste tag names"
                   selectedIds={draft.tag_ids || []}
                 />
                 <small>{draftTagNames.length ? draftTagNames.join(", ") : "No domain tags selected"}</small>
-              </label>
+                {tagPasteReview ? (
+                  <div className="domain-tag-paste-review">
+                    <div className="domain-tag-tool-head">
+                      <span>
+                        <Clipboard size={14} />
+                        Review Pasted Tags
+                      </span>
+                      <small>
+                        {tagPasteReview.matches.length} matched
+                        {tagPasteReview.unmatched.length ? ` / ${tagPasteReview.unmatched.length} unmatched` : ""}
+                      </small>
+                    </div>
+                    {tagPasteReview.matches.length ? (
+                      <div className="domain-tag-match-list">
+                        {tagPasteReview.matches.map((match) => (
+                          <span key={`${match.input}-${match.tag.id}`}>
+                            {match.input !== match.tag.name ? `${match.input} -> ` : ""}
+                            {match.tag.name}
+                            {match.basis === "close" ? " (close match)" : ""}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {tagPasteReview.unmatched.length ? <small>Unmatched: {tagPasteReview.unmatched.join(", ")}</small> : null}
+                    {tagPasteReview.skipped.length ? (
+                      <small>
+                        Skipped: {tagPasteReview.skipped.map((item) => `${item.input} (${item.reason})`).join(", ")}
+                      </small>
+                    ) : null}
+                    <div className="domain-tag-tool-actions">
+                      <button
+                        className="primary-button compact"
+                        data-disabled-reason="no pasted tag names matched existing tags."
+                        data-tooltip="Apply the matched pasted tags to this domain draft. Save the domain to persist them."
+                        disabled={!tagPasteReview.matches.length}
+                        onClick={applyPastedDomainTags}
+                        type="button"
+                      >
+                        <CheckCircle2 size={15} />
+                        Apply Matches
+                      </button>
+                      <button
+                        className="secondary-button compact"
+                        data-tooltip="Discard this pasted tag review without changing the domain draft."
+                        onClick={() => setTagPasteReview(null)}
+                        type="button"
+                      >
+                        <X size={15} />
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {suggestedDomainTags.length ? (
+                  <div className="domain-tag-suggestions">
+                    <div className="domain-tag-tool-head">
+                      <span>
+                        <Sparkles size={14} />
+                        Suggested Tags
+                      </span>
+                      <button
+                        className="text-button"
+                        data-tooltip="Add every suggested existing tag to this domain draft. Save the domain to persist them."
+                        onClick={addAllSuggestedDomainTags}
+                        type="button"
+                      >
+                        Add all
+                      </button>
+                    </div>
+                    <div className="domain-tag-suggestion-list">
+                      {suggestedDomainTags.map((suggestion) => (
+                        <button
+                          data-tooltip={`Add ${suggestion.tag.name} to this domain draft.`}
+                          key={suggestion.tag.id}
+                          onClick={() => addSuggestedDomainTag(suggestion)}
+                          type="button"
+                        >
+                          <Plus size={14} />
+                          <span>
+                            <strong>{suggestion.tag.name}</strong>
+                            <small>{suggestion.reasons.join(" / ")}</small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
               <div className="domain-color-field">
                 <span>Color</span>
                 <div className="domain-color-controls">
@@ -3834,6 +4078,7 @@ function BulkMultiSelect({
   label,
   onCreateFromSearch,
   onChange,
+  onPasteText,
   options,
   selectedIds,
   searchPlaceholder = "Type to filter",
@@ -3845,6 +4090,7 @@ function BulkMultiSelect({
   label: string;
   onCreateFromSearch?: (value: string) => void;
   onChange: (ids: string[]) => void;
+  onPasteText?: (value: string) => void;
   options: Array<{ id: string; name: string }>;
   selectedIds: string[];
   searchPlaceholder?: string;
@@ -3896,6 +4142,11 @@ function BulkMultiSelect({
     onChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : uniqueValues([...selectedIds, id]));
   };
   const chooseActive = () => {
+    if (onPasteText && hasDelimitedListInput(searchText)) {
+      onPasteText(searchText);
+      setSearchText("");
+      return;
+    }
     const option = visibleOptions[activeIndex];
     if (option) {
       toggleId(option.id);
@@ -3913,7 +4164,7 @@ function BulkMultiSelect({
       <input
         ref={searchRef}
         className="select-search-input"
-        data-tooltip={`Type to filter ${label.toLocaleLowerCase()} options; press Enter to toggle the highlighted match${onCreateFromSearch ? " or create the typed value" : ""}.`}
+        data-tooltip={`Type to filter ${label.toLocaleLowerCase()} options; press Enter to toggle the highlighted match${onCreateFromSearch ? " or create the typed value" : ""}${onPasteText ? "; paste a comma-separated list to review matching existing values" : ""}.`}
         onChange={(event) => setSearchText(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
@@ -3926,6 +4177,14 @@ function BulkMultiSelect({
             event.preventDefault();
             chooseActive();
           }
+        }}
+        onPaste={(event) => {
+          if (!onPasteText) return;
+          const pastedText = event.clipboardData.getData("text");
+          if (!hasDelimitedListInput(pastedText)) return;
+          event.preventDefault();
+          onPasteText(pastedText);
+          setSearchText("");
         }}
         placeholder={searchPlaceholder}
         value={searchText}

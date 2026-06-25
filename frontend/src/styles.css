@@ -1031,6 +1031,9 @@ textarea {
   display: grid;
   gap: 3px;
   min-width: 0;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.36;
 }
 
 .domain-tree-node {
@@ -1062,13 +1065,13 @@ textarea {
 }
 
 .domain-row {
-  min-height: 26px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   border: 1px solid transparent;
-  padding: 2px 8px 2px var(--domain-depth-offset);
+  padding: 4px 8px 4px var(--domain-depth-offset);
   border-radius: 6px;
   color: var(--muted);
   white-space: nowrap;
@@ -1175,6 +1178,10 @@ textarea {
   grid-template-columns: minmax(260px, 0.82fr) minmax(420px, 1.35fr) minmax(300px, 0.9fr);
   gap: 10px;
   overflow: hidden;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.36;
 }
 
 .domain-directory,
@@ -1259,13 +1266,22 @@ textarea {
 
 .domain-manager-row {
   width: 100%;
-  min-height: 42px;
+  min-height: 46px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
   color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
   padding: 5px 10px;
   text-align: left;
+}
+
+.domain-manager-row-text strong,
+.domain-document-row strong {
+  font-size: 14px;
+  font-weight: 560;
+  line-height: 1.25;
 }
 
 .domain-manager-row:hover,
@@ -1300,8 +1316,9 @@ textarea {
 .domain-document-row span,
 .domain-document-row small {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.28;
 }
 
 .domain-stat-grid {
@@ -1319,8 +1336,8 @@ textarea {
   display: grid;
   gap: 3px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .domain-stat-grid strong {
@@ -1335,12 +1352,13 @@ textarea {
 }
 
 .domain-edit-grid label,
+.domain-tags-field,
 .domain-color-field {
   display: grid;
   gap: 7px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .domain-description-field,
@@ -1349,7 +1367,10 @@ textarea {
 }
 
 .domain-description-field textarea {
-  min-height: 116px;
+  min-height: 176px;
+  background: var(--panel);
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 .domain-tags-field .bulk-multi-trigger {
@@ -1358,9 +1379,98 @@ textarea {
 
 .domain-tags-field small {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.35;
+}
+
+.domain-tag-paste-review,
+.domain-tag-suggestions {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.domain-tag-tool-head,
+.domain-tag-tool-head span,
+.domain-tag-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.domain-tag-tool-head {
+  justify-content: space-between;
+}
+
+.domain-tag-tool-head > span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.domain-tag-tool-head > small {
+  flex: 0 0 auto;
+}
+
+.domain-tag-match-list,
+.domain-tag-suggestion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.domain-tag-match-list > span,
+.domain-tag-suggestion-list button {
+  border: 1px solid var(--button-line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--ink);
+}
+
+.domain-tag-match-list > span {
+  max-width: 100%;
+  padding: 4px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.domain-tag-suggestion-list button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  text-align: left;
+}
+
+.domain-tag-suggestion-list button:hover,
+.domain-tag-suggestion-list button:focus-visible {
+  border-color: color-mix(in srgb, var(--blue) 34%, var(--button-line));
+  background: var(--blue-soft);
+  outline: 0;
+}
+
+.domain-tag-suggestion-list button > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.domain-tag-suggestion-list strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.domain-tag-tool-actions {
+  flex-wrap: wrap;
 }
 
 .domain-color-controls {
