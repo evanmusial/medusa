@@ -174,6 +174,15 @@ type BackgroundJob = {
   createdAt: number;
   completedAt?: number;
 };
+type ReleaseUpgradeLockStage = "requesting" | "requested" | "polling" | "health" | "reloading" | "failed";
+type ReleaseUpgradeLock = {
+  detail?: string;
+  error?: string;
+  message: string;
+  stage: ReleaseUpgradeLockStage;
+  startedAt: number;
+  targetVersion?: string | null;
+};
 
 type EscapeLayer = {
   id: symbol;
@@ -244,6 +253,8 @@ type SettingsSaveHandler = () => Promise<boolean>;
 type SelectMenuOption = { id: string; name: string };
 
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
+const RELEASE_POLL_INTERVAL_MS = 1500;
+const RELEASE_RELOAD_DELAY_MS = 900;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -1298,6 +1309,101 @@ function ReleaseUpgradeButton({
       <Rocket className={busy || phaseBusy ? "spin" : ""} size={15} />
       Upgrade Now
     </button>
+  );
+}
+
+function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgradeLock, "detail" | "message" | "stage" | "targetVersion"> {
+  const targetVersion = status.available?.version || status.running.version || null;
+  if (status.phase === "requested") {
+    return {
+      detail: "The host agent has received the request and will start the server update shortly.",
+      message: "Upgrade requested",
+      stage: "requested",
+      targetVersion,
+    };
+  }
+  if (status.phase === "fetching" || status.phase === "applying") {
+    return {
+      detail: status.message || "Fetching and applying the latest server checkout.",
+      message: "Updating Medusa",
+      stage: "polling",
+      targetVersion,
+    };
+  }
+  if (status.phase === "building" || status.phase === "restarting") {
+    return {
+      detail: status.message || "Rebuilding containers and restarting the app.",
+      message: "Rebuilding Medusa",
+      stage: "polling",
+      targetVersion,
+    };
+  }
+  if (status.phase === "verifying") {
+    return {
+      detail: status.message || "Waiting for the updated server to pass health checks.",
+      message: "Checking the new build",
+      stage: "health",
+      targetVersion,
+    };
+  }
+  if (status.phase === "failed") {
+    return {
+      detail: status.last_error || status.message || "The host agent reported that the upgrade failed.",
+      message: "Upgrade needs attention",
+      stage: "failed",
+      targetVersion,
+    };
+  }
+  if (status.browser_reload_recommended) {
+    return {
+      detail: "The updated server is healthy. This browser tab is reloading into the new build.",
+      message: "Reloading Medusa",
+      stage: "reloading",
+      targetVersion: status.running.version || targetVersion,
+    };
+  }
+  return {
+    detail: status.message || "The updated server is healthy and the browser is current.",
+    message: "Upgrade complete",
+    stage: "health",
+    targetVersion,
+  };
+}
+
+function ReleaseUpgradeOverlay({ lock, onDismiss }: { lock: ReleaseUpgradeLock; onDismiss: () => void }) {
+  const failed = lock.stage === "failed";
+  const titleId = "release-upgrade-title";
+  return (
+    <div className="release-upgrade-backdrop" role="presentation">
+      <section
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className={`release-upgrade-dialog${failed ? " failed" : ""}`}
+        role="alertdialog"
+      >
+        <div className="release-upgrade-emblem" aria-hidden="true">
+          {failed ? <AlertTriangle size={28} /> : <Rocket className={lock.stage === "reloading" ? "" : "spin"} size={28} />}
+        </div>
+        <div className="release-upgrade-copy">
+          <span>{lock.targetVersion ? `Target ${lock.targetVersion}` : "Medusa release"}</span>
+          <h2 id={titleId}>{lock.message}</h2>
+          {lock.detail ? <p>{lock.detail}</p> : null}
+          {lock.error ? <p className="release-upgrade-error">{lock.error}</p> : null}
+        </div>
+        {!failed ? (
+          <div className="release-upgrade-track" aria-label="Medusa upgrade in progress" role="progressbar">
+            <span />
+          </div>
+        ) : (
+          <div className="release-upgrade-actions">
+            <button className="secondary-button" type="button" onClick={onDismiss}>
+              <X size={16} />
+              Dismiss
+            </button>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -14810,8 +14916,10 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
+  const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
   const [viewTitleSubjects, setViewTitleSubjects] = useState<Partial<Record<View, string>>>({});
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
+  const releaseReloadScheduledRef = useRef(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -14866,11 +14974,15 @@ export default function App() {
   const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data), refetchInterval: 10000 });
   const review = useQuery({ queryKey: ["review"], queryFn: api.reviewQueue, enabled: Boolean(me.data), refetchInterval: 10000 });
   const stashes = useQuery({ queryKey: ["doi-stashes"], queryFn: api.doiStashes, enabled: Boolean(me.data), refetchInterval: 4000 });
+  const releaseUpgradeLocked = Boolean(releaseUpgradeLock && releaseUpgradeLock.stage !== "failed");
+  const releaseUpgradePollActive = Boolean(
+    releaseUpgradeLock && releaseUpgradeLock.stage !== "failed" && releaseUpgradeLock.stage !== "reloading",
+  );
   const releaseStatus = useQuery({
     queryKey: ["release-status", MEDUSA_BUILD_VERSION],
     queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
     enabled: Boolean(me.data),
-    refetchInterval: 15000,
+    refetchInterval: releaseUpgradeLocked ? RELEASE_POLL_INTERVAL_MS : 15000,
   });
   const logout = useMutation({
     mutationFn: api.logout,
@@ -14883,14 +14995,19 @@ export default function App() {
         : "Reload Medusa to finish the upgrade? Unsaved page edits will be discarded.",
     );
   }, [settingsDirty]);
+  const confirmReleaseUpgrade = useCallback(() => {
+    return window.confirm(
+      settingsDirty
+        ? "You have unsaved Settings changes. Upgrading Medusa will lock the app, restart the server, and reload this tab after health checks pass. Those unsaved changes will be discarded. Continue?"
+        : "Upgrade Medusa now? The app will be locked while the server updates, then this tab will reload after health checks pass. Unsaved page edits will be discarded.",
+    );
+  }, [settingsDirty]);
   const releaseUpgrade = useMutation({
     mutationFn: () => api.requestReleaseUpgrade(MEDUSA_BUILD_VERSION),
     onSuccess: (status) => {
       queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], status);
       void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
-      if (status.browser_reload_recommended && confirmReleaseReload()) window.location.reload();
     },
-    onError: (error) => window.alert(actionFailureMessage("Could not request Medusa upgrade", error)),
   });
 
   const updateViewTitleSubject = useCallback((view: View, subject: string | null) => {
@@ -14935,15 +15052,181 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [settingsDirty]);
 
-  const handleReleaseUpgrade = useCallback(() => {
+  useEffect(() => {
+    if (!releaseUpgradeLocked) return;
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) activeElement.blur();
+    const blockKeyboardInput = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const browserReload = key === "f5" || ((event.metaKey || event.ctrlKey) && key === "r");
+      if (browserReload) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", blockKeyboardInput, true);
+    return () => window.removeEventListener("keydown", blockKeyboardInput, true);
+  }, [releaseUpgradeLocked]);
+
+  const handleReleaseUpgrade = useCallback(async () => {
     const status = releaseStatus.data;
     if (!status) return;
+    if (releaseUpgradeLock && releaseUpgradeLock.stage !== "failed") return;
     if (status.browser_reload_recommended) {
-      if (confirmReleaseReload()) window.location.reload();
+      if (!confirmReleaseReload()) return;
+      releaseReloadScheduledRef.current = true;
+      setReleaseUpgradeLock({
+        ...releaseUpgradeLockFromStatus(status),
+        detail: "The updated server is healthy. This browser tab is reloading into the new build.",
+        message: "Reloading Medusa",
+        stage: "reloading",
+        startedAt: Date.now(),
+        targetVersion: status.running.version,
+      });
+      window.setTimeout(() => window.location.reload(), RELEASE_RELOAD_DELAY_MS);
       return;
     }
-    releaseUpgrade.mutate();
-  }, [confirmReleaseReload, releaseStatus.data, releaseUpgrade]);
+    if (!confirmReleaseUpgrade()) return;
+    releaseReloadScheduledRef.current = false;
+    setReleaseUpgradeLock({
+      detail: "The host agent will update the server in the background. Medusa will stay locked until the new build is healthy.",
+      message: "Starting Medusa upgrade",
+      stage: "requesting",
+      startedAt: Date.now(),
+      targetVersion: status.available?.version || null,
+    });
+    try {
+      const requestedStatus = await releaseUpgrade.mutateAsync();
+      const nextLock = releaseUpgradeLockFromStatus(requestedStatus);
+      setReleaseUpgradeLock((current) =>
+        current
+          ? {
+              ...current,
+              ...nextLock,
+              error: requestedStatus.phase === "failed" ? requestedStatus.last_error || requestedStatus.message : undefined,
+              startedAt: current.startedAt,
+            }
+          : null,
+      );
+    } catch (error) {
+      setReleaseUpgradeLock((current) => ({
+        detail: "The upgrade request was not accepted, so the app was not restarted.",
+        error: actionFailureMessage("Could not request Medusa upgrade", error),
+        message: "Upgrade request failed",
+        stage: "failed",
+        startedAt: current?.startedAt || Date.now(),
+        targetVersion: current?.targetVersion || status.available?.version || null,
+      }));
+    }
+  }, [confirmReleaseReload, confirmReleaseUpgrade, releaseStatus.data, releaseUpgrade, releaseUpgradeLock]);
+
+  useEffect(() => {
+    if (!releaseUpgradePollActive) return;
+    let cancelled = false;
+    const pollReleaseUpgrade = async () => {
+      try {
+        const status = await api.releaseStatus(MEDUSA_BUILD_VERSION);
+        if (cancelled) return;
+        queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], status);
+        const nextLock = releaseUpgradeLockFromStatus(status);
+        if (status.phase === "failed") {
+          setReleaseUpgradeLock((current) =>
+            current
+              ? {
+                  ...current,
+                  ...nextLock,
+                  error: status.last_error || status.message,
+                  stage: "failed",
+                }
+              : current,
+          );
+          return;
+        }
+        const serverUpdateComplete =
+          !status.update_available &&
+          (status.phase === "complete" || status.phase === "current" || status.phase === "reload_ready" || status.browser_reload_recommended);
+        if (!serverUpdateComplete) {
+          setReleaseUpgradeLock((current) =>
+            current
+              ? {
+                  ...current,
+                  ...nextLock,
+                }
+              : current,
+          );
+          return;
+        }
+        setReleaseUpgradeLock((current) =>
+          current
+            ? {
+                ...current,
+                detail: "The update is applied. Verifying the health endpoint before returning control.",
+                message: "Checking the new build",
+                stage: "health",
+                targetVersion: status.running.version || nextLock.targetVersion,
+              }
+            : current,
+        );
+        try {
+          await api.health();
+        } catch {
+          if (!cancelled) {
+            setReleaseUpgradeLock((current) =>
+              current
+                ? {
+                    ...current,
+                    detail: "The server has updated, but the health endpoint is not ready yet.",
+                    message: "Waiting for Medusa health",
+                    stage: "health",
+                    targetVersion: status.running.version || nextLock.targetVersion,
+                  }
+                : current,
+            );
+          }
+          return;
+        }
+        if (cancelled) return;
+        if (status.browser_reload_recommended) {
+          setReleaseUpgradeLock((current) =>
+            current
+              ? {
+                  ...current,
+                  detail: "The updated server is healthy. This browser tab is reloading into the new build.",
+                  message: "Reloading Medusa",
+                  stage: "reloading",
+                  targetVersion: status.running.version || nextLock.targetVersion,
+                }
+              : current,
+          );
+          if (!releaseReloadScheduledRef.current) {
+            releaseReloadScheduledRef.current = true;
+            window.setTimeout(() => window.location.reload(), RELEASE_RELOAD_DELAY_MS);
+          }
+          return;
+        }
+        releaseReloadScheduledRef.current = false;
+        setReleaseUpgradeLock(null);
+      } catch {
+        if (cancelled) return;
+        setReleaseUpgradeLock((current) =>
+          current
+            ? {
+                ...current,
+                detail: "The server may be restarting. Medusa will stay locked until release status and health checks answer again.",
+                message: "Waiting for Medusa to return",
+                stage: "polling",
+              }
+            : current,
+        );
+      }
+    };
+    void pollReleaseUpgrade();
+    const interval = window.setInterval(() => void pollReleaseUpgrade(), RELEASE_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [queryClient, releaseUpgradePollActive]);
 
   useEffect(() => {
     const route = routeFromCurrentLocation();
@@ -15276,6 +15559,15 @@ export default function App() {
           />
         ) : null}
       </main>
+      {releaseUpgradeLock ? (
+        <ReleaseUpgradeOverlay
+          lock={releaseUpgradeLock}
+          onDismiss={() => {
+            releaseReloadScheduledRef.current = false;
+            setReleaseUpgradeLock(null);
+          }}
+        />
+      ) : null}
       </div>
     </AppTooltipProvider>
   );

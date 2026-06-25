@@ -92,6 +92,7 @@ export const api = {
     request<ReleaseStatus>(`/api/release/status?client_version=${encodeURIComponent(clientVersion)}`),
   requestReleaseUpgrade: (clientVersion: string) =>
     request<ReleaseStatus>(`/api/release/upgrade?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
+  health: () => request<{ status: string; app: string }>(`/api/health?release_check=${Date.now()}`),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
   documentCacheStatus: () => request<DocumentCacheStatus>("/api/document-cache/status"),
