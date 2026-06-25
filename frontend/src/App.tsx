@@ -82,6 +82,7 @@ import {
   Server,
   Settings,
   SlidersHorizontal,
+  Sigma,
   Sparkles,
   Sun,
   Tags,
@@ -5647,6 +5648,7 @@ function DocumentPanelContent({
   const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationRefreshTarget | null>(null);
   const [summaryRunId, setSummaryRunId] = useState<string | null>(null);
   const [bibliographyRunId, setBibliographyRunId] = useState<string | null>(null);
+  const [formulaCaptureRunId, setFormulaCaptureRunId] = useState<string | null>(null);
   const [tagRefreshRunId, setTagRefreshRunId] = useState<string | null>(null);
   const [editingCitation, setEditingCitation] = useState<CitationKind | null>(null);
   const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
@@ -5665,6 +5667,7 @@ function DocumentPanelContent({
   const inTextCitationFeedback = useAsyncActionFeedback();
   const summaryRefreshFeedback = useAsyncActionFeedback();
   const bibliographyRefreshFeedback = useAsyncActionFeedback();
+  const formulaCaptureFeedback = useAsyncActionFeedback();
   const tagRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const visualPageScanFeedback = useAsyncActionFeedback();
@@ -5960,6 +5963,34 @@ function DocumentPanelContent({
       bibliographyRefreshFeedback.showError(actionFailureMessage("Could not start bibliography refresh", error));
     },
   });
+  const captureFormulas = useMutation({
+    mutationFn: () =>
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Capturing formulas",
+        capability_keys: ["formula_capture"],
+        capabilityKey: "formula_capture",
+        documentId: document.id,
+        force: true,
+        label: `Formula capture: ${document.title}`,
+        scope_data: { document_ids: [document.id] },
+        scope_type: "documents",
+      }),
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setFormulaCaptureRunId(run.id);
+      else formulaCaptureFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    },
+    onError: (error) => {
+      setFormulaCaptureRunId(null);
+      formulaCaptureFeedback.showError(actionFailureMessage("Could not start formula capture", error));
+    },
+  });
   const refreshTags = useMutation({
     mutationFn: () =>
       startConcordanceRun({
@@ -6104,6 +6135,7 @@ function DocumentPanelContent({
     setCitationRefreshTarget(null);
     setSummaryRunId(null);
     setBibliographyRunId(null);
+    setFormulaCaptureRunId(null);
     setTagRefreshRunId(null);
     setEditingCitation(null);
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
@@ -6208,6 +6240,9 @@ function DocumentPanelContent({
   const bibliographyRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "bibliography_extraction" && isActiveConcordanceStatus(job.status),
   );
+  const formulaCaptureActive = citationJobs.some(
+    (job) => job.document_id === document.id && job.capability_key === "formula_capture" && isActiveConcordanceStatus(job.status),
+  );
   const tagRefreshActive = citationJobs.some(
     (job) => job.document_id === document.id && job.capability_key === "tag_refresh" && isActiveConcordanceStatus(job.status),
   );
@@ -6240,6 +6275,13 @@ function DocumentPanelContent({
         : [],
     [bibliographyRunId, citationJobs, document.id],
   );
+  const trackedFormulaCaptureJobs = useMemo(
+    () =>
+      formulaCaptureRunId
+        ? citationJobs.filter((job) => job.run_id === formulaCaptureRunId && job.document_id === document.id && job.capability_key === "formula_capture")
+        : [],
+    [citationJobs, document.id, formulaCaptureRunId],
+  );
   const trackedTagRefreshJobs = useMemo(
     () =>
       tagRefreshRunId
@@ -6265,6 +6307,13 @@ function DocumentPanelContent({
       bibliographyRunId &&
         (!trackedBibliographyJobs.length || trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status))),
     );
+  const formulaCaptureBusy =
+    captureFormulas.isPending ||
+    formulaCaptureActive ||
+    Boolean(
+      formulaCaptureRunId &&
+        (!trackedFormulaCaptureJobs.length || trackedFormulaCaptureJobs.some((job) => isActiveConcordanceStatus(job.status))),
+    );
   const tagRefreshBusy =
     refreshTags.isPending ||
     tagRefreshActive ||
@@ -6288,6 +6337,11 @@ function DocumentPanelContent({
     ? "a bibliography refresh request is already starting."
     : bibliographyRefreshActive || bibliographyRunId
       ? "a bibliography refresh is already queued or running for this document."
+      : "";
+  const formulaCaptureBusyReason = captureFormulas.isPending
+    ? "a formula capture request is already starting."
+    : formulaCaptureActive || formulaCaptureRunId
+      ? "formula capture is already queued or running for this document."
       : "";
   const tagRefreshBusyReason = refreshTags.isPending
     ? "a tag refresh request is already starting."
@@ -6438,6 +6492,25 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
   }, [bibliographyRefreshFeedback, bibliographyRunId, document.id, queryClient, trackedBibliographyJobs]);
+
+  useEffect(() => {
+    if (!formulaCaptureRunId || trackedFormulaCaptureJobs.length === 0) return;
+    if (trackedFormulaCaptureJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    const failedJob = trackedFormulaCaptureJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      formulaCaptureFeedback.showError(
+        actionFailureMessage("Formula capture failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      formulaCaptureFeedback.showSuccess();
+    }
+    setFormulaCaptureRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+  }, [document.id, formulaCaptureFeedback, formulaCaptureRunId, queryClient, trackedFormulaCaptureJobs]);
 
   useEffect(() => {
     if (!tagRefreshRunId || trackedTagRefreshJobs.length === 0) return;
@@ -7979,6 +8052,21 @@ function DocumentPanelContent({
       </button>
     </AsyncActionSlot>
   );
+  const formulaCaptureButton = (
+    <AsyncActionSlot busy={formulaCaptureBusy} feedback={formulaCaptureFeedback.feedback} label="Formula capture in progress">
+      <button
+        className={asyncFeedbackClass("secondary-button", formulaCaptureFeedback.feedback, formulaCaptureBusy)}
+        data-disabled-reason={formulaCaptureBusyReason}
+        data-tooltip="Queue a manual Formula Capture refinement for this document using the selected Formula Capture model."
+        onClick={() => captureFormulas.mutate()}
+        disabled={formulaCaptureBusy}
+        type="button"
+      >
+        <Sigma className={formulaCaptureBusy ? "spin" : ""} size={15} />
+        {formulaCaptureBusy ? "Capturing" : "Formulas"}
+      </button>
+    </AsyncActionSlot>
+  );
   const downloadOriginalLink = (
     <a
       className="secondary-button"
@@ -8038,6 +8126,7 @@ function DocumentPanelContent({
                 {relatedButton}
                 {compositionButton}
                 {concordButton}
+                {formulaCaptureButton}
                 {downloadOriginalLink}
                 {openOriginalLink}
               </div>
@@ -8054,6 +8143,7 @@ function DocumentPanelContent({
                 {relatedButton}
                 {compositionButton}
                 {concordButton}
+                {formulaCaptureButton}
               </div>
               <div className="detail-actions-row">
                 {downloadOriginalLink}
