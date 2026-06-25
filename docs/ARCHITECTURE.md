@@ -29,7 +29,7 @@ Typography should reserve compact, heavier treatment for controls, interaction c
 
 Workspace navigation and ordinary action buttons share the same regular-weight control typography and 42px control height so commands do not read smaller, bolder, or visually weaker than the main Library/Domains/Projects navigation.
 
-Domain references in dropdowns, picker lists, checklists, chips, saved-search summaries, note links, Settings scopes, and other non-tree lists should render the full hierarchy path such as `Parent / Child / Topic`; dedicated tree views may use indentation plus the selected path detail.
+Domain references in dropdowns, picker lists, checklists, chips, saved-search summaries, note links, Settings scopes, and other non-tree lists should render the full hierarchy path such as `Parent / Child / Topic`; dedicated tree views may use indentation, quiet connector elbows, and the selected path detail.
 
 Current UI architecture:
 

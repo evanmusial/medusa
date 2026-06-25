@@ -3804,11 +3804,12 @@ function DomainTree({
     const label = `${domain.name} ${countLabel}`;
     const alreadyAssigned = Boolean(dropReady && draggedDocumentAssignedDomainIds?.has(domain.id));
     const assigning = assigningDomainId === domain.id;
-    const depthStep = 14;
-    const baseOffset = 4;
+    const depthStep = 18;
+    const baseOffset = 6;
+    const dotCenterOffset = 4;
     const style = {
       "--domain-depth-offset": `${baseOffset + depth * depthStep}px`,
-      "--domain-connector-left": `${baseOffset + Math.max(depth - 1, 0) * depthStep + 4}px`,
+      "--domain-connector-left": `${baseOffset + Math.max(depth - 1, 0) * depthStep + dotCenterOffset}px`,
       "--domain-connector-width": `${depth > 0 ? depthStep : 0}px`,
     } as CSSProperties;
     const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
@@ -3897,6 +3898,7 @@ function DomainsView({
   const [error, setError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [tagPasteReview, setTagPasteReview] = useState<DomainTagPasteReview | null>(null);
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
   const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const selected = domains.find((domain) => domain.id === selectedId) || null;
@@ -4011,6 +4013,13 @@ function DomainsView({
     onTitleSubjectChange?.(selectedPath || null);
   }, [onTitleSubjectChange, selectedPath]);
 
+  useEffect(() => {
+    const textarea = descriptionTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(textarea.scrollHeight, 520)}px`;
+  }, [draft.description, selectedId]);
+
   const saveSelected = () => {
     if (!selected || !canSave) return;
     updateDomain.mutate({
@@ -4052,6 +4061,16 @@ function DomainsView({
       `Added ${suggestedDomainTags.length} suggested tag${suggestedDomainTags.length === 1 ? "" : "s"}.`,
     );
   };
+  const domainManagerNodeStyle = (depth: number) => {
+    const depthStep = 24;
+    const baseOffset = 12;
+    const dotCenterOffset = 4;
+    return {
+      "--domain-manager-depth-offset": `${baseOffset + depth * depthStep}px`,
+      "--domain-manager-connector-left": `${baseOffset + Math.max(depth - 1, 0) * depthStep + dotCenterOffset}px`,
+      "--domain-manager-connector-width": `${depth > 0 ? depthStep : 0}px`,
+    } as CSSProperties;
+  };
   const renderDomainButton = (domain: Domain, depth: number, pathOverride?: string) => {
     const childCount = (children[domain.id] || []).length;
     const countLabel = domainDocumentCountLabel(domain, children, subtreeCounts);
@@ -4062,7 +4081,7 @@ function DomainsView({
         className={`domain-manager-row${selectedRow ? " selected" : ""}`}
         data-tooltip={`Select ${domain.name} in the domain editor.`}
         onClick={() => setSelectedId(domain.id)}
-        style={{ paddingLeft: 12 + depth * 18 }}
+        style={domainManagerNodeStyle(depth)}
         type="button"
       >
         <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
@@ -4075,7 +4094,7 @@ function DomainsView({
     );
   };
   const renderDomainNode = (domain: Domain, depth = 0): ReactNode => (
-    <div key={domain.id}>
+    <div key={domain.id} className="domain-manager-node" data-depth={depth} style={domainManagerNodeStyle(depth)}>
       {renderDomainButton(domain, depth)}
       {(children[domain.id] || []).map((child) => renderDomainNode(child, depth + 1))}
     </div>
@@ -4185,6 +4204,7 @@ function DomainsView({
                 Description
                 <textarea
                   data-tooltip="Edit the optional description for this domain."
+                  ref={descriptionTextareaRef}
                   value={String(draft.description || "")}
                   onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
                   placeholder="Optional scope note"

@@ -1034,6 +1034,8 @@ textarea {
 }
 
 .domain-tree {
+  --domain-tree-row-height: 32px;
+  --domain-tree-connector-color: color-mix(in srgb, var(--muted) 26%, transparent);
   display: grid;
   gap: 3px;
   min-width: 0;
@@ -1051,13 +1053,14 @@ textarea {
   content: "";
   position: absolute;
   left: var(--domain-connector-left);
-  top: -7px;
+  top: -16px;
   width: var(--domain-connector-width);
-  height: 20px;
-  border-left: 1px solid color-mix(in srgb, var(--muted) 24%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--muted) 24%, transparent);
-  border-bottom-left-radius: 5px;
+  height: var(--domain-tree-row-height);
+  border-left: 1px solid var(--domain-tree-connector-color);
+  border-bottom: 1px solid var(--domain-tree-connector-color);
+  border-bottom-left-radius: 7px;
   pointer-events: none;
+  z-index: 1;
 }
 
 .domain-tool-row {
@@ -1154,7 +1157,7 @@ textarea {
   height: 8px;
   border-radius: 999px;
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 
 .domain-label {
@@ -1228,6 +1231,30 @@ textarea {
   overflow: auto;
 }
 
+.domain-manager-tree {
+  --domain-manager-row-height: 48px;
+  --domain-manager-connector-color: color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+.domain-manager-node {
+  position: relative;
+  min-width: 0;
+}
+
+.domain-manager-node:not([data-depth="0"])::before {
+  content: "";
+  position: absolute;
+  left: var(--domain-manager-connector-left);
+  top: -24px;
+  width: var(--domain-manager-connector-width);
+  height: var(--domain-manager-row-height);
+  border-left: 1px solid var(--domain-manager-connector-color);
+  border-bottom: 1px solid var(--domain-manager-connector-color);
+  border-bottom-left-radius: 7px;
+  pointer-events: none;
+  z-index: 1;
+}
+
 .domain-create-options,
 .domain-search,
 .domain-manager-row,
@@ -1279,7 +1306,7 @@ textarea {
   color: var(--ink);
   font-size: 15px;
   font-weight: 500;
-  padding: 6px 10px;
+  padding: 6px 10px 6px var(--domain-manager-depth-offset, 12px);
   text-align: left;
 }
 
@@ -1373,11 +1400,12 @@ textarea {
 }
 
 .domain-description-field textarea {
-  min-height: 260px;
+  min-height: 520px;
   background: var(--panel);
   font-size: 15px;
   font-weight: 400;
   line-height: 1.5;
+  overflow-y: hidden;
 }
 
 .domain-tags-field .bulk-multi-trigger {
