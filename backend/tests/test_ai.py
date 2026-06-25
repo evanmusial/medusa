@@ -75,6 +75,10 @@ def test_summary_prompts_default_to_plain_technical_paragraphs():
         normalized_prompt = prompt.lower()
         assert "few technical, on-topic plain-text paragraphs" in prompt
         assert "Use complete sentences throughout" in prompt
+        assert "graduate academic level" in prompt
+        assert "master's-degree reader" in prompt
+        assert "Put key findings and concrete facts early" in prompt
+        assert "Avoid starting sentences with prepositions" in prompt
         assert "Do not begin with Summary, Overview" in prompt
         assert "a single-word opening" in prompt
         assert "first paragraph should state the paper's broad facts and purpose" in prompt

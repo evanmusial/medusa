@@ -62,9 +62,12 @@ PAGE_TEXT_NORMALIZATION_PROMPT = (
 
 SUMMARY_STYLE_HINT = (
     "Unless the user explicitly requests another format, write the summary as a few technical, on-topic plain-text "
-    "paragraphs separated by blank lines. Use complete sentences throughout. Do not begin with Summary, Overview, "
-    "a single-word opening, or any standalone heading. The first paragraph should state the paper's broad facts "
-    "and purpose. Subsequent paragraphs should summarize the main points, ideas, methods, findings, and concepts "
+    "paragraphs separated by blank lines. Use complete sentences throughout. Write at a graduate academic level "
+    "suitable for a master's-degree reader. Put key findings and concrete facts early in the summary, especially "
+    "in the first paragraph when the supplied text supports them. Avoid starting "
+    "sentences with prepositions. Do not begin with Summary, Overview, a single-word opening, or any standalone "
+    "heading. The first paragraph should state the paper's broad facts and purpose. Subsequent paragraphs should "
+    "summarize the main points, ideas, methods, findings, and concepts "
     "introduced in the paper. Do not use bold, italics, bullet points, em dashes, curly or fancy quotes, or "
     "decorative Markdown by default. Use plain ASCII punctuation."
 )
