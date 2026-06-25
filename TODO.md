@@ -203,6 +203,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [x] Add host-agent release refresh for portable server deployments.
   - Acceptance: the backend reads an ignored release-status file, writes an ignored upgrade-request file after authenticated user approval, the header shows a compact accent-colored `Upgrade Now` action with a non-refresh icon when a newer release or newer running build is available, reload confirms with an unsaved-edits warning, and a host-side script can check upstream git state, refuse dirty checkouts, fast-forward only, rebuild Compose with explicit build identity, and verify health.
 
+- [x] Make Utilities database maintenance visible during long runs.
+  - Acceptance: Compact Database and Optimize Database start backend-owned maintenance work, return immediately, report active operation/detail/elapsed time through database maintenance status, prevent overlapping maintenance operations, and keep the Utilities page responsive while PostgreSQL runs `VACUUM (FULL, ANALYZE)` or `ANALYZE`.
+
 - [ ] Add backup scheduling, retention, and drill automation.
   - Acceptance: full database backups can run on a schedule, old GCS backups can be pruned by a visible retention policy, and a dry restore drill can validate the latest backup without replacing the live database.
 

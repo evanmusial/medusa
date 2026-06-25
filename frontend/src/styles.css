@@ -6741,6 +6741,33 @@ pre {
   text-align: right;
 }
 
+.database-maintenance-progress {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  padding: 10px 12px;
+}
+
+.database-maintenance-progress span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.database-maintenance-progress strong {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .utilities-action-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

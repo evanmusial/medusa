@@ -181,6 +181,18 @@ export type DatabaseMaintenanceStatus = {
   terminal_import_job_count: number;
   orphan_import_job_count: number;
   database_size_bytes?: number | null;
+  active_operation?: string | null;
+  active_operation_label?: string | null;
+  active_operation_started_at?: string | null;
+  active_operation_elapsed_seconds?: number | null;
+  active_operation_status_detail?: string | null;
+  last_operation?: string | null;
+  last_operation_status?: string | null;
+  last_operation_completed_at?: string | null;
+  last_operation_status_detail?: string | null;
+  last_operation_error?: string | null;
+  last_operation_database_size_before_bytes?: number | null;
+  last_operation_database_size_after_bytes?: number | null;
 };
 
 export type DatabaseMaintenanceResult = DatabaseMaintenanceStatus & {

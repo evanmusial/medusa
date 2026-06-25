@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
@@ -271,6 +272,27 @@ PDF_PREVIEW_RENDER_SCALE = 2.5
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
+DATABASE_MAINTENANCE_LABELS = {
+    "compact_database": "Compact Database",
+    "optimize_database": "Optimize Database",
+}
+DATABASE_MAINTENANCE_DETAILS = {
+    "compact_database": "Compacting database with PostgreSQL VACUUM FULL and ANALYZE.",
+    "optimize_database": "Refreshing PostgreSQL planner statistics with ANALYZE.",
+}
+DATABASE_MAINTENANCE_LOCK = threading.Lock()
+DATABASE_MAINTENANCE_STATE: dict[str, Any] = {
+    "active_operation": None,
+    "active_operation_started_at": None,
+    "active_operation_status_detail": None,
+    "last_operation": None,
+    "last_operation_status": None,
+    "last_operation_completed_at": None,
+    "last_operation_status_detail": None,
+    "last_operation_error": None,
+    "last_operation_database_size_before_bytes": None,
+    "last_operation_database_size_after_bytes": None,
+}
 IMPORT_ESTIMATE_TASK_TOKEN_PROFILES: dict[str, dict[str, int]] = {
     MODEL_METADATA: {"input_per_page": 2000, "output_base": 900},
     MODEL_SUMMARY: {"input_per_page": 950, "output_base": 1000},
@@ -1314,12 +1336,15 @@ def compact_database(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> DatabaseMaintenanceResultOut:
-    return run_database_sql_maintenance(
-        db,
-        operation="compact_database",
-        postgres_sql="VACUUM (FULL, ANALYZE)",
-        sqlite_sql="VACUUM",
-    )
+    try:
+        return run_database_sql_maintenance(
+            db,
+            operation="compact_database",
+            postgres_sql="VACUUM (FULL, ANALYZE)",
+            sqlite_sql="VACUUM",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/utilities/database/optimize", response_model=DatabaseMaintenanceResultOut)
@@ -1327,12 +1352,15 @@ def optimize_database(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> DatabaseMaintenanceResultOut:
-    return run_database_sql_maintenance(
-        db,
-        operation="optimize_database",
-        postgres_sql="ANALYZE",
-        sqlite_sql="ANALYZE",
-    )
+    try:
+        return run_database_sql_maintenance(
+            db,
+            operation="optimize_database",
+            postgres_sql="ANALYZE",
+            sqlite_sql="ANALYZE",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/utilities/import-cache/clear", response_model=DatabaseMaintenanceResultOut)
@@ -5126,23 +5154,121 @@ def database_maintenance_status_out(db: Session) -> DatabaseMaintenanceStatusOut
         terminal_import_job_count=terminal_import_job_count,
         orphan_import_job_count=orphan_import_job_count,
         database_size_bytes=current_database_size_bytes(db),
+        **database_maintenance_state_payload(),
     )
+
+
+def database_maintenance_state_payload() -> dict[str, Any]:
+    with DATABASE_MAINTENANCE_LOCK:
+        state = dict(DATABASE_MAINTENANCE_STATE)
+    active_operation = state.get("active_operation")
+    active_started_at = state.get("active_operation_started_at")
+    elapsed = None
+    if isinstance(active_started_at, datetime):
+        elapsed = max(0.0, (utc_now() - active_started_at).total_seconds())
+    return {
+        "active_operation": active_operation,
+        "active_operation_label": DATABASE_MAINTENANCE_LABELS.get(active_operation) if active_operation else None,
+        "active_operation_started_at": active_started_at,
+        "active_operation_elapsed_seconds": elapsed,
+        "active_operation_status_detail": state.get("active_operation_status_detail"),
+        "last_operation": state.get("last_operation"),
+        "last_operation_status": state.get("last_operation_status"),
+        "last_operation_completed_at": state.get("last_operation_completed_at"),
+        "last_operation_status_detail": state.get("last_operation_status_detail"),
+        "last_operation_error": state.get("last_operation_error"),
+        "last_operation_database_size_before_bytes": state.get("last_operation_database_size_before_bytes"),
+        "last_operation_database_size_after_bytes": state.get("last_operation_database_size_after_bytes"),
+    }
+
+
+def _set_database_maintenance_active(operation: str, *, database_size_before: int | None) -> None:
+    with DATABASE_MAINTENANCE_LOCK:
+        active_operation = DATABASE_MAINTENANCE_STATE.get("active_operation")
+        if active_operation:
+            label = DATABASE_MAINTENANCE_LABELS.get(active_operation, active_operation.replace("_", " "))
+            raise ValueError(f"{label} is already running.")
+        DATABASE_MAINTENANCE_STATE.update(
+            {
+                "active_operation": operation,
+                "active_operation_started_at": utc_now(),
+                "active_operation_status_detail": DATABASE_MAINTENANCE_DETAILS.get(operation, "Database maintenance is running."),
+                "last_operation": None,
+                "last_operation_status": None,
+                "last_operation_completed_at": None,
+                "last_operation_status_detail": None,
+                "last_operation_error": None,
+                "last_operation_database_size_before_bytes": database_size_before,
+                "last_operation_database_size_after_bytes": None,
+            }
+        )
+
+
+def _finish_database_maintenance(
+    operation: str,
+    *,
+    status: str,
+    detail: str,
+    database_size_after: int | None = None,
+    error: str | None = None,
+) -> None:
+    with DATABASE_MAINTENANCE_LOCK:
+        DATABASE_MAINTENANCE_STATE.update(
+            {
+                "active_operation": None,
+                "active_operation_started_at": None,
+                "active_operation_status_detail": None,
+                "last_operation": operation,
+                "last_operation_status": status,
+                "last_operation_completed_at": utc_now(),
+                "last_operation_status_detail": detail,
+                "last_operation_error": error,
+                "last_operation_database_size_after_bytes": database_size_after,
+            }
+        )
+
+
+def _execute_database_sql_maintenance(operation: str, *, postgres_sql: str, sqlite_sql: str) -> None:
+    sql = postgres_sql if is_postgres() else sqlite_sql
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text(sql))
+        with session_scope() as db:
+            database_size_after = current_database_size_bytes(db)
+        _finish_database_maintenance(
+            operation,
+            status="complete",
+            detail=f"{DATABASE_MAINTENANCE_LABELS.get(operation, operation.replace('_', ' ').title())} complete.",
+            database_size_after=database_size_after,
+        )
+    except Exception as exc:
+        _finish_database_maintenance(
+            operation,
+            status="failed",
+            detail=f"{DATABASE_MAINTENANCE_LABELS.get(operation, operation.replace('_', ' ').title())} failed.",
+            error=str(exc),
+        )
 
 
 def run_database_sql_maintenance(db: Session, *, operation: str, postgres_sql: str, sqlite_sql: str) -> DatabaseMaintenanceResultOut:
     db.commit()
     database_size_before = current_database_size_bytes(db)
-    sql = postgres_sql if is_postgres() else sqlite_sql
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-        connection.execute(text(sql))
-    database_size_after = current_database_size_bytes(db)
+    _set_database_maintenance_active(operation, database_size_before=database_size_before)
+    thread = threading.Thread(
+        target=_execute_database_sql_maintenance,
+        kwargs={"operation": operation, "postgres_sql": postgres_sql, "sqlite_sql": sqlite_sql},
+        daemon=True,
+        name=f"medusa-{operation}",
+    )
+    thread.start()
     status = database_maintenance_status_out(db)
     return DatabaseMaintenanceResultOut(
         **status.model_dump(),
         operation=operation,
-        message=f"{operation.replace('_', ' ').title()} complete.",
+        status="running",
+        message=f"{DATABASE_MAINTENANCE_LABELS.get(operation, operation.replace('_', ' ').title())} started.",
         database_size_before_bytes=database_size_before,
-        database_size_after_bytes=database_size_after,
+        database_size_after_bytes=None,
     )
 
 

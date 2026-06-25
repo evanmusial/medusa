@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -103,6 +104,67 @@ def test_clear_import_cache_removes_only_hidden_terminal_import_rows(monkeypatch
         assert db.get(Document, cleared_document.id) is None
         assert db.query(ProjectItem).count() == 2
         assert db.query(ImportJob).count() == 1
+
+
+def test_database_sql_maintenance_starts_background_job(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    import app.main as main
+
+    launched: list[str] = []
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+        def start(self):
+            launched.append(self.kwargs["name"])
+
+    def reset_maintenance_state():
+        with main.DATABASE_MAINTENANCE_LOCK:
+            main.DATABASE_MAINTENANCE_STATE.update(
+                {
+                    "active_operation": None,
+                    "active_operation_started_at": None,
+                    "active_operation_status_detail": None,
+                    "last_operation": None,
+                    "last_operation_status": None,
+                    "last_operation_completed_at": None,
+                    "last_operation_status_detail": None,
+                    "last_operation_error": None,
+                    "last_operation_database_size_before_bytes": None,
+                    "last_operation_database_size_after_bytes": None,
+                }
+            )
+
+    reset_maintenance_state()
+    monkeypatch.setattr(main.threading, "Thread", FakeThread)
+    monkeypatch.setattr(main, "current_database_size_bytes", lambda db: 321)
+
+    try:
+        with Session() as db:
+            result = main.run_database_sql_maintenance(
+                db,
+                operation="compact_database",
+                postgres_sql="VACUUM (FULL, ANALYZE)",
+                sqlite_sql="VACUUM",
+            )
+
+            assert result.status == "running"
+            assert result.message == "Compact Database started."
+            assert result.active_operation == "compact_database"
+            assert result.active_operation_label == "Compact Database"
+            assert result.database_size_before_bytes == 321
+            assert launched == ["medusa-compact_database"]
+
+            with pytest.raises(ValueError, match="Compact Database is already running"):
+                main.run_database_sql_maintenance(
+                    db,
+                    operation="optimize_database",
+                    postgres_sql="ANALYZE",
+                    sqlite_sql="ANALYZE",
+                )
+    finally:
+        reset_maintenance_state()
 
 
 def test_container_footprint_status_reports_medusa_storage_paths(monkeypatch, tmp_path):

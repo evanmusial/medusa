@@ -12635,7 +12635,7 @@ function UtilitiesView({
   const maintenanceStatus = useQuery({
     queryKey: ["database-maintenance-status"],
     queryFn: api.databaseMaintenanceStatus,
-    refetchInterval: 10000,
+    refetchInterval: 3000,
   });
   const containerStatus = useQuery({
     queryKey: ["container-footprint-status"],
@@ -12653,6 +12653,7 @@ function UtilitiesView({
   const refreshMaintenanceQueries = (result: DatabaseMaintenanceStatus & { message?: string; database_size_after_bytes?: number | null }) => {
     setLastResult(result.message || "");
     queryClient.setQueryData<DatabaseMaintenanceStatus>(["database-maintenance-status"], {
+      ...result,
       import_cache_count: result.import_cache_count,
       hidden_project_item_count: result.hidden_project_item_count,
       terminal_import_job_count: result.terminal_import_job_count,
@@ -12715,7 +12716,7 @@ function UtilitiesView({
   const compactDatabase = useMutation({
     mutationFn: api.compactDatabase,
     onSuccess: (result) => {
-      compactFeedback.showSuccess();
+      if (result.status !== "running") compactFeedback.showSuccess();
       refreshMaintenanceQueries(result);
     },
     onError: (error) => compactFeedback.showError(actionFailureMessage("Could not compact database", error)),
@@ -12723,7 +12724,7 @@ function UtilitiesView({
   const optimizeDatabase = useMutation({
     mutationFn: api.optimizeDatabase,
     onSuccess: (result) => {
-      optimizeFeedback.showSuccess();
+      if (result.status !== "running") optimizeFeedback.showSuccess();
       refreshMaintenanceQueries(result);
     },
     onError: (error) => optimizeFeedback.showError(actionFailureMessage("Could not optimize database", error)),
@@ -12761,13 +12762,53 @@ function UtilitiesView({
       restartFeedback.showError(message);
     },
   });
-  const databaseBusy = compactDatabase.isPending || optimizeDatabase.isPending || clearImportCache.isPending;
+  const activeMaintenanceOperation = status?.active_operation || null;
+  const activeMaintenanceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeMaintenanceOperation) {
+      activeMaintenanceRef.current = activeMaintenanceOperation;
+      return;
+    }
+    const previousOperation = activeMaintenanceRef.current;
+    if (!previousOperation || status?.last_operation !== previousOperation) return;
+    const message = status.last_operation_status_detail || "";
+    setLastResult(message);
+    if (status.last_operation_status === "failed") {
+      const errorMessage = status.last_operation_error || message || "Database maintenance failed.";
+      if (previousOperation === "compact_database") compactFeedback.showError(errorMessage);
+      else if (previousOperation === "optimize_database") optimizeFeedback.showError(errorMessage);
+    } else if (status.last_operation_status === "complete") {
+      if (previousOperation === "compact_database") compactFeedback.showSuccess();
+      else if (previousOperation === "optimize_database") optimizeFeedback.showSuccess();
+    }
+    activeMaintenanceRef.current = null;
+  }, [
+    activeMaintenanceOperation,
+    compactFeedback,
+    optimizeFeedback,
+    status?.last_operation,
+    status?.last_operation_error,
+    status?.last_operation_status,
+    status?.last_operation_status_detail,
+  ]);
+  const databaseMaintenanceBusy = Boolean(activeMaintenanceOperation);
+  const compactRunning = compactDatabase.isPending || activeMaintenanceOperation === "compact_database";
+  const optimizeRunning = optimizeDatabase.isPending || activeMaintenanceOperation === "optimize_database";
+  const databaseBusy = compactDatabase.isPending || optimizeDatabase.isPending || clearImportCache.isPending || databaseMaintenanceBusy;
   const restartBusy = restartContainer.isPending || restartPhase === "requesting" || restartPhase === "waiting";
   const busy = databaseBusy || restartBusy;
   const importCacheCount = status?.import_cache_count ?? 0;
   const cacheCountLabel = maintenanceStatus.isFetching && !status ? "..." : formatMetric(importCacheCount);
   const databaseSizeLabel = maintenanceStatus.isFetching && !status ? "..." : formatDatabaseSize(status?.database_size_bytes);
   const utilitiesRefreshing = maintenanceStatus.isFetching || containerStatus.isFetching || haproxyStatus.isFetching;
+  const activeMaintenanceLabel = status?.active_operation_label || (activeMaintenanceOperation ? activeMaintenanceOperation.replaceAll("_", " ") : "");
+  const activeMaintenanceElapsed =
+    status?.active_operation_elapsed_seconds !== undefined && status?.active_operation_elapsed_seconds !== null
+      ? formatDuration(status.active_operation_elapsed_seconds)
+      : "";
+  const databaseStatusLine = activeMaintenanceOperation
+    ? `${activeMaintenanceLabel}${activeMaintenanceElapsed ? ` for ${activeMaintenanceElapsed}` : ""}`
+    : lastResult || status?.last_operation_status_detail || "Ready";
   const memoryPercent =
     container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null && container?.memory_limit_bytes
       ? (container.memory_current_bytes / container.memory_limit_bytes) * 100
@@ -12848,12 +12889,12 @@ function UtilitiesView({
         proxyServer.check_duration_ms !== undefined && proxyServer.check_duration_ms !== null ? ` in ${proxyServer.check_duration_ms}ms` : ""
       }`
     : proxyBackend?.status || "No check yet";
-  const compactDisabledReason = compactDatabase.isPending
+  const compactDisabledReason = compactRunning
     ? "database compaction is already running."
     : busy
       ? "another database utility is already running."
       : "";
-  const optimizeDisabledReason = optimizeDatabase.isPending
+  const optimizeDisabledReason = optimizeRunning
     ? "database optimization is already running."
     : busy
       ? "another database utility is already running."
@@ -12887,7 +12928,7 @@ function UtilitiesView({
           <div className="panel-title-row utility-section-title">
             <div>
               <h3>Database</h3>
-              <span>{lastResult || "Ready"}</span>
+              <span>{databaseStatusLine}</span>
             </div>
             <Database size={19} />
           </div>
@@ -12909,23 +12950,29 @@ function UtilitiesView({
             <span>Current database size on disk</span>
             <strong>{databaseSizeLabel}</strong>
           </div>
+          {activeMaintenanceOperation ? (
+            <div className="database-maintenance-progress">
+              <span>{status?.active_operation_status_detail || "Database maintenance is running."}</span>
+              <strong>{activeMaintenanceElapsed || "Starting"}</strong>
+            </div>
+          ) : null}
           <div className="utilities-action-grid">
             <div className="utility-action-block">
               <div>
                 <strong>Compact Database</strong>
                 <span>{databaseSizeLabel}</span>
               </div>
-              <AsyncActionSlot busy={compactDatabase.isPending} feedback={compactFeedback.feedback} label="Database compaction in progress">
+              <AsyncActionSlot busy={compactRunning} feedback={compactFeedback.feedback} label="Database compaction in progress">
                 <button
-                  className={asyncFeedbackClass("secondary-button", compactFeedback.feedback, compactDatabase.isPending)}
+                  className={asyncFeedbackClass("secondary-button", compactFeedback.feedback, compactRunning)}
                   data-disabled-reason={compactDisabledReason}
                   data-tooltip="Run PostgreSQL VACUUM FULL with ANALYZE to reclaim database space where possible."
                   disabled={busy}
                   onClick={() => compactDatabase.mutate()}
                   type="button"
                 >
-                  <Archive className={compactDatabase.isPending ? "spin" : ""} size={16} />
-                  {compactDatabase.isPending ? "Compacting" : "Compact Database"}
+                  <Archive className={compactRunning ? "spin" : ""} size={16} />
+                  {compactRunning ? "Compacting" : "Compact Database"}
                 </button>
               </AsyncActionSlot>
             </div>
@@ -12934,17 +12981,17 @@ function UtilitiesView({
                 <strong>Optimize Database</strong>
                 <span>{maintenanceStatus.isFetching ? "Refreshing" : "Statistics"}</span>
               </div>
-              <AsyncActionSlot busy={optimizeDatabase.isPending} feedback={optimizeFeedback.feedback} label="Database optimization in progress">
+              <AsyncActionSlot busy={optimizeRunning} feedback={optimizeFeedback.feedback} label="Database optimization in progress">
                 <button
-                  className={asyncFeedbackClass("secondary-button", optimizeFeedback.feedback, optimizeDatabase.isPending)}
+                  className={asyncFeedbackClass("secondary-button", optimizeFeedback.feedback, optimizeRunning)}
                   data-disabled-reason={optimizeDisabledReason}
                   data-tooltip="Run PostgreSQL ANALYZE to refresh planner statistics across database tables."
                   disabled={busy}
                   onClick={() => optimizeDatabase.mutate()}
                   type="button"
                 >
-                  <Gauge className={optimizeDatabase.isPending ? "spin" : ""} size={16} />
-                  {optimizeDatabase.isPending ? "Optimizing" : "Optimize Database"}
+                  <Gauge className={optimizeRunning ? "spin" : ""} size={16} />
+                  {optimizeRunning ? "Optimizing" : "Optimize Database"}
                 </button>
               </AsyncActionSlot>
             </div>

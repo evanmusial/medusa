@@ -947,6 +947,18 @@ class DatabaseMaintenanceStatusOut(BaseModel):
     terminal_import_job_count: int = 0
     orphan_import_job_count: int = 0
     database_size_bytes: int | None = None
+    active_operation: str | None = None
+    active_operation_label: str | None = None
+    active_operation_started_at: datetime | None = None
+    active_operation_elapsed_seconds: float | None = None
+    active_operation_status_detail: str | None = None
+    last_operation: str | None = None
+    last_operation_status: str | None = None
+    last_operation_completed_at: datetime | None = None
+    last_operation_status_detail: str | None = None
+    last_operation_error: str | None = None
+    last_operation_database_size_before_bytes: int | None = None
+    last_operation_database_size_after_bytes: int | None = None
 
 
 class DatabaseMaintenanceResultOut(DatabaseMaintenanceStatusOut):
