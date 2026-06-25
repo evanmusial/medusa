@@ -263,9 +263,10 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "Clean and format an extracted scholarly reference section for a research library. APA 7-style formatting, "
     "intelligent source grouping, and one source per output item are paramount. First infer which wrapped, indented, "
     "blank-separated, numbered, or bulleted lines belong to the same source. Then return one Markdown-compatible "
-    "APA-style reference-list entry per source. Remove leading source prefixes such as numbers, bracketed numbers, "
-    "bullets, and list markers. Start each entry with the visible author or group author when present; when "
-    "no author is visible, start with the title. Use Markdown italics where APA requires italics, such as book, "
+    "APA-style reference-list entry per source, alphabetized by first significant author, group-author, or title text "
+    "in APA reference-list style. Remove leading source prefixes such as numbers, bracketed numbers, bullets, and "
+    "list markers. Start each entry with the visible author or group author when present; when no author is visible, "
+    "start with the title. Use Markdown italics where APA requires italics, such as book, "
     "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Preserve DOI "
     "links, stable URLs, retrieval notes, edition/series details, page ranges, publishers, and years when visible. "
     "Do not invent missing authors, years, titles, venues, publishers, pages, DOI links, URLs, or access dates. If "
@@ -366,6 +367,9 @@ _STANDALONE_SUMMARY_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\s+")
+_BIBLIOGRAPHY_SORT_LEADING_RE = re.compile(r"^[\s*_`\"'(\[]+")
+_BIBLIOGRAPHY_SORT_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+", re.IGNORECASE)
+_BIBLIOGRAPHY_SORT_KEY_RE = re.compile(r"[^a-z0-9]+")
 
 
 def normalize_obfuscated_email(value: Any) -> str | None:
@@ -422,6 +426,19 @@ def normalize_model_bibliography_entry(value: Any) -> str:
     entry = normalize_extracted_text(value).replace("\n", " ").strip()
     entry = _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE.sub("", entry, count=1).strip()
     return entry
+
+
+def bibliography_entry_sort_key(value: Any) -> tuple[str, str]:
+    entry = normalize_model_bibliography_entry(value)
+    key = _BIBLIOGRAPHY_SORT_LEADING_RE.sub("", entry).casefold()
+    key = _BIBLIOGRAPHY_SORT_ARTICLE_RE.sub("", key)
+    key = _BIBLIOGRAPHY_SORT_KEY_RE.sub(" ", key).strip()
+    return (key or entry.casefold(), entry.casefold())
+
+
+def sorted_bibliography_entries(entries: list[Any]) -> list[str]:
+    cleaned_entries = [normalize_model_bibliography_entry(entry) for entry in entries]
+    return sorted((entry for entry in cleaned_entries if entry), key=bibliography_entry_sort_key)
 
 
 @contextmanager
@@ -981,8 +998,7 @@ class AiService:
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
-        fallback_entries = [normalize_model_bibliography_entry(line) for line in bibliography.splitlines()]
-        fallback = "\n".join(entry for entry in fallback_entries if entry).strip()
+        fallback = "\n".join(sorted_bibliography_entries(bibliography.splitlines())).strip()
         if not fallback:
             return {
                 "bibliography": "",
@@ -1017,8 +1033,7 @@ class AiService:
             used_pdf_file=False,
             prompt_cache_key=prompt_cache_key,
         )
-        entries = [normalize_model_bibliography_entry(entry) for entry in result.get("references") or []]
-        bibliography_text = "\n".join(entry for entry in entries if entry).strip() or fallback
+        bibliography_text = "\n".join(sorted_bibliography_entries(result.get("references") or [])).strip() or fallback
         return {
             "bibliography": bibliography_text,
             "confidence": result.get("confidence"),

@@ -132,7 +132,7 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         db.refresh(capability)
         assert capability.evidence["status"] == "extracted"
         assert capability.evidence["model_cleanup"]["model"] == "gpt-5.4-nano"
-        assert capability.evidence["model_cleanup"]["formatting"] == "apa_markdown_one_source_per_line"
+        assert capability.evidence["model_cleanup"]["formatting"] == "alphabetized_apa_markdown_one_source_per_line"
         assert document.metadata_evidence["bibliography_extraction"]["status"] == "extracted"
         assert len(cleanup_calls) == 1
         assert cleanup_calls[0]["model"] == "gpt-5.4-nano"

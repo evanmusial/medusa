@@ -86,6 +86,56 @@ def test_summary_prompts_default_to_plain_technical_paragraphs():
         assert "labeled bullets" not in prompt
 
 
+def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import BIBLIOGRAPHY_CLEANUP_PROMPT, AiService
+
+    class FakeResponses:
+        def __init__(self):
+            self.system_prompt = ""
+
+        def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
+            del model, text, timeout, prompt_cache_key, prompt_cache_retention
+            self.system_prompt = input[0]["content"]
+            return SimpleNamespace(
+                id="resp_bibliography_cleanup",
+                output_text=json.dumps(
+                    {
+                        "references": [
+                            "Zed, Z. (2024). *Zeta systems*. Journal.",
+                            "[2] Adams, A. (2022). *Alpha methods*. Press.",
+                            "Brown, B. (2023). *Beta analysis*. Journal.",
+                        ]
+                    }
+                    | {"confidence": 0.91, "notes": []}
+                ),
+                usage=SimpleNamespace(input_tokens=20, output_tokens=15, total_tokens=35),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service.normalize_bibliography(
+        "references.pdf",
+        "Zed, Z. (2024). Zeta systems.\nAdams, A. (2022). Alpha methods.",
+        model="gpt-5.4-nano",
+    )
+
+    assert "alphabetized" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert result["bibliography"].splitlines() == [
+        "Adams, A. (2022). *Alpha methods*. Press.",
+        "Brown, B. (2023). *Beta analysis*. Journal.",
+        "Zed, Z. (2024). *Zeta systems*. Journal.",
+    ]
+    assert responses.system_prompt == BIBLIOGRAPHY_CLEANUP_PROMPT
+
+
 def test_ai_prompt_cache_key_uses_api_safe_length_for_document_checksums(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

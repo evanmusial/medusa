@@ -1159,7 +1159,7 @@ class ConcordanceProcessor:
                     "model": (cleanup.get("_openai") or {}).get("model") or cleanup_model,
                     "confidence": cleanup.get("confidence"),
                     "notes": cleanup.get("notes") or [],
-                    "formatting": "apa_markdown_one_source_per_line",
+                    "formatting": "alphabetized_apa_markdown_one_source_per_line",
                 }
                 if (cleanup.get("_openai") or {}).get("configured"):
                     evidence["formatting"] = "apa_markdown_model_cleanup"

@@ -6562,7 +6562,7 @@ function DocumentPanelContent({
           <button
             className={asyncFeedbackClass("secondary-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
             data-disabled-reason={bibliographyRefreshBusyReason}
-            data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as one APA-style source per line with the selected Bibliography Cleanup model."
+            data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as alphabetized APA-style sources, one per line, with the selected Bibliography Cleanup model."
             onClick={checkBibliography}
             disabled={bibliographyRefreshBusy}
             type="button"
