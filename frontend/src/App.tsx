@@ -7004,7 +7004,13 @@ function DocumentPanelContent({
       ? "an Accessory Summary is already queued or running for this document."
       : "";
   const sortedDocumentTags = useMemo(() => sortByName(document.tags), [document.tags]);
-  const sortedDocumentDomains = useMemo(() => sortByName(document.domains), [document.domains]);
+  const sortedDocumentDomains = useMemo(
+    () =>
+      [...document.domains].sort((left, right) =>
+        domainPathLabel(left, domains).localeCompare(domainPathLabel(right, domains), undefined, { numeric: true, sensitivity: "base" }),
+      ),
+    [document.domains, domains],
+  );
   const sortedAvailableTags = useMemo(() => sortByName(tags), [tags]);
   const currentTagNames = useMemo(() => normalizedNameList(sortedDocumentTags.map((tag) => tag.name)), [sortedDocumentTags]);
   const currentDomainIds = useMemo(() => new Set(document.domains.map((domain) => domain.id)), [document.domains]);
@@ -7680,7 +7686,7 @@ function DocumentPanelContent({
               key={domain.id}
               style={{ "--domain-chip-color": domain.color || "var(--blue)" } as CSSProperties}
             >
-              {domain.name}
+              {domainPathLabel(domain, domains)}
             </span>
           ))}
         </div>
@@ -8935,7 +8941,7 @@ function DocumentPanelContent({
           <div className="editor-block">
             <strong>Domains</strong>
             <div className="compact-checklist">
-              {domains.map((domain) => (
+              {domainPickerItems(domains).map((domain) => (
                 <label key={domain.id}>
                   <input type="checkbox" checked={draft.domain_ids.includes(domain.id)} onChange={() => toggleDomain(domain.id)} />
                   <span>{domain.name}</span>
@@ -9551,18 +9557,8 @@ function ImportDefaultPicker({
 }
 
 function domainPickerItems(domains: Domain[]): ImportPickerItem[] {
-  const byId = new Map(domains.map((domain) => [domain.id, domain]));
-  const labelFor = (domain: Domain): string => {
-    const parents: string[] = [];
-    let current: Domain | undefined = domain;
-    while (current) {
-      parents.unshift(current.name);
-      current = current.parent_id ? byId.get(current.parent_id) : undefined;
-    }
-    return parents.join(" / ");
-  };
   return domains
-    .map((domain) => ({ id: domain.id, name: labelFor(domain), meta: `${domain.document_count} documents` }))
+    .map((domain) => ({ id: domain.id, name: domainPathLabel(domain, domains), meta: `${domain.document_count} documents` }))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -12356,9 +12352,11 @@ function NotesView({
   const setDraftValue = <K extends keyof NotePayload>(key: K, value: NotePayload[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
+  const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
+  const domainLabelLookup = useMemo(() => new Map(domainOptions.map((domain) => [domain.id, domain.name])), [domainOptions]);
   const linkedLabel = (note: Note) => {
     if (note.document_id) return documents.find((document) => document.id === note.document_id)?.title || "Document";
-    if (note.domain_id) return domains.find((domain) => domain.id === note.domain_id)?.name || "Domain";
+    if (note.domain_id) return domainLabelLookup.get(note.domain_id) || "Domain";
     if (note.project_id) return projects.find((project) => project.id === note.project_id)?.name || "Project";
     return "Library";
   };
@@ -12411,7 +12409,7 @@ function NotesView({
             Domain
             <select data-tooltip="Optionally attach this note to a domain." value={draft.domain_id || ""} onChange={(event) => setDraftValue("domain_id", event.target.value || null)}>
               <option value="">No domain</option>
-              {domains.map((domain) => (
+              {domainOptions.map((domain) => (
                 <option key={domain.id} value={domain.id}>
                   {domain.name}
                 </option>
@@ -14876,6 +14874,7 @@ function SettingsView({
     enabled: stepEnabled(step.key),
     route: importProcessingRouteForStep(step.key, selectedImportProcessingPreset, preferences),
   }));
+  const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
   const preferenceDirty = Boolean(
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
@@ -15881,7 +15880,7 @@ function SettingsView({
               Domain
               <select data-tooltip="Choose the domain scope for the Concordance Run." value={domainId} onChange={(event) => setDomainId(event.target.value)}>
                 <option value="">Select domain</option>
-                {domains.map((domain) => (
+                {domainOptions.map((domain) => (
                   <option key={domain.id} value={domain.id}>
                     {domain.name}
                   </option>

@@ -19,7 +19,7 @@
   --danger-soft: #fde7e9;
   --action-success: #0f766e;
   --action-error: #b4232d;
-  --button-font-size: 13px;
+  --button-font-size: 14px;
   --button-font-weight: 400;
   --library-row-alt: #f6f8fb;
   --library-row-selected: #dceafe;
@@ -8515,6 +8515,225 @@ pre {
 
 .run-row.empty {
   color: var(--muted);
+}
+
+/* Focused typography polish for dense navigation and operational workbenches. */
+.pane-heading {
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--button-font-size);
+  font-stretch: normal;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.utilities-panel .panel-title-row span,
+.settings-grid .panel-title-row span,
+.status-panel .panel-title-row span,
+.utilities-status-grid span,
+.database-size-readout span,
+.utility-action-block span,
+.container-footprint-card span,
+.container-footprint-card em,
+.container-control-row span,
+.container-path-row span,
+.container-version-row span,
+.container-path-empty,
+.haproxy-stat-row span,
+.backup-action-block span,
+.restore-action-heading span,
+.backup-size-estimate,
+.backup-status-grid span,
+.verified-backup-value small,
+.backup-history-head span,
+.backup-history-main small,
+.backup-history-row > span:not(.pill),
+.legacy-export-actions a,
+.status-acronym-panel span:not(.pill),
+.status-metric-card span:not(.status-metric-icon),
+.status-metric-card em,
+.status-fact-row span,
+.preference-control label,
+.model-pricing-status span,
+.model-pricing-status p,
+.usage-metric-grid span,
+.usage-row,
+.concordance-estimate-summary span,
+.concordance-estimate-detail,
+.concordance-estimate-route,
+.import-processing-step-row.header,
+.import-processing-step-row small,
+.import-preset-grid legend,
+.model-options-group-label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.container-footprint-card em,
+.container-control-row span,
+.container-path-row span,
+.container-version-row span,
+.haproxy-stat-row span,
+.backup-action-block span,
+.restore-action-heading span,
+.backup-size-estimate,
+.backup-history-head span,
+.backup-history-main small,
+.backup-history-row > span:not(.pill),
+.status-metric-card em,
+.model-pricing-status p {
+  font-weight: 400;
+}
+
+.utility-section-title h3,
+.status-title-row h2,
+.status-detail-panel h3 {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.utilities-status-grid strong,
+.database-size-readout strong,
+.container-footprint-card strong,
+.status-metric-card strong {
+  font-weight: 700;
+}
+
+.container-control-row strong,
+.container-path-row strong,
+.container-version-row strong,
+.haproxy-stat-row strong,
+.backup-action-block strong,
+.restore-action-heading strong,
+.backup-history-head strong,
+.status-fact-row strong,
+.model-pricing-status strong,
+.model-task-label,
+.utility-action-block strong,
+.capability-grid strong,
+.concordance-estimate-route span:first-child {
+  font-weight: 600;
+}
+
+.database-maintenance-progress span,
+.database-maintenance-progress strong,
+.backup-history-main strong,
+.backup-status-grid strong,
+.verified-backup-value strong,
+.status-fact-row > span,
+.concordance-estimate-summary strong {
+  font-weight: 600;
+}
+
+.database-size-readout strong {
+  font-size: 21px;
+}
+
+.preference-warning,
+.template-token-row code,
+.citation-convention-control legend,
+.radio-row,
+.accent-settings label,
+.run-row.header,
+.usage-row.header {
+  font-weight: 500;
+}
+
+.workspace-nav-item,
+.primary-button,
+.secondary-button,
+.icon-button,
+.text-button,
+.bulk-multi-trigger,
+.single-select-menu button,
+.model-select-trigger,
+.model-options button,
+.reader-tabs button,
+.recommendation-view-tabs button,
+.recommendation-family-tabs button,
+.bibliography-tabs button,
+.selected-chips button,
+.picker-options button,
+.tags-table-row > button,
+.tags-table-row.header button,
+button.history-row,
+.compact-toggle,
+.stash-upload-button,
+.stash-upload-drop,
+.saved-search-list button,
+.domain-tag-suggestion-list button,
+.project-list button {
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
+  letter-spacing: 0;
+}
+
+.primary-button,
+.secondary-button,
+.release-upgrade-button,
+.bulk-multi-trigger,
+.model-select-trigger,
+.reader-tabs button,
+.recommendation-view-tabs button,
+.recommendation-family-tabs button,
+.bibliography-tabs button,
+.stash-upload-button,
+.stash-upload-drop {
+  min-height: 42px;
+}
+
+.icon-button,
+.icon-button.compact {
+  width: 42px;
+  min-width: 42px;
+  min-height: 42px;
+}
+
+.secondary-button.compact,
+.primary-button.compact,
+.text-button,
+.single-select-menu button,
+.model-options button,
+.picker-options button,
+.saved-search-list button,
+.tags-table-row > button,
+.project-list button {
+  min-height: 42px;
+}
+
+.selected-chips button {
+  min-height: 34px;
+}
+
+.select-all-row {
+  min-height: 42px;
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
+  letter-spacing: 0;
+}
+
+.select-all-row strong {
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: 1.25;
+}
+
+.bulk-bar > span {
+  font-size: var(--button-font-size);
+  font-weight: var(--button-font-weight);
+}
+
+.bulk-bar select,
+.bulk-multi-trigger,
+.bulk-custom-tag,
+.bulk-bar .primary-button,
+.bulk-bar .secondary-button,
+.select-search-input {
+  min-height: 42px;
 }
 
 @media (max-width: 1180px) {
