@@ -718,7 +718,7 @@ function backgroundJobsHaveActiveWork(jobs: BackgroundJob[]) {
 function importDuplicateSourceLabel(file: ImportDuplicateFile) {
   if (file.existing_documents.some((document) => LIBRARY_DOCUMENT_STATUSES.has(document.processing_status))) return "In library";
   if (file.existing_documents.length) return "In queue";
-  return "In batch";
+  return "This drop";
 }
 
 function duplicateBadgeLabel(count: number) {
@@ -10351,6 +10351,8 @@ function ImportView({
   const cancelJob = useMutation({
     mutationFn: (jobId: string) => api.cancelImportJob(jobId),
     onSuccess: (_job, jobId) => {
+      setDuplicateCheck(null);
+      setPendingFiles([]);
       cancelFeedback.showSuccess(jobId);
       setDropMessage("Import job canceled");
       refreshImportQueueData();
@@ -10377,6 +10379,8 @@ function ImportView({
   const clearStagedUploads = useMutation({
     mutationFn: api.clearStagedImportJobs,
     onSuccess: (result) => {
+      setDuplicateCheck(null);
+      setPendingFiles([]);
       clearStagedFeedback.showSuccess();
       const cacheLabel = result.deleted_cache_files ? `; removed ${importFileCountLabel(result.deleted_cache_files)} from cache` : "";
       setDropMessage(result.updated_count ? `Cleared ${importFileCountLabel(result.updated_count)}${cacheLabel}` : "No staged uploads");

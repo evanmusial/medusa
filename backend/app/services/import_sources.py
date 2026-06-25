@@ -18,6 +18,15 @@ TEXT_EXTENSIONS = {".txt", ".text", ".md", ".markdown"}
 HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
 TEXT_CONTENT_TYPES = {"text/plain", "text/markdown", "text/x-markdown"}
 SUPPORTED_SOURCE_KINDS = {"pdf", "html", "text"}
+GENERIC_IMPORT_TITLES = {
+    "document",
+    "document1",
+    "new document",
+    "no title",
+    "unknown",
+    "untitled",
+    "untitled document",
+}
 
 
 class ImportSourceError(ValueError):
@@ -76,6 +85,20 @@ def _pdf_filename(filename: str) -> str:
     return f"{stem}.pdf"
 
 
+def _title_key(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def is_generic_import_title(value: str | None) -> bool:
+    return _title_key(value) in GENERIC_IMPORT_TITLES
+
+
+def fallback_import_title(filename: str | None, checksum: str) -> str:
+    title = Path(_safe_filename(filename)).stem.replace("_", " ").replace("-", " ")
+    title = re.sub(r"\s+", " ", title).strip(" .")
+    return title if title and not is_generic_import_title(title) else f"Document {checksum[:12]}"
+
+
 def classify_import_source(filename: str | None, content_type: str | None = None) -> str:
     clean_type = _normalized_content_type(content_type)
     suffix = Path(filename or "").suffix.lower()
@@ -126,6 +149,11 @@ def pdf_metadata_title(data: bytes) -> str | None:
         return None
 
 
+def useful_pdf_metadata_title(data: bytes) -> str | None:
+    title = pdf_metadata_title(data)
+    return None if is_generic_import_title(title) else title
+
+
 def _decode_text(data: bytes) -> str:
     for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
@@ -140,6 +168,11 @@ def _clean_text(value: str, *, preserve_lines: bool = False) -> str:
     if preserve_lines:
         return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in value.splitlines()).strip()
     return re.sub(r"\s+", " ", value).strip()
+
+
+def useful_import_title(value: str | None, fallback_title: str) -> str:
+    title = _clean_text(value or "")
+    return title[:600] if title and not is_generic_import_title(title) else fallback_title
 
 
 class _SemanticHTMLParser(HTMLParser):
@@ -251,7 +284,7 @@ def _parse_html(text: str, fallback_title: str) -> tuple[str, list[SemanticBlock
         title_block = next((block for block in blocks if block.kind == "title"), None)
     if not title_block:
         title_block = next((block for block in blocks if block.kind == "heading"), None)
-    title = title_block.text if title_block else fallback_title
+    title = useful_import_title(title_block.text if title_block else None, fallback_title)
     outline = [
         {"level": block.level, "text": block.text[:240]}
         for block in blocks
@@ -267,7 +300,7 @@ def _parse_plain_text(text: str, fallback_title: str) -> tuple[str, list[Semanti
     if not paragraphs:
         paragraphs = [_clean_text(clean) or fallback_title]
     first_line = next((line.strip() for line in clean.splitlines() if line.strip()), fallback_title)
-    title = first_line[:600] if len(first_line) <= 180 else fallback_title
+    title = useful_import_title(first_line if len(first_line) <= 180 else None, fallback_title)
     blocks: list[SemanticBlock] = []
     title_used = False
     for paragraph in paragraphs:
@@ -367,8 +400,8 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
     source_content_type = _normalized_content_type(content_type)
     if probe.source_kind == "pdf":
         page_count = estimate_pdf_page_count(data)
-        fallback_title = Path(probe.filename).stem.replace("_", " ").replace("-", " ")
-        title = pdf_metadata_title(data) or fallback_title
+        fallback_title = fallback_import_title(probe.filename, probe.checksum_sha256)
+        title = useful_pdf_metadata_title(data) or fallback_title
         return PreparedImportSource(
             source_kind="pdf",
             source_filename=probe.filename,
@@ -394,7 +427,7 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
         )
 
     text = _decode_text(data)
-    fallback_title = Path(probe.filename).stem.replace("_", " ").replace("-", " ")
+    fallback_title = fallback_import_title(probe.filename, probe.checksum_sha256)
     if probe.source_kind == "html":
         title, blocks, outline = _parse_html(text, fallback_title)
     else:

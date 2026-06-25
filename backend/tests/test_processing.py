@@ -757,6 +757,58 @@ def test_duplicate_preflight_ignores_cleared_queue_documents(monkeypatch, tmp_pa
         assert db.query(Document).count() == 2
 
 
+def test_duplicate_preflight_same_drop_requires_fingerprint_or_doi(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    import fitz
+
+    from app.database import Base
+    from app import main
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+    def pdf_with_title(body: str) -> bytes:
+        document = fitz.open()
+        document.new_page().insert_text((72, 72), body)
+        document.set_metadata({"title": "Shared Title"})
+        data = document.tobytes()
+        document.close()
+        return data
+
+    with Session() as db:
+        title_only_check = asyncio.run(
+            main.check_import_duplicates(
+                object(),
+                db,
+                [
+                    UploadFile(filename="first.pdf", file=BytesIO(pdf_with_title("First body"))),
+                    UploadFile(filename="second.pdf", file=BytesIO(pdf_with_title("Second body"))),
+                ],
+            )
+        )
+
+        assert title_only_check.duplicate_file_count == 0
+        assert [row.duplicate_in_upload for row in title_only_check.files] == [False, False]
+
+        duplicate_bytes = b"%PDF-1.4 identical source"
+        fingerprint_check = asyncio.run(
+            main.check_import_duplicates(
+                object(),
+                db,
+                [
+                    UploadFile(filename="first.pdf", file=BytesIO(duplicate_bytes)),
+                    UploadFile(filename="second.pdf", file=BytesIO(duplicate_bytes)),
+                ],
+            )
+        )
+
+        assert fingerprint_check.duplicate_file_count == 1
+        assert [row.duplicate_in_upload for row in fingerprint_check.files] == [False, True]
+
+
 def test_import_anyway_allows_same_checksum_document(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

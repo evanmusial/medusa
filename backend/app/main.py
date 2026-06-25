@@ -598,6 +598,11 @@ def prepared_import_duplicate_profile(prepared) -> Any:
     )
 
 
+def same_drop_duplicate_reasons(left: Any, right: Any) -> list[str]:
+    reasons = duplicate_match_reasons(left, right)
+    return reasons if {"sha256", "md5", "doi"}.intersection(reasons) else []
+
+
 def document_summary_out(
     document: Document,
     duplicate_count: int = 0,
@@ -4271,7 +4276,7 @@ async def inspect_import_duplicates(files: list[UploadFile], db: Session) -> Imp
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         profile = prepared_import_duplicate_profile(prepared)
         matches = active_duplicate_matches_for_profile(db, profile, statuses=IMPORT_DUPLICATE_DOCUMENT_STATUSES)
-        duplicate_in_upload = any(duplicate_match_score(duplicate_match_reasons(profile, seen_profile)) > 0 for seen_profile in seen_profiles)
+        duplicate_in_upload = any(same_drop_duplicate_reasons(profile, seen_profile) for seen_profile in seen_profiles)
         seen_profiles.append(profile)
         duplicate_reasons = duplicate_reason_labels(matches)
         if matches or duplicate_in_upload:
@@ -4369,7 +4374,7 @@ async def create_import_batch(
             (
                 (existing_profile, existing_document, duplicate_match_reasons(profile, existing_profile))
                 for existing_profile, existing_document in batch_documents
-                if duplicate_match_score(duplicate_match_reasons(profile, existing_profile)) > 0
+                if same_drop_duplicate_reasons(profile, existing_profile)
             ),
             None,
         )
