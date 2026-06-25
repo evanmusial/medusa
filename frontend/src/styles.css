@@ -20,6 +20,8 @@
   --action-success: #0f766e;
   --action-error: #b4232d;
   --library-row-alt: #f6f8fb;
+  --library-row-selected: #dceafe;
+  --library-row-selected-hover: #d2e3ff;
   --document-title-ink: #000000;
   --shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
   font-family:
@@ -48,6 +50,8 @@
   --action-success: #168a7f;
   --action-error: #c2414b;
   --library-row-alt: #1b2433;
+  --library-row-selected: #203a61;
+  --library-row-selected-hover: #26476f;
   --document-title-ink: #ffffff;
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
 }
@@ -2358,9 +2362,17 @@ textarea {
   padding: 0;
 }
 
-.doc-row:hover,
-.doc-row.selected {
+.doc-row:hover {
   background: var(--panel-2);
+}
+
+.doc-row.selected {
+  background: var(--library-row-selected);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.doc-row.selected:hover {
+  background: var(--library-row-selected-hover);
 }
 
 .doc-row.dragging {

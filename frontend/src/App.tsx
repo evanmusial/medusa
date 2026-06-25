@@ -1293,10 +1293,7 @@ function ReleaseUpgradeButton({
         : !status.apply_available
           ? status.last_error || status.message || "automatic upgrade is not available from this Medusa runtime."
           : undefined;
-  const target = status.browser_reload_recommended ? status.running.version : status.available?.version;
-  const tooltip = target
-    ? `${status.message}\nTarget: ${target}`
-    : status.message || "Upgrade Medusa to the newest available release.";
+  const tooltip = releaseUpgradeTooltip(status);
   return (
     <button
       className={`primary-button release-upgrade-button${busy || phaseBusy ? " pending" : ""}`}
@@ -1310,6 +1307,49 @@ function ReleaseUpgradeButton({
       Upgrade Now
     </button>
   );
+}
+
+function releaseDateLabel(value?: string | null) {
+  const text = (value || "").trim();
+  if (!text) return "";
+  const date = new Date(text);
+  if (Number.isNaN(date.valueOf())) return text;
+  return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function releaseVersionLabel(version?: ReleaseStatus["running"] | null) {
+  if (!version) return "unknown";
+  const base = version.version || version.git_sha_short || "unknown";
+  const pieces = [
+    base,
+    version.git_sha_short && !base.includes(version.git_sha_short) ? `sha ${version.git_sha_short}` : "",
+    version.branch ? `branch ${version.branch}` : "",
+  ];
+  return pieces.filter(Boolean).join(" / ");
+}
+
+function releaseUpgradeTooltip(status: ReleaseStatus) {
+  const target = status.browser_reload_recommended ? status.running : status.available;
+  const lines = [
+    status.message || "Upgrade Medusa to the newest available release.",
+    `Target: ${releaseVersionLabel(target)}`,
+    `Browser bundle: ${MEDUSA_BUILD_VERSION}`,
+    `Running server: ${releaseVersionLabel(status.running)}`,
+  ];
+  const availableLabel = status.available ? releaseVersionLabel(status.available) : "";
+  if (availableLabel) lines.push(`Available release: ${availableLabel}`);
+  const runningBuiltAt = releaseDateLabel(status.running.built_at);
+  if (runningBuiltAt) lines.push(`Running built: ${runningBuiltAt}`);
+  const availableBuiltAt = releaseDateLabel(status.available?.built_at);
+  if (availableBuiltAt) lines.push(`Available built: ${availableBuiltAt}`);
+  const checkedAt = releaseDateLabel(status.checked_at);
+  if (checkedAt) lines.push(`Status checked: ${checkedAt}`);
+  const requestedAt = releaseDateLabel(status.requested_at);
+  if (requestedAt) lines.push(`Upgrade requested: ${requestedAt}`);
+  if (status.phase) lines.push(`Phase: ${status.phase.replaceAll("_", " ")}`);
+  if (status.dirty) lines.push("Server checkout has local changes.");
+  if (status.last_error) lines.push(`Last error: ${status.last_error}`);
+  return lines.filter(Boolean).join("\n");
 }
 
 function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgradeLock, "detail" | "message" | "stage" | "targetVersion"> {
