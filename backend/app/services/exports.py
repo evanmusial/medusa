@@ -156,6 +156,7 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
                 "description": domain.description,
                 "color": domain.color,
                 "sort_order": domain.sort_order,
+                "tag_ids": [tag.id for tag in sorted(domain.tags, key=lambda value: value.name)],
                 **_timestamps(domain),
                 **_soft_delete(domain),
             }

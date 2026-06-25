@@ -182,7 +182,6 @@ type EscapeLayer = {
 
 const ESCAPE_PRIORITY_READER = 10;
 const ESCAPE_PRIORITY_EXPANDED = 20;
-const ESCAPE_PRIORITY_POPOVER = 30;
 const ESCAPE_PRIORITY_DIALOG = 40;
 const ESCAPE_PRIORITY_MENU = 50;
 const ESCAPE_PRIORITY_TOOLTIP = 60;
@@ -523,6 +522,104 @@ function recommendationStatusPill(item: DocumentRecommendation) {
 function recommendationReasonChips(item: DocumentRecommendation) {
   const chips = item.reason_chips?.length ? item.reason_chips : [recommendationFamilyLabel(item.relation_family)];
   return Array.from(new Set(chips.map((chip) => (chip === "Wishlisted" ? "Stashed" : chip)).filter(Boolean))).slice(0, 7);
+}
+
+function isBibliographyRecommendation(item: DocumentRecommendation) {
+  const providers = item.source_provider
+    .split(",")
+    .map((provider) => provider.trim().toLowerCase())
+    .filter(Boolean);
+  return providers.includes("bibliography") || item.source_relation === "bibliography_reference" || item.raw_metadata.provider === "bibliography";
+}
+
+function recommendationRawReference(item: DocumentRecommendation) {
+  const rawReference = item.raw_metadata.raw_reference;
+  return typeof rawReference === "string" ? decodeHtmlEntities(rawReference).trim() : "";
+}
+
+function recommendationReferenceIndex(item: DocumentRecommendation) {
+  const value = item.raw_metadata.reference_index;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function bibliographyEntriesFromText(content?: string | null) {
+  const source = decodeHtmlEntities(content || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+  if (!source) return [];
+  const paragraphEntries = source
+    .split(/\n\s*\n+/)
+    .map((entry) => entry.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (paragraphEntries.length > 1) return paragraphEntries;
+  return source
+    .split(/\n+/)
+    .map((entry) => entry.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function bibliographyReferenceKey(value: string) {
+  return decodeHtmlEntities(value)
+    .replace(/[*_`[\](){}]/g, "")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+type BibliographyReferenceItem = {
+  key: string;
+  index: number;
+  text: string;
+  recommendation?: DocumentRecommendation;
+};
+
+function bibliographyReferenceItems(content: string | null | undefined, rows: DocumentRecommendation[]): BibliographyReferenceItem[] {
+  const entries = bibliographyEntriesFromText(content);
+  const bibliographyRows = rows.filter(isBibliographyRecommendation);
+  const rowsByIndex = new Map<number, DocumentRecommendation>();
+  const rowsByReference = new Map<string, DocumentRecommendation>();
+  bibliographyRows.forEach((row) => {
+    const referenceIndex = recommendationReferenceIndex(row);
+    if (referenceIndex && !rowsByIndex.has(referenceIndex)) rowsByIndex.set(referenceIndex, row);
+    const rawReference = recommendationRawReference(row);
+    if (rawReference) rowsByReference.set(bibliographyReferenceKey(rawReference), row);
+  });
+
+  const usedRecommendationIds = new Set<string>();
+  const items = entries.map((entry, entryIndex) => {
+    const index = entryIndex + 1;
+    const recommendation = rowsByIndex.get(index) || rowsByReference.get(bibliographyReferenceKey(entry));
+    if (recommendation) usedRecommendationIds.add(recommendation.id);
+    return {
+      key: `${index}-${bibliographyReferenceKey(entry).slice(0, 80)}`,
+      index,
+      text: entry,
+      recommendation,
+    };
+  });
+
+  bibliographyRows.forEach((row) => {
+    if (usedRecommendationIds.has(row.id)) return;
+    const rawReference = recommendationRawReference(row);
+    items.push({
+      key: `recommendation-${row.id}`,
+      index: items.length + 1,
+      text: rawReference || row.title,
+      recommendation: row,
+    });
+  });
+  return items;
+}
+
+function bibliographyScholarUrl(value: string) {
+  return `https://scholar.google.com/scholar?q=${encodeURIComponent(value)}`;
 }
 
 function citationText(document: DocumentDetail, kind: CitationKind) {
@@ -2985,10 +3082,12 @@ function DomainTree({
 function DomainsView({
   domains,
   documents,
+  tags,
   onTitleSubjectChange,
 }: {
   domains: Domain[];
   documents: DocumentSummary[];
+  tags: Tag[];
   onTitleSubjectChange?: (subject: string | null) => void;
 }) {
   const queryClient = useQueryClient();
@@ -3020,6 +3119,14 @@ function DomainsView({
   }, [domains, searchText]);
   const selectedPath = selected ? domainPathLabel(selected, domains) : "";
   const selectedChildCount = selected ? (children[selected.id] || []).length : 0;
+  const tagOptions = useMemo(() => tags.map((tag) => ({ id: tag.id, name: tag.name })), [tags]);
+  const draftTagNames = useMemo(() => {
+    const selectedTagIds = new Set(draft.tag_ids || []);
+    return tags
+      .filter((tag) => selectedTagIds.has(tag.id))
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
+      .map((tag) => tag.name);
+  }, [draft.tag_ids, tags]);
   const canSave = Boolean(selected && String(draft.name || "").trim());
   const createDomain = useMutation({
     mutationFn: () => api.createDomain(newName.trim(), newParentId || null, newColor),
@@ -3070,6 +3177,7 @@ function DomainsView({
       description: selected.description || "",
       color: normalizeHexColor(selected.color, DOMAIN_COLOR_SWATCHES[0]),
       sort_order: selected.sort_order,
+      tag_ids: selected.tags.map((tag) => tag.id),
     });
     setConfirmingDeleteId(null);
   }, [selected]);
@@ -3088,6 +3196,7 @@ function DomainsView({
         description: String(draft.description || "").trim() || null,
         color: normalizeHexColor(draft.color, DOMAIN_COLOR_SWATCHES[0]),
         sort_order: typeof draft.sort_order === "number" ? draft.sort_order : selected.sort_order,
+        tag_ids: draft.tag_ids || [],
       },
     });
   };
@@ -3194,6 +3303,10 @@ function DomainsView({
                 <strong>{selected.parent_id ? "Nested" : "Root"}</strong>
                 Level
               </span>
+              <span>
+                <strong>{draftTagNames.length}</strong>
+                Domain Tags
+              </span>
             </div>
             <div className="domain-edit-grid">
               <label>
@@ -3223,6 +3336,18 @@ function DomainsView({
                   onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
                   placeholder="Optional scope note"
                 />
+              </label>
+              <label className="domain-tags-field">
+                Domain Tags
+                <BulkMultiSelect
+                  emptyLabel="No tags"
+                  label="Tags"
+                  onChange={(ids) => setDraft((current) => ({ ...current, tag_ids: ids }))}
+                  options={tagOptions}
+                  searchPlaceholder="Type tag name"
+                  selectedIds={draft.tag_ids || []}
+                />
+                <small>{draftTagNames.length ? draftTagNames.join(", ") : "No domain tags selected"}</small>
               </label>
               <div className="domain-color-field">
                 <span>Color</span>
@@ -4333,7 +4458,7 @@ function DocumentPanel({
   );
 }
 
-function RecommendationsPanel({ document, onClose }: { document: DocumentDetail; onClose?: () => void }) {
+function RecommendationsPanel({ document, onClose }: { document: DocumentDetail; onClose: () => void }) {
   const [view, setView] = useStoredString<RecommendationView>(
     "medusa-recommendations-view-v1",
     "discover",
@@ -4353,10 +4478,13 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const selectedDownloadFeedback = useAsyncActionFeedback();
   const newDownloadFeedback = useAsyncActionFeedback();
   const stashFeedback = useAsyncActionFeedbackMap();
+  const bibliographyEntries = useMemo(() => bibliographyEntriesFromText(document.bibliography), [document.bibliography]);
+  const hasBibliography = bibliographyEntries.length > 0;
+  const canRefresh = document.processing_status === "ready" && (Boolean(document.doi) || hasBibliography);
   const recommendations = useQuery({
     queryKey: ["document-recommendations", document.id, view, family],
     queryFn: () => api.documentRecommendations(document.id, { view, family }),
-    enabled: document.processing_status === "ready" && Boolean(document.doi),
+    enabled: canRefresh,
   });
   const refresh = useMutation({
     mutationFn: () => api.refreshDocumentRecommendations(document.id),
@@ -4415,22 +4543,29 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
       setNotice(message);
     },
   });
+  useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
 
   useEffect(() => {
     setSelectedIds([]);
     setNotice("");
   }, [document.id, view, family]);
 
-  const rows = recommendations.data || [];
-  const newRows = rows.filter((item) => !isKnownRecommendation(item));
-  const selectableRows = rows.filter((item) => !isKnownRecommendation(item));
+  const rows = useMemo(() => recommendations.data || [], [recommendations.data]);
+  const otherRows = useMemo(() => rows.filter((item) => !isBibliographyRecommendation(item)), [rows]);
+  const bibliographyItems = useMemo(() => bibliographyReferenceItems(document.bibliography, rows), [document.bibliography, rows]);
+  const newRows = useMemo(() => rows.filter((item) => !isKnownRecommendation(item)), [rows]);
+  const selectableRows = newRows;
   const allSelectableSelected =
     selectableRows.length > 0 && selectableRows.every((item) => selectedIds.includes(item.id));
   const selectedCount = selectedIds.length;
   const selectedDownloadable = rows.filter((item) => selectedIds.includes(item.id) && item.has_pdf).length;
   const rowDownloadable = rows.filter((item) => item.has_pdf).length;
   const newDownloadable = newRows.filter((item) => item.has_pdf).length;
-  const canRefresh = document.processing_status === "ready" && Boolean(document.doi);
+  const summaryText = recommendations.isFetching
+    ? "Loading related papers"
+    : view === "known"
+      ? `${rows.length} known / ${rowDownloadable} with open PDFs`
+      : `${otherRows.length} other / ${bibliographyItems.length} bibliography / ${newDownloadable} open PDFs`;
 
   useEffect(() => {
     const selectableIds = new Set(selectableRows.map((item) => item.id));
@@ -4475,243 +4610,402 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
     setSelectedIds(allSelectableSelected ? [] : selectableRows.map((item) => item.id));
   };
 
-  return (
-    <section className="detail-section recommendations-panel">
-      <div className="recommendations-head">
-        <div>
-          <h3>Recommendations</h3>
+  const renderRecommendationRow = (item: DocumentRecommendation) => {
+    const known = isKnownRecommendation(item);
+    const doiCopied = copiedKey === `doi-${item.id}`;
+    const titleCopied = copiedKey === `title-${item.id}`;
+    const statusPill = recommendationStatusPill(item);
+    const reasonChips = recommendationReasonChips(item);
+    return (
+      <article key={item.id} className={`recommendation-row ${known ? "known" : ""}`}>
+        <input
+          aria-label={`Select ${item.title}`}
+          data-disabled-reason="this recommendation is already known to Medusa."
+          data-tooltip={`Toggle selection for ${item.title} before queueing recommendation imports.`}
+          type="checkbox"
+          checked={selectedIds.includes(item.id)}
+          disabled={known}
+          onChange={() => toggleSelected(item.id)}
+        />
+        <strong className="recommendation-title">{item.title}</strong>
+        <div className="recommendation-row-status">{statusPill}</div>
+        <div className="recommendation-copy">
           <span>
-            {recommendations.isFetching
-              ? "Loading related papers"
-              : view === "known"
-                ? `${rows.length} known / ${rowDownloadable} with open PDFs`
-                : `${rows.length} shown / ${newRows.length} discovery leads / ${newDownloadable} with open PDFs`}
+            {recommendationAuthorLine(item)}
+            {item.publication_year ? ` / ${item.publication_year}` : ""}
+            {item.journal ? ` / ${item.journal}` : ""}
           </span>
+          <div className="recommendation-reason-chips" aria-label="Recommendation evidence">
+            {reasonChips.map((chip) => (
+              <span key={chip}>{chip}</span>
+            ))}
+          </div>
+          {item.doi ? <code>{item.doi}</code> : null}
+          <p>{item.description || "No abstract available from recommendation sources."}</p>
+          <small>
+            {recommendationProviderLabel(item.source_provider)}
+            {item.source_relation ? ` / ${item.source_relation.replaceAll("_", " ")}` : ""}
+            {item.existing_document_title ? ` / ${item.existing_document_title}` : ""}
+            {item.hidden_reason ? ` / ${item.hidden_reason}` : ""}
+          </small>
         </div>
-        <div className="recommendation-actions">
-          <AsyncActionSlot feedback={refreshFeedback.feedback}>
+        <div className="recommendation-row-actions">
+          <div className="recommendation-left-actions">
             <button
-              className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback)}
-              data-disabled-reason={
-                refresh.isPending
-                  ? "recommendation refresh is already running."
-                  : "recommendations need a completed document with a DOI."
-              }
-              data-tooltip="Refresh related-paper recommendations for this document from scholarly metadata services."
-              disabled={!canRefresh || refresh.isPending}
-              onClick={() => refresh.mutate()}
+              className={`secondary-button compact recommendation-copy-action${doiCopied ? " copy-acknowledged" : ""}`}
+              data-disabled-reason="this recommendation does not include a DOI."
+              data-tooltip="Copy this recommendation DOI to the clipboard."
+              disabled={!item.doi}
+              onClick={() => item.doi && void copyToClipboard(`doi-${item.id}`, item.doi)}
               type="button"
             >
-              <RefreshCw className={refresh.isPending ? "spin" : ""} size={14} />
-              Refresh
+              {doiCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+              DOI
             </button>
-          </AsyncActionSlot>
-          {onClose ? (
-            <button className="icon-button compact" data-tooltip="Close the related-papers recommendations panel." onClick={onClose} type="button">
-              <X size={15} />
+            <button
+              className={`secondary-button compact recommendation-copy-action${titleCopied ? " copy-acknowledged" : ""}`}
+              data-tooltip="Copy this recommendation title to the clipboard."
+              onClick={() => void copyToClipboard(`title-${item.id}`, item.title)}
+              type="button"
+            >
+              {titleCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+              Title
             </button>
+            <AsyncActionSlot feedback={stashFeedback.feedbackFor(item.id)}>
+              <button
+                className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(item.id))}
+                data-disabled-reason={
+                  stashDoi.isPending
+                    ? "a DOI stash request is already running."
+                    : item.known_status === "stashed"
+                      ? "this DOI is already saved in Stashes."
+                      : "this recommendation does not include a DOI to stash."
+                }
+                data-tooltip="Save this DOI to Stashes for later follow-up."
+                disabled={!item.doi || stashDoi.isPending || item.known_status === "stashed"}
+                onClick={() => stashDoi.mutate(item)}
+                type="button"
+              >
+                <Bookmark size={15} />
+                {item.known_status === "stashed" ? "Stashed" : "Stash"}
+              </button>
+            </AsyncActionSlot>
+            <a
+              className="secondary-button compact recommendation-copy-action"
+              href={item.scholar_url}
+              target="_blank"
+              rel="noreferrer"
+              data-tooltip="Open a manual Google Scholar search for this recommendation in a new tab."
+            >
+              <Search size={15} />
+              Scholar
+            </a>
+          </div>
+          {item.source_url ? (
+            <a
+              className="icon-button compact recommendation-source-action"
+              href={item.source_url}
+              target="_blank"
+              rel="noreferrer"
+              data-tooltip="Open this recommendation's source page in a new tab."
+            >
+              <ExternalLink size={15} />
+            </a>
           ) : null}
         </div>
-      </div>
-      <div className="recommendations-controls">
-        <div className="recommendation-view-tabs" role="tablist" aria-label="Recommendation view">
-          {RECOMMENDATION_VIEW_OPTIONS.map((option) => (
-            <button
-              key={option.id}
-              className={view === option.id ? "selected" : ""}
-              onClick={() => setView(option.id)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <div className="recommendation-family-tabs" role="tablist" aria-label="Recommendation relation family">
-          {RECOMMENDATION_FAMILY_OPTIONS.map((option) => (
-            <button
-              key={option.id}
-              className={family === option.id ? "selected" : ""}
-              onClick={() => setFamily(option.id)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="recommendations-download-row">
-        <label className="select-all-row">
-          <input
-            data-disabled-reason="there are no new recommendations available for selection."
-            data-tooltip={allSelectableSelected ? "Clear all selectable recommendation rows." : "Select all discovery rows that are not already known to Medusa."}
-            type="checkbox"
-            checked={allSelectableSelected}
-            onChange={toggleAllSelectable}
-            disabled={!selectableRows.length}
-          />
-          <strong>{selectedCount ? `${selectedCount} selected` : "Select discovery leads"}</strong>
+      </article>
+    );
+  };
+
+  const renderBibliographyReference = (item: BibliographyReferenceItem) => {
+    const recommendation = item.recommendation;
+    const known = recommendation ? isKnownRecommendation(recommendation) : false;
+    const statusPill = recommendation ? recommendationStatusPill(recommendation) : <StatusPill value="Source" />;
+    const sourceCopied = copiedKey === `bibliography-source-${item.key}`;
+    const doiCopied = recommendation ? copiedKey === `doi-${recommendation.id}` : false;
+    const titleCopied = recommendation ? copiedKey === `title-${recommendation.id}` : false;
+    const reasonChips = recommendation ? recommendationReasonChips(recommendation) : ["Bibliography"];
+    const scholarUrl = recommendation?.scholar_url || bibliographyScholarUrl(item.text);
+    return (
+      <article key={item.key} className={`bibliography-reference-row ${known ? "known" : ""}`}>
+        <label className="bibliography-reference-selector">
+          {recommendation ? (
+            <input
+              aria-label={`Select bibliography source ${item.index}`}
+              data-disabled-reason="this bibliography source is already known to Medusa."
+              data-tooltip={`Toggle selection for bibliography source ${item.index} before queueing recommendation imports.`}
+              type="checkbox"
+              checked={selectedIds.includes(recommendation.id)}
+              disabled={known}
+              onChange={() => toggleSelected(recommendation.id)}
+            />
+          ) : null}
+          <span>{item.index}</span>
         </label>
-        <AsyncActionSlot feedback={selectedDownloadFeedback.feedback}>
-          <button
-            className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
-            data-disabled-reason={
-              download.isPending
+        <div className="bibliography-reference-main">
+          <p className="bibliography-reference-text">{renderInlineMarkdown(item.text, `bibliography-reference-${item.key}`)}</p>
+          {recommendation ? (
+            <div className="bibliography-reference-match">
+              <strong>{recommendation.title}</strong>
+              <span>
+                {recommendationAuthorLine(recommendation)}
+                {recommendation.publication_year ? ` / ${recommendation.publication_year}` : ""}
+                {recommendation.journal ? ` / ${recommendation.journal}` : ""}
+              </span>
+              <div className="recommendation-reason-chips" aria-label="Bibliography recommendation evidence">
+                {reasonChips.map((chip) => (
+                  <span key={chip}>{chip}</span>
+                ))}
+              </div>
+              {recommendation.doi ? <code>{recommendation.doi}</code> : null}
+              {recommendation.hidden_reason ? <small>{recommendation.hidden_reason}</small> : null}
+            </div>
+          ) : (
+            <small>Extracted source reference</small>
+          )}
+          <div className="bibliography-reference-actions">
+            <button
+              className={`secondary-button compact recommendation-copy-action${sourceCopied ? " copy-acknowledged" : ""}`}
+              data-tooltip="Copy this bibliography source text to the clipboard."
+              onClick={() => void copyToClipboard(`bibliography-source-${item.key}`, item.text)}
+              type="button"
+            >
+              {sourceCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+              Source
+            </button>
+            {recommendation ? (
+              <>
+                <button
+                  className={`secondary-button compact recommendation-copy-action${doiCopied ? " copy-acknowledged" : ""}`}
+                  data-disabled-reason="this bibliography source does not include a DOI."
+                  data-tooltip="Copy this recommendation DOI to the clipboard."
+                  disabled={!recommendation.doi}
+                  onClick={() => recommendation.doi && void copyToClipboard(`doi-${recommendation.id}`, recommendation.doi)}
+                  type="button"
+                >
+                  {doiCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+                  DOI
+                </button>
+                <button
+                  className={`secondary-button compact recommendation-copy-action${titleCopied ? " copy-acknowledged" : ""}`}
+                  data-tooltip="Copy this recommendation title to the clipboard."
+                  onClick={() => void copyToClipboard(`title-${recommendation.id}`, recommendation.title)}
+                  type="button"
+                >
+                  {titleCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+                  Title
+                </button>
+                <AsyncActionSlot feedback={stashFeedback.feedbackFor(recommendation.id)}>
+                  <button
+                    className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(recommendation.id))}
+                    data-disabled-reason={
+                      stashDoi.isPending
+                        ? "a DOI stash request is already running."
+                        : recommendation.known_status === "stashed"
+                          ? "this DOI is already saved in Stashes."
+                          : "this bibliography source does not include a DOI to stash."
+                    }
+                    data-tooltip="Save this DOI to Stashes for later follow-up."
+                    disabled={!recommendation.doi || stashDoi.isPending || recommendation.known_status === "stashed"}
+                    onClick={() => stashDoi.mutate(recommendation)}
+                    type="button"
+                  >
+                    <Bookmark size={15} />
+                    {recommendation.known_status === "stashed" ? "Stashed" : "Stash"}
+                  </button>
+                </AsyncActionSlot>
+              </>
+            ) : null}
+            <a
+              className="secondary-button compact recommendation-copy-action"
+              href={scholarUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-tooltip="Open a manual Google Scholar search for this bibliography source in a new tab."
+            >
+              <Search size={15} />
+              Scholar
+            </a>
+          </div>
+        </div>
+        <div className="bibliography-reference-status">
+          {statusPill}
+          {recommendation?.source_url ? (
+            <a
+              className="icon-button compact recommendation-source-action"
+              href={recommendation.source_url}
+              target="_blank"
+              rel="noreferrer"
+              data-tooltip="Open this bibliography source page in a new tab."
+            >
+              <ExternalLink size={15} />
+            </a>
+          ) : null}
+        </div>
+      </article>
+    );
+  };
+
+  return (
+    <div
+      className="modal-backdrop recommendations-modal-backdrop"
+      data-escape-layer="dialog"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="recommendations-dialog" role="dialog" aria-modal="true" aria-labelledby="recommendations-title">
+        <div className="recommendations-head">
+          <div>
+            <span>Related</span>
+            <h2 id="recommendations-title">{document.title}</h2>
+            <p>{summaryText}</p>
+          </div>
+          <div className="recommendation-actions">
+            <AsyncActionSlot feedback={refreshFeedback.feedback}>
+              <button
+                className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback)}
+                data-disabled-reason={
+                  refresh.isPending
+                    ? "recommendation refresh is already running."
+                    : "related recommendations need a completed document with a DOI or extracted bibliography."
+                }
+                data-tooltip="Refresh related-paper recommendations for this document from scholarly metadata services and extracted bibliography references."
+                disabled={!canRefresh || refresh.isPending}
+                onClick={() => refresh.mutate()}
+                type="button"
+              >
+                <RefreshCw className={refresh.isPending ? "spin" : ""} size={14} />
+                Refresh
+              </button>
+            </AsyncActionSlot>
+            <button className="icon-button compact" data-tooltip="Close Related." onClick={onClose} type="button">
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+        <div className="recommendations-controls">
+          <div className="recommendation-view-tabs" role="tablist" aria-label="Recommendation view">
+            {RECOMMENDATION_VIEW_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                className={view === option.id ? "selected" : ""}
+                onClick={() => setView(option.id)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="recommendation-family-tabs" role="tablist" aria-label="Recommendation relation family">
+            {RECOMMENDATION_FAMILY_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                className={family === option.id ? "selected" : ""}
+                onClick={() => setFamily(option.id)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="recommendations-download-row">
+          <label className="select-all-row">
+            <input
+              data-disabled-reason="there are no new recommendations available for selection."
+              data-tooltip={allSelectableSelected ? "Clear all selectable recommendation rows." : "Select all discovery rows that are not already known to Medusa."}
+              type="checkbox"
+              checked={allSelectableSelected}
+              onChange={toggleAllSelectable}
+              disabled={!selectableRows.length}
+            />
+            <strong>{selectedCount ? `${selectedCount} selected` : "Select discovery leads"}</strong>
+          </label>
+          <AsyncActionSlot feedback={selectedDownloadFeedback.feedback}>
+            <button
+              className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
+              data-disabled-reason={
+                download.isPending
                   ? "recommendation downloads are already being queued."
                   : !selectedCount
-                  ? "select one or more discovery rows first."
-                  : "none of the selected recommendations has an open PDF URL."
-            }
-            data-tooltip="Queue imports for selected discovery rows that have open PDF URLs."
-            disabled={!selectedCount || !selectedDownloadable || download.isPending}
-            onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
-            type="button"
-          >
-            <Download size={14} />
-            Selected
-          </button>
-        </AsyncActionSlot>
-        <AsyncActionSlot feedback={newDownloadFeedback.feedback}>
-          <button
-            className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
-            data-disabled-reason={
-              download.isPending
+                    ? "select one or more discovery rows first."
+                    : "none of the selected recommendations has an open PDF URL."
+              }
+              data-tooltip="Queue imports for selected discovery rows that have open PDF URLs."
+              disabled={!selectedCount || !selectedDownloadable || download.isPending}
+              onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
+              type="button"
+            >
+              <Download size={14} />
+              Selected
+            </button>
+          </AsyncActionSlot>
+          <AsyncActionSlot feedback={newDownloadFeedback.feedback}>
+            <button
+              className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
+              data-disabled-reason={
+                download.isPending
                   ? "recommendation downloads are already being queued."
                   : !newRows.length
-                  ? "there are no discovery rows."
-                  : "no discovery row has an open PDF URL."
-            }
-            data-tooltip="Queue imports for every discovery row that has an open PDF URL."
-            disabled={!newRows.length || !newDownloadable || download.isPending}
-            onClick={() => download.mutate({ mode: "new", skip_existing: true })}
-            type="button"
-          >
-            <Download size={14} />
-            All Open PDFs
-          </button>
-        </AsyncActionSlot>
-      </div>
-      {notice ? <p className="recommendation-notice">{notice}</p> : null}
-      {!canRefresh ? (
-        <div className="empty-inline">
-          <Sparkles size={17} />
-          <span>Recommendations need a completed document with a DOI.</span>
+                    ? "there are no discovery rows."
+                    : "no discovery row has an open PDF URL."
+              }
+              data-tooltip="Queue imports for every discovery row that has an open PDF URL."
+              disabled={!newRows.length || !newDownloadable || download.isPending}
+              onClick={() => download.mutate({ mode: "new", skip_existing: true })}
+              type="button"
+            >
+              <Download size={14} />
+              All Open PDFs
+            </button>
+          </AsyncActionSlot>
         </div>
-      ) : rows.length ? (
-        <div className="recommendation-list">
-          {rows.map((item) => {
-            const known = isKnownRecommendation(item);
-            const doiCopied = copiedKey === `doi-${item.id}`;
-            const titleCopied = copiedKey === `title-${item.id}`;
-            const statusPill = recommendationStatusPill(item);
-            const reasonChips = recommendationReasonChips(item);
-            return (
-              <article key={item.id} className={`recommendation-row ${known ? "known" : ""}`}>
-                <input
-                  aria-label={`Select ${item.title}`}
-                  data-disabled-reason="this recommendation is already known to Medusa."
-                  data-tooltip={`Toggle selection for ${item.title} before queueing recommendation imports.`}
-                  type="checkbox"
-                  checked={selectedIds.includes(item.id)}
-                  disabled={known}
-                  onChange={() => toggleSelected(item.id)}
-                />
-                <strong className="recommendation-title">{item.title}</strong>
-                <div className="recommendation-row-status">{statusPill}</div>
-                <div className="recommendation-copy">
-                  <span>
-                    {recommendationAuthorLine(item)}
-                    {item.publication_year ? ` / ${item.publication_year}` : ""}
-                    {item.journal ? ` / ${item.journal}` : ""}
-                  </span>
-                  <div className="recommendation-reason-chips" aria-label="Recommendation evidence">
-                    {reasonChips.map((chip) => (
-                      <span key={chip}>{chip}</span>
-                    ))}
-                  </div>
-                  {item.doi ? <code>{item.doi}</code> : null}
-                  <p>{item.description || "No abstract available from recommendation sources."}</p>
-                  <small>
-                    {recommendationProviderLabel(item.source_provider)}
-                    {item.source_relation ? ` / ${item.source_relation.replaceAll("_", " ")}` : ""}
-                    {item.existing_document_title ? ` / ${item.existing_document_title}` : ""}
-                    {item.hidden_reason ? ` / ${item.hidden_reason}` : ""}
-                  </small>
+        <div className="recommendation-notice-slot">{notice ? <p className="recommendation-notice">{notice}</p> : null}</div>
+        {!canRefresh ? (
+          <div className="empty-inline recommendations-dialog-empty">
+            <Sparkles size={17} />
+            <span>Related needs a completed document with a DOI or extracted bibliography.</span>
+          </div>
+        ) : (
+          <div className="recommendations-dialog-body">
+            <section className="recommendation-group recommendation-group-other">
+              <div className="recommendation-group-head">
+                <div>
+                  <h3>Other Related Articles</h3>
+                  <span>{otherRows.length} shown</span>
                 </div>
-                <div className="recommendation-row-actions">
-                  <div className="recommendation-left-actions">
-                    <button
-                      className={`secondary-button compact recommendation-copy-action${doiCopied ? " copy-acknowledged" : ""}`}
-                      data-disabled-reason="this recommendation does not include a DOI."
-                      data-tooltip="Copy this recommendation DOI to the clipboard."
-                      disabled={!item.doi}
-                      onClick={() => item.doi && void copyToClipboard(`doi-${item.id}`, item.doi)}
-                      type="button"
-                    >
-                      {doiCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-                      DOI
-                    </button>
-                    <button
-                      className={`secondary-button compact recommendation-copy-action${titleCopied ? " copy-acknowledged" : ""}`}
-                      data-tooltip="Copy this recommendation title to the clipboard."
-                      onClick={() => void copyToClipboard(`title-${item.id}`, item.title)}
-                      type="button"
-                    >
-                      {titleCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-                      Title
-                    </button>
-                    <AsyncActionSlot feedback={stashFeedback.feedbackFor(item.id)}>
-                      <button
-                        className={asyncFeedbackClass("secondary-button compact recommendation-copy-action", stashFeedback.feedbackFor(item.id))}
-                        data-disabled-reason={
-                          stashDoi.isPending
-                            ? "a DOI stash request is already running."
-                            : item.known_status === "stashed"
-                              ? "this DOI is already saved in Stashes."
-                              : "this recommendation does not include a DOI to stash."
-                        }
-                        data-tooltip="Save this DOI to Stashes for later follow-up."
-                        disabled={!item.doi || stashDoi.isPending || item.known_status === "stashed"}
-                        onClick={() => stashDoi.mutate(item)}
-                        type="button"
-                      >
-                        <Bookmark size={15} />
-                        {item.known_status === "stashed" ? "Stashed" : "Stash"}
-                      </button>
-                    </AsyncActionSlot>
-                    <a
-                      className="secondary-button compact recommendation-copy-action"
-                      href={item.scholar_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      data-tooltip="Open a manual Google Scholar search for this recommendation in a new tab."
-                    >
-                      <Search size={15} />
-                      Scholar
-                    </a>
-                  </div>
-                  {item.source_url ? (
-                    <a
-                      className="icon-button compact recommendation-source-action"
-                      href={item.source_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      data-tooltip="Open this recommendation's source page in a new tab."
-                    >
-                      <ExternalLink size={15} />
-                    </a>
-                  ) : null}
+              </div>
+              {otherRows.length ? (
+                <div className="recommendation-list">{otherRows.map(renderRecommendationRow)}</div>
+              ) : (
+                <div className="empty-inline">
+                  <Sparkles size={17} />
+                  <span>{refresh.isPending || recommendations.isFetching ? "Finding related papers." : "No other related articles shown."}</span>
                 </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="empty-inline">
-          <Sparkles size={17} />
-          <span>{refresh.isPending ? "Finding related papers." : "No related papers found yet."}</span>
-        </div>
-      )}
-    </section>
+              )}
+            </section>
+            <section className="recommendation-group recommendation-group-bibliography">
+              <div className="recommendation-group-head">
+                <div>
+                  <h3>Bibliography Sources</h3>
+                  <span>{bibliographyItems.length} extracted</span>
+                </div>
+              </div>
+              {bibliographyItems.length ? (
+                <div className="bibliography-reference-list">{bibliographyItems.map(renderBibliographyReference)}</div>
+              ) : (
+                <div className="empty-inline">
+                  <FileText size={17} />
+                  <span>No source bibliography extracted yet.</span>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -6230,7 +6524,6 @@ function DocumentPanelContent({
     createAccessorySummary.mutate();
   };
 
-  useEscapeLayer(recommendationsOpen, () => setRecommendationsOpen(false), ESCAPE_PRIORITY_POPOVER);
   useEscapeLayer(domainAssignOpen, () => setDomainAssignOpen(false), ESCAPE_PRIORITY_MENU);
   useEscapeLayer(accessoryComposerOpen && !accessorySummaryBusy, () => setAccessoryComposerOpen(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingDoi && !updateDoi.isPending, () => setEditingDoi(false), ESCAPE_PRIORITY_EXPANDED);
@@ -7448,11 +7741,7 @@ function DocumentPanelContent({
               Compare
             </button>
           </div>
-          {recommendationsOpen ? (
-            <div className="recommendations-popover" data-escape-layer="popover">
-              <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} />
-            </div>
-          ) : null}
+          {recommendationsOpen ? <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} /> : null}
           {readerMode === "pdf" ? (
             renderPdfPreview()
           ) : readerMode === "compare" ? (
@@ -14677,6 +14966,7 @@ export default function App() {
           <DomainsView
             documents={documents.data || []}
             domains={domains.data || []}
+            tags={tags.data || []}
             onTitleSubjectChange={(subject) => updateViewTitleSubject("domains", subject)}
           />
         ) : null}

@@ -459,6 +459,7 @@ export type Domain = {
   color?: string | null;
   sort_order: number;
   document_count: number;
+  tags: Tag[];
 };
 
 export type DomainUpdatePayload = {
@@ -467,6 +468,7 @@ export type DomainUpdatePayload = {
   description?: string | null;
   color?: string | null;
   sort_order?: number | null;
+  tag_ids?: string[] | null;
 };
 
 export type DomainReorderItem = {

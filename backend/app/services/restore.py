@@ -207,6 +207,7 @@ def restore_metadata_export(
     try:
         restored_counts["domains"] = _restore_domains(db, _section(data, "domains"), id_maps, preserve_ids)
         restored_counts["tags"] = _restore_tags(db, _section(data, "tags"), id_maps, preserve_ids)
+        _restore_domain_tags(db, _section(data, "domains"), id_maps)
         restored_counts["tag_aliases"], skipped_rows["tag_aliases"] = _restore_tag_aliases(
             db,
             _section(data, "tag_aliases"),
@@ -339,6 +340,20 @@ def _restore_domains(db: Session, rows: list[dict[str, Any]], id_maps: dict[str,
             domain.parent_id = id_maps["domains"].get(parent_id)
     db.flush()
     return count
+
+
+def _restore_domain_tags(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, dict[str, str]]) -> None:
+    for row in rows:
+        if "tag_ids" not in row:
+            continue
+        mapped_id = id_maps["domains"].get(row.get("id"))
+        if not mapped_id:
+            continue
+        domain = db.get(Domain, mapped_id)
+        if not domain:
+            continue
+        domain.tags = _mapped_rows(db, Tag, id_maps["tags"], row.get("tag_ids") or [])
+    db.flush()
 
 
 def _restore_tags(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, dict[str, str]], preserve_ids: bool) -> int:

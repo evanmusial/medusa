@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -121,6 +122,46 @@ def test_refresh_recommendations_uses_stored_bibliography_references(monkeypatch
         assert known.relation_family == "foundational"
         assert known.raw_metadata["recommendations_v2"]["evidence"]["provider"] == "bibliography"
         assert unheld.source_url == "https://example.test/source"
+
+
+def test_refresh_recommendations_route_allows_bibliography_without_doi(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import refresh_recommendations
+    from app.models import Document
+    from app.services import recommendations as service
+
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Bibliography Only Paper",
+            original_filename="source.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+            bibliography="Smith, A. (2020). Bibliography seeded paper. Research Press.",
+        )
+        blocked = Document(
+            title="No Related Inputs",
+            original_filename="blocked.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        db.add_all([source, blocked])
+        db.commit()
+
+        monkeypatch.setattr(service, "_enabled_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_enrichers", lambda: [])
+
+        result = refresh_recommendations(source.id, object(), db)
+
+        assert result.recommendation_count == 1
+        assert result.recommendations[0].source_provider == "bibliography"
+        with pytest.raises(HTTPException) as exc:
+            refresh_recommendations(blocked.id, object(), db)
+        assert exc.value.status_code == 400
 
 
 def test_bibliography_reference_entries_split_one_source_per_line(monkeypatch, tmp_path):

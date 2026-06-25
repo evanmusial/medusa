@@ -1175,7 +1175,7 @@ textarea {
 
 .domain-stat-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1212,12 +1212,24 @@ textarea {
   font-weight: 750;
 }
 
-.domain-description-field {
+.domain-description-field,
+.domain-tags-field {
   grid-column: 1 / -1;
 }
 
 .domain-description-field textarea {
   min-height: 116px;
+}
+
+.domain-tags-field .bulk-multi-trigger {
+  width: 100%;
+}
+
+.domain-tags-field small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
 }
 
 .domain-color-controls {
@@ -3420,27 +3432,27 @@ textarea {
   gap: 10px;
 }
 
-.recommendations-popover {
-  position: absolute;
-  z-index: 24;
-  top: 54px;
-  right: 0;
-  left: 0;
+.recommendations-modal-backdrop {
+  padding: clamp(8px, 1.4vw, 18px);
 }
 
-.recommendations-popover .recommendations-panel {
+.recommendations-dialog {
+  width: min(1560px, calc(100vw - 28px));
+  height: min(980px, calc(100dvh - 28px));
+  min-height: 0;
+  display: grid;
   grid-template-rows: auto auto auto auto minmax(0, 1fr);
-  max-height: min(64vh, 680px);
-  margin-top: 0;
+  gap: 10px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   box-shadow: var(--shadow);
-  padding: 12px;
+  padding: 14px;
 }
 
-.recommendations-popover .recommendation-list {
+.recommendations-dialog .recommendation-list,
+.recommendations-dialog .bibliography-reference-list {
   min-height: 0;
   max-height: none;
 }
@@ -3454,6 +3466,16 @@ textarea {
 .recommendations-head {
   justify-content: space-between;
   gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  align-items: flex-start;
+}
+
+.recommendations-head h2 {
+  margin: 1px 0 0;
+  font-size: clamp(18px, 2vw, 24px);
+  line-height: 1.18;
+  overflow-wrap: anywhere;
 }
 
 .recommendations-head h3 {
@@ -3461,11 +3483,21 @@ textarea {
 }
 
 .recommendations-head span,
+.recommendations-head p,
+.recommendation-group-head span,
 .recommendation-copy span,
 .recommendation-copy small,
+.bibliography-reference-main small,
+.bibliography-reference-match span,
+.bibliography-reference-match small,
 .recommendation-notice {
   color: var(--muted);
   font-size: 12px;
+}
+
+.recommendations-head p {
+  margin: 3px 0 0;
+  font-weight: 650;
 }
 
 .recommendation-actions,
@@ -3538,11 +3570,61 @@ textarea {
   font-weight: 650;
 }
 
+.recommendation-notice-slot {
+  min-height: 0;
+}
+
+.recommendations-dialog-empty {
+  align-self: center;
+  justify-self: center;
+}
+
+.recommendations-dialog-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(380px, 0.88fr);
+  gap: 12px;
+}
+
+.recommendation-group {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.recommendation-group-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 9px 10px;
+}
+
+.recommendation-group-head h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.recommendation-group > .empty-inline {
+  margin: 12px;
+}
+
 .recommendation-list {
-  max-height: 520px;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   display: grid;
   gap: 8px;
+  align-content: start;
+  padding: 0 10px 10px;
 }
 
 .recommendation-row {
@@ -3671,6 +3753,109 @@ textarea {
   background: var(--action-success);
   border-color: var(--action-success);
   color: #ffffff;
+}
+
+.bibliography-reference-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  padding: 0 10px 10px;
+}
+
+.bibliography-reference-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.bibliography-reference-row:first-child {
+  border-top: 0;
+}
+
+.bibliography-reference-selector {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.bibliography-reference-selector input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.bibliography-reference-selector span {
+  min-width: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  padding: 1px 6px;
+  text-align: center;
+}
+
+.bibliography-reference-main {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.bibliography-reference-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.bibliography-reference-match {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  border-left: 2px solid var(--line);
+  padding-left: 9px;
+}
+
+.bibliography-reference-match strong {
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.bibliography-reference-match code {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  padding: 2px 5px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.bibliography-reference-actions {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.bibliography-reference-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .spin {
@@ -7701,6 +7886,11 @@ pre {
   .budget-trend-panel {
     grid-row: auto;
   }
+
+  .recommendations-dialog-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 980px) {
@@ -7731,6 +7921,10 @@ pre {
   .composition-flow-chart {
     height: 58vh;
     min-height: 420px;
+  }
+
+  .recommendations-dialog {
+    height: calc(100dvh - 16px);
   }
 }
 
@@ -7771,8 +7965,28 @@ pre {
     margin-left: 0;
   }
 
+  .recommendations-head,
+  .recommendations-download-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recommendation-actions {
+    justify-content: flex-start;
+  }
+
+  .bibliography-reference-row {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .bibliography-reference-status {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
   .library-grid,
   .domains-workbench,
+  .domain-stat-grid,
   .domain-edit-grid,
   .project-workbench,
   .workbench.split,

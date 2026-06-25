@@ -46,6 +46,7 @@ class DomainCreate(BaseModel):
     parent_id: str | None = None
     description: str | None = None
     color: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
 
 
 class DomainPatch(BaseModel):
@@ -54,6 +55,7 @@ class DomainPatch(BaseModel):
     description: str | None = None
     color: str | None = None
     sort_order: int | None = None
+    tag_ids: list[str] | None = None
 
 
 class DomainReorderItem(BaseModel):
@@ -66,6 +68,18 @@ class DomainReorder(BaseModel):
     domains: list[DomainReorderItem] = Field(min_length=1)
 
 
+class TagOut(ApiModel):
+    id: str
+    name: str
+    kind: str
+    color: str | None = None
+    status: str = "canonical"
+    definition: str | None = None
+    use_guidance: str | None = None
+    avoid_guidance: str | None = None
+    document_count: int = 0
+
+
 class DomainOut(ApiModel):
     id: str
     parent_id: str | None = None
@@ -74,6 +88,7 @@ class DomainOut(ApiModel):
     color: str | None = None
     sort_order: int
     document_count: int = 0
+    tags: list[TagOut] = Field(default_factory=list)
 
 
 class DomainDeleteOut(BaseModel):
@@ -101,18 +116,6 @@ class TagMerge(BaseModel):
     source_tag_ids: list[str] = Field(min_length=1)
     target_tag_id: str | None = None
     target_name: str | None = None
-
-
-class TagOut(ApiModel):
-    id: str
-    name: str
-    kind: str
-    color: str | None = None
-    status: str = "canonical"
-    definition: str | None = None
-    use_guidance: str | None = None
-    avoid_guidance: str | None = None
-    document_count: int = 0
 
 
 class TagOperationOut(BaseModel):

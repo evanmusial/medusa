@@ -331,6 +331,7 @@ def domain_out(domain: Domain, db: Session | None = None) -> DomainOut:
         document_count=domain_document_count(db, domain.id)
         if db
         else len([document for document in domain.documents if document_is_library_visible(document)]),
+        tags=[tag_out(tag, db) for tag in sorted(domain.tags, key=lambda item: item.name.lower())] if db else [],
     )
 
 
@@ -636,6 +637,17 @@ def validate_domain_parent(db: Session, *, domain_id: str | None, parent_id: str
         if current and current.deleted_at:
             current = None
     return parent_id
+
+
+def tags_for_ids(db: Session, tag_ids: list[str]) -> list[Tag]:
+    unique_ids = unique_tag_ids([tag_id for tag_id in tag_ids if tag_id])
+    if not unique_ids:
+        return []
+    tags = db.query(Tag).filter(Tag.id.in_(unique_ids)).order_by(func.lower(Tag.name), Tag.name).all()
+    if len(tags) != len(unique_ids):
+        raise HTTPException(status_code=404, detail="One or more tags were not found")
+    by_id = {tag.id: tag for tag in tags}
+    return [by_id[tag_id] for tag_id in unique_ids if tag_id in by_id]
 
 
 def active_documents_for_domain_ids(db: Session, domain_ids: list[str]) -> list[Document]:
@@ -1366,7 +1378,13 @@ def read_openai_usage(
 
 @app.get("/api/domains", response_model=list[DomainOut])
 def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[DomainOut]:
-    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(func.lower(Domain.name), Domain.name, Domain.sort_order).all()
+    domains = (
+        db.query(Domain)
+        .filter(Domain.deleted_at.is_(None))
+        .options(selectinload(Domain.tags))
+        .order_by(func.lower(Domain.name), Domain.name, Domain.sort_order)
+        .all()
+    )
     return [domain_out(domain, db) for domain in domains]
 
 
@@ -1394,6 +1412,7 @@ def create_domain(
         description=(payload.description or "").strip() or None,
         color=normalize_domain_color(payload.color),
         sort_order=next_order,
+        tags=tags_for_ids(db, payload.tag_ids),
     )
     db.add(domain)
     db.commit()
@@ -1436,6 +1455,9 @@ def update_domain(
 
     if "sort_order" in payload.model_fields_set and payload.sort_order is not None:
         domain.sort_order = payload.sort_order
+
+    if "tag_ids" in payload.model_fields_set:
+        domain.tags = tags_for_ids(db, payload.tag_ids or [])
 
     db.flush()
     if domain.name != old_name:
@@ -1497,7 +1519,13 @@ def reorder_domains(
         domain.sort_order = item.sort_order
 
     db.commit()
-    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).order_by(func.lower(Domain.name), Domain.name, Domain.sort_order).all()
+    domains = (
+        db.query(Domain)
+        .filter(Domain.deleted_at.is_(None))
+        .options(selectinload(Domain.tags))
+        .order_by(func.lower(Domain.name), Domain.name, Domain.sort_order)
+        .all()
+    )
     return [domain_out(domain, db) for domain in domains]
 
 
@@ -2610,8 +2638,8 @@ def refresh_recommendations(
         raise HTTPException(status_code=404, detail="Document not found")
     if document.processing_status != "ready":
         raise HTTPException(status_code=409, detail="Recommendations are available after processing is complete")
-    if not document.doi:
-        raise HTTPException(status_code=400, detail="A DOI is required to refresh related-paper recommendations")
+    if not document.doi and not (document.bibliography or "").strip():
+        raise HTTPException(status_code=400, detail="A DOI or extracted bibliography is required to refresh related-paper recommendations")
     rows = refresh_document_recommendations(db, document)
     db.commit()
     return DocumentRecommendationRefreshOut(

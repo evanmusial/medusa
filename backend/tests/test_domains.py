@@ -121,6 +121,47 @@ def test_list_domains_returns_alphabetical_names_before_manual_sort_order(monkey
     assert [domain.name for domain in result] == ["Alpha", "Alpha Child", "Beta Child", "Zeta"]
 
 
+def test_domain_tags_create_patch_and_clear(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import create_domain, update_domain
+    from app.models import Domain, Tag
+    from app.schemas import DomainCreate, DomainPatch
+
+    Session = make_session()
+    with Session() as db:
+        methods = Tag(name="Methods")
+        policy = Tag(name="Policy")
+        db.add_all([methods, policy])
+        db.commit()
+
+        created = create_domain(
+            DomainCreate(
+                name="Responsible AI",
+                description="Governance and evaluation work.",
+                tag_ids=[policy.id, methods.id, policy.id],
+            ),
+            object(),
+            db,
+        )
+
+        domain = db.get(Domain, created.id)
+        assert created.description == "Governance and evaluation work."
+        assert [tag.name for tag in created.tags] == ["Methods", "Policy"]
+        assert sorted(tag.name for tag in domain.tags) == ["Methods", "Policy"]
+
+        updated = update_domain(domain.id, DomainPatch(tag_ids=[methods.id]), object(), db)
+        db.refresh(domain)
+        assert [tag.name for tag in updated.tags] == ["Methods"]
+        assert [tag.name for tag in domain.tags] == ["Methods"]
+
+        cleared = update_domain(domain.id, DomainPatch(tag_ids=[]), object(), db)
+        db.refresh(domain)
+        assert cleared.tags == []
+        assert domain.tags == []
+
+
 def test_domain_reorder_moves_domains_and_rejects_parent_cycles(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

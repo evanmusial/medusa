@@ -67,6 +67,14 @@ document_tags = Table(
 )
 
 
+domain_tags = Table(
+    "domain_tags",
+    Base.metadata,
+    Column("domain_id", String(36), ForeignKey("domains.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", String(36), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -245,6 +253,7 @@ class Domain(Base, TimestampMixin, SoftDeleteMixin):
     parent: Mapped["Domain | None"] = relationship(remote_side=[id], back_populates="children")
     children: Mapped[list["Domain"]] = relationship(back_populates="parent")
     documents: Mapped[list["Document"]] = relationship(secondary=document_domains, back_populates="domains")
+    tags: Mapped[list["Tag"]] = relationship(secondary=domain_tags, back_populates="domains")
 
     __table_args__ = (UniqueConstraint("parent_id", "name", name="uq_domains_parent_name"),)
 
@@ -263,6 +272,7 @@ class Tag(Base, TimestampMixin):
     governance_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
 
     documents: Mapped[list["Document"]] = relationship(secondary=document_tags, back_populates="tags")
+    domains: Mapped[list[Domain]] = relationship(secondary=domain_tags, back_populates="tags")
     aliases: Mapped[list["TagAlias"]] = relationship(back_populates="target_tag", cascade="all, delete-orphan")
     outgoing_relationships: Mapped[list["TagRelationship"]] = relationship(
         back_populates="source_tag",

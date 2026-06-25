@@ -139,10 +139,10 @@ export const api = {
     return request<AppPreferences>("/api/preferences/google-service-account", { method: "POST", body: form });
   },
   domains: () => request<Domain[]>("/api/domains"),
-  createDomain: (name: string, parentId?: string | null, color?: string | null, description?: string | null) =>
+  createDomain: (name: string, parentId?: string | null, color?: string | null, description?: string | null, tagIds: string[] = []) =>
     request<Domain>("/api/domains", {
       method: "POST",
-      body: JSON.stringify({ name, parent_id: parentId || null, color: color || null, description: description || null }),
+      body: JSON.stringify({ name, parent_id: parentId || null, color: color || null, description: description || null, tag_ids: tagIds }),
     }),
   updateDomain: (id: string, body: DomainUpdatePayload) =>
     request<Domain>(`/api/domains/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

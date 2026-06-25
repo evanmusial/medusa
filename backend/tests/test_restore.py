@@ -43,9 +43,9 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
     SourceSession = make_session()
     with SourceSession() as source:
         user = User(email="admin@medusa.local", display_name="Admin", password_hash="not-in-export")
-        parent = Domain(name="Philosophy")
-        child = Domain(name="Cybernetics", parent=parent)
         tag = Tag(name="systems", kind="tag")
+        parent = Domain(name="Philosophy")
+        child = Domain(name="Cybernetics", parent=parent, tags=[tag])
         attribute = AttributeDefinition(name="Aspect summary", value_type="markdown")
         source.add_all([user, parent, child, tag, attribute])
         source.flush()
@@ -121,6 +121,7 @@ def test_restore_export_round_trips_core_metadata(monkeypatch, tmp_path):
         assert restored.title == "Restorable Paper"
         assert restored.domains[0].name == "Cybernetics"
         assert restored.domains[0].parent.name == "Philosophy"
+        assert restored.domains[0].tags[0].name == "systems"
         assert restored.tags[0].name == "systems"
         assert restored_alias.alias_name == "system theory"
         assert restored_alias.target_tag_id == restored.tags[0].id
