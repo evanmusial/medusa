@@ -183,6 +183,7 @@ export type BackupEstimate = {
 
 export type DatabaseMaintenanceStatus = {
   import_cache_count: number;
+  document_hash_missing_count: number;
   hidden_project_item_count: number;
   terminal_import_job_count: number;
   orphan_import_job_count: number;
@@ -804,12 +805,15 @@ export type DocumentSummary = {
   metadata_confidence?: number | null;
   original_filename: string;
   checksum_sha256: string;
+  checksum_md5?: string | null;
   page_count: number;
   processing_status: string;
   read_status: string;
   priority: string;
   created_at: string;
+  updated_at: string;
   duplicate_count: number;
+  duplicate_reasons: string[];
   tags: Tag[];
   domains: Domain[];
   projects?: Project[];
@@ -1020,6 +1024,8 @@ export type ImportQueueActionResult = {
   deleted_documents?: number;
   deleted_cache_files?: number;
   deleted_original_objects?: number;
+  hashed_documents?: number;
+  hash_failed_documents?: number;
 };
 
 export type DuplicateImportStrategy = "skip" | "overwrite" | "import_anyway";
@@ -1030,21 +1036,67 @@ export type ImportDuplicateDocument = {
   original_filename: string;
   created_at: string;
   processing_status: string;
+  match_reasons: string[];
+  match_basis?: string | null;
+  match_score: number;
 };
 
 export type ImportDuplicateFile = {
   filename: string;
   checksum_sha256: string;
+  checksum_md5?: string | null;
   file_size_bytes: number;
   source_kind: string;
   stored_filename?: string | null;
+  detected_title?: string | null;
   existing_documents: ImportDuplicateDocument[];
   duplicate_in_upload: boolean;
+  duplicate_reasons: string[];
 };
 
 export type ImportDuplicateCheck = {
   files: ImportDuplicateFile[];
   duplicate_file_count: number;
+};
+
+export type DuplicateDocument = {
+  id: string;
+  title: string;
+  authors: Array<Record<string, string | null>>;
+  publication_year?: number | null;
+  journal?: string | null;
+  doi?: string | null;
+  original_filename: string;
+  checksum_sha256: string;
+  checksum_md5?: string | null;
+  page_count: number;
+  processing_status: string;
+  citation_status: string;
+  created_at: string;
+  updated_at: string;
+  version_count: number;
+  latest_version_at?: string | null;
+};
+
+export type DuplicatePair = {
+  id: string;
+  left: DuplicateDocument;
+  right: DuplicateDocument;
+  match_reasons: string[];
+  match_basis: string;
+  match_score: number;
+};
+
+export type DuplicateScan = {
+  pairs: DuplicatePair[];
+  pair_count: number;
+  document_count: number;
+};
+
+export type DuplicateResolveResult = {
+  keep_document_id: string;
+  duplicate_document_id: string;
+  status: string;
 };
 
 export type CitationCandidate = {

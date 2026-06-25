@@ -81,6 +81,11 @@ from app.schemas import (
     DatabaseMaintenanceResultOut,
     DatabaseMaintenanceStatusOut,
     DocumentDetail,
+    DuplicateDocumentOut,
+    DuplicatePairOut,
+    DuplicateResolveCreate,
+    DuplicateResolveOut,
+    DuplicateScanOut,
     DocumentCompositionOut,
     DocumentCacheStatusOut,
     DocumentPatch,
@@ -187,10 +192,22 @@ from app.services.document_visibility import (
     filter_library_visible_documents,
     library_visible_document_filter,
 )
+from app.services.duplicates import (
+    DuplicateMatch,
+    active_duplicate_matches_for_profile,
+    document_duplicate_profile,
+    duplicate_document_id_set,
+    duplicate_document_version_stats,
+    duplicate_match_reasons,
+    duplicate_match_score,
+    duplicate_matches_by_document,
+    import_duplicate_profile,
+    match_basis,
+)
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.haproxy_stats import haproxy_stats_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
-from app.services.import_sources import ImportSourceError, prepare_import_source, probe_import_source
+from app.services.import_sources import ImportSourceError, prepare_import_source
 from app.services.ai import get_ai_service
 from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage
 from app.services.processing import (
@@ -273,10 +290,12 @@ IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
 DATABASE_MAINTENANCE_LABELS = {
+    "backfill_document_md5": "Backfill Document Hashes",
     "compact_database": "Compact Database",
     "optimize_database": "Optimize Database",
 }
 DATABASE_MAINTENANCE_DETAILS = {
+    "backfill_document_md5": "Hydrating originals into the document cache and writing missing MD5 hashes.",
     "compact_database": "Compacting database with PostgreSQL VACUUM FULL and ANALYZE.",
     "optimize_database": "Refreshing PostgreSQL planner statistics with ANALYZE.",
 }
@@ -530,68 +549,111 @@ def normalize_document_title_spacing(value: str | None) -> str:
     return " ".join((value or "").split())
 
 
-def duplicate_checksum_select():
-    return (
-        select(Document.checksum_sha256)
-        .where(library_visible_document_filter())
-        .group_by(Document.checksum_sha256)
-        .having(func.count(Document.id) > 1)
-    )
+def duplicate_reason_labels(matches: list[DuplicateMatch]) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        for reason in match.match_reasons:
+            label = reason.replace("_", " ")
+            if label not in seen:
+                seen.add(label)
+                labels.append(label)
+    return labels
 
 
-def duplicate_count_by_checksum(db: Session, checksums: list[str]) -> dict[str, int]:
-    if not checksums:
-        return {}
-    rows = (
-        db.query(Document.checksum_sha256, func.count(Document.id))
-        .filter(library_visible_document_filter(), Document.checksum_sha256.in_(checksums))
-        .group_by(Document.checksum_sha256)
-        .all()
-    )
-    return {checksum: max(0, int(count) - 1) for checksum, count in rows}
+def duplicate_summary_by_document(db: Session) -> dict[str, dict[str, Any]]:
+    matches = duplicate_matches_by_document(db)
+    return {
+        document_id: {
+            "duplicate_count": len(document_matches),
+            "duplicate_document_ids": [match.document.id for match in document_matches],
+            "duplicate_reasons": duplicate_reason_labels(document_matches),
+        }
+        for document_id, document_matches in matches.items()
+    }
 
 
-def active_documents_for_checksum(db: Session, checksum: str) -> list[Document]:
-    return (
-        db.query(Document)
-        .filter(
-            Document.deleted_at.is_(None),
-            Document.processing_status.in_(IMPORT_DUPLICATE_DOCUMENT_STATUSES),
-            Document.checksum_sha256 == checksum,
-        )
-        .order_by(Document.created_at.desc(), Document.id)
-        .all()
-    )
-
-
-def visible_documents_for_checksum(db: Session, checksum: str) -> list[Document]:
-    return (
-        db.query(Document)
-        .filter(library_visible_document_filter(), Document.checksum_sha256 == checksum)
-        .order_by(Document.created_at.desc(), Document.id)
-        .all()
-    )
-
-
-def duplicate_document_out(document: Document) -> ImportDuplicateDocumentOut:
+def duplicate_document_out(document: Document, match: DuplicateMatch | None = None) -> ImportDuplicateDocumentOut:
     return ImportDuplicateDocumentOut(
         id=document.id,
         title=document.title,
         original_filename=document.original_filename,
         created_at=document.created_at,
         processing_status=document.processing_status,
+        match_reasons=match.match_reasons if match else [],
+        match_basis=match.match_basis if match else None,
+        match_score=match.match_score if match else 0,
     )
 
 
-def document_summary_out(document: Document, duplicate_count: int = 0, projects: list[ProjectOut] | None = None) -> DocumentSummary:
-    return DocumentSummary.model_validate(document).model_copy(update={"duplicate_count": duplicate_count, "projects": projects or []})
+def prepared_import_duplicate_profile(prepared) -> Any:
+    return import_duplicate_profile(
+        title=prepared.title,
+        original_filename=prepared.stored_filename,
+        source_checksum_sha256=prepared.source_checksum_sha256,
+        stored_checksum_sha256=prepared.stored_checksum_sha256,
+        source_checksum_md5=prepared.source_checksum_md5,
+        stored_checksum_md5=prepared.stored_checksum_md5,
+        page_count=prepared.stored_page_count,
+    )
+
+
+def document_summary_out(
+    document: Document,
+    duplicate_count: int = 0,
+    projects: list[ProjectOut] | None = None,
+    duplicate_reasons: list[str] | None = None,
+) -> DocumentSummary:
+    return DocumentSummary.model_validate(document).model_copy(
+        update={"duplicate_count": duplicate_count, "duplicate_reasons": duplicate_reasons or [], "projects": projects or []}
+    )
 
 
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
-    duplicate_ids = [item.id for item in visible_documents_for_checksum(db, document.checksum_sha256) if item.id != document.id]
+    duplicate_summary = duplicate_summary_by_document(db).get(document.id, {})
+    duplicate_ids = duplicate_summary.get("duplicate_document_ids", [])
     projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
     return DocumentDetail.model_validate(document).model_copy(
-        update={"duplicate_count": len(duplicate_ids), "duplicate_document_ids": duplicate_ids, "projects": projects}
+        update={
+            "duplicate_count": len(duplicate_ids),
+            "duplicate_reasons": duplicate_summary.get("duplicate_reasons", []),
+            "duplicate_document_ids": duplicate_ids,
+            "projects": projects,
+        }
+    )
+
+
+def duplicate_document_review_out(document: Document, version_stats: dict[str, Any] | None = None) -> DuplicateDocumentOut:
+    stats = version_stats or {}
+    return DuplicateDocumentOut(
+        id=document.id,
+        title=document.title,
+        authors=document.authors or [],
+        publication_year=document.publication_year,
+        journal=document.journal,
+        doi=document.doi,
+        original_filename=document.original_filename,
+        checksum_sha256=document.checksum_sha256,
+        checksum_md5=document.checksum_md5,
+        page_count=document.page_count,
+        processing_status=document.processing_status,
+        citation_status=document.citation_status,
+        created_at=document.created_at,
+        updated_at=document.updated_at,
+        version_count=int(stats.get("version_count") or 0),
+        latest_version_at=stats.get("latest_version_at"),
+    )
+
+
+def duplicate_pair_out(left: Document, right: Document, match: DuplicateMatch, stats: dict[str, dict[str, Any]]) -> DuplicatePairOut:
+    ordered = sorted([left, right], key=lambda document: (document.title.lower(), document.created_at, document.id))
+    return DuplicatePairOut(
+        id=f"{ordered[0].id}:{ordered[1].id}",
+        left=duplicate_document_review_out(ordered[0], stats.get(ordered[0].id)),
+        right=duplicate_document_review_out(ordered[1], stats.get(ordered[1].id)),
+        match_reasons=match.match_reasons,
+        match_basis=match.match_basis,
+        match_score=match.match_score,
     )
 
 
@@ -1376,6 +1438,17 @@ def clear_import_cache(
     db: Annotated[Session, Depends(get_db)],
 ) -> DatabaseMaintenanceResultOut:
     return clear_hidden_import_cache(db)
+
+
+@app.post("/api/utilities/document-hashes/backfill", response_model=DatabaseMaintenanceResultOut)
+def backfill_document_hashes(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DatabaseMaintenanceResultOut:
+    try:
+        return run_document_md5_backfill(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/utilities/container/status", response_model=ContainerFootprintStatusOut)
@@ -2557,19 +2630,27 @@ def list_documents(
         citation_status=citation_status,
     )
     if duplicate_status:
-        duplicate_checksums = duplicate_checksum_select()
+        duplicate_ids = duplicate_document_id_set(db)
         if duplicate_status == "duplicates":
-            query = query.filter(Document.checksum_sha256.in_(duplicate_checksums))
+            if not duplicate_ids:
+                return []
+            query = query.filter(Document.id.in_(duplicate_ids))
         elif duplicate_status == "unique":
-            query = query.filter(Document.checksum_sha256.notin_(duplicate_checksums))
+            if duplicate_ids:
+                query = query.filter(Document.id.notin_(duplicate_ids))
     query = query.order_by(None).order_by(*document_title_order_columns(db))
     if limit is not None:
         query = query.limit(limit)
     documents = query.all()
-    duplicate_counts = duplicate_count_by_checksum(db, [document.checksum_sha256 for document in documents])
+    duplicate_summary = duplicate_summary_by_document(db)
     project_map = project_summaries_for_documents(db, [document.id for document in documents])
     return [
-        document_summary_out(document, duplicate_counts.get(document.checksum_sha256, 0), project_map.get(document.id, []))
+        document_summary_out(
+            document,
+            duplicate_summary.get(document.id, {}).get("duplicate_count", 0),
+            project_map.get(document.id, []),
+            duplicate_summary.get(document.id, {}).get("duplicate_reasons", []),
+        )
         for document in documents
     ]
 
@@ -2584,6 +2665,110 @@ def get_document(
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     return document_detail_out(document, db)
+
+
+@app.get("/api/documents/duplicates/scan", response_model=DuplicateScanOut)
+def scan_document_duplicates(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DuplicateScanOut:
+    documents = filter_library_visible_documents(db.query(Document)).order_by(*document_title_order_columns(db)).all()
+    matches = duplicate_matches_by_document(db, documents=documents)
+    stats = duplicate_document_version_stats(db, [document.id for document in documents])
+    by_id = {document.id: document for document in documents}
+    pairs: list[DuplicatePairOut] = []
+    seen: set[tuple[str, str]] = set()
+    for document in documents:
+        for match in matches.get(document.id, []):
+            pair_key = tuple(sorted([document.id, match.document.id]))
+            if pair_key in seen:
+                continue
+            seen.add(pair_key)
+            pairs.append(duplicate_pair_out(document, by_id[match.document.id], match, stats))
+    pairs.sort(key=lambda pair: (-pair.match_score, pair.left.title.lower(), pair.right.title.lower(), pair.id))
+    return DuplicateScanOut(pairs=pairs, pair_count=len(pairs), document_count=len({item for pair in pairs for item in [pair.left.id, pair.right.id]}))
+
+
+@app.post("/api/documents/duplicates/resolve", response_model=DuplicateResolveOut)
+def resolve_document_duplicate(
+    payload: DuplicateResolveCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DuplicateResolveOut:
+    if payload.keep_document_id == payload.duplicate_document_id:
+        raise HTTPException(status_code=400, detail="Choose two different documents")
+    keep_document = db.get(Document, payload.keep_document_id)
+    duplicate_document = db.get(Document, payload.duplicate_document_id)
+    if not document_is_library_visible(keep_document) or not document_is_library_visible(duplicate_document):
+        raise HTTPException(status_code=404, detail="Duplicate pair not found")
+    reasons = duplicate_match_reasons(document_duplicate_profile(keep_document), document_duplicate_profile(duplicate_document))
+    if duplicate_match_score(reasons) <= 0:
+        raise HTTPException(status_code=400, detail="Documents no longer match as duplicates")
+    resolved_at = utc_now()
+    basis = match_basis(reasons)
+    keep_before = document_correction_snapshot(keep_document)
+    duplicate_before = document_correction_snapshot(duplicate_document)
+    keep_evidence = dict(keep_document.metadata_evidence or {})
+    kept_resolutions = list(keep_evidence.get("duplicate_resolutions") or [])
+    kept_resolutions.append(
+        {
+            "status": "kept",
+            "duplicate_document_id": duplicate_document.id,
+            "match_reasons": reasons,
+            "match_basis": basis,
+            "resolved_at": resolved_at.isoformat(),
+        }
+    )
+    keep_evidence["duplicate_resolutions"] = kept_resolutions
+    keep_document.metadata_evidence = keep_evidence
+    duplicate_evidence = dict(duplicate_document.metadata_evidence or {})
+    duplicate_evidence["duplicate_resolution"] = {
+        "status": "resolved_duplicate",
+        "kept_document_id": keep_document.id,
+        "match_reasons": reasons,
+        "match_basis": basis,
+        "resolved_at": resolved_at.isoformat(),
+    }
+    duplicate_document.metadata_evidence = duplicate_evidence
+    duplicate_document.deleted_at = resolved_at
+    db.flush()
+    record_document_version(
+        db,
+        document=keep_document,
+        change_note="Duplicate resolution kept",
+        changed_fields={"metadata_evidence"},
+        before=keep_before,
+        after=document_correction_snapshot(keep_document),
+        extra={"operation": "duplicate_resolution", "duplicate_document_id": duplicate_document.id, "match_reasons": reasons},
+    )
+    record_document_version(
+        db,
+        document=duplicate_document,
+        change_note="Duplicate resolution removed",
+        changed_fields={"metadata_evidence", "deleted_at"},
+        before=duplicate_before,
+        after=document_correction_snapshot(duplicate_document),
+        extra={
+            "operation": "duplicate_resolution",
+            "kept_document_id": keep_document.id,
+            "match_reasons": reasons,
+            "deleted_at": resolved_at.isoformat(),
+        },
+    )
+    record_manual_edit(
+        db,
+        document=keep_document,
+        message="Duplicate resolution kept",
+        metadata={"duplicate_document_id": duplicate_document.id, "match_reasons": reasons, "match_basis": basis},
+    )
+    record_manual_edit(
+        db,
+        document=duplicate_document,
+        message="Duplicate resolution removed",
+        metadata={"kept_document_id": keep_document.id, "match_reasons": reasons, "match_basis": basis},
+    )
+    db.commit()
+    return DuplicateResolveOut(keep_document_id=keep_document.id, duplicate_document_id=duplicate_document.id)
 
 
 @app.get("/api/documents/{document_id}/composition", response_model=DocumentCompositionOut)
@@ -3015,6 +3200,17 @@ async def upload_doi_stash_pdf(
         raise HTTPException(status_code=400, detail="Upload a PDF file.")
 
     checksum = hashlib.sha256(data).hexdigest()
+    checksum_md5 = hashlib.md5(data, usedforsecurity=False).hexdigest()
+    title = stash.title or Path(filename).stem.replace("_", " ").replace("-", " ")
+    duplicate_profile = import_duplicate_profile(
+        title=title,
+        original_filename=filename,
+        source_checksum_sha256=checksum,
+        stored_checksum_sha256=checksum,
+        source_checksum_md5=checksum_md5,
+        stored_checksum_md5=checksum_md5,
+        doi=stash.doi,
+    )
     batch = ImportBatch(
         label=f"Stash: {stash.doi}",
         total_files=1,
@@ -3027,17 +3223,17 @@ async def upload_doi_stash_pdf(
     db.add(batch)
     db.flush()
 
-    existing_documents = active_documents_for_checksum(db, checksum)
-    if existing_documents:
+    existing_matches = active_duplicate_matches_for_profile(db, duplicate_profile, statuses=IMPORT_DUPLICATE_DOCUMENT_STATUSES)
+    if existing_matches:
         job = create_skipped_duplicate_job(
             db,
             batch=batch,
-            document=existing_documents[0],
+            document=existing_matches[0].document,
             filename=filename,
             checksum=checksum,
-            reason="matched_existing_document",
+            reason=f"matched_existing_document:{existing_matches[0].match_basis}",
         )
-        stash.imported_document_id = existing_documents[0].id
+        stash.imported_document_id = existing_matches[0].document.id
         stash.import_job_id = job.id
         stash.status = "imported"
         stash.uploaded_filename = filename
@@ -3048,10 +3244,11 @@ async def upload_doi_stash_pdf(
         return doi_stash_out(stash)
 
     document = Document(
-        title=stash.title or Path(filename).stem.replace("_", " ").replace("-", " "),
+        title=title,
         original_filename=filename,
         content_type=file.content_type or "application/pdf",
         checksum_sha256=checksum,
+        checksum_md5=checksum_md5,
         doi=stash.doi,
         source_url=stash.source_url or doi_url(stash.doi),
         priority="normal",
@@ -3073,6 +3270,7 @@ async def upload_doi_stash_pdf(
         "file_size_bytes": len(data),
         "local_cache_path": str(cache_path),
         "document_cache_path": str(cache_path),
+        "hashes": {"source_sha256": checksum, "source_md5": checksum_md5, "stored_sha256": checksum, "stored_md5": checksum_md5},
         "doi_stash": {
             "id": stash.id,
             "doi": stash.doi,
@@ -4062,30 +4260,34 @@ def create_skipped_duplicate_job(
 
 
 async def inspect_import_duplicates(files: list[UploadFile], db: Session) -> ImportDuplicateCheckOut:
-    seen_checksums: set[str] = set()
+    seen_profiles: list[Any] = []
     rows: list[ImportDuplicateFileOut] = []
     duplicate_count = 0
     for upload in files:
         data = await upload.read()
         try:
-            source = probe_import_source(data, upload.filename, upload.content_type)
+            prepared = prepare_import_source(data, upload.filename, upload.content_type)
         except ImportSourceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        checksum = source.checksum_sha256
-        existing = active_documents_for_checksum(db, checksum)
-        duplicate_in_upload = checksum in seen_checksums
-        seen_checksums.add(checksum)
-        if existing or duplicate_in_upload:
+        profile = prepared_import_duplicate_profile(prepared)
+        matches = active_duplicate_matches_for_profile(db, profile, statuses=IMPORT_DUPLICATE_DOCUMENT_STATUSES)
+        duplicate_in_upload = any(duplicate_match_score(duplicate_match_reasons(profile, seen_profile)) > 0 for seen_profile in seen_profiles)
+        seen_profiles.append(profile)
+        duplicate_reasons = duplicate_reason_labels(matches)
+        if matches or duplicate_in_upload:
             duplicate_count += 1
         rows.append(
             ImportDuplicateFileOut(
-                filename=source.filename,
-                checksum_sha256=checksum,
-                file_size_bytes=source.file_size_bytes,
-                source_kind=source.source_kind,
-                stored_filename=source.stored_filename,
-                existing_documents=[duplicate_document_out(document) for document in existing],
+                filename=prepared.source_filename,
+                checksum_sha256=prepared.source_checksum_sha256,
+                checksum_md5=prepared.stored_checksum_md5,
+                file_size_bytes=prepared.source_size_bytes,
+                source_kind=prepared.source_kind,
+                stored_filename=prepared.stored_filename,
+                detected_title=prepared.title,
+                existing_documents=[duplicate_document_out(match.document, match) for match in matches],
                 duplicate_in_upload=duplicate_in_upload,
+                duplicate_reasons=duplicate_reasons,
             )
         )
     return ImportDuplicateCheckOut(files=rows, duplicate_file_count=duplicate_count)
@@ -4156,38 +4358,48 @@ async def create_import_batch(
     model_preferences = get_analysis_models(db)
     estimate_rates = import_cost_exemplar_rates(db)
 
-    batch_documents_by_checksum: dict[str, Document] = {}
+    batch_documents: list[tuple[Any, Document]] = []
     for prepared in prepared_files:
         checksum = prepared.source_checksum_sha256
         filename = prepared.source_filename
         stored_filename = prepared.stored_filename
-        existing_documents = active_documents_for_checksum(db, checksum)
-        already_handled_document = batch_documents_by_checksum.get(checksum)
-        if already_handled_document and duplicate_strategy != "import_anyway":
+        profile = prepared_import_duplicate_profile(prepared)
+        existing_matches = active_duplicate_matches_for_profile(db, profile, statuses=IMPORT_DUPLICATE_DOCUMENT_STATUSES)
+        batch_match = next(
+            (
+                (existing_profile, existing_document, duplicate_match_reasons(profile, existing_profile))
+                for existing_profile, existing_document in batch_documents
+                if duplicate_match_score(duplicate_match_reasons(profile, existing_profile)) > 0
+            ),
+            None,
+        )
+        if batch_match and duplicate_strategy != "import_anyway":
+            _, already_handled_document, batch_reasons = batch_match
             create_skipped_duplicate_job(
                 db,
                 batch=batch,
                 document=already_handled_document,
                 filename=filename,
                 checksum=checksum,
-                reason="duplicate_in_current_batch",
+                reason=f"duplicate_in_current_batch:{match_basis(batch_reasons)}",
             )
             continue
 
-        if existing_documents and duplicate_strategy == "skip":
+        if existing_matches and duplicate_strategy == "skip":
             create_skipped_duplicate_job(
                 db,
                 batch=batch,
-                document=existing_documents[0],
+                document=existing_matches[0].document,
                 filename=filename,
                 checksum=checksum,
-                reason="matched_existing_document",
+                reason=f"matched_existing_document:{existing_matches[0].match_basis}",
             )
             continue
 
-        duplicate_source_ids = [document.id for document in existing_documents]
-        if existing_documents and duplicate_strategy == "overwrite":
-            document = existing_documents[0]
+        duplicate_source_ids = [match.document.id for match in existing_matches]
+        duplicate_source_reasons = {match.document.id: match.match_reasons for match in existing_matches}
+        if existing_matches and duplicate_strategy == "overwrite":
+            document = existing_matches[0].document
             reset_document_for_overwrite(db, document)
         else:
             document = Document(
@@ -4195,6 +4407,7 @@ async def create_import_batch(
                 original_filename=stored_filename,
                 content_type=prepared.stored_content_type,
                 checksum_sha256=checksum,
+                checksum_md5=prepared.stored_checksum_md5,
                 priority=priority,
                 read_status=read_status,
             )
@@ -4209,6 +4422,7 @@ async def create_import_batch(
         document.original_filename = stored_filename
         document.content_type = prepared.stored_content_type
         document.checksum_sha256 = checksum
+        document.checksum_md5 = prepared.stored_checksum_md5
         document.gcs_uri = stored.uri
         document.storage_status = stored.backend
         document.processing_status = STAGED_IMPORT_STATUS
@@ -4221,6 +4435,12 @@ async def create_import_batch(
             "local_cache_path": str(cache_path),
             "document_cache_path": str(cache_path),
             "source_import": prepared.metadata,
+            "hashes": {
+                "source_sha256": prepared.source_checksum_sha256,
+                "source_md5": prepared.source_checksum_md5,
+                "stored_sha256": prepared.stored_checksum_sha256,
+                "stored_md5": prepared.stored_checksum_md5,
+            },
             "upload_cost_estimate": {
                 "estimated_page_count": estimated_page_count or None,
                 "basis": "pending_preset_step_cost_model",
@@ -4230,6 +4450,7 @@ async def create_import_batch(
             "duplicate_import": {
                 "strategy": duplicate_strategy,
                 "matched_document_ids": duplicate_source_ids,
+                "matched_document_reasons": duplicate_source_reasons,
             },
         }
         register_document_cache(document, cache_path, source="upload")
@@ -4289,7 +4510,7 @@ async def create_import_batch(
                 },
             },
         )
-        batch_documents_by_checksum[checksum] = document
+        batch_documents.append((profile, document))
 
     refresh_import_batch_progress(db, batch)
     db.commit()
@@ -5155,8 +5376,18 @@ def database_maintenance_status_out(db: Session) -> DatabaseMaintenanceStatusOut
         else 0
     )
     orphan_import_job_count = len(terminal_orphan_import_jobs(db))
+    document_hash_missing_count = (
+        db.query(Document)
+        .filter(
+            Document.deleted_at.is_(None),
+            Document.processing_status.in_(IMPORT_DUPLICATE_DOCUMENT_STATUSES),
+            Document.checksum_md5.is_(None),
+        )
+        .count()
+    )
     return DatabaseMaintenanceStatusOut(
         import_cache_count=len(document_ids),
+        document_hash_missing_count=document_hash_missing_count,
         hidden_project_item_count=hidden_project_item_count,
         terminal_import_job_count=terminal_import_job_count,
         orphan_import_job_count=orphan_import_job_count,
@@ -5211,6 +5442,12 @@ def _set_database_maintenance_active(operation: str, *, database_size_before: in
         )
 
 
+def _update_database_maintenance_detail(detail: str) -> None:
+    with DATABASE_MAINTENANCE_LOCK:
+        if DATABASE_MAINTENANCE_STATE.get("active_operation"):
+            DATABASE_MAINTENANCE_STATE["active_operation_status_detail"] = detail
+
+
 def _finish_database_maintenance(
     operation: str,
     *,
@@ -5233,6 +5470,64 @@ def _finish_database_maintenance(
                 "last_operation_database_size_after_bytes": database_size_after,
             }
         )
+
+
+def _execute_document_md5_backfill() -> None:
+    operation = "backfill_document_md5"
+    processed = 0
+    updated = 0
+    failed = 0
+    try:
+        with session_scope() as db:
+            documents = (
+                db.query(Document)
+                .filter(
+                    Document.deleted_at.is_(None),
+                    Document.processing_status.in_(IMPORT_DUPLICATE_DOCUMENT_STATUSES),
+                )
+                .order_by(Document.created_at.asc(), Document.id.asc())
+                .all()
+            )
+            total = len(documents)
+            for document in documents:
+                processed += 1
+                if document.checksum_md5:
+                    if processed % 10 == 0 or processed == total:
+                        _update_database_maintenance_detail(f"Hashing documents: {processed}/{total} checked, {updated} updated.")
+                    continue
+                data = ensure_document_pdf_bytes(db, document, source="md5_backfill")
+                if not data:
+                    failed += 1
+                    _update_database_maintenance_detail(
+                        f"Hashing documents: {processed}/{total} checked, {updated} updated, {failed} unavailable."
+                    )
+                    continue
+                checksum_md5 = hashlib.md5(data, usedforsecurity=False).hexdigest()
+                document.checksum_md5 = checksum_md5
+                evidence = dict(document.metadata_evidence or {})
+                hashes = dict(evidence.get("hashes") or {})
+                hashes["stored_md5"] = checksum_md5
+                hashes.setdefault("stored_sha256", document.checksum_sha256)
+                hashes["backfilled_at"] = utc_now().isoformat()
+                evidence["hashes"] = hashes
+                document.metadata_evidence = evidence
+                updated += 1
+                if processed % 10 == 0 or processed == total:
+                    db.commit()
+                    _update_database_maintenance_detail(
+                        f"Hashing documents: {processed}/{total} checked, {updated} updated, {failed} unavailable."
+                    )
+            db.commit()
+        with session_scope() as db:
+            database_size_after = current_database_size_bytes(db)
+        _finish_database_maintenance(
+            operation,
+            status="complete",
+            detail=f"Document hash backfill complete: {updated} updated, {failed} unavailable.",
+            database_size_after=database_size_after,
+        )
+    except Exception as exc:
+        _finish_database_maintenance(operation, status="failed", detail="Document hash backfill failed.", error=str(exc))
 
 
 def _execute_database_sql_maintenance(operation: str, *, postgres_sql: str, sqlite_sql: str) -> None:
@@ -5274,6 +5569,27 @@ def run_database_sql_maintenance(db: Session, *, operation: str, postgres_sql: s
         operation=operation,
         status="running",
         message=f"{DATABASE_MAINTENANCE_LABELS.get(operation, operation.replace('_', ' ').title())} started.",
+        database_size_before_bytes=database_size_before,
+        database_size_after_bytes=None,
+    )
+
+
+def run_document_md5_backfill(db: Session) -> DatabaseMaintenanceResultOut:
+    db.commit()
+    database_size_before = current_database_size_bytes(db)
+    _set_database_maintenance_active("backfill_document_md5", database_size_before=database_size_before)
+    thread = threading.Thread(
+        target=_execute_document_md5_backfill,
+        daemon=True,
+        name="medusa-backfill-document-md5",
+    )
+    thread.start()
+    status = database_maintenance_status_out(db)
+    return DatabaseMaintenanceResultOut(
+        **status.model_dump(),
+        operation="backfill_document_md5",
+        status="running",
+        message="Document hash backfill started.",
         database_size_before_bytes=database_size_before,
         database_size_after_bytes=None,
     )

@@ -96,6 +96,7 @@ def build_storage_manifest(db: Session) -> dict[str, Any]:
                     "title": document.title,
                     "filename": document.original_filename,
                     "checksum_sha256": document.checksum_sha256,
+                    "checksum_md5": document.checksum_md5,
                     "content_type": document.content_type,
                     **_uri_parts(document.gcs_uri),
                 }
@@ -472,6 +473,7 @@ def _document_export(document: Document) -> dict[str, Any]:
         "original_filename": document.original_filename,
         "content_type": document.content_type,
         "checksum_sha256": document.checksum_sha256,
+        "checksum_md5": document.checksum_md5,
         "page_count": document.page_count,
         "gcs_uri": document.gcs_uri,
         "storage_status": document.storage_status,

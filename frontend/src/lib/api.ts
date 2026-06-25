@@ -27,6 +27,8 @@ import type {
   DocumentRecommendation,
   DocumentRecommendationDownload,
   DocumentRecommendationRefresh,
+  DuplicateResolveResult,
+  DuplicateScan,
   DocumentSummary,
   DocumentTextScrubPayload,
   DocumentUpdatePayload,
@@ -105,6 +107,8 @@ export const api = {
     request<DatabaseMaintenanceResult>("/api/utilities/database/optimize", { method: "POST" }),
   clearImportCache: () =>
     request<DatabaseMaintenanceResult>("/api/utilities/import-cache/clear", { method: "POST" }),
+  backfillDocumentHashes: () =>
+    request<DatabaseMaintenanceResult>("/api/utilities/document-hashes/backfill", { method: "POST" }),
   containerFootprintStatus: () => request<ContainerFootprintStatus>("/api/utilities/container/status"),
   restartContainer: () => request<ContainerRestartResult>("/api/utilities/container/restart", { method: "POST" }),
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
@@ -202,6 +206,12 @@ export const api = {
     return request<DocumentSummary[]>(`/api/documents${suffix ? `?${suffix}` : ""}`);
   },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),
+  scanDocumentDuplicates: () => request<DuplicateScan>("/api/documents/duplicates/scan"),
+  resolveDocumentDuplicate: (keepDocumentId: string, duplicateDocumentId: string) =>
+    request<DuplicateResolveResult>("/api/documents/duplicates/resolve", {
+      method: "POST",
+      body: JSON.stringify({ keep_document_id: keepDocumentId, duplicate_document_id: duplicateDocumentId }),
+    }),
   documentComposition: (id: string) => request<DocumentComposition>(`/api/documents/${id}/composition`),
   cleanupDocumentTitles: () => request<{ updated: number }>("/api/documents/title-cleanup", { method: "POST" }),
   updateDocument: (id: string, body: DocumentUpdatePayload) =>

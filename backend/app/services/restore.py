@@ -536,6 +536,7 @@ def _restore_documents(
                 title=row.get("title") or row.get("original_filename") or "Untitled Document",
                 original_filename=row.get("original_filename") or "document.pdf",
                 checksum_sha256=checksum or "",
+                checksum_md5=row.get("checksum_md5"),
                 ),
             )
             db.add(document)
@@ -1005,6 +1006,7 @@ def _assign_document_fields(document: Document, row: dict[str, Any]) -> None:
     document.original_filename = row.get("original_filename") or document.original_filename
     document.content_type = row.get("content_type") or "application/pdf"
     document.checksum_sha256 = row.get("checksum_sha256") or document.checksum_sha256
+    document.checksum_md5 = row.get("checksum_md5")
     document.page_count = row.get("page_count") or 0
     document.gcs_uri = row.get("gcs_uri")
     document.storage_status = row.get("storage_status") or "restored"

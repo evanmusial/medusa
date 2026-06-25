@@ -4073,6 +4073,174 @@ textarea {
   gap: 12px;
 }
 
+.duplicate-review-backdrop {
+  padding: clamp(8px, 1.4vw, 18px);
+}
+
+.duplicate-review-dialog {
+  width: min(1180px, calc(100vw - 28px));
+  max-height: min(860px, calc(100dvh - 28px));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.duplicate-review-head,
+.duplicate-review-head-actions,
+.duplicate-review-summary,
+.duplicate-review-footer,
+.duplicate-document-head,
+.duplicate-document-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.duplicate-review-head {
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.duplicate-review-head h2,
+.duplicate-document-head h3 {
+  margin: 0;
+  color: var(--ink);
+  letter-spacing: 0;
+}
+
+.duplicate-review-head h2 {
+  font-size: 22px;
+}
+
+.duplicate-review-head span,
+.duplicate-review-summary span,
+.duplicate-document-head span,
+.duplicate-document-facts span,
+.duplicate-document-lines span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.duplicate-review-head-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.duplicate-review-summary {
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 9px 10px;
+}
+
+.duplicate-review-summary > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.duplicate-review-summary strong,
+.duplicate-review-summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duplicate-review-body {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.duplicate-document-card {
+  min-width: 0;
+  align-self: start;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.duplicate-document-head {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.duplicate-document-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.duplicate-document-head h3 {
+  font-size: 16px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-document-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.duplicate-document-facts > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  padding: 7px;
+}
+
+.duplicate-document-facts strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.duplicate-document-lines {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.duplicate-document-lines span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duplicate-document-status {
+  flex-wrap: wrap;
+}
+
+.duplicate-review-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
 .recommendation-group {
   min-height: 0;
   display: grid;
@@ -8875,6 +9043,14 @@ button.history-row,
 
   .recommendations-dialog {
     height: calc(100dvh - 16px);
+  }
+
+  .duplicate-review-body {
+    grid-template-columns: 1fr;
+  }
+
+  .duplicate-document-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

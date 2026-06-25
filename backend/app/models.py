@@ -357,6 +357,7 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_type: Mapped[str] = mapped_column(String(160), default="application/pdf", nullable=False)
     checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    checksum_md5: Mapped[str | None] = mapped_column(String(32), index=True)
     page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     gcs_uri: Mapped[str | None] = mapped_column(Text)
     storage_status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False)

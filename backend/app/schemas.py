@@ -468,12 +468,15 @@ class DocumentSummary(ApiModel):
     metadata_confidence: float | None = None
     original_filename: str
     checksum_sha256: str
+    checksum_md5: str | None = None
     page_count: int
     processing_status: str
     read_status: str
     priority: str
     created_at: datetime
+    updated_at: datetime
     duplicate_count: int = 0
+    duplicate_reasons: list[str] = Field(default_factory=list)
     tags: list[TagOut] = Field(default_factory=list)
     domains: list[DomainOut] = Field(default_factory=list)
     projects: list[ProjectOut] = Field(default_factory=list)
@@ -617,21 +620,72 @@ class ImportDuplicateDocumentOut(BaseModel):
     original_filename: str
     created_at: datetime
     processing_status: str
+    match_reasons: list[str] = Field(default_factory=list)
+    match_basis: str | None = None
+    match_score: int = 0
 
 
 class ImportDuplicateFileOut(BaseModel):
     filename: str
     checksum_sha256: str
+    checksum_md5: str | None = None
     file_size_bytes: int
     source_kind: str = "pdf"
     stored_filename: str | None = None
+    detected_title: str | None = None
     existing_documents: list[ImportDuplicateDocumentOut] = Field(default_factory=list)
     duplicate_in_upload: bool = False
+    duplicate_reasons: list[str] = Field(default_factory=list)
 
 
 class ImportDuplicateCheckOut(BaseModel):
     files: list[ImportDuplicateFileOut]
     duplicate_file_count: int
+
+
+class DuplicateDocumentOut(BaseModel):
+    id: str
+    title: str
+    authors: list[dict[str, Any]]
+    publication_year: int | None = None
+    journal: str | None = None
+    doi: str | None = None
+    original_filename: str
+    checksum_sha256: str
+    checksum_md5: str | None = None
+    page_count: int
+    processing_status: str
+    citation_status: str
+    created_at: datetime
+    updated_at: datetime
+    version_count: int = 0
+    latest_version_at: datetime | None = None
+
+
+class DuplicatePairOut(BaseModel):
+    id: str
+    left: DuplicateDocumentOut
+    right: DuplicateDocumentOut
+    match_reasons: list[str]
+    match_basis: str
+    match_score: int
+
+
+class DuplicateScanOut(BaseModel):
+    pairs: list[DuplicatePairOut]
+    pair_count: int
+    document_count: int
+
+
+class DuplicateResolveCreate(BaseModel):
+    keep_document_id: str
+    duplicate_document_id: str
+
+
+class DuplicateResolveOut(BaseModel):
+    keep_document_id: str
+    duplicate_document_id: str
+    status: str = "resolved"
 
 
 class ProjectItemOut(ApiModel):
@@ -949,6 +1003,7 @@ class BackupArtifactOut(BaseModel):
 
 class DatabaseMaintenanceStatusOut(BaseModel):
     import_cache_count: int = 0
+    document_hash_missing_count: int = 0
     hidden_project_item_count: int = 0
     terminal_import_job_count: int = 0
     orphan_import_job_count: int = 0
@@ -979,6 +1034,8 @@ class DatabaseMaintenanceResultOut(DatabaseMaintenanceStatusOut):
     removed_orphan_import_jobs: int = 0
     deleted_cache_files: int = 0
     deleted_original_objects: int = 0
+    hashed_documents: int = 0
+    hash_failed_documents: int = 0
 
 
 class ContainerFilesystemOut(BaseModel):

@@ -117,6 +117,9 @@ import type {
   DocumentCompositionEntry,
   DocumentDetail,
   DocumentFilters,
+  DuplicateDocument,
+  DuplicatePair,
+  DuplicateScan,
   DocumentRecommendation,
   DocumentSummary,
   DocumentUpdatePayload,
@@ -716,6 +719,29 @@ function importDuplicateSourceLabel(file: ImportDuplicateFile) {
   if (file.existing_documents.some((document) => LIBRARY_DOCUMENT_STATUSES.has(document.processing_status))) return "In library";
   if (file.existing_documents.length) return "In queue";
   return "In batch";
+}
+
+function duplicateBadgeLabel(count: number) {
+  return count > 1 ? `Duplicate ${count + 1}` : "Duplicate";
+}
+
+function duplicateTooltip(reasons?: string[]) {
+  const basis = (reasons || []).filter(Boolean).join(", ");
+  return basis ? `Duplicate match basis: ${basis}.` : "This document matches another Library document.";
+}
+
+function duplicateDocumentAuthorLine(document: DuplicateDocument) {
+  const authors = document.authors || [];
+  if (!authors.length) return "Unknown author";
+  return authors
+    .slice(0, 3)
+    .map((author) => [author.given, author.family].filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function duplicateDateLabel(value?: string | null) {
+  return backupDateLabel(value) || "Unknown";
 }
 
 function actionFailureMessage(action: string, error: unknown) {
@@ -4754,6 +4780,192 @@ function LibrarySingleSelect({
   );
 }
 
+function DuplicateDocumentCard({
+  document,
+  disabled,
+  onKeep,
+}: {
+  document: DuplicateDocument;
+  disabled: boolean;
+  onKeep: () => void;
+}) {
+  const latestDataDate = document.latest_version_at || document.updated_at || document.created_at;
+  return (
+    <section className="duplicate-document-card">
+      <div className="duplicate-document-head">
+        <div>
+          <h3>{document.title}</h3>
+          <span>{duplicateDocumentAuthorLine(document)}</span>
+        </div>
+        <button
+          className="primary-button compact"
+          data-disabled-reason={disabled ? "duplicate resolution is already saving." : undefined}
+          data-tooltip="Keep this document visible and move the duplicate match out of the active Library."
+          disabled={disabled}
+          onClick={onKeep}
+          type="button"
+        >
+          <CheckCircle2 size={14} />
+          Keep this
+        </button>
+      </div>
+      <div className="duplicate-document-facts">
+        <div>
+          <span>Created</span>
+          <strong>{duplicateDateLabel(document.created_at)}</strong>
+        </div>
+        <div>
+          <span>Updated</span>
+          <strong>{duplicateDateLabel(document.updated_at)}</strong>
+        </div>
+        <div>
+          <span>Latest data</span>
+          <strong>{duplicateDateLabel(latestDataDate)}</strong>
+        </div>
+        <div>
+          <span>History</span>
+          <strong>{formatMetric(document.version_count)}</strong>
+        </div>
+        <div>
+          <span>Pages</span>
+          <strong>{document.page_count || "?"}</strong>
+        </div>
+        <div>
+          <span>Year</span>
+          <strong>{document.publication_year || "n.d."}</strong>
+        </div>
+      </div>
+      <div className="duplicate-document-lines">
+        <span>{document.journal || "No journal recorded"}</span>
+        <span>{document.doi || "No DOI recorded"}</span>
+        <span>{document.original_filename}</span>
+        <span>{document.checksum_md5 ? `MD5 ${document.checksum_md5.slice(0, 10)}` : "MD5 pending"}</span>
+        <span>SHA {document.checksum_sha256.slice(0, 10)}</span>
+      </div>
+      <div className="duplicate-document-status">
+        <StatusPill value={document.processing_status} tone={document.processing_status === "ready" ? "good" : "blue"} />
+        <StatusPill value={document.citation_status} tone={document.citation_status === "verified" ? "good" : "warn"} />
+      </div>
+    </section>
+  );
+}
+
+function DuplicateReviewDialog({
+  error,
+  loading,
+  onClose,
+  onRefresh,
+  onResolve,
+  resolvingPairId,
+  scan,
+}: {
+  error?: string | null;
+  loading: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+  onResolve: (pair: DuplicatePair, keepId: string, duplicateId: string) => void;
+  resolvingPairId?: string | null;
+  scan?: DuplicateScan;
+}) {
+  const [pairIndex, setPairIndex] = useState(0);
+  const pairs = scan?.pairs || [];
+  const pair = pairs[Math.min(pairIndex, Math.max(0, pairs.length - 1))];
+  const resolving = Boolean(pair && resolvingPairId === pair.id);
+  useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
+  useEffect(() => {
+    if (pairIndex >= pairs.length) setPairIndex(Math.max(0, pairs.length - 1));
+  }, [pairIndex, pairs.length]);
+  return (
+    <div
+      className="modal-backdrop duplicate-review-backdrop"
+      data-escape-layer="dialog"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="duplicate-review-dialog" role="dialog" aria-modal="true" aria-labelledby="duplicate-review-title">
+        <div className="duplicate-review-head">
+          <div>
+            <span>Duplicate Review</span>
+            <h2 id="duplicate-review-title">
+              {loading ? "Scanning Library" : pairs.length ? `${formatMetric(pairs.length)} duplicate pair${pairs.length === 1 ? "" : "s"}` : "No duplicates found"}
+            </h2>
+          </div>
+          <div className="duplicate-review-head-actions">
+            <button className="secondary-button compact" data-tooltip="Refresh the duplicate scan." onClick={onRefresh} type="button">
+              <RefreshCw className={loading ? "spin" : ""} size={14} />
+              Refresh
+            </button>
+            <button className="icon-button" data-tooltip="Close duplicate review." onClick={onClose} type="button">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+        {error ? <p className="form-error">{error}</p> : null}
+        {loading && !scan ? (
+          <div className="composition-empty">
+            <RefreshCw className="spin" size={22} />
+            <span>Scanning duplicates</span>
+          </div>
+        ) : !pair ? (
+          <div className="composition-empty">
+            <CheckCircle2 size={22} />
+            <strong>No duplicate pairs</strong>
+            <span>Library documents are unique by the current duplicate checks.</span>
+          </div>
+        ) : (
+          <>
+            <div className="duplicate-review-summary">
+              <div>
+                <strong>{`Pair ${pairIndex + 1} of ${pairs.length}`}</strong>
+                <span>{pair.match_basis}</span>
+              </div>
+              <StatusPill value={`${pair.match_score}% match`} tone="warn" />
+            </div>
+            <div className="duplicate-review-body">
+              <DuplicateDocumentCard
+                disabled={resolving}
+                document={pair.left}
+                onKeep={() => onResolve(pair, pair.left.id, pair.right.id)}
+              />
+              <DuplicateDocumentCard
+                disabled={resolving}
+                document={pair.right}
+                onKeep={() => onResolve(pair, pair.right.id, pair.left.id)}
+              />
+            </div>
+            <div className="duplicate-review-footer">
+              <button
+                className="secondary-button compact"
+                data-disabled-reason={pairIndex <= 0 ? "this is the first duplicate pair." : undefined}
+                data-tooltip="Show the previous duplicate pair."
+                disabled={pairIndex <= 0 || resolving}
+                onClick={() => setPairIndex((index) => Math.max(0, index - 1))}
+                type="button"
+              >
+                <ChevronLeft size={14} />
+                Previous
+              </button>
+              <button
+                className="secondary-button compact"
+                data-disabled-reason={pairIndex >= pairs.length - 1 ? "this is the last duplicate pair." : undefined}
+                data-tooltip="Show the next duplicate pair."
+                disabled={pairIndex >= pairs.length - 1 || resolving}
+                onClick={() => setPairIndex((index) => Math.min(pairs.length - 1, index + 1))}
+                type="button"
+              >
+                Next
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function LibraryView({
   documents,
   document,
@@ -4804,8 +5016,27 @@ function LibraryView({
   const [bulkProjectIds, setBulkProjectIds] = useState<string[]>([]);
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
   const [domainDropError, setDomainDropError] = useState<string | null>(null);
+  const [duplicateReviewOpen, setDuplicateReviewOpen] = useState(false);
   const queryClient = useQueryClient();
   const titleCleanupFeedback = useAsyncActionFeedback();
+  const duplicateScanFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const duplicateScan = useQuery({
+    queryKey: ["document-duplicates"],
+    queryFn: api.scanDocumentDuplicates,
+    enabled: duplicateReviewOpen,
+  });
+  const resolveDuplicate = useMutation({
+    mutationFn: ({ keepId, duplicateId }: { pair: DuplicatePair; keepId: string; duplicateId: string }) =>
+      api.resolveDocumentDuplicate(keepId, duplicateId),
+    onSuccess: () => {
+      duplicateScanFeedback.showSuccess();
+      void duplicateScan.refetch();
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => duplicateScanFeedback.showError(actionFailureMessage("Could not resolve duplicate", error)),
+  });
   const saveSearch = useMutation({
     mutationFn: () => api.createSavedSearch({ name: saveName, query, filters: cleanFilters(filters) }),
     onSuccess: () => {
@@ -4960,6 +5191,10 @@ function LibraryView({
 
   const setFilterValue = (key: keyof DocumentFilters, value: string) => {
     setFilters({ ...filters, [key]: value });
+  };
+
+  const openDuplicateReview = () => {
+    setDuplicateReviewOpen(true);
   };
 
   const applySavedSearch = (savedSearch: SavedSearch) => {
@@ -5150,6 +5385,19 @@ function LibraryView({
               Title Cleanup
             </button>
           </AsyncActionSlot>
+          <AsyncActionSlot busy={duplicateScan.isFetching || resolveDuplicate.isPending} feedback={duplicateScanFeedback.feedback} label="Duplicate scan in progress">
+            <button
+              className={asyncFeedbackClass("secondary-button", duplicateScanFeedback.feedback, duplicateScan.isFetching || resolveDuplicate.isPending)}
+              data-disabled-reason={duplicateScan.isFetching ? "duplicate scan is already running." : ""}
+              data-tooltip="Scan the Library for duplicate documents and review each pair side by side."
+              disabled={duplicateScan.isFetching}
+              onClick={openDuplicateReview}
+              type="button"
+            >
+              <Search className={duplicateScan.isFetching ? "spin" : ""} size={15} />
+              {duplicateScan.isFetching ? "Scanning" : "Find Duplicates"}
+            </button>
+          </AsyncActionSlot>
         </div>
         <div className="pane-heading tags-heading">
           <Tags size={17} />
@@ -5294,7 +5542,11 @@ function LibraryView({
               <div className="row-meta">
                 {showLibraryPriorityPill(item.priority) ? <PriorityPill value={item.priority} /> : null}
                 {!item.doi ? <MissingDoiPill /> : null}
-                {item.duplicate_count > 0 ? <StatusPill value={`Duplicate ${item.duplicate_count + 1}`} tone="warn" /> : null}
+                {item.duplicate_count > 0 ? (
+                  <span data-tooltip={duplicateTooltip(item.duplicate_reasons)}>
+                    <StatusPill value={duplicateBadgeLabel(item.duplicate_count)} tone="warn" />
+                  </span>
+                ) : null}
                 {showLibraryStatusPill(item.processing_status, "ready") ? <StatusPill value={item.processing_status} tone="blue" /> : null}
                 {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
               </div>
@@ -5325,6 +5577,17 @@ function LibraryView({
         startConcordanceRun={startConcordanceRun}
         tags={tags}
       />
+      {duplicateReviewOpen ? (
+        <DuplicateReviewDialog
+          error={duplicateScan.error instanceof Error ? duplicateScan.error.message : null}
+          loading={duplicateScan.isFetching}
+          onClose={() => setDuplicateReviewOpen(false)}
+          onRefresh={() => void duplicateScan.refetch()}
+          onResolve={(pair, keepId, duplicateId) => resolveDuplicate.mutate({ pair, keepId, duplicateId })}
+          resolvingPairId={resolveDuplicate.isPending ? resolveDuplicate.variables?.pair.id : null}
+          scan={duplicateScan.data}
+        />
+      ) : null}
     </section>
   );
 }
@@ -8776,7 +9039,11 @@ function DocumentPanelContent({
             <p>{authorLine(document)}</p>
           </div>
           <div className="detail-status">
-            {document.duplicate_count > 0 ? <StatusPill value={`Duplicate ${document.duplicate_count + 1}`} tone="warn" /> : null}
+            {document.duplicate_count > 0 ? (
+              <span data-tooltip={duplicateTooltip(document.duplicate_reasons)}>
+                <StatusPill value={duplicateBadgeLabel(document.duplicate_count)} tone="warn" />
+              </span>
+            ) : null}
             <PriorityPill value={document.priority} />
           </div>
         </div>
@@ -10225,7 +10492,7 @@ function ImportView({
         <section className="duplicate-panel">
           <div>
             <h2>Duplicate files</h2>
-            <p>{duplicateFiles.length} exact checksum {duplicateFiles.length === 1 ? "match" : "matches"} need a decision.</p>
+            <p>{duplicateFiles.length} duplicate {duplicateFiles.length === 1 ? "match" : "matches"} need a decision.</p>
           </div>
           <div className="duplicate-list">
             {duplicateFiles.slice(0, 8).map((file, index) => (
@@ -10237,6 +10504,7 @@ function ImportView({
                     {file.source_kind && file.source_kind !== "pdf" && file.stored_filename ? ` / ${file.source_kind.toUpperCase()} -> ${file.stored_filename}` : ""}
                     {file.duplicate_in_upload ? " / duplicate in this drop" : ""}
                     {file.existing_documents.length ? ` / matches ${file.existing_documents[0].title}` : ""}
+                    {file.existing_documents[0]?.match_basis ? ` / ${file.existing_documents[0].match_basis}` : ""}
                   </small>
                 </span>
                 <StatusPill value={importDuplicateSourceLabel(file)} tone="warn" />
@@ -10247,7 +10515,7 @@ function ImportView({
             <button
               className="secondary-button"
               data-disabled-reason="the duplicate decision is already being uploaded."
-              data-tooltip="Skip every exact duplicate in this upload and only import files without checksum matches."
+              data-tooltip="Skip every duplicate in this upload and only import files without duplicate matches."
               disabled={upload.isPending}
               onClick={() => applyDuplicateStrategy("skip")}
               type="button"
@@ -10269,7 +10537,7 @@ function ImportView({
             <button
               className="primary-button"
               data-disabled-reason="the duplicate decision is already being uploaded."
-              data-tooltip="Import the duplicate files anyway as separate document records with the same checksums."
+              data-tooltip="Import the duplicate files anyway as separate document records."
               disabled={upload.isPending}
               onClick={() => applyDuplicateStrategy("import_anyway")}
               type="button"
@@ -13625,6 +13893,7 @@ function UtilitiesView({
   const compactFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const optimizeFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const clearCacheFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const hashBackfillFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const restartFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const maintenanceStatus = useQuery({
     queryKey: ["database-maintenance-status"],
@@ -13731,6 +14000,14 @@ function UtilitiesView({
     },
     onError: (error) => clearCacheFeedback.showError(actionFailureMessage("Could not clear import cache", error)),
   });
+  const backfillDocumentHashes = useMutation({
+    mutationFn: api.backfillDocumentHashes,
+    onSuccess: (result) => {
+      if (result.status !== "running") hashBackfillFeedback.showSuccess();
+      refreshMaintenanceQueries(result);
+    },
+    onError: (error) => hashBackfillFeedback.showError(actionFailureMessage("Could not backfill document hashes", error)),
+  });
   const restartContainer = useMutation({
     mutationFn: api.restartContainer,
     onMutate: () => {
@@ -13771,14 +14048,17 @@ function UtilitiesView({
       const errorMessage = status.last_operation_error || message || "Database maintenance failed.";
       if (previousOperation === "compact_database") compactFeedback.showError(errorMessage);
       else if (previousOperation === "optimize_database") optimizeFeedback.showError(errorMessage);
+      else if (previousOperation === "backfill_document_md5") hashBackfillFeedback.showError(errorMessage);
     } else if (status.last_operation_status === "complete") {
       if (previousOperation === "compact_database") compactFeedback.showSuccess();
       else if (previousOperation === "optimize_database") optimizeFeedback.showSuccess();
+      else if (previousOperation === "backfill_document_md5") hashBackfillFeedback.showSuccess();
     }
     activeMaintenanceRef.current = null;
   }, [
     activeMaintenanceOperation,
     compactFeedback,
+    hashBackfillFeedback,
     optimizeFeedback,
     status?.last_operation,
     status?.last_operation_error,
@@ -13788,11 +14068,14 @@ function UtilitiesView({
   const databaseMaintenanceBusy = Boolean(activeMaintenanceOperation);
   const compactRunning = compactDatabase.isPending || activeMaintenanceOperation === "compact_database";
   const optimizeRunning = optimizeDatabase.isPending || activeMaintenanceOperation === "optimize_database";
-  const databaseBusy = compactDatabase.isPending || optimizeDatabase.isPending || clearImportCache.isPending || databaseMaintenanceBusy;
+  const hashBackfillRunning = backfillDocumentHashes.isPending || activeMaintenanceOperation === "backfill_document_md5";
+  const databaseBusy = compactDatabase.isPending || optimizeDatabase.isPending || clearImportCache.isPending || backfillDocumentHashes.isPending || databaseMaintenanceBusy;
   const restartBusy = restartContainer.isPending || restartPhase === "requesting" || restartPhase === "waiting";
   const busy = databaseBusy || restartBusy;
   const importCacheCount = status?.import_cache_count ?? 0;
+  const missingHashCount = status?.document_hash_missing_count ?? 0;
   const cacheCountLabel = maintenanceStatus.isFetching && !status ? "..." : formatMetric(importCacheCount);
+  const missingHashCountLabel = maintenanceStatus.isFetching && !status ? "..." : formatMetric(missingHashCount);
   const databaseSizeLabel = maintenanceStatus.isFetching && !status ? "..." : formatDatabaseSize(status?.database_size_bytes);
   const utilitiesRefreshing = maintenanceStatus.isFetching || containerStatus.isFetching || haproxyStatus.isFetching;
   const activeMaintenanceLabel = status?.active_operation_label || (activeMaintenanceOperation ? activeMaintenanceOperation.replaceAll("_", " ") : "");
@@ -13900,6 +14183,13 @@ function UtilitiesView({
       : importCacheCount <= 0
         ? "no hidden import cache rows are available to clear."
         : "";
+  const hashBackfillDisabledReason = hashBackfillRunning
+    ? "document hash backfill is already running."
+    : busy
+      ? "another database utility is already running."
+      : missingHashCount <= 0
+        ? "all active documents already have MD5 hashes."
+        : "";
   const restartDisabledReason = restartBusy
     ? "backend container restart is already in progress."
     : databaseBusy
@@ -13938,6 +14228,10 @@ function UtilitiesView({
             <div>
               <span>Terminal jobs</span>
               <strong>{formatMetric((status?.terminal_import_job_count || 0) + (status?.orphan_import_job_count || 0))}</strong>
+            </div>
+            <div>
+              <span>MD5 pending</span>
+              <strong>{missingHashCountLabel}</strong>
             </div>
           </div>
           <div className="database-size-readout">
@@ -14005,6 +14299,25 @@ function UtilitiesView({
                 >
                   <Trash2 className={clearImportCache.isPending ? "spin" : ""} size={16} />
                   {clearImportCache.isPending ? "Clearing" : `Clear Import Cache (${cacheCountLabel})`}
+                </button>
+              </AsyncActionSlot>
+            </div>
+            <div className="utility-action-block">
+              <div>
+                <strong>Backfill Document Hashes</strong>
+                <span>{`${missingHashCountLabel} missing MD5`}</span>
+              </div>
+              <AsyncActionSlot busy={hashBackfillRunning} feedback={hashBackfillFeedback.feedback} label="Document hash backfill in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button", hashBackfillFeedback.feedback, hashBackfillRunning)}
+                  data-disabled-reason={hashBackfillDisabledReason}
+                  data-tooltip="Hydrate missing originals into the document cache, compute MD5 hashes, and store them on document rows."
+                  disabled={busy || missingHashCount <= 0}
+                  onClick={() => backfillDocumentHashes.mutate()}
+                  type="button"
+                >
+                  <RefreshCw className={hashBackfillRunning ? "spin" : ""} size={16} />
+                  {hashBackfillRunning ? "Hashing" : "Backfill Hashes"}
                 </button>
               </AsyncActionSlot>
             </div>

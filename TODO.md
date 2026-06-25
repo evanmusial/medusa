@@ -132,6 +132,13 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Library Organization And Search
 
+- [x] Add robust duplicate detection, review, and resolution.
+  - Acceptance: Library has a left-pane duplicate scan action; duplicate matching uses SHA-256, MD5, DOI, case-insensitive normalized titles, and supporting metadata; duplicate documents are labeled in Library rows and Reader/detail mode; duplicate review shows side-by-side recency and identity details; choosing which document to keep removes the unkept duplicate from active Library/search without destroying files or history; import-time duplicate checks use the same matching basis; Utilities can backfill MD5 hashes for existing documents by hydrating originals through the document cache.
+  - Completed: `Document.checksum_md5` is persisted with an Alembic migration, imports and stash/recommendation download paths write MD5, `/api/documents/duplicates/scan` and `/api/documents/duplicates/resolve` power the Library review dialog, duplicate row/detail labels include match basis, and `/api/utilities/document-hashes/backfill` computes missing MD5 hashes from cache or durable storage.
+
+- [ ] Add optional duplicate metadata merge during resolution.
+  - Acceptance: before hiding the unkept duplicate, the review dialog can selectively copy newer DOI/citation/summary/tags/domains/notes/project links or other non-conflicting metadata onto the kept document with `DocumentVersion` history and a clear before/after preview.
+
 - [ ] Add tag Delete workflow.
   - Acceptance: Tags view can delete unused or selected tags only after confirmation, safely remove document links when requested, and record any document tag changes in `DocumentVersion` history.
   - Partial: Optimize now uses the same Settings-selected Tag Suggestions model as import tag creation plus deeper deterministic governance analysis to produce larger reviewable merge, orphaned-tag cleanup, relationship, status, and pruning plans. Broad scopes cap the LLM call to a ranked high-yield subset while deterministic cleanup still reviews the full scope. Approved merges and document-assignment pruning run through audited document-history paths; true zero-link orphan tags can be alias-merged into useful used tags or pruned entirely through a guarded approval path. The plan pane can approve individual suggestions or batch-approve all current suggestions while showing top progress feedback during plan generation and bulk apply, and reporting stale skipped actions.

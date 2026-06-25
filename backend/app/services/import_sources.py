@@ -29,6 +29,7 @@ class SourceProbe:
     source_kind: str
     filename: str
     checksum_sha256: str
+    checksum_md5: str
     file_size_bytes: int
     stored_filename: str
 
@@ -46,11 +47,13 @@ class PreparedImportSource:
     source_filename: str
     source_content_type: str
     source_checksum_sha256: str
+    source_checksum_md5: str
     source_size_bytes: int
     stored_filename: str
     stored_content_type: str
     stored_data: bytes
     stored_checksum_sha256: str
+    stored_checksum_md5: str
     stored_page_count: int | None
     title: str
     metadata: dict[str, Any]
@@ -92,6 +95,7 @@ def probe_import_source(data: bytes, filename: str | None, content_type: str | N
         source_kind=source_kind,
         filename=safe_name,
         checksum_sha256=hashlib.sha256(data).hexdigest(),
+        checksum_md5=hashlib.md5(data, usedforsecurity=False).hexdigest(),
         file_size_bytes=len(data),
         stored_filename=safe_name if source_kind == "pdf" else _pdf_filename(safe_name),
     )
@@ -100,6 +104,19 @@ def probe_import_source(data: bytes, filename: str | None, content_type: str | N
 def estimate_pdf_page_count(data: bytes) -> int | None:
     try:
         import fitz
+    except Exception:
+        return None
+
+
+def pdf_metadata_title(data: bytes) -> str | None:
+    try:
+        import fitz
+    except Exception:
+        return None
+    try:
+        with fitz.open(stream=data, filetype="pdf") as document:
+            title = _clean_text((document.metadata or {}).get("title"))
+            return title or None
     except Exception:
         return None
     try:
@@ -350,19 +367,30 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
     source_content_type = _normalized_content_type(content_type)
     if probe.source_kind == "pdf":
         page_count = estimate_pdf_page_count(data)
+        fallback_title = Path(probe.filename).stem.replace("_", " ").replace("-", " ")
+        title = pdf_metadata_title(data) or fallback_title
         return PreparedImportSource(
             source_kind="pdf",
             source_filename=probe.filename,
             source_content_type=source_content_type or PDF_CONTENT_TYPE,
             source_checksum_sha256=probe.checksum_sha256,
+            source_checksum_md5=probe.checksum_md5,
             source_size_bytes=probe.file_size_bytes,
             stored_filename=probe.stored_filename,
             stored_content_type=PDF_CONTENT_TYPE,
             stored_data=data,
             stored_checksum_sha256=probe.checksum_sha256,
+            stored_checksum_md5=probe.checksum_md5,
             stored_page_count=page_count,
-            title=Path(probe.filename).stem.replace("_", " ").replace("-", " "),
-            metadata={"kind": "pdf", "estimated_page_count": page_count},
+            title=title,
+            metadata={
+                "kind": "pdf",
+                "estimated_page_count": page_count,
+                "source_checksum_sha256": probe.checksum_sha256,
+                "source_checksum_md5": probe.checksum_md5,
+                "stored_checksum_sha256": probe.checksum_sha256,
+                "stored_checksum_md5": probe.checksum_md5,
+            },
         )
 
     text = _decode_text(data)
@@ -373,11 +401,13 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
         title, blocks, outline = _parse_plain_text(text, fallback_title)
     pdf_bytes, pages = _render_blocks_to_pdf(title, blocks)
     stored_checksum = hashlib.sha256(pdf_bytes).hexdigest()
+    stored_md5 = hashlib.md5(pdf_bytes, usedforsecurity=False).hexdigest()
     metadata = {
         "kind": probe.source_kind,
         "original_filename": probe.filename,
         "original_content_type": source_content_type or ("text/html" if probe.source_kind == "html" else "text/plain"),
         "source_checksum_sha256": probe.checksum_sha256,
+        "source_checksum_md5": probe.checksum_md5,
         "source_size_bytes": probe.file_size_bytes,
         "parsed_title": title,
         "semantic_outline": outline,
@@ -387,6 +417,7 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
             "filename": probe.stored_filename,
             "content_type": PDF_CONTENT_TYPE,
             "checksum_sha256": stored_checksum,
+            "checksum_md5": stored_md5,
             "size_bytes": len(pdf_bytes),
             "tool": "pymupdf",
         },
@@ -396,11 +427,13 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
         source_filename=probe.filename,
         source_content_type=metadata["original_content_type"],
         source_checksum_sha256=probe.checksum_sha256,
+        source_checksum_md5=probe.checksum_md5,
         source_size_bytes=probe.file_size_bytes,
         stored_filename=probe.stored_filename,
         stored_content_type=PDF_CONTENT_TYPE,
         stored_data=pdf_bytes,
         stored_checksum_sha256=stored_checksum,
+        stored_checksum_md5=stored_md5,
         stored_page_count=len(pages),
         title=title,
         metadata=metadata,

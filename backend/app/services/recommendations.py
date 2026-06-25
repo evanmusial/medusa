@@ -562,6 +562,7 @@ def queue_recommendation_imports(
         try:
             data, content_type = _download_pdf(recommendation.pdf_url)
             checksum = hashlib.sha256(data).hexdigest()
+            checksum_md5 = hashlib.md5(data, usedforsecurity=False).hexdigest()
             duplicate = _first_active_checksum_match(db, checksum)
             if skip_existing and duplicate:
                 recommendation.existing_document_id = duplicate.id
@@ -588,6 +589,7 @@ def queue_recommendation_imports(
                 original_filename=filename,
                 content_type=content_type,
                 checksum_sha256=checksum,
+                checksum_md5=checksum_md5,
                 priority=source_document.priority,
                 read_status="unread",
             )
@@ -605,6 +607,7 @@ def queue_recommendation_imports(
                 "file_size_bytes": len(data),
                 "local_cache_path": str(cache_path),
                 "document_cache_path": str(cache_path),
+                "hashes": {"stored_sha256": checksum, "stored_md5": checksum_md5},
                 "recommendation_import": {
                     "source_document_id": source_document.id,
                     "source_document_title": source_document.title,
@@ -724,6 +727,7 @@ def queue_doi_stash_open_pdf_import(db: Session, stash: DoiStash) -> dict[str, A
     try:
         data, content_type = _download_pdf(candidate.pdf_url)
         checksum = hashlib.sha256(data).hexdigest()
+        checksum_md5 = hashlib.md5(data, usedforsecurity=False).hexdigest()
         filename = _candidate_filename(candidate)
         duplicate = _first_active_checksum_match(db, checksum)
         if duplicate:
@@ -758,6 +762,7 @@ def queue_doi_stash_open_pdf_import(db: Session, stash: DoiStash) -> dict[str, A
             original_filename=filename,
             content_type=content_type,
             checksum_sha256=checksum,
+            checksum_md5=checksum_md5,
             priority=source_document.priority if source_document else "normal",
             read_status="unread",
         )
@@ -776,6 +781,7 @@ def queue_doi_stash_open_pdf_import(db: Session, stash: DoiStash) -> dict[str, A
             "file_size_bytes": len(data),
             "local_cache_path": str(cache_path),
             "document_cache_path": str(cache_path),
+            "hashes": {"stored_sha256": checksum, "stored_md5": checksum_md5},
             "doi_stash_import": {
                 "id": stash.id,
                 "doi": stash.doi,
