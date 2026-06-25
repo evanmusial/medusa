@@ -19,7 +19,7 @@
   --danger-soft: #fde7e9;
   --action-success: #0f766e;
   --action-error: #b4232d;
-  --library-row-alt: #e7eef8;
+  --library-row-alt: #f6f8fb;
   --document-title-ink: #000000;
   --shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
   font-family:
@@ -47,7 +47,7 @@
   --danger-soft: #4b1f26;
   --action-success: #168a7f;
   --action-error: #c2414b;
-  --library-row-alt: #1d2d47;
+  --library-row-alt: #1b2433;
   --document-title-ink: #ffffff;
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
 }
