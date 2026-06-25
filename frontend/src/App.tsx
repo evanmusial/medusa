@@ -4966,6 +4966,7 @@ function DocumentPanelContent({
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
   const domainAssignRef = useRef<HTMLDivElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
+  const pdfDrivenReaderPageRef = useRef(false);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [pageTextDraft, setPageTextDraft] = useState("");
   const [pageTextError, setPageTextError] = useState<string | null>(null);
@@ -5437,6 +5438,7 @@ function DocumentPanelContent({
     setPageTextSelection("");
     setVisualScanPageDraft("1");
     setPdfPreviewPageTarget(1);
+    pdfDrivenReaderPageRef.current = false;
     setVisualScanReview(null);
     setSelectedVisualScanCandidateIds(new Set());
     setDocumentConcordanceRunId(null);
@@ -5839,6 +5841,40 @@ function DocumentPanelContent({
 
   const pdfScrollElement = () => pdfPreviewScrollRef.current;
 
+  const pdfPageNode = (scroller: Element | null, pageNumber?: number | null) => {
+    if (!scroller || !pageNumber) return null;
+    return scroller.querySelector<HTMLElement>(`.pdf-page-render[data-page-number="${pageNumber}"]`);
+  };
+
+  const pdfPageScrollRange = (scroller: Element | null, pageNumber?: number | null) => {
+    const pageNode = pdfPageNode(scroller, pageNumber);
+    if (!scroller || !pageNode) return null;
+    const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const start = Math.min(maximum, Math.max(0, pageNode.offsetTop));
+    const pageBottomAtViewportBottom = pageNode.offsetTop + pageNode.offsetHeight - scroller.clientHeight;
+    const end = Math.min(maximum, Math.max(start, pageBottomAtViewportBottom));
+    return { start, end };
+  };
+
+  const scrollRatioForPdfPage = (pageNumber?: number | null) => {
+    const scroller = pdfScrollElement();
+    const range = pdfPageScrollRange(scroller, pageNumber);
+    if (!scroller || !range) return scrollRatioFor(scroller);
+    const maximum = range.end - range.start;
+    return maximum > 0 ? Math.min(1, Math.max(0, (scroller.scrollTop - range.start) / maximum)) : 0;
+  };
+
+  const applyScrollRatioToPdfPage = (pageNumber: number | undefined, ratio: number) => {
+    const scroller = pdfScrollElement();
+    const range = pdfPageScrollRange(scroller, pageNumber);
+    if (!scroller) return;
+    if (!range) {
+      applyScrollRatio(scroller, ratio);
+      return;
+    }
+    scroller.scrollTop = range.start + (range.end - range.start) * Math.min(1, Math.max(0, ratio));
+  };
+
   const clampPdfPageNumber = useCallback(
     (pageNumber: number) => Math.min(maxVisualScanPage, Math.max(1, Math.round(pageNumber))),
     [maxVisualScanPage],
@@ -5884,7 +5920,10 @@ function DocumentPanelContent({
     setVisualScanPageDraft((current) => (current === String(pageNumber) ? current : String(pageNumber)));
     if (readerMode === "compare") {
       const pageIndex = pages.findIndex((page) => page.page_number === pageNumber);
-      if (pageIndex >= 0 && pageIndex !== currentPageIndex) setReaderPageIndex(pageIndex);
+      if (pageIndex >= 0 && pageIndex !== currentPageIndex) {
+        pdfDrivenReaderPageRef.current = true;
+        setReaderPageIndex(pageIndex);
+      }
     }
   }, [currentPageIndex, currentPdfPreviewPage, pages, readerMode]);
 
@@ -5896,22 +5935,22 @@ function DocumentPanelContent({
 
   const handleCompareTextScroll = () => {
     if (readerMode !== "compare" || syncScrollSourceRef.current === "pdf") return;
-    const target = pdfScrollElement();
-    if (!target) return;
+    if (!pdfScrollElement()) return;
     syncScrollSourceRef.current = "text";
-    applyScrollRatio(target, scrollRatioFor(compareTextRef.current));
+    applyScrollRatioToPdfPage(currentPage?.page_number, scrollRatioFor(compareTextRef.current));
     releaseScrollSync();
   };
 
   const handleComparePdfScroll = useCallback(() => {
+    if (syncScrollSourceRef.current === "text") return;
     syncVisualScanPageFromPdf();
-    if (readerMode !== "compare" || syncScrollSourceRef.current === "text") return;
+    if (readerMode !== "compare") return;
     const source = pdfScrollElement();
     if (!source) return;
     syncScrollSourceRef.current = "pdf";
-    applyScrollRatio(compareTextRef.current, scrollRatioFor(source));
+    applyScrollRatio(compareTextRef.current, scrollRatioForPdfPage(currentPdfPreviewPage()));
     releaseScrollSync();
-  }, [readerMode, syncVisualScanPageFromPdf]);
+  }, [currentPdfPreviewPage, readerMode, syncVisualScanPageFromPdf]);
 
   useEffect(() => {
     if (readerMode !== "pdf" && readerMode !== "compare") return;
@@ -5928,7 +5967,12 @@ function DocumentPanelContent({
   }, [document.id, pdfPreviewPageTarget, readerMode, syncVisualScanPageFromPdf]);
 
   useEffect(() => {
-    if (readerMode === "compare" && currentPage) setPdfPreviewPageTarget(currentPage.page_number);
+    if (readerMode !== "compare" || !currentPage) return;
+    if (pdfDrivenReaderPageRef.current) {
+      pdfDrivenReaderPageRef.current = false;
+      return;
+    }
+    setPdfPreviewPageTarget(currentPage.page_number);
   }, [currentPage?.page_number, readerMode]);
 
   const copyFullText = () => {
