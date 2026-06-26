@@ -1424,6 +1424,7 @@ function ReleaseUpgradeButton({
           ? status.last_error || status.message || "automatic upgrade is not available from this Medusa runtime."
           : undefined;
   const tooltip = releaseUpgradeTooltip(status);
+  const label = status.browser_reload_recommended ? "Reload Now" : "Upgrade Now";
   return (
     <button
       className={`primary-button release-upgrade-button${busy || phaseBusy ? " pending" : ""}`}
@@ -1434,7 +1435,7 @@ function ReleaseUpgradeButton({
       type="button"
     >
       <Rocket className={busy || phaseBusy ? "spin" : ""} size={15} />
-      Upgrade Now
+      {label}
     </button>
   );
 }
