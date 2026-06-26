@@ -58,12 +58,12 @@ def parse_cpuset(value: str) -> set[int]:
 
 
 def host_ips() -> set[str]:
-    ips = {"0.0.0.0", "127.0.0.1", "::"}
+    ips = {"0.0.0.0", "127.0.0.1", "::", "::1"}
     if shutil.which("ip"):
         result = subprocess.run(["ip", "-o", "addr", "show"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         for line in result.stdout.splitlines():
             for token in line.split():
-                if "/" in token and token[0].isdigit():
+                if "/" in token and (token[0].isdigit() or ":" in token):
                     ips.add(token.split("/", 1)[0])
     if shutil.which("ifconfig"):
         result = subprocess.run(["ifconfig"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -96,22 +96,35 @@ def check_file(path: Path, label: str, *, required: bool = True) -> bool:
     return not required
 
 
-def check_port(bind_ip: str, port: int) -> bool:
+def format_host_port(bind_ip: str, port: int) -> str:
+    return f"[{bind_ip}]:{port}" if ":" in bind_ip else f"{bind_ip}:{port}"
+
+
+def normalize_host_ip(value: str | None) -> str:
+    cleaned = (value or "0.0.0.0").strip()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        return cleaned[1:-1]
+    return cleaned
+
+
+def check_port(bind_ip: str, port: int, *, label: str | None = None) -> bool:
     family = socket.AF_INET6 if ":" in bind_ip else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
+    check_label = label or f"Port {port} bind"
+    host_port = format_host_port(bind_ip, port)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((bind_ip, port))
     except OSError as exc:
-        status(f"Port {port} bind", "FAIL", f"{bind_ip}:{port} is not available: {exc}")
+        status(check_label, "FAIL", f"{host_port} is not available: {exc}")
         return False
     finally:
         sock.close()
-    status(f"Port {port} bind", "OK", f"{bind_ip}:{port} is available")
+    status(check_label, "OK", f"{host_port} is available")
     return True
 
 
-def check_haproxy_ports(repo: Path, bind_ip: str, port: int) -> bool:
+def check_haproxy_ports(repo: Path, expected_host_ips: list[str], port: int) -> bool:
     config = run_command(
         ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.server.yml", "config", "--format", "json"],
         cwd=repo,
@@ -133,14 +146,25 @@ def check_haproxy_ports(repo: Path, bind_ip: str, port: int) -> bool:
         and int(item.get("target", 0)) == port
         and item.get("protocol", "tcp") == "tcp"
     ]
-    if len(matches) != 1:
-        status("HAProxy published ports", "FAIL", f"expected 1 host binding for {port}/tcp, found {len(matches)}")
+    expected = [normalize_host_ip(item) for item in expected_host_ips]
+    actual = [normalize_host_ip(item.get("host_ip")) for item in matches]
+    if len(actual) != len(expected):
+        expected_detail = ", ".join(format_host_port(item, port) for item in expected)
+        actual_detail = ", ".join(format_host_port(item, port) for item in actual) or "none"
+        status("HAProxy published ports", "FAIL", f"expected {expected_detail}; rendered {actual_detail}")
         return False
-    host_ip = matches[0].get("host_ip") or "0.0.0.0"
-    if host_ip != bind_ip:
-        status("HAProxy published ports", "FAIL", f"renders {host_ip}:{port}, expected {bind_ip}:{port}")
+    missing = [item for item in expected if item not in actual]
+    unexpected = [item for item in actual if item not in expected]
+    if missing or unexpected:
+        detail_parts = []
+        if missing:
+            detail_parts.append("missing " + ", ".join(format_host_port(item, port) for item in missing))
+        if unexpected:
+            detail_parts.append("unexpected " + ", ".join(format_host_port(item, port) for item in unexpected))
+        status("HAProxy published ports", "FAIL", "; ".join(detail_parts))
         return False
-    status("HAProxy published ports", "OK", f"renders {host_ip}:{port}->{port}/tcp")
+    rendered = ", ".join(format_host_port(item, port) for item in actual)
+    status("HAProxy published ports", "OK", f"renders {rendered}->{port}/tcp")
     return True
 
 
@@ -158,6 +182,7 @@ def main() -> int:
     public_host = env.get("MEDUSA_PUBLIC_HOST") or os.environ.get("MEDUSA_PUBLIC_HOST") or ""
     allowed_hosts = env.get("MEDUSA_ALLOWED_HOSTS") or os.environ.get("MEDUSA_ALLOWED_HOSTS") or ""
     bind_ip = env.get("MEDUSA_BIND_IP") or os.environ.get("MEDUSA_BIND_IP") or "0.0.0.0"
+    bind_ipv6 = env.get("MEDUSA_BIND_IPV6") or os.environ.get("MEDUSA_BIND_IPV6") or "::1"
     cpuset_value = env.get("MEDUSA_CPUSET") or os.environ.get("MEDUSA_CPUSET") or "0-5"
     failures = 0
 
@@ -212,7 +237,14 @@ def main() -> int:
     else:
         failures += 1
         status("MEDUSA_BIND_IP", "FAIL", f"{bind_ip} was not found on this host")
+    if bind_ipv6 in ips:
+        status("MEDUSA_BIND_IPV6", "OK", bind_ipv6)
+    else:
+        failures += 1
+        status("MEDUSA_BIND_IPV6", "FAIL", f"{bind_ipv6} was not found on this host")
     if not check_port(bind_ip, args.port):
+        failures += 1
+    if not check_port(bind_ipv6, args.port, label=f"Port {args.port} IPv6 bind"):
         failures += 1
 
     print("")
@@ -237,7 +269,7 @@ def main() -> int:
     config = run_command(["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.server.yml", "config"], cwd=repo)
     if config.returncode == 0:
         status("Server Compose config", "OK", "base plus server override renders")
-        if not check_haproxy_ports(repo, bind_ip, args.port):
+        if not check_haproxy_ports(repo, [bind_ip, bind_ipv6], args.port):
             failures += 1
     else:
         failures += 1

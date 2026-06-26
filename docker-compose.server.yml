@@ -29,3 +29,5 @@ services:
 
   haproxy:
     <<: *server-cpu
+    ports:
+      - "[${MEDUSA_BIND_IPV6:-::1}]:3737:3737"
