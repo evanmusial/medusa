@@ -438,6 +438,7 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
             "secrets_included": False,
             "password_hashes_included": False,
             "session_tokens_included": False,
+            "two_factor_secrets_included": False,
             "storage_credentials_included": False,
         },
         "counts": counts,

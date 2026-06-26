@@ -96,9 +96,18 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     display_name: Mapped[str] = mapped_column(String(160), nullable=False, default="Medusa User")
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    two_factor_secret: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    two_factor_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    two_factor_last_used_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    two_factor_recovery_hashes: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     sessions: Mapped[list["SessionToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+    @property
+    def two_factor_recovery_codes_remaining(self) -> int:
+        return len(self.two_factor_recovery_hashes or [])
 
 
 class SessionToken(Base, TimestampMixin):

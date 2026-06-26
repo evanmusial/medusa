@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException, Response
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -69,6 +72,112 @@ def test_update_me_rotates_password_and_revokes_other_sessions(monkeypatch, tmp_
         assert verify_password("new-password", updated.password_hash)
         assert current_session.revoked_at is None
         assert other_session.revoked_at is not None
+
+
+def test_login_requires_two_factor_code_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.main import login
+    from app.models import User
+    from app.schemas import LoginRequest
+    from app.security import current_totp_code, generate_totp_secret, hash_password
+
+    secret = generate_totp_secret()
+    Session = make_session()
+    with Session() as db:
+        user = User(
+            email="admin@medusa.local",
+            display_name="Admin",
+            password_hash=hash_password("correct-password"),
+            two_factor_enabled=True,
+            two_factor_secret=secret,
+            two_factor_recovery_hashes=[],
+        )
+        db.add(user)
+        db.commit()
+
+        request = SimpleNamespace(headers={"user-agent": "pytest"})
+        with pytest.raises(HTTPException) as missing_code:
+            login(LoginRequest(email="admin@medusa.local", password="correct-password"), request, Response(), db)
+        assert missing_code.value.status_code == 401
+
+        response = Response()
+        logged_in = login(
+            LoginRequest(
+                email="admin@medusa.local",
+                password="correct-password",
+                otp_code=current_totp_code(secret),
+            ),
+            request,
+            response,
+            db,
+        )
+        assert logged_in.id == user.id
+        assert "medusa_session=" in response.headers["set-cookie"]
+
+
+def test_two_factor_setup_enable_and_recovery_code_login(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.main import enable_two_factor, login, setup_two_factor
+    from app.models import User
+    from app.schemas import LoginRequest, TwoFactorEnableRequest, TwoFactorSetupRequest
+    from app.security import current_totp_code, hash_password
+
+    Session = make_session()
+    with Session() as db:
+        user = User(
+            email="admin@medusa.local",
+            display_name="Admin",
+            password_hash=hash_password("correct-password"),
+        )
+        db.add(user)
+        db.commit()
+
+        setup = setup_two_factor(TwoFactorSetupRequest(current_password="correct-password"), user)
+        enabled = enable_two_factor(
+            TwoFactorEnableRequest(
+                current_password="correct-password",
+                secret=setup.secret,
+                otp_code=current_totp_code(setup.secret),
+            ),
+            user,
+            db,
+            token=None,
+        )
+        db.refresh(user)
+
+        assert user.two_factor_enabled
+        assert user.two_factor_secret == setup.secret
+        assert len(enabled["recovery_codes"]) == 10
+        assert user.two_factor_recovery_codes_remaining == 10
+
+        recovery_code = enabled["recovery_codes"][0]
+        logged_in = login(
+            LoginRequest(
+                email="admin@medusa.local",
+                password="correct-password",
+                otp_code=recovery_code,
+            ),
+            SimpleNamespace(headers={}),
+            Response(),
+            db,
+        )
+        db.refresh(user)
+        assert logged_in.id == user.id
+        assert user.two_factor_recovery_codes_remaining == 9
 
 
 def test_ensure_admin_user_handles_concurrent_insert(monkeypatch, tmp_path):

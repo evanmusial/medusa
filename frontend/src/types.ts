@@ -2,6 +2,8 @@ export type User = {
   id: string;
   email: string;
   display_name: string;
+  two_factor_enabled: boolean;
+  two_factor_recovery_codes_remaining: number;
 };
 
 export type AccountUpdatePayload = {
@@ -9,6 +11,31 @@ export type AccountUpdatePayload = {
   current_password: string;
   new_password?: string | null;
   new_password_confirmation?: string | null;
+};
+
+export type TwoFactorSetupPayload = {
+  current_password: string;
+};
+
+export type TwoFactorSetup = {
+  secret: string;
+  otpauth_uri: string;
+};
+
+export type TwoFactorEnablePayload = {
+  current_password: string;
+  secret: string;
+  otp_code: string;
+};
+
+export type TwoFactorEnableResult = {
+  user: User;
+  recovery_codes: string[];
+};
+
+export type TwoFactorDisablePayload = {
+  current_password: string;
+  otp_code: string;
 };
 
 export type RuntimeLocation = {

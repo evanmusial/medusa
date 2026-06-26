@@ -18,6 +18,7 @@ def decode_html_entity_text(value: Any) -> Any:
 class LoginRequest(BaseModel):
     email: str
     password: str
+    otp_code: str | None = None
 
 
 class AccountUpdateRequest(BaseModel):
@@ -31,6 +32,33 @@ class UserOut(ApiModel):
     id: str
     email: str
     display_name: str
+    two_factor_enabled: bool = False
+    two_factor_recovery_codes_remaining: int = 0
+
+
+class TwoFactorSetupRequest(BaseModel):
+    current_password: str
+
+
+class TwoFactorSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class TwoFactorEnableRequest(BaseModel):
+    current_password: str
+    secret: str
+    otp_code: str
+
+
+class TwoFactorEnableOut(BaseModel):
+    user: UserOut
+    recovery_codes: list[str]
+
+
+class TwoFactorDisableRequest(BaseModel):
+    current_password: str
+    otp_code: str
 
 
 class RuntimeLocationOut(BaseModel):

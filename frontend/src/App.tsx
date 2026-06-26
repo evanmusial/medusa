@@ -158,6 +158,7 @@ import type {
   TagRelationshipSuggestion,
   TagStatusSuggestion,
   TagOptimizationSuggestion,
+  TwoFactorSetup,
   User,
   VisualScanCandidate,
   VisualScanReview,
@@ -277,6 +278,8 @@ type SelectMenuOption = { id: string; name: string; depth?: number; meta?: strin
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
 const RELEASE_POLL_INTERVAL_MS = 1000;
 const RELEASE_RELOAD_DELAY_MS = 900;
+const RELEASE_RELOAD_PARAM = "_medusa_reload";
+const RELEASE_RELOAD_TARGET_PARAM = "_medusa_release";
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
 const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
@@ -1120,23 +1123,39 @@ function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | 
     .join(" ");
 }
 
+function progressPercent(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function AsyncActionSlot({
   busy = false,
   children,
   feedback,
   label = "Async work in progress",
+  progress,
 }: {
   busy?: boolean;
   children: ReactNode;
   feedback?: AsyncActionFeedback | null;
   label?: string;
+  progress?: number | null;
 }) {
+  const hasProgress = typeof progress === "number" && Number.isFinite(progress);
+  const progressValue = hasProgress ? progressPercent(progress) : undefined;
+  const progressStyle = hasProgress ? ({ "--async-action-progress": `${progressValue}%` } as CSSProperties) : undefined;
   return (
     <span className={`async-action-slot ${busy ? "in-flight" : ""}`}>
       {children}
       {busy ? (
-        <span className="async-action-progress" role="progressbar" aria-label={label}>
-          <span />
+        <span
+          className={`async-action-progress ${hasProgress ? "determinate" : "indeterminate"}`}
+          role="progressbar"
+          aria-label={label}
+          aria-valuemin={hasProgress ? 0 : undefined}
+          aria-valuemax={hasProgress ? 100 : undefined}
+          aria-valuenow={progressValue}
+        >
+          <span style={progressStyle} />
         </span>
       ) : null}
       {feedback?.tone === "error" && feedback.message ? (
@@ -1146,6 +1165,70 @@ function AsyncActionSlot({
       ) : null}
     </span>
   );
+}
+
+function concordanceJobButtonProgress(jobs: ConcordanceJob[], busy: boolean) {
+  if (!busy) return undefined;
+  if (!jobs.length) return 8;
+  const total = jobs.length;
+  const completed = jobs.filter((job) => job.status === "complete" || job.status === "failed").length;
+  const running = jobs.filter((job) => job.status === "running").length;
+  const queued = jobs.filter((job) => job.status === "queued").length;
+  return progressPercent(((completed + running * 0.56 + queued * 0.18) / total) * 100);
+}
+
+function backupRunButtonProgress(run?: BackupRun | null, pending = false) {
+  if (run) return progressPercent(run.progress || (run.status === "queued" ? 6 : 18));
+  return pending ? 8 : undefined;
+}
+
+function restoreRunButtonProgress(run?: BackupRun | null, safetyRun?: BackupRun | null, pending = false) {
+  if (run?.phase === "safety_backup" && safetyRun && isActiveBackupRun(safetyRun)) {
+    return progressPercent(Math.max(run.progress || 0, 6 + (safetyRun.progress || 0) * 0.28));
+  }
+  return backupRunButtonProgress(run, pending);
+}
+
+function backupRunButtonPhaseLabel(run?: BackupRun | null, safetyRun?: BackupRun | null) {
+  if (run?.phase === "safety_backup" && safetyRun && isActiveBackupRun(safetyRun)) {
+    return `safety ${backupPhaseLabel(safetyRun.phase)}`;
+  }
+  return backupPhaseLabel(run?.phase || "starting");
+}
+
+function isActiveBackupRun(run: BackupRun) {
+  return run.status === "queued" || run.status === "running";
+}
+
+function isTerminalBackupRun(run?: BackupRun | null) {
+  return Boolean(run && (run.status === "complete" || run.status === "failed"));
+}
+
+function maintenanceButtonProgress(status: DatabaseMaintenanceStatus | undefined, operation: string, pending = false) {
+  if (!status?.active_operation) return pending ? 8 : undefined;
+  if (status.active_operation !== operation) return undefined;
+  const elapsed = Math.max(0, status.active_operation_elapsed_seconds || 0);
+  return progressPercent(Math.min(88, 18 + Math.log1p(elapsed) * 16));
+}
+
+function accessorySummaryButtonProgress(summary: AccessorySummary | undefined, busy: boolean) {
+  if (!busy) return undefined;
+  if (!summary) return 8;
+  if (summary.status === "complete" || summary.status === "failed") return 100;
+  if (summary.status === "running") return 56;
+  return 18;
+}
+
+function restartButtonProgress(phase: "idle" | "requesting" | "waiting" | "healthy" | "failed") {
+  if (phase === "requesting") return 10;
+  if (phase === "waiting") return 58;
+  if (phase === "healthy" || phase === "failed") return 100;
+  return undefined;
+}
+
+function stagingButtonProgress(total: number, pending: boolean) {
+  if (!pending) return undefined;
+  return progressPercent(total > 1 ? Math.min(86, 16 + Math.log1p(total) * 14) : 32);
 }
 
 function scopeLabel(value?: string) {
@@ -1481,6 +1564,21 @@ function releaseUpgradeTooltip(status: ReleaseStatus) {
   if (status.dirty) lines.push("Server checkout has local changes.");
   if (status.last_error) lines.push(`Last error: ${status.last_error}`);
   return lines.filter(Boolean).join("\n");
+}
+
+function releaseTargetParam(status: ReleaseStatus) {
+  return status.running.git_sha || status.running.version || status.running.git_sha_short || "current";
+}
+
+function releaseReloadUrl(status: ReleaseStatus) {
+  const url = new URL(window.location.href);
+  url.searchParams.set(RELEASE_RELOAD_PARAM, Date.now().toString(36));
+  url.searchParams.set(RELEASE_RELOAD_TARGET_PARAM, releaseTargetParam(status));
+  return url.toString();
+}
+
+function scheduleReleaseReload(status: ReleaseStatus) {
+  window.setTimeout(() => window.location.replace(releaseReloadUrl(status)), RELEASE_RELOAD_DELAY_MS);
 }
 
 function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgradeLock, "detail" | "message" | "stage" | "targetVersion"> {
@@ -3535,9 +3633,10 @@ function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; 
 function Login() {
   const [email, setEmail] = useState("admin@medusa.local");
   const [password, setPassword] = useState("");
+  const [otpCode, setOtpCode] = useState("");
   const queryClient = useQueryClient();
   const login = useMutation({
-    mutationFn: () => api.login(email, password),
+    mutationFn: () => api.login(email, password, otpCode.trim()),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["me"] }),
   });
 
@@ -3571,10 +3670,19 @@ function Login() {
               onChange={(event) => setPassword(event.target.value)}
             />
           </label>
+          <label>
+            2FA code
+            <input
+              autoComplete="one-time-code"
+              data-tooltip="Enter an authenticator code or recovery code when two-factor authentication is enabled."
+              value={otpCode}
+              onChange={(event) => setOtpCode(event.target.value)}
+            />
+          </label>
           <button
             className="primary-button"
             data-disabled-reason={login.isPending ? "the sign-in request is already running." : "email and password are required."}
-            data-tooltip="Sign in to Medusa with the email and password in this form."
+            data-tooltip="Sign in to Medusa with the account credentials and two-factor code when required."
             type="submit"
             disabled={login.isPending || !email.trim() || !password}
           >
@@ -6356,9 +6464,9 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             <p>{summaryText}</p>
           </div>
           <div className="recommendation-actions">
-            <AsyncActionSlot feedback={refreshFeedback.feedback}>
+            <AsyncActionSlot busy={refresh.isPending} feedback={refreshFeedback.feedback} label="Recommendation refresh in progress">
               <button
-                className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback)}
+                className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback, refresh.isPending)}
                 data-disabled-reason={
                   refresh.isPending
                     ? "recommendation refresh is already running."
@@ -7392,21 +7500,31 @@ function DocumentPanelContent({
   const latestHistoryVersion = historyRows[0];
   const latestHistoryChangedFields = latestHistoryVersion ? changedFieldsForVersion(latestHistoryVersion) : [];
   const latestHistoryPreviewLines = latestHistoryVersion ? versionPreviewLines(latestHistoryVersion) : [];
-  const citationRefreshActive = citationJobs.some(
-    (job) => job.document_id === document.id && job.capability_key === "citation_refresh" && isActiveConcordanceStatus(job.status),
+  const citationRefreshJobsForDocument = useMemo(
+    () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "citation_refresh"),
+    [citationJobs, document.id],
   );
-  const summaryRefreshActive = citationJobs.some(
-    (job) => job.document_id === document.id && job.capability_key === "summary_refresh" && isActiveConcordanceStatus(job.status),
+  const summaryRefreshJobsForDocument = useMemo(
+    () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "summary_refresh"),
+    [citationJobs, document.id],
   );
-  const bibliographyRefreshActive = citationJobs.some(
-    (job) => job.document_id === document.id && job.capability_key === "bibliography_extraction" && isActiveConcordanceStatus(job.status),
+  const bibliographyRefreshJobsForDocument = useMemo(
+    () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "bibliography_extraction"),
+    [citationJobs, document.id],
   );
-  const formulaCaptureActive = citationJobs.some(
-    (job) => job.document_id === document.id && job.capability_key === "formula_capture" && isActiveConcordanceStatus(job.status),
+  const formulaCaptureJobsForDocument = useMemo(
+    () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "formula_capture"),
+    [citationJobs, document.id],
   );
-  const tagRefreshActive = citationJobs.some(
-    (job) => job.document_id === document.id && job.capability_key === "tag_refresh" && isActiveConcordanceStatus(job.status),
+  const tagRefreshJobsForDocument = useMemo(
+    () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "tag_refresh"),
+    [citationJobs, document.id],
   );
+  const citationRefreshActive = citationRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const summaryRefreshActive = summaryRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const bibliographyRefreshActive = bibliographyRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const formulaCaptureActive = formulaCaptureJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const tagRefreshActive = tagRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
   const trackedDocumentConcordanceJobs = useMemo(
     () => (documentConcordanceRunId ? citationJobs.filter((job) => job.run_id === documentConcordanceRunId && job.document_id === document.id) : []),
     [citationJobs, document.id, documentConcordanceRunId],
@@ -7479,6 +7597,27 @@ function DocumentPanelContent({
     refreshTags.isPending ||
     tagRefreshActive ||
     Boolean(tagRefreshRunId && (!trackedTagRefreshJobs.length || trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))));
+  const documentConcordanceProgress = concordanceJobButtonProgress(trackedDocumentConcordanceJobs, documentConcordanceBusy);
+  const citationProgress = concordanceJobButtonProgress(
+    trackedCitationJobs.length ? trackedCitationJobs : citationRefreshJobsForDocument,
+    citationBusy,
+  );
+  const summaryRefreshProgress = concordanceJobButtonProgress(
+    trackedSummaryJobs.length ? trackedSummaryJobs : summaryRefreshJobsForDocument,
+    summaryRefreshBusy,
+  );
+  const bibliographyRefreshProgress = concordanceJobButtonProgress(
+    trackedBibliographyJobs.length ? trackedBibliographyJobs : bibliographyRefreshJobsForDocument,
+    bibliographyRefreshBusy,
+  );
+  const formulaCaptureProgress = concordanceJobButtonProgress(
+    trackedFormulaCaptureJobs.length ? trackedFormulaCaptureJobs : formulaCaptureJobsForDocument,
+    formulaCaptureBusy,
+  );
+  const tagRefreshProgress = concordanceJobButtonProgress(
+    trackedTagRefreshJobs.length ? trackedTagRefreshJobs : tagRefreshJobsForDocument,
+    tagRefreshBusy,
+  );
   const pageTextBusyReason = updatePageText.isPending
     ? "a parsed-text save is already running."
     : scrubText.isPending
@@ -7524,6 +7663,7 @@ function DocumentPanelContent({
       trackedAccessorySummaryId &&
         (!trackedAccessorySummary || isActiveAccessorySummaryStatus(trackedAccessorySummary.status)),
     );
+  const accessorySummaryProgress = accessorySummaryButtonProgress(trackedAccessorySummary, accessorySummaryBusy);
   const accessorySummaryBusyReason = createAccessorySummary.isPending
     ? "an Accessory Summary request is already starting."
     : accessorySummaryBusy
@@ -8283,7 +8423,12 @@ function DocumentPanelContent({
       <section className="detail-section detail-tags-section">
         <div className="detail-section-title-row">
           <h3>TAGS</h3>
-          <AsyncActionSlot busy={tagRefreshBusy} feedback={tagRefreshFeedback.feedback} label="Tag refresh in progress">
+          <AsyncActionSlot
+            busy={tagRefreshBusy}
+            feedback={tagRefreshFeedback.feedback}
+            label="Tag refresh in progress"
+            progress={tagRefreshProgress}
+          >
             <button
               className={asyncFeedbackClass("secondary-button compact", tagRefreshFeedback.feedback, tagRefreshBusy)}
               data-disabled-reason={tagRefreshBusyReason}
@@ -8435,7 +8580,7 @@ function DocumentPanelContent({
           <Edit3 size={15} />
           Edit
         </button>
-        <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI refresh in progress">
+        <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI refresh in progress" progress={citationProgress}>
           <button
             className={asyncFeedbackClass("secondary-button", doiRefreshFeedback.feedback, doiCheckBusy)}
             data-disabled-reason={citationBusyReason}
@@ -8639,7 +8784,12 @@ function DocumentPanelContent({
           <Edit3 size={15} />
           Edit
         </button>
-        <AsyncActionSlot busy={summaryRefreshBusy} feedback={summaryRefreshFeedback.feedback} label="Summary refresh in progress">
+        <AsyncActionSlot
+          busy={summaryRefreshBusy}
+          feedback={summaryRefreshFeedback.feedback}
+          label="Summary refresh in progress"
+          progress={summaryRefreshProgress}
+        >
           <button
             className={asyncFeedbackClass("secondary-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
             data-disabled-reason={summaryRefreshBusyReason}
@@ -8672,7 +8822,12 @@ function DocumentPanelContent({
           {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
           {copiedKey === "document-bibliography" ? "Copied" : "Copy"}
         </button>
-        <AsyncActionSlot busy={bibliographyRefreshBusy} feedback={bibliographyRefreshFeedback.feedback} label="Bibliography refresh in progress">
+        <AsyncActionSlot
+          busy={bibliographyRefreshBusy}
+          feedback={bibliographyRefreshFeedback.feedback}
+          label="Bibliography refresh in progress"
+          progress={bibliographyRefreshProgress}
+        >
           <button
             className={asyncFeedbackClass("secondary-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
             data-disabled-reason={bibliographyRefreshBusyReason}
@@ -8764,7 +8919,7 @@ function DocumentPanelContent({
             <Edit3 size={15} />
             Edit
           </button>
-          <AsyncActionSlot busy={busy} feedback={feedback} label="Citation refresh in progress">
+          <AsyncActionSlot busy={busy} feedback={feedback} label="Citation refresh in progress" progress={citationProgress}>
             <button
               className={asyncFeedbackClass("secondary-button", feedback, busy)}
               data-disabled-reason={citationBusyReason}
@@ -9229,7 +9384,12 @@ function DocumentPanelContent({
     </button>
   );
   const concordButton = (
-    <AsyncActionSlot busy={documentConcordanceBusy} feedback={runConcordanceFeedback.feedback} label="Document Concordance in progress">
+    <AsyncActionSlot
+      busy={documentConcordanceBusy}
+      feedback={runConcordanceFeedback.feedback}
+      label="Document Concordance in progress"
+      progress={documentConcordanceProgress}
+    >
       <button
         className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback, documentConcordanceBusy)}
         data-disabled-reason={documentConcordanceBusyReason}
@@ -9244,7 +9404,12 @@ function DocumentPanelContent({
     </AsyncActionSlot>
   );
   const formulaCaptureButton = (
-    <AsyncActionSlot busy={formulaCaptureBusy} feedback={formulaCaptureFeedback.feedback} label="Formula capture in progress">
+    <AsyncActionSlot
+      busy={formulaCaptureBusy}
+      feedback={formulaCaptureFeedback.feedback}
+      label="Formula capture in progress"
+      progress={formulaCaptureProgress}
+    >
       <button
         className={asyncFeedbackClass("secondary-button", formulaCaptureFeedback.feedback, formulaCaptureBusy)}
         data-disabled-reason={formulaCaptureBusyReason}
@@ -9616,7 +9781,12 @@ function DocumentPanelContent({
                 options={accessoryModelOptions}
                 value={accessoryModel || accessorySummaryDefaultModel}
               />
-              <AsyncActionSlot busy={accessorySummaryBusy} feedback={accessorySummaryFeedback.feedback} label="Accessory summary in progress">
+              <AsyncActionSlot
+                busy={accessorySummaryBusy}
+                feedback={accessorySummaryFeedback.feedback}
+                label="Accessory summary in progress"
+                progress={accessorySummaryProgress}
+              >
                 <button
                   className={asyncFeedbackClass("primary-button", accessorySummaryFeedback.feedback, accessorySummaryBusy)}
                   data-disabled-reason={accessorySummaryBusy ? accessorySummaryBusyReason : "an Accessory Summary prompt is required."}
@@ -13967,7 +14137,20 @@ function DatabaseBackupRestorePanel({
   const completedBackupArtifactIdsInitializedRef = useRef(false);
   const backupFeedback = useAsyncActionFeedback();
   const restoreFeedback = useAsyncActionFeedback({ errorMs: 9000 });
-  const activeBackupRun = backupRuns.find((run) => run.status === "queued" || run.status === "running");
+  const [trackedBackupRunId, setTrackedBackupRunId] = useState<string | null>(null);
+  const [trackedRestoreRunId, setTrackedRestoreRunId] = useState<string | null>(null);
+  const activeBackupRuns = backupRuns.filter(isActiveBackupRun);
+  const activeManualBackupRun = activeBackupRuns.find((run) => run.kind === "backup" && run.reason !== "pre_restore");
+  const activeRestoreRun = activeBackupRuns.find((run) => run.kind === "restore");
+  const activeSafetyBackupRun = activeBackupRuns.find((run) => run.kind === "backup" && run.reason === "pre_restore");
+  const activeBackupRun = activeRestoreRun || activeManualBackupRun || activeSafetyBackupRun || activeBackupRuns[0];
+  const trackedBackupRun = trackedBackupRunId ? backupRuns.find((run) => run.id === trackedBackupRunId) : undefined;
+  const trackedRestoreRun = trackedRestoreRunId ? backupRuns.find((run) => run.id === trackedRestoreRunId) : undefined;
+  const backupButtonRun = activeManualBackupRun || (trackedBackupRun && !isTerminalBackupRun(trackedBackupRun) ? trackedBackupRun : undefined);
+  const restoreButtonRun =
+    activeRestoreRun ||
+    (trackedRestoreRun && !isTerminalBackupRun(trackedRestoreRun) ? trackedRestoreRun : undefined) ||
+    (trackedRestoreRunId ? activeSafetyBackupRun : undefined);
   const gcsBackupArtifacts = useQuery({
     queryKey: ["gcs-backups"],
     queryFn: api.gcsBackups,
@@ -14011,8 +14194,10 @@ function DatabaseBackupRestorePanel({
 
   const startBackup = useMutation({
     mutationFn: api.startDatabaseBackup,
-    onSuccess: () => {
-      backupFeedback.showSuccess();
+    onSuccess: (run) => {
+      if (run.status === "complete") backupFeedback.showSuccess();
+      else if (run.status === "failed") backupFeedback.showError(run.last_error || "Database backup failed.");
+      else setTrackedBackupRunId(run.id);
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
       void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
@@ -14023,8 +14208,10 @@ function DatabaseBackupRestorePanel({
   });
   const startRestore = useMutation({
     mutationFn: () => api.startDatabaseRestore(selectedBackupUri),
-    onSuccess: () => {
-      restoreFeedback.showSuccess();
+    onSuccess: (run) => {
+      if (run.status === "complete") restoreFeedback.showSuccess();
+      else if (run.status === "failed") restoreFeedback.showError(run.last_error || "Database restore failed.");
+      else setTrackedRestoreRunId(run.id);
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
       void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
@@ -14050,22 +14237,48 @@ function DatabaseBackupRestorePanel({
       : preferences?.gcs_bucket
         ? "No backups"
         : "No bucket";
-  const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || startBackup.isPending;
-  const restoreDisabled = Boolean(activeBackupRun) || startRestore.isPending || !selectedBackupUri;
+  const backupButtonBusy = startBackup.isPending || Boolean(backupButtonRun) || Boolean(trackedBackupRunId && !trackedBackupRun);
+  const restoreButtonBusy = startRestore.isPending || Boolean(restoreButtonRun) || Boolean(trackedRestoreRunId && !trackedRestoreRun);
+  const backupButtonProgress = backupRunButtonProgress(backupButtonRun, startBackup.isPending || Boolean(trackedBackupRunId && !trackedBackupRun));
+  const restoreButtonProgress = restoreRunButtonProgress(
+    restoreButtonRun,
+    activeSafetyBackupRun,
+    startRestore.isPending || Boolean(trackedRestoreRunId && !trackedRestoreRun),
+  );
+  const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || backupButtonBusy;
+  const restoreDisabled = Boolean(activeBackupRun) || restoreButtonBusy || !selectedBackupUri;
   const backupDisabledReason = startBackup.isPending
     ? "a database backup request is already starting."
-    : activeBackupRun
+    : activeBackupRun || backupButtonBusy
       ? "a backup or restore is already running."
       : !preferences?.gcs_bucket
         ? "a GCS bucket must be saved before browser backups can start."
         : "";
   const restoreDisabledReason = startRestore.isPending
     ? "a database restore request is already starting."
-    : activeBackupRun
+    : activeBackupRun || restoreButtonBusy
       ? "a backup or restore is already running."
       : !selectedBackupUri
         ? "a GCS backup must be selected."
         : "";
+  useEffect(() => {
+    if (!trackedBackupRun || !isTerminalBackupRun(trackedBackupRun)) return;
+    if (trackedBackupRun.status === "failed") {
+      backupFeedback.showError(trackedBackupRun.last_error || trackedBackupRun.status_detail || "Database backup failed.");
+    } else {
+      backupFeedback.showSuccess();
+    }
+    setTrackedBackupRunId(null);
+  }, [backupFeedback, trackedBackupRun]);
+  useEffect(() => {
+    if (!trackedRestoreRun || !isTerminalBackupRun(trackedRestoreRun)) return;
+    if (trackedRestoreRun.status === "failed") {
+      restoreFeedback.showError(trackedRestoreRun.last_error || trackedRestoreRun.status_detail || "Database restore failed.");
+    } else {
+      restoreFeedback.showSuccess();
+    }
+    setTrackedRestoreRunId(null);
+  }, [restoreFeedback, trackedRestoreRun]);
   const confirmDatabaseRestore = () => {
     if (!selectedBackupUri) return;
     const artifact = backupArtifacts.find((item) => item.gcs_uri === selectedBackupUri);
@@ -14091,17 +14304,22 @@ function DatabaseBackupRestorePanel({
             <strong>Backup Database</strong>
             <span>{preferences?.gcs_bucket ? `gs://${preferences.gcs_bucket}` : "Save a GCS bucket first"}</span>
           </div>
-          <AsyncActionSlot busy={startBackup.isPending} feedback={backupFeedback.feedback} label="Database backup request in progress">
+          <AsyncActionSlot
+            busy={backupButtonBusy}
+            feedback={backupFeedback.feedback}
+            label="Database backup in progress"
+            progress={backupButtonProgress}
+          >
             <button
-              className={asyncFeedbackClass("primary-button", backupFeedback.feedback, startBackup.isPending)}
+              className={asyncFeedbackClass("primary-button", backupFeedback.feedback, backupButtonBusy)}
               data-disabled-reason={backupDisabledReason}
               data-tooltip="Start a full PostgreSQL database backup, compress it, upload it to the configured GCS bucket, and verify the checksum."
               disabled={backupDisabled}
               onClick={() => startBackup.mutate()}
               type="button"
             >
-              <Archive className={startBackup.isPending ? "spin" : ""} size={16} />
-              {startBackup.isPending ? "Starting" : "Backup Database"}
+              <Archive className={backupButtonBusy ? "spin" : ""} size={16} />
+              {backupButtonBusy ? backupRunButtonPhaseLabel(backupButtonRun) : "Backup Database"}
             </button>
           </AsyncActionSlot>
           <p className="backup-size-estimate">{backupEstimateLabel(backupEstimate.data, backupEstimate.isLoading)}</p>
@@ -14115,9 +14333,13 @@ function DatabaseBackupRestorePanel({
             <label>
               GCS backup
               <select
-                data-disabled-reason={startRestore.isPending ? "a database restore request is already starting." : "no GCS backup artifacts are available."}
+                data-disabled-reason={
+                  activeBackupRun || restoreButtonBusy
+                    ? "a backup or restore is already running."
+                    : "no GCS backup artifacts are available."
+                }
                 data-tooltip="Choose the GCS backup artifact to restore from."
-                disabled={!backupArtifacts.length || startRestore.isPending}
+                disabled={!backupArtifacts.length || Boolean(activeBackupRun) || restoreButtonBusy}
                 onChange={(event) => setSelectedBackupUri(event.target.value)}
                 value={selectedBackupUri}
               >
@@ -14132,17 +14354,22 @@ function DatabaseBackupRestorePanel({
                 )}
               </select>
             </label>
-            <AsyncActionSlot busy={startRestore.isPending} feedback={restoreFeedback.feedback} label="Database restore request in progress">
+            <AsyncActionSlot
+              busy={restoreButtonBusy}
+              feedback={restoreFeedback.feedback}
+              label="Database restore in progress"
+              progress={restoreButtonProgress}
+            >
               <button
-                className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, startRestore.isPending)}
+                className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, restoreButtonBusy)}
                 data-disabled-reason={restoreDisabledReason}
                 data-tooltip="Restore the database from the selected GCS backup after Medusa first creates and verifies a fresh safety backup."
                 disabled={restoreDisabled}
                 onClick={confirmDatabaseRestore}
                 type="button"
               >
-                <RotateCcw className={startRestore.isPending ? "spin" : ""} size={16} />
-                {startRestore.isPending ? "Starting" : "Restore Database"}
+                <RotateCcw className={restoreButtonBusy ? "spin" : ""} size={16} />
+                {restoreButtonBusy ? backupRunButtonPhaseLabel(restoreButtonRun, activeSafetyBackupRun) : "Restore Database"}
               </button>
             </AsyncActionSlot>
           </div>
@@ -14488,7 +14715,12 @@ function UtilitiesBulkIntakePanel() {
       ) : null}
       <div className="bulk-intake-footer">
         <span>Non-duplicate files are staged only; processing still starts from Import.</span>
-        <AsyncActionSlot busy={stageNew.isPending} feedback={stageFeedback.feedback} label="Staging new documents">
+        <AsyncActionSlot
+          busy={stageNew.isPending}
+          feedback={stageFeedback.feedback}
+          label="Staging new documents"
+          progress={stagingButtonProgress(newRows.length, stageNew.isPending)}
+        >
           <button
             className={asyncFeedbackClass("primary-button", stageFeedback.feedback, stageNew.isPending)}
             data-disabled-reason={stageDisabledReason}
@@ -14701,8 +14933,12 @@ function UtilitiesView({
   const compactRunning = compactDatabase.isPending || activeMaintenanceOperation === "compact_database";
   const optimizeRunning = optimizeDatabase.isPending || activeMaintenanceOperation === "optimize_database";
   const hashBackfillRunning = backfillDocumentHashes.isPending || activeMaintenanceOperation === "backfill_document_md5";
+  const compactProgress = maintenanceButtonProgress(status, "compact_database", compactDatabase.isPending);
+  const optimizeProgress = maintenanceButtonProgress(status, "optimize_database", optimizeDatabase.isPending);
+  const hashBackfillProgress = maintenanceButtonProgress(status, "backfill_document_md5", backfillDocumentHashes.isPending);
   const databaseBusy = compactDatabase.isPending || optimizeDatabase.isPending || clearImportCache.isPending || backfillDocumentHashes.isPending || databaseMaintenanceBusy;
   const restartBusy = restartContainer.isPending || restartPhase === "requesting" || restartPhase === "waiting";
+  const restartProgress = restartButtonProgress(restartPhase);
   const busy = databaseBusy || restartBusy;
   const importCacheCount = status?.import_cache_count ?? 0;
   const missingHashCount = status?.document_hash_missing_count ?? 0;
@@ -14907,7 +15143,12 @@ function UtilitiesView({
                 <strong>Compact Database</strong>
                 <span>{databaseSizeLabel}</span>
               </div>
-              <AsyncActionSlot busy={compactRunning} feedback={compactFeedback.feedback} label="Database compaction in progress">
+              <AsyncActionSlot
+                busy={compactRunning}
+                feedback={compactFeedback.feedback}
+                label="Database compaction in progress"
+                progress={compactProgress}
+              >
                 <button
                   className={asyncFeedbackClass("secondary-button", compactFeedback.feedback, compactRunning)}
                   data-disabled-reason={compactDisabledReason}
@@ -14926,7 +15167,12 @@ function UtilitiesView({
                 <strong>Optimize Database</strong>
                 <span>{maintenanceStatisticsLabel}</span>
               </div>
-              <AsyncActionSlot busy={optimizeRunning} feedback={optimizeFeedback.feedback} label="Database optimization in progress">
+              <AsyncActionSlot
+                busy={optimizeRunning}
+                feedback={optimizeFeedback.feedback}
+                label="Database optimization in progress"
+                progress={optimizeProgress}
+              >
                 <button
                   className={asyncFeedbackClass("secondary-button", optimizeFeedback.feedback, optimizeRunning)}
                   data-disabled-reason={optimizeDisabledReason}
@@ -14964,7 +15210,12 @@ function UtilitiesView({
                 <strong>Backfill Document Hashes</strong>
                 <span>{`${missingHashCountLabel} missing MD5`}</span>
               </div>
-              <AsyncActionSlot busy={hashBackfillRunning} feedback={hashBackfillFeedback.feedback} label="Document hash backfill in progress">
+              <AsyncActionSlot
+                busy={hashBackfillRunning}
+                feedback={hashBackfillFeedback.feedback}
+                label="Document hash backfill in progress"
+                progress={hashBackfillProgress}
+              >
                 <button
                   className={asyncFeedbackClass("secondary-button", hashBackfillFeedback.feedback, hashBackfillRunning)}
                   data-disabled-reason={hashBackfillDisabledReason}
@@ -15122,7 +15373,12 @@ function UtilitiesView({
               <strong>Restart Backend Container</strong>
               <span>{restartMessage || container?.restart_note || "Restart the backend and wait for health."}</span>
             </div>
-            <AsyncActionSlot busy={restartBusy} feedback={restartFeedback.feedback} label="Backend container restart in progress">
+            <AsyncActionSlot
+              busy={restartBusy}
+              feedback={restartFeedback.feedback}
+              label="Backend container restart in progress"
+              progress={restartProgress}
+            >
               <button
                 className={asyncFeedbackClass("secondary-button", restartFeedback.feedback, restartBusy)}
                 data-disabled-reason={restartDisabledReason}
@@ -15684,11 +15940,15 @@ function SettingsView({
   const [accountCurrentPassword, setAccountCurrentPassword] = useState("");
   const [accountNewPassword, setAccountNewPassword] = useState("");
   const [accountNewPasswordConfirmation, setAccountNewPasswordConfirmation] = useState("");
+  const [accountTwoFactorCode, setAccountTwoFactorCode] = useState("");
+  const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null);
+  const [twoFactorRecoveryCodes, setTwoFactorRecoveryCodes] = useState<string[]>([]);
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
   const accountUpdateFeedback = useAsyncActionFeedback();
+  const twoFactorFeedback = useAsyncActionFeedback();
   const savePreferencesFeedback = useAsyncActionFeedback();
   const modelPricingFeedback = useAsyncActionFeedback();
   const serviceAccountUploadFeedback = useAsyncActionFeedback();
@@ -15723,6 +15983,8 @@ function SettingsView({
 
   useEffect(() => {
     setAccountEmail(currentUser?.email || "");
+    setTwoFactorSetup(null);
+    setTwoFactorRecoveryCodes([]);
   }, [currentUser?.email]);
 
   useEffect(() => {
@@ -15804,6 +16066,57 @@ function SettingsView({
     },
     onError: (error) => {
       accountUpdateFeedback.showError(actionFailureMessage("Could not update account", error));
+    },
+  });
+  const startTwoFactorSetup = useMutation({
+    mutationFn: () => api.startTwoFactorSetup({ current_password: accountCurrentPassword }),
+    onSuccess: (setup) => {
+      setTwoFactorSetup(setup);
+      setAccountTwoFactorCode("");
+      setTwoFactorRecoveryCodes([]);
+      twoFactorFeedback.showSuccess();
+    },
+    onError: (error) => {
+      twoFactorFeedback.showError(actionFailureMessage("Could not start 2FA setup", error));
+    },
+  });
+  const enableTwoFactor = useMutation({
+    mutationFn: () =>
+      api.enableTwoFactor({
+        current_password: accountCurrentPassword,
+        secret: twoFactorSetup?.secret || "",
+        otp_code: accountTwoFactorCode.trim(),
+      }),
+    onSuccess: (result) => {
+      twoFactorFeedback.showSuccess();
+      queryClient.setQueryData(["me"], result.user);
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+      setAccountCurrentPassword("");
+      setAccountTwoFactorCode("");
+      setTwoFactorSetup(null);
+      setTwoFactorRecoveryCodes(result.recovery_codes);
+    },
+    onError: (error) => {
+      twoFactorFeedback.showError(actionFailureMessage("Could not enable 2FA", error));
+    },
+  });
+  const disableTwoFactor = useMutation({
+    mutationFn: () =>
+      api.disableTwoFactor({
+        current_password: accountCurrentPassword,
+        otp_code: accountTwoFactorCode.trim(),
+      }),
+    onSuccess: (updatedUser) => {
+      twoFactorFeedback.showSuccess();
+      queryClient.setQueryData(["me"], updatedUser);
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+      setAccountCurrentPassword("");
+      setAccountTwoFactorCode("");
+      setTwoFactorSetup(null);
+      setTwoFactorRecoveryCodes([]);
+    },
+    onError: (error) => {
+      twoFactorFeedback.showError(actionFailureMessage("Could not disable 2FA", error));
     },
   });
   const savePreferences = useMutation({
@@ -15992,6 +16305,38 @@ function SettingsView({
                 ? "new password confirmation must match."
                 : "";
   const accountUpdateDisabled = Boolean(accountUpdateDisabledReason);
+  const twoFactorEnabled = Boolean(currentUser?.two_factor_enabled);
+  const twoFactorBusy = startTwoFactorSetup.isPending || enableTwoFactor.isPending || disableTwoFactor.isPending;
+  const twoFactorCodeValue = accountTwoFactorCode.trim();
+  const startTwoFactorSetupDisabledReason = !currentUser
+    ? "the current account is still loading."
+    : twoFactorBusy
+      ? "a two-factor update is already running."
+      : twoFactorEnabled
+        ? "two-factor authentication is already enabled."
+        : !accountCurrentPassword
+          ? "current password is required to start two-factor setup."
+          : "";
+  const enableTwoFactorDisabledReason = twoFactorBusy
+    ? "a two-factor update is already running."
+    : !twoFactorSetup
+      ? "two-factor setup has not started."
+      : !accountCurrentPassword
+        ? "current password is required to enable two-factor authentication."
+        : !twoFactorCodeValue
+          ? "authenticator code is required to enable two-factor authentication."
+          : "";
+  const disableTwoFactorDisabledReason = !currentUser
+    ? "the current account is still loading."
+    : twoFactorBusy
+      ? "a two-factor update is already running."
+      : !twoFactorEnabled
+        ? "two-factor authentication is already disabled."
+        : !accountCurrentPassword
+          ? "current password is required to disable two-factor authentication."
+          : !twoFactorCodeValue
+            ? "authenticator or recovery code is required to disable two-factor authentication."
+            : "";
   const savePreferencesDisabled = !preferences || !preferenceDirty || savePreferences.isPending;
   const serviceAccountName =
     preferences?.google_service_account_name || "None, please upload a service account JSON";
@@ -16124,6 +16469,118 @@ function SettingsView({
             </button>
           </AsyncActionSlot>
         </form>
+        <div className="two-factor-settings">
+          <div className="two-factor-status-row">
+            <div>
+              <strong>Two-factor authentication</strong>
+              <span>{twoFactorEnabled ? `${currentUser?.two_factor_recovery_codes_remaining ?? 0} recovery codes left` : "Authenticator app"}</span>
+            </div>
+            <em>{twoFactorEnabled ? "Enabled" : "Disabled"}</em>
+          </div>
+          {twoFactorSetup ? (
+            <div className="two-factor-setup-grid">
+              <div className="preference-control two-factor-secret-control">
+                <label htmlFor="account-two-factor-secret">
+                  <span>Setup key</span>
+                </label>
+                <input
+                  data-tooltip="Enter this setup key in an authenticator app, then confirm with the generated code."
+                  id="account-two-factor-secret"
+                  readOnly
+                  value={twoFactorSetup.secret}
+                />
+              </div>
+              <div className="preference-control">
+                <label htmlFor="account-two-factor-code">
+                  <span>Verification code</span>
+                </label>
+                <input
+                  autoComplete="one-time-code"
+                  data-tooltip="Enter the current authenticator code for this setup key."
+                  id="account-two-factor-code"
+                  onChange={(event) => setAccountTwoFactorCode(event.target.value)}
+                  value={accountTwoFactorCode}
+                />
+              </div>
+              <AsyncActionSlot busy={enableTwoFactor.isPending} feedback={twoFactorFeedback.feedback} label="Two-factor setup confirmation in progress">
+                <button
+                  className={asyncFeedbackClass("primary-button account-security-button", twoFactorFeedback.feedback, enableTwoFactor.isPending)}
+                  data-disabled-reason={enableTwoFactorDisabledReason}
+                  data-tooltip="Enable two-factor authentication after verifying the authenticator code."
+                  disabled={Boolean(enableTwoFactorDisabledReason)}
+                  onClick={() => enableTwoFactor.mutate()}
+                  type="button"
+                >
+                  <KeyRound className={enableTwoFactor.isPending ? "spin" : ""} size={16} />
+                  {enableTwoFactor.isPending ? "Enabling" : "Enable 2FA"}
+                </button>
+              </AsyncActionSlot>
+              <button
+                className="secondary-button account-security-button"
+                onClick={() => {
+                  setTwoFactorSetup(null);
+                  setAccountTwoFactorCode("");
+                }}
+                type="button"
+              >
+                <X size={16} />
+                Cancel
+              </button>
+            </div>
+          ) : twoFactorEnabled ? (
+            <div className="two-factor-setup-grid">
+              <div className="preference-control">
+                <label htmlFor="account-two-factor-disable-code">
+                  <span>2FA or recovery code</span>
+                </label>
+                <input
+                  autoComplete="one-time-code"
+                  data-tooltip="Enter an authenticator code or one unused recovery code to disable two-factor authentication."
+                  id="account-two-factor-disable-code"
+                  onChange={(event) => setAccountTwoFactorCode(event.target.value)}
+                  value={accountTwoFactorCode}
+                />
+              </div>
+              <AsyncActionSlot busy={disableTwoFactor.isPending} feedback={twoFactorFeedback.feedback} label="Two-factor disable in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button account-security-button", twoFactorFeedback.feedback, disableTwoFactor.isPending)}
+                  data-disabled-reason={disableTwoFactorDisabledReason}
+                  data-tooltip="Disable two-factor authentication after verifying the current password and a second factor."
+                  disabled={Boolean(disableTwoFactorDisabledReason)}
+                  onClick={() => disableTwoFactor.mutate()}
+                  type="button"
+                >
+                  <KeyRound className={disableTwoFactor.isPending ? "spin" : ""} size={16} />
+                  {disableTwoFactor.isPending ? "Disabling" : "Disable 2FA"}
+                </button>
+              </AsyncActionSlot>
+            </div>
+          ) : (
+            <AsyncActionSlot busy={startTwoFactorSetup.isPending} feedback={twoFactorFeedback.feedback} label="Two-factor setup in progress">
+              <button
+                className={asyncFeedbackClass("secondary-button account-security-button", twoFactorFeedback.feedback, startTwoFactorSetup.isPending)}
+                data-disabled-reason={startTwoFactorSetupDisabledReason}
+                data-tooltip="Generate an authenticator-app setup key after verifying the current password."
+                disabled={Boolean(startTwoFactorSetupDisabledReason)}
+                onClick={() => startTwoFactorSetup.mutate()}
+                type="button"
+              >
+                <KeyRound className={startTwoFactorSetup.isPending ? "spin" : ""} size={16} />
+                {startTwoFactorSetup.isPending ? "Starting" : "Set Up 2FA"}
+              </button>
+            </AsyncActionSlot>
+          )}
+          {twoFactorRecoveryCodes.length ? (
+            <div className="two-factor-recovery">
+              <span>Recovery codes</span>
+              <div>
+                {twoFactorRecoveryCodes.map((code) => (
+                  <code key={code}>{code}</code>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
       <div className="storage-settings-panel">
         <div className="panel-title-row">
@@ -17278,6 +17735,7 @@ export default function App() {
   useEffect(() => {
     if (!settingsDirty) return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (releaseReloadScheduledRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -17316,7 +17774,7 @@ export default function App() {
         startedAt: Date.now(),
         targetVersion: status.running.version,
       });
-      window.setTimeout(() => window.location.reload(), RELEASE_RELOAD_DELAY_MS);
+      scheduleReleaseReload(status);
       return;
     }
     if (!confirmReleaseUpgrade()) return;
@@ -17433,7 +17891,7 @@ export default function App() {
           );
           if (!releaseReloadScheduledRef.current) {
             releaseReloadScheduledRef.current = true;
-            window.setTimeout(() => window.location.reload(), RELEASE_RELOAD_DELAY_MS);
+            scheduleReleaseReload(status);
           }
           return;
         }

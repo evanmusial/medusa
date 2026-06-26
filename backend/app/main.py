@@ -156,9 +156,28 @@ from app.schemas import (
     TagOptimizationSuggestionOut,
     TagOut,
     TagRename,
+    TwoFactorDisableRequest,
+    TwoFactorEnableOut,
+    TwoFactorEnableRequest,
+    TwoFactorSetupOut,
+    TwoFactorSetupRequest,
     UserOut,
 )
-from app.security import create_session, ensure_admin_user, hash_password, revoke_other_sessions, revoke_session, user_for_token, verify_password
+from app.security import (
+    create_session,
+    ensure_admin_user,
+    generate_recovery_codes,
+    generate_totp_secret,
+    hash_password,
+    hash_recovery_codes,
+    revoke_other_sessions,
+    revoke_session,
+    totp_setup_uri,
+    user_for_token,
+    verify_password,
+    verify_totp_code,
+    verify_two_factor_code,
+)
 from app.services.accessory_summaries import create_accessory_summary
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
@@ -1316,9 +1335,12 @@ def health() -> dict[str, str]:
 
 @app.post("/api/auth/login", response_model=UserOut)
 def login(payload: LoginRequest, request: Request, response: Response, db: Annotated[Session, Depends(get_db)]) -> User:
-    user = db.query(User).filter(User.email == payload.email).one_or_none()
+    login_email = payload.email.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == login_email).one_or_none()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.two_factor_enabled and not verify_two_factor_code(user, payload.otp_code):
+        raise HTTPException(status_code=401, detail="Invalid email, password, or two-factor code")
     token = create_session(db, user, user_agent=request.headers.get("user-agent"))
     response.set_cookie(
         settings.session_cookie_name,
@@ -1345,6 +1367,69 @@ def logout(
 
 @app.get("/api/me", response_model=UserOut)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
+    return user
+
+
+@app.post("/api/me/two-factor/setup", response_model=TwoFactorSetupOut)
+def setup_two_factor(
+    payload: TwoFactorSetupRequest,
+    user: Annotated[User, Depends(current_user)],
+) -> TwoFactorSetupOut:
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+    if user.two_factor_enabled:
+        raise HTTPException(status_code=409, detail="Two-factor authentication is already enabled")
+    secret = generate_totp_secret()
+    return TwoFactorSetupOut(secret=secret, otpauth_uri=totp_setup_uri(secret, user.email))
+
+
+@app.post("/api/me/two-factor/enable", response_model=TwoFactorEnableOut)
+def enable_two_factor(
+    payload: TwoFactorEnableRequest,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> dict[str, Any]:
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+    if user.two_factor_enabled:
+        raise HTTPException(status_code=409, detail="Two-factor authentication is already enabled")
+    matched_step = verify_totp_code(payload.secret, payload.otp_code)
+    if matched_step is None:
+        raise HTTPException(status_code=400, detail="Enter a valid authenticator code")
+    recovery_codes = generate_recovery_codes()
+    user.two_factor_enabled = True
+    user.two_factor_secret = payload.secret
+    user.two_factor_confirmed_at = utc_now()
+    user.two_factor_last_used_step = matched_step
+    user.two_factor_recovery_hashes = hash_recovery_codes(recovery_codes)
+    revoke_other_sessions(db, user, token)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"user": user, "recovery_codes": recovery_codes}
+
+
+@app.post("/api/me/two-factor/disable", response_model=UserOut)
+def disable_two_factor(
+    payload: TwoFactorDisableRequest,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> User:
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+    if user.two_factor_enabled and not verify_two_factor_code(user, payload.otp_code):
+        raise HTTPException(status_code=403, detail="Two-factor code is incorrect")
+    user.two_factor_enabled = False
+    user.two_factor_secret = None
+    user.two_factor_confirmed_at = None
+    user.two_factor_last_used_step = None
+    user.two_factor_recovery_hashes = []
+    revoke_other_sessions(db, user, token)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 

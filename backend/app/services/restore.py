@@ -58,6 +58,8 @@ FORBIDDEN_EXPORT_KEYS = {
     "session_token",
     "sessions",
     "token_hash",
+    "two_factor_recovery_hashes",
+    "two_factor_secret",
 }
 
 PARKED_JOB_STATUSES = {"queued", "running", "processing", "in_progress", "locked"}

@@ -666,6 +666,7 @@ def _backup_manifest(
             "plaintext_passwords_included": False,
             "password_hashes_included": True,
             "session_tokens_included": True,
+            "two_factor_secrets_included": True,
             "database_dump_includes_auth_tables": True,
         },
     }

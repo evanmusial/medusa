@@ -488,6 +488,9 @@ textarea {
   position: relative;
   display: inline-flex;
   align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  justify-self: start;
 }
 
 .async-action-slot.in-flight {
@@ -508,9 +511,12 @@ textarea {
 
 .async-action-progress span {
   display: block;
-  width: 44%;
   height: 100%;
   border-radius: inherit;
+}
+
+.async-action-progress.indeterminate span {
+  width: 44%;
   background: linear-gradient(
     90deg,
     color-mix(in srgb, var(--blue) 18%, white) 0%,
@@ -518,6 +524,19 @@ textarea {
     color-mix(in srgb, var(--blue) 18%, white) 100%
   );
   animation: async-action-progress 1.1s ease-in-out infinite;
+}
+
+.async-action-progress.determinate span {
+  width: var(--async-action-progress, 0%);
+  background: linear-gradient(
+    90deg,
+    var(--blue) 0%,
+    color-mix(in srgb, var(--blue) 62%, var(--teal)) 50%,
+    var(--blue) 100%
+  );
+  background-size: 180% 100%;
+  animation: work-progress-pulse 1.6s linear infinite;
+  transition: width 160ms ease;
 }
 
 @keyframes async-action-progress {
@@ -6727,6 +6746,90 @@ pre {
   white-space: nowrap;
 }
 
+.two-factor-settings {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.two-factor-status-row,
+.two-factor-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.two-factor-status-row > div {
+  display: grid;
+  gap: 3px;
+}
+
+.two-factor-status-row strong,
+.two-factor-recovery > span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.two-factor-status-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.two-factor-status-row em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.two-factor-setup-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.65fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.two-factor-secret-control {
+  min-width: 0;
+}
+
+.two-factor-secret-control input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0;
+}
+
+.account-security-button {
+  min-height: var(--button-control-height);
+  align-self: end;
+  white-space: nowrap;
+}
+
+.two-factor-recovery {
+  align-items: flex-start;
+}
+
+.two-factor-recovery > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.two-factor-recovery code {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 4px 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .import-processing-panel {
   grid-column: 1 / -1;
   display: grid;
@@ -9656,6 +9759,7 @@ button.history-row,
   .workbench.split,
   .settings-grid,
   .account-settings-grid,
+  .two-factor-setup-grid,
 	  .editor-grid,
 	  .scope-grid,
 	  .reader-compare,

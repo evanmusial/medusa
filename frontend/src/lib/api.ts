@@ -66,6 +66,11 @@ import type {
   TagOptimizationApproveAllResult,
   TagOptimizationResult,
   TagOperationResult,
+  TwoFactorDisablePayload,
+  TwoFactorEnablePayload,
+  TwoFactorEnableResult,
+  TwoFactorSetup,
+  TwoFactorSetupPayload,
   User,
   VisualScanCandidate,
   VisualScanReview,
@@ -85,12 +90,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  login: (email: string, password: string) =>
-    request<User>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  login: (email: string, password: string, otpCode?: string) =>
+    request<User>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password, otp_code: otpCode || null }) }),
   logout: () => request<{ status: string }>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/me"),
   updateMe: (body: AccountUpdatePayload) =>
     request<User>("/api/me", { method: "PATCH", body: JSON.stringify(body) }),
+  startTwoFactorSetup: (body: TwoFactorSetupPayload) =>
+    request<TwoFactorSetup>("/api/me/two-factor/setup", { method: "POST", body: JSON.stringify(body) }),
+  enableTwoFactor: (body: TwoFactorEnablePayload) =>
+    request<TwoFactorEnableResult>("/api/me/two-factor/enable", { method: "POST", body: JSON.stringify(body) }),
+  disableTwoFactor: (body: TwoFactorDisablePayload) =>
+    request<User>("/api/me/two-factor/disable", { method: "POST", body: JSON.stringify(body) }),
   runtimeLocation: (browserHost: string) =>
     request<RuntimeLocation>(`/api/runtime-location?browser_host=${encodeURIComponent(browserHost)}`),
   releaseStatus: (clientVersion: string) =>

@@ -8,7 +8,7 @@ This is the living record of Medusa's product, design, and architecture decision
 
 Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analysis**. It is a local-first research document clearinghouse that should help organize, search, read, annotate, summarize, cite, and reuse research documents across domains of knowledge and project-specific run sheets.
 
-The product is optimized for one primary user on a trusted local network. It still requires password login because HAProxy exposes the app on LAN-accessible HTTPS port `3737`.
+The product is optimized for one primary user on a trusted local network. It still requires password login because HAProxy exposes the app on LAN-accessible HTTPS port `3737`; the live password is stored as a database hash after first boot, and the account can require authenticator-app two-factor authentication.
 
 Core workflows:
 
@@ -335,11 +335,12 @@ Expected behavior:
 
 Authentication:
 
-- Single-user password login.
+- Single-user password login with optional authenticator-app TOTP.
 - Session cookies are HTTP-only and backed by hashed session tokens in PostgreSQL.
 - Default dev credentials exist only so a fresh local stack is usable. Real use should set `MEDUSA_PASSWORD` in `.env`.
 - `MEDUSA_ADMIN_EMAIL` and `MEDUSA_PASSWORD` seed the first admin account only. Once the user row exists, the live login email and password are PostgreSQL account state, and Settings > Account is the supported in-app rotation path.
 - Account credential changes require the current password. Password changes hash the new password and revoke other active sessions while preserving the browser session that made the change.
+- Settings > Account can generate a TOTP setup key, require a current authenticator code before enabling 2FA, store the TOTP secret and hashed recovery codes on the user row, and disable 2FA only after current-password plus TOTP or recovery-code verification. Enabling or disabling 2FA revokes other sessions.
 
 Secrets:
 
@@ -370,7 +371,7 @@ Operational settings:
 - HAProxy and the Vite API proxy use five-minute client/server timeouts so intentionally synchronous long-running API calls, especially Tags Optimize plan generation over broad tag scopes, can finish while the UI progress strip remains visible.
 - The active import concurrency, citation convention, Library alternate-row shading preference, accent color preferences, Download Naming template, saved GCS bucket, managed service-account display/path metadata, document cache size, and model selections are stored in PostgreSQL through `AppPreference` and can be changed in Settings without editing `.env`; private credential JSON remains outside PostgreSQL and outside exports.
 - Portable deployment logic must distinguish repository data from database data: `./data` bind mounts application files and caches, while the default `medusa-postgres` volume remains host-local Docker state. Moving to another machine should restore a full PostgreSQL dump; running directly from removable media should require a separate Compose override and a reliability warning for slow or flash-style storage.
-- Release detection is file-backed so the web backend does not need host Docker or git control. `MEDUSA_RELEASE_STATUS_PATH` defaults to `/app/data/deploy/release-status.json`, and `MEDUSA_RELEASE_REQUEST_PATH` defaults to `/app/data/deploy/release-request.json`. A host-side release agent such as `scripts/medusa-release-agent.py` owns `git fetch`, fast-forward-only merge, Compose rebuild/restart, and health verification. The backend reads the status file and writes a request file when an authenticated user clicks `Upgrade Now`; server systemd units can own the Compose stack, refresh release status on a timer, and consume upgrade-request files outside the container. The signed-in frontend performs lightweight release-status checks on a short idle cadence so newly available upgrades appear promptly, then treats an accepted upgrade request as a blocking release transaction: it polls release status through restart gaps, verifies `/api/health` after the agent reports completion, and reloads the browser when the server is running a newer build than the current bundle. When no server update remains and only the browser bundle is stale, the header action is labeled `Reload Now`.
+- Release detection is file-backed so the web backend does not need host Docker or git control. `MEDUSA_RELEASE_STATUS_PATH` defaults to `/app/data/deploy/release-status.json`, and `MEDUSA_RELEASE_REQUEST_PATH` defaults to `/app/data/deploy/release-request.json`. A host-side release agent such as `scripts/medusa-release-agent.py` owns `git fetch`, fast-forward-only merge, Compose rebuild/restart, and health verification. The agent also writes the target `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` into ignored `.env` before Compose rebuilds so later container recreates keep the same runtime/browser build identity. The backend reads the status file and writes a request file when an authenticated user clicks `Upgrade Now`; server systemd units can own the Compose stack, refresh release status on a timer, and consume upgrade-request files outside the container. The signed-in frontend performs lightweight release-status checks on a short idle cadence so newly available upgrades appear promptly, then treats an accepted upgrade request as a blocking release transaction: it polls release status through restart gaps, verifies `/api/health` after the agent reports completion, and reloads the browser with a cache-busting URL when the server is running a newer build than the current bundle. When no server update remains and only the browser bundle is stale, the header action is labeled `Reload Now`.
 
 Safe deletion:
 
@@ -382,9 +383,9 @@ Safe deletion:
 - The reserved header active-work control includes backup and restore progress. Backup phases are `initializing`, `dumping`, `compressing`, `uploading`, `verifying`, and `complete`/`failed`; restore phases include `safety_backup`, `fetching`, `checking`, `restoring`, `migrating`, and terminal state.
 - `/api/backups/estimate` reports the current PostgreSQL database size and a likely compressed backup size, using the latest completed backup's compression ratio when a manifest has source database size. `/api/backups/gcs` lists all available GCS `.dump.zst` artifacts from the backup folder using manifests and object metadata; Utilities sums those rows to show the total remote backup footprint. `/api/backups/database` starts a new full backup. `/api/restores/database` starts restore from a selected GCS backup. `/api/restores/database/upload` remains an authenticated API recovery hook but is not exposed in the normal Utilities UI.
 - Every restore must first create a new full pre-restore safety backup and verify its upload/checksum before the target dump is fetched, checked, decompressed, and applied. Restore uses `pg_restore --clean --if-exists --no-owner --no-privileges`, then runs Alembic migrations so older dumps can be brought to the current schema. Because `pg_restore` replaces `BackupRun` rows, the backend must reconstruct the completed restore row afterward, preserve the verified safety-backup row, and neutralize active backup/restore rows inherited from the restored snapshot; if the selected source backup's own row was captured mid-dump, it is completed from the verified source artifact instead of blocking future work. The Utilities UI asks for confirmation before creating a restore run. A full database restore can replace session rows, so the browser may need to sign in again after restore.
-- Full database backups are true PostgreSQL snapshots and therefore include auth tables such as password hashes and session rows. API keys and service-account JSON are not stored in PostgreSQL and are not written into backup manifests; managed Google key files remain in ignored local data paths and must exist on the restored machine for GCS/Google integrations.
+- Full database backups are true PostgreSQL snapshots and therefore include auth tables such as password hashes, session rows, TOTP secrets, and hashed recovery codes. API keys and service-account JSON are not stored in PostgreSQL and are not written into backup manifests; managed Google key files remain in ignored local data paths and must exist on the restored machine for GCS/Google integrations.
 - Full database backup/restore is the supported portability path for the system of record. Copying the repo, `data/originals`, or `data/processing-cache` without a database dump is not a complete library move.
-- Legacy backup/export routes are authenticated and intentionally omit API keys, service-account credentials, password hashes, and session tokens.
+- Legacy backup/export routes are authenticated and intentionally omit API keys, service-account credentials, password hashes, session tokens, TOTP secrets, and recovery-code hashes.
 - `/api/exports/metadata` returns full metadata JSON with organization state, extracted text, notes, correction history, jobs, Concordance history, and an embedded storage manifest.
 - `/api/exports/storage-manifest` returns the durable original/page/figure asset URI manifest by itself.
 - `/api/openai/usage` returns authenticated usage totals, task/model rollups, recent OpenAI/Gemini call records, pricing status, the active OpenAI pricing tier, and estimated costs for a requested period (`last_day`, `last_month`, `last_3_months`, or `all_time`). Unknown models are counted as unpriced rather than guessed.
@@ -1017,7 +1018,7 @@ Consequences:
 - Utilities now includes backup/export controls for full metadata and the asset manifest.
 - `backend/app/services/exports.py` owns export construction so future restore tooling can share the schema.
 - Metadata exports include documents, extracted text, tags, domains, annotations, notes, attributes, correction history, projects, jobs, Concordance state, citation candidates, and storage URI references.
-- Exports intentionally omit service-account credentials, API keys, password hashes, and session tokens.
+- Exports intentionally omit service-account credentials, API keys, password hashes, session tokens, TOTP secrets, and recovery-code hashes.
 - JSON metadata restore later became the CLI `restore_export` workflow; full disaster recovery is handled by the 2026-06-19 PostgreSQL backup/restore workflow.
 
 ### 2026-06-19: Full database backup and restore through GCS
@@ -1164,7 +1165,7 @@ Consequences:
 - Citation Refresh queues a forced `citation_refresh` Concordance Run for both APA citation surfaces instead of relying on a page-local request lifecycle.
 - The app shell records a local "starting" job immediately, reconciles it with persisted Concordance run/job state, and displays starting/queued/running status in the header active-work control.
 - Page-local controls can unmount without losing the shell's progress/error display. If the originating page remains mounted, its button can still flash completion/failure from the watched job.
-- Buttons that start async work use the same restrained feedback language: soft blue plus a spinning in-button icon and slim progress bar while work is in flight, a timed green success blend on completion, red plus a short error popover for failure, then a fade back to the normal button color.
+- Buttons that start async work use the same restrained feedback language: soft blue plus a spinning in-button icon and slim progress bar while work is in flight, a timed green success blend on completion, red plus a short error popover for failure, then a fade back to the normal button color. When the originating control can see durable job state, such as Concordance refresh jobs or backup/restore runs, the in-button bar fills from that state; operations with no reliable percent, such as SQL maintenance, keep the animated in-flight rail.
 - Import progress shares the header active-work control because imports already have dashboard-backed progress, while import requeue buttons use the same transient feedback convention.
 - Recommendation refresh/download buttons use the same local feedback convention until recommendation downloads become durable background fetch jobs.
 
@@ -1285,3 +1286,17 @@ Consequences:
 - `DoiStash` rows are unique by normalized DOI, can be reactivated after soft delete, and keep recommendation/source evidence plus import job/document pointers.
 - Stashes view lists saved DOIs with local sorting, per-row DOI copy, manual Sci-Hub DOI links in a new window that first copy the paper title, resolver-backed Import DOI, Upload PDF, compact dashed drag target controls, and Library validation plus stash-record deletion for already matched documents.
 - Stash uploads create normal import batches, documents, storage writes, cache records, import jobs, duplicate-skip events, and queue progress. Once the import job completes, a duplicate match is accepted as already imported, or a ready Library document matches by DOI/title, the stash can be removed from the active list.
+
+### 2026-06-26: Database-backed password hashes and account 2FA
+
+Decision: Keep the first admin password as a first-boot `.env` seed only, store the live password as `users.password_hash`, and add optional authenticator-app TOTP to the single-user account.
+
+Why: Medusa is LAN-accessible through HAProxy, so the login process should not depend on a long-lived plaintext `.env` password after the account exists. The app also needs a second factor that fits the local-first single-user model without adding an external identity provider.
+
+Consequences:
+
+- `users` stores TOTP enablement, the TOTP secret, last-used time step, confirmation timestamp, and hashed one-time recovery codes.
+- `/api/auth/login` verifies the password hash and, when enabled, requires a current TOTP code or unused recovery code before issuing the HTTP-only session cookie.
+- Settings > Account generates a setup key, confirms the first code before enabling 2FA, shows recovery codes once, and requires current password plus TOTP or recovery code to disable 2FA.
+- Enabling or disabling 2FA revokes other active sessions. Password changes continue to revoke other sessions while preserving the current browser session.
+- Legacy metadata exports and restore validation treat TOTP secrets and recovery-code hashes as secret auth material. Full PostgreSQL backups include them because they are complete database snapshots.

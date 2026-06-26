@@ -70,6 +70,42 @@ def env_file_value(repo: Path, key: str) -> str | None:
     return None
 
 
+def env_assignment(key: str, value: str) -> str:
+    return f"{key}={json.dumps(value)}"
+
+
+def persist_build_identity(repo: Path, target: dict[str, Any]) -> dict[str, str]:
+    values = {
+        "MEDUSA_BUILD_VERSION": str(target["version"]),
+        "MEDUSA_BUILD_DATE": str(target["version"])[:8],
+        "MEDUSA_BUILD_HASH": str(target["git_sha_short"]),
+        "MEDUSA_GIT_SHA": str(target["git_sha"]),
+    }
+    env_path = repo / ".env"
+    try:
+        lines = env_path.read_text().splitlines()
+    except FileNotFoundError:
+        lines = []
+    seen: set[str] = set()
+    next_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        key = stripped.split("=", 1)[0].strip() if stripped and not stripped.startswith("#") and "=" in stripped else ""
+        if key in values:
+            next_lines.append(env_assignment(key, values[key]))
+            seen.add(key)
+            continue
+        next_lines.append(line)
+    missing = [key for key in values if key not in seen]
+    if missing:
+        if next_lines and next_lines[-1].strip():
+            next_lines.append("")
+        next_lines.append("# Medusa release identity; maintained by scripts/medusa-release-agent.py.")
+        next_lines.extend(env_assignment(key, values[key]) for key in missing)
+    env_path.write_text("\n".join(next_lines).rstrip() + "\n")
+    return values
+
+
 def current_branch(repo: Path) -> str:
     branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     return branch if branch != "HEAD" else "detached"
@@ -208,6 +244,7 @@ def apply(args: argparse.Namespace) -> int:
         if dirty:
             raise RuntimeError("The server checkout has local changes; refusing automatic upgrade.")
         if current_sha == available_sha:
+            persist_build_identity(repo, release_version(repo, current_sha, branch, "git-local"))
             write_phase(args, "complete", "Medusa was already current.")
             request_path.unlink(missing_ok=True)
             return 0
@@ -215,15 +252,9 @@ def apply(args: argparse.Namespace) -> int:
         git(repo, "merge", "--ff-only", upstream)
         target_sha = git(repo, "rev-parse", "HEAD")
         target = release_version(repo, target_sha, branch, "git-local")
+        build_identity = persist_build_identity(repo, target)
         env = os.environ.copy()
-        env.update(
-            {
-                "MEDUSA_BUILD_VERSION": target["version"],
-                "MEDUSA_BUILD_DATE": target["version"][:8],
-                "MEDUSA_BUILD_HASH": target["git_sha_short"],
-                "MEDUSA_GIT_SHA": target_sha,
-            }
-        )
+        env.update(build_identity)
         write_phase(args, "building", f"Building Medusa {target['version']}.")
         run_command(["docker", "compose", "up", "-d", "--build"], cwd=repo, env=env)
         write_phase(args, "verifying", "Waiting for Medusa health after upgrade.")

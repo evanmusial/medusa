@@ -250,7 +250,10 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add production-password guardrails.
   - Acceptance: default password use is visibly warned in UI and can be disabled through `.env`.
-  - Partial: Settings > Account now rotates the live login email/password after current-password verification, password changes revoke other sessions, and the login form no longer prefills the default password. Remaining work is the visible default-password warning/control.
+  - Partial: Settings > Account now rotates the live login email/password after current-password verification, password changes revoke other sessions, the login form no longer prefills the default password, and passwords are stored as PostgreSQL `users.password_hash` values seeded only on first account creation. Remaining work is the visible default-password warning/control.
+
+- [x] Add account two-factor authentication.
+  - Acceptance: Settings > Account can generate an authenticator-app setup key after current-password verification, require a current TOTP code before enabling, store the TOTP secret and hashed one-time recovery codes on the user row, require a TOTP or recovery code during login when enabled, consume recovery codes after use, and disable 2FA only after current-password plus second-factor verification.
 
 ## Testing And QA
 
