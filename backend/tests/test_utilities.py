@@ -24,7 +24,7 @@ def make_session(monkeypatch, tmp_path):
 def test_clear_import_cache_removes_only_hidden_terminal_import_rows(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import clear_hidden_import_cache, database_maintenance_status_out
-    from app.models import Document, ImportBatch, ImportJob, ProcessingEvent, Project, ProjectItem
+    from app.models import Document, Domain, ImportBatch, ImportJob, ProcessingEvent, Project, ProjectItem
     from app.services.document_cache import document_cache_path, register_document_cache
 
     original_path = tmp_path / "staged-originals" / "cleared.pdf"
@@ -33,6 +33,7 @@ def test_clear_import_cache_removes_only_hidden_terminal_import_rows(monkeypatch
 
     with Session() as db:
         project = Project(name="IT-CFS")
+        domain = Domain(name="Cybersecurity")
         batch = ImportBatch(total_files=4, shared_defaults={})
         ready_document = Document(
             title="Ready",
@@ -53,7 +54,8 @@ def test_clear_import_cache_removes_only_hidden_terminal_import_rows(monkeypatch
             checksum_sha256="q" * 64,
             processing_status="queued",
         )
-        db.add_all([project, batch, ready_document, cleared_document, active_document])
+        cleared_document.domains.append(domain)
+        db.add_all([project, domain, batch, ready_document, cleared_document, active_document])
         db.flush()
         db.add_all(
             [
@@ -102,8 +104,63 @@ def test_clear_import_cache_removes_only_hidden_terminal_import_rows(monkeypatch
         assert db.get(Document, ready_document.id) is not None
         assert db.get(Document, active_document.id) is not None
         assert db.get(Document, cleared_document.id) is None
+        assert db.get(Domain, domain.id) is not None
         assert db.query(ProjectItem).count() == 2
         assert db.query(ImportJob).count() == 1
+
+
+def test_clear_import_cache_tolerates_original_delete_failure(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    import app.main as main
+    from app.models import Document, DocumentCompositionRecord, ImportBatch, ImportJob
+    from app.services.document_cache import document_cache_path, register_document_cache
+
+    class FailingStorage:
+        def delete_uri(self, uri):
+            raise RuntimeError(f"cannot delete {uri}")
+
+    monkeypatch.setattr(main, "get_storage_service", lambda: FailingStorage())
+
+    with Session() as db:
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        document = Document(
+            title="Cleared GCS",
+            original_filename="cleared-gcs.pdf",
+            checksum_sha256="g" * 64,
+            processing_status="cleared",
+            gcs_uri="gs://bucket/medusa/documents/cleared-gcs.pdf",
+        )
+        db.add_all([batch, document])
+        db.flush()
+        job = ImportJob(batch=batch, document=document, status="cleared", current_step="cleared")
+        db.add(job)
+        db.flush()
+        db.add(
+            DocumentCompositionRecord(
+                document_id=document.id,
+                import_job_id=job.id,
+                record_kind="estimate",
+                stage_key="import_cost_estimate",
+                stage_label="Import cost estimate",
+                status="estimated",
+                amount_usd=0.01,
+            )
+        )
+        cache_path = document_cache_path(document.id)
+        cache_path.write_bytes(b"cache")
+        register_document_cache(document, cache_path, source="upload")
+        db.commit()
+
+        result = main.clear_hidden_import_cache(db)
+
+        assert result.status == "complete"
+        assert result.removed_import_documents == 1
+        assert result.removed_import_jobs == 1
+        assert result.deleted_cache_files == 1
+        assert result.deleted_original_objects == 0
+        assert not cache_path.exists()
+        assert db.get(Document, document.id) is None
+        assert db.query(DocumentCompositionRecord).count() == 0
 
 
 def test_database_sql_maintenance_starts_background_job(monkeypatch, tmp_path):

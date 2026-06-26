@@ -1325,6 +1325,13 @@ function backupDateLabel(value?: string | null) {
   return date.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 }
 
+function backupShortDateLabel(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "";
+  return date.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
 function modelPricingDateLabel(value?: string | null) {
   if (!value) return "";
   const date = new Date(value.includes("T") ? value : `${value}T00:00:00`);
@@ -1365,6 +1372,36 @@ function backupEstimateLabel(estimate?: BackupEstimate, loading = false) {
   if (estimate.basis === "database_size_upper_bound") return `Likely backup size: up to ${size} before compression`;
   if (estimate.basis === "latest_backup") return `Likely backup size: about ${size} (last backup)`;
   return `Likely backup size: about ${size}`;
+}
+
+type BackupSizeTrendPoint = {
+  id: string;
+  timestamp: string;
+  sizeBytes: number;
+  detail: string;
+};
+
+function backupSizeTrendPoints(artifacts: BackupArtifact[], runs: BackupRun[]): BackupSizeTrendPoint[] {
+  const artifactPoints = artifacts
+    .map((artifact) => ({
+      id: artifact.id || artifact.gcs_uri,
+      timestamp: artifact.completed_at || artifact.created_at || "",
+      sizeBytes: artifact.size_bytes || 0,
+      detail: artifact.filename,
+    }))
+    .filter((point) => point.timestamp && point.sizeBytes > 0);
+  const runPoints = runs
+    .filter((run) => run.kind === "backup" && run.status === "complete" && (run.size_bytes || 0) > 0)
+    .map((run) => ({
+      id: run.id,
+      timestamp: run.completed_at || run.started_at || run.created_at,
+      sizeBytes: run.size_bytes || 0,
+      detail: backupRunDetail(run),
+    }))
+    .filter((point) => point.timestamp && point.sizeBytes > 0);
+  return (artifactPoints.length ? artifactPoints : runPoints).sort(
+    (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+  );
 }
 
 function backgroundJobFromBackupRun(run: BackupRun): BackgroundJob {
@@ -14190,6 +14227,82 @@ function BudgetView() {
   );
 }
 
+function BackupSizeTrend({ points }: { points: BackupSizeTrendPoint[] }) {
+  const width = 640;
+  const height = 170;
+  const padding = { top: 18, right: 18, bottom: 28, left: 42 };
+  const latest = points[points.length - 1];
+  const minSize = points.length ? Math.min(...points.map((point) => point.sizeBytes)) : 0;
+  const maxSize = points.length ? Math.max(...points.map((point) => point.sizeBytes)) : 0;
+  const range = Math.max(1, maxSize - minSize);
+  const xForIndex = (index: number) =>
+    points.length <= 1
+      ? width / 2
+      : padding.left + (index / (points.length - 1)) * (width - padding.left - padding.right);
+  const yForSize = (size: number) =>
+    maxSize === minSize
+      ? padding.top + (height - padding.top - padding.bottom) / 2
+      : padding.top + ((maxSize - size) / range) * (height - padding.top - padding.bottom);
+  const coordinates = points.map((point, index) => ({
+    ...point,
+    x: xForIndex(index),
+    y: yForSize(point.sizeBytes),
+  }));
+  const linePath = coordinates.length
+    ? coordinates.length === 1
+      ? `M ${padding.left} ${coordinates[0].y} L ${width - padding.right} ${coordinates[0].y}`
+      : coordinates.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")
+    : "";
+  const summary = points.length
+    ? points.length === 1
+      ? `${formatFileSize(points[0].sizeBytes)} on ${backupDateLabel(points[0].timestamp)}`
+      : `${formatFileSize(minSize)} to ${formatFileSize(maxSize)} across ${formatMetric(points.length)} backups`
+    : "No completed backups with size yet";
+  const firstDate = backupShortDateLabel(points[0]?.timestamp);
+  const lastDate = backupShortDateLabel(latest?.timestamp);
+
+  return (
+    <div className="backup-trend">
+      <div className="backup-trend-head">
+        <div>
+          <strong>Backup size over time</strong>
+          <span>{summary}</span>
+        </div>
+        <span>{latest ? `Latest ${formatFileSize(latest.sizeBytes)}` : "Waiting for backup history"}</span>
+      </div>
+      {coordinates.length ? (
+        <>
+          <svg
+            aria-label="Completed database backup sizes over time"
+            className="backup-trend-chart"
+            role="img"
+            viewBox={`0 0 ${width} ${height}`}
+          >
+            {[0, 0.5, 1].map((ratio) => {
+              const y = padding.top + ratio * (height - padding.top - padding.bottom);
+              return <line className="backup-trend-grid" key={ratio} x1={padding.left} x2={width - padding.right} y1={y} y2={y} />;
+            })}
+            <line className="backup-trend-axis-line" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
+            <line className="backup-trend-axis-line" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+            <path className="backup-trend-line" d={linePath} />
+            {coordinates.map((point) => (
+              <circle className="backup-trend-point" cx={point.x} cy={point.y} key={point.id} r={4}>
+                <title>{`${backupDateLabel(point.timestamp)} - ${formatFileSize(point.sizeBytes)} - ${point.detail}`}</title>
+              </circle>
+            ))}
+          </svg>
+          <div className="backup-trend-axis">
+            <span>{firstDate}</span>
+            <span>{lastDate && lastDate !== firstDate ? lastDate : ""}</span>
+          </div>
+        </>
+      ) : (
+        <div className="backup-trend-empty">No completed backups with size yet</div>
+      )}
+    </div>
+  );
+}
+
 function DatabaseBackupRestorePanel({
   backupRuns,
   preferences,
@@ -14288,6 +14401,7 @@ function DatabaseBackupRestorePanel({
   });
 
   const backupArtifacts = gcsBackupArtifacts.data || [];
+  const backupTrendPoints = backupSizeTrendPoints(backupArtifacts, backupRuns);
   const latestBackupRun = backupRuns[0];
   const backupHistoryRuns = backupRuns.slice(0, 10);
   const latestVerifiedBackupRun = backupRuns.find((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri);
@@ -14465,6 +14579,7 @@ function DatabaseBackupRestorePanel({
           </div>
         </div>
       </div>
+      <BackupSizeTrend points={backupTrendPoints} />
       <div className="backup-history">
         <div className="backup-history-head">
           <strong>Recent history</strong>

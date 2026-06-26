@@ -8923,6 +8923,95 @@ pre {
   font-weight: 500;
 }
 
+.backup-trend {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+}
+
+.backup-trend-head {
+  min-width: 0;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backup-trend-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.backup-trend-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.backup-trend-head span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-trend-chart {
+  width: 100%;
+  height: 170px;
+  display: block;
+}
+
+.backup-trend-grid,
+.backup-trend-axis-line {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.backup-trend-line {
+  fill: none;
+  stroke: var(--blue);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.backup-trend-point {
+  fill: var(--panel);
+  stroke: var(--blue);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.backup-trend-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.backup-trend-empty {
+  min-height: 138px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .backup-history {
   display: grid;
   gap: 8px;
@@ -9983,6 +10072,11 @@ button.history-row,
 
   .backup-history-head {
     grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .backup-trend-head {
+    display: grid;
     gap: 2px;
   }
 

@@ -6226,14 +6226,17 @@ def delete_staged_document_cache(document: Document) -> int:
     try:
         cache_path.unlink()
         return 1
-    except FileNotFoundError:
+    except OSError:
         return 0
 
 
 def delete_staged_original(document: Document) -> int:
     if not document.gcs_uri:
         return 0
-    return 1 if get_storage_service().delete_uri(document.gcs_uri) else 0
+    try:
+        return 1 if get_storage_service().delete_uri(document.gcs_uri) else 0
+    except Exception:
+        return 0
 
 
 def import_cache_document_ids(db: Session) -> set[str]:
@@ -6518,7 +6521,6 @@ def clear_hidden_import_cache(db: Session) -> DatabaseMaintenanceResultOut:
 
     documents = (
         db.query(Document)
-        .options(selectinload(Document.domains), selectinload(Document.tags))
         .filter(Document.id.in_(document_ids))
         .all()
         if document_ids
@@ -6547,8 +6549,9 @@ def clear_hidden_import_cache(db: Session) -> DatabaseMaintenanceResultOut:
         else 0
     )
     if document_ids:
-        db.execute(document_domains.delete().where(document_domains.c.document_id.in_(document_ids)))
-        db.execute(document_tags.delete().where(document_tags.c.document_id.in_(document_ids)))
+        for document in documents:
+            document.domains.clear()
+            document.tags.clear()
         db.query(DocumentTagAssessment).filter(DocumentTagAssessment.document_id.in_(document_ids)).delete(synchronize_session=False)
         db.query(CitationCandidate).filter(CitationCandidate.document_id.in_(document_ids)).delete(synchronize_session=False)
         db.query(ProcessingEvent).filter(ProcessingEvent.document_id.in_(document_ids)).delete(synchronize_session=False)
