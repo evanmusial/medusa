@@ -1,6 +1,6 @@
 # Portable Deployment
 
-Medusa can run from a normal Ubuntu server checkout, including carrot, as long as database state, ignored runtime files, and release refreshes are treated as separate concerns.
+Medusa can run from a normal Ubuntu server checkout, including a dedicated host, as long as database state, ignored runtime files, and release refreshes are treated as separate concerns.
 
 ## Server-Specific Files
 
@@ -35,6 +35,41 @@ python3 scripts/medusa-server-doctor.py
 
 The doctor checks Docker, Compose, the configured CPU set, the dedicated bind IP, port `3737`, required cert/secret files, and whether the base-plus-server Compose config renders.
 
+## Let's Encrypt Certificate Helper
+
+Server TLS certificates are installed into the ignored HAProxy mount:
+
+```text
+data/haproxy/fullchain.pem
+data/haproxy/privatekey.pem
+```
+
+Use `deploy/server/medusa-certbot.sh` on the target server to keep the certbot commands reproducible. The script reads `MEDUSA_PUBLIC_HOST` and `MEDUSA_BIND_IP` from the server `.env`, requests or renews the certificate with standalone HTTP-01 validation bound to that IP, copies the live Let's Encrypt files into `data/haproxy/`, and installs a certbot deploy hook that repeats the copy after automatic renewals. Standalone HTTP-01 validation requires public TCP port `80` on the bind IP to be free and reachable; Medusa itself continues to run on HTTPS port `3737`.
+
+First issuance or replacement:
+
+```bash
+deploy/server/medusa-certbot.sh issue
+```
+
+Manual renewal:
+
+```bash
+deploy/server/medusa-certbot.sh renew
+```
+
+Renewal dry run:
+
+```bash
+deploy/server/medusa-certbot.sh dry-run
+```
+
+If certbot has not registered an account on the host yet, set `MEDUSA_CERTBOT_EMAIL` for first issuance:
+
+```bash
+MEDUSA_CERTBOT_EMAIL=admin@example.com deploy/server/medusa-certbot.sh issue
+```
+
 ## Move A Library To Another Host
 
 1. Run the portability audit on the source machine.
@@ -51,18 +86,19 @@ The doctor checks Docker, Compose, the configured CPU set, the dedicated bind IP
    - optionally `data/processing-cache/` to avoid rehydrating recent PDFs.
    - copy `data/originals/` when local fallback storage contains authoritative originals that are not in GCS.
 6. Fill the target `.env` from `deploy/server/.env.server.example`, including `MEDUSA_PUBLIC_HOST`, `MEDUSA_ALLOWED_HOSTS`, `MEDUSA_BIND_IP`, `MEDUSA_CPUSET`, GCS, and model-provider credentials.
-7. Run the server doctor on the target.
-8. Start Medusa on the target:
+7. Run `deploy/server/medusa-certbot.sh issue` on the target when the target should own its own Let's Encrypt certificate.
+8. Run the server doctor on the target.
+9. Start Medusa on the target:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-9. Restore the full PostgreSQL backup from Utilities on the target.
-10. Confirm health:
+10. Restore the full PostgreSQL backup from Utilities on the target.
+11. Confirm health:
 
 ```bash
-curl -kfsS https://medusa.home.musial.io:3737/api/health
+curl -kfsS https://medusa.evan.engineer:3737/api/health
 ```
 
 The default `medusa-postgres` Docker named volume is host-local and is not copied by moving the checkout or `data/`. Use the full database backup/restore workflow as the system-of-record move.
@@ -103,7 +139,7 @@ The agent fetches the configured upstream, refuses to deploy from a dirty checko
 
 A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
 
-Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if carrot uses a different checkout location, and adjust `medusa.service` to use the server override if this host should run with `docker-compose.server.yml`:
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and adjust `medusa.service` to use the server override if this host should run with `docker-compose.server.yml`:
 
 ```ini
 ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
