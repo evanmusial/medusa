@@ -779,6 +779,34 @@ class ImportBatchOut(ApiModel):
     created_at: datetime
 
 
+class IngestionHistoryOut(BaseModel):
+    batch_id: str
+    label: str | None = None
+    status: str
+    active: bool = False
+    total_files: int = 0
+    completed_files: int = 0
+    failed_files: int = 0
+    queued_files: int = 0
+    running_files: int = 0
+    staged_files: int = 0
+    cleared_files: int = 0
+    estimated_cost_usd: float = 0.0
+    actual_cost_usd: float = 0.0
+    cost_variance_usd: float | None = None
+    cost_per_document_usd: float | None = None
+    total_size_bytes: int = 0
+    processing_preset_id: str | None = None
+    processing_preset_name: str | None = None
+    processing_preset_mode: str | None = None
+    latest_stage: str | None = None
+    duration_seconds: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ImportJobOut(ApiModel):
     id: str
     batch_id: str

@@ -130,6 +130,7 @@ import type {
   HAProxyServiceStat,
   HAProxyStatsStatus,
   Figure as FigureRecord,
+  IngestionHistory,
   ImportDuplicateCheck,
   ImportDuplicateFile,
   ImportJob,
@@ -277,6 +278,7 @@ const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
 const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
 const WORKSPACE_REFETCH_INTERVAL_MS = 15000;
 const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
+const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -470,6 +472,19 @@ function cleanBrowserTitleSegment(value?: string | null) {
 function medusaBrowserTitle(segment?: string | null) {
   const cleaned = cleanBrowserTitleSegment(segment);
   return cleaned ? `${MEDUSA_APP_NAME} | ${cleaned}` : MEDUSA_APP_NAME;
+}
+
+function readDismissedIngestionHistoryIds() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DISMISSED_INGESTION_HISTORY_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writeDismissedIngestionHistoryIds(ids: Set<string>) {
+  window.localStorage.setItem(DISMISSED_INGESTION_HISTORY_KEY, JSON.stringify([...ids]));
 }
 
 function syncBrowserUrl(path: string, state: Record<string, string | undefined>, mode: Exclude<BrowserHistoryMode, "none">) {
@@ -1259,36 +1274,44 @@ function backgroundStatusLabel(job: BackgroundJob) {
 }
 
 function HeaderWorkProgress({
+  completedImport,
   dashboard,
   jobs,
+  onDismissCompletedImport,
   onOpenQueue,
 }: {
+  completedImport?: IngestionHistory | null;
   dashboard?: Dashboard;
   jobs: BackgroundJob[];
+  onDismissCompletedImport?: (batchId: string) => void;
   onOpenQueue: () => void;
 }) {
   const importActive = Boolean(dashboard && dashboard.active_import_jobs > 0);
   const activeJobs = jobs.filter((job) => !isTerminalBackgroundStatus(job.status));
-  if (!importActive && !activeJobs.length) return <div className="header-work-slot empty" aria-hidden="true" />;
+  if (!importActive && !activeJobs.length && !completedImport) return <div className="header-work-slot empty" aria-hidden="true" />;
 
   let label = "Background work";
   let detail = "Processing";
   let progress = 10;
   let activeClass = "running";
+  let tooltip = "Open Queue to inspect active imports, Concordance runs, backups, restores, and citation review work.";
 
   if (importActive && dashboard) {
-    const total = dashboard.import_progress_total || dashboard.active_import_jobs;
-    const finished = Math.min(total, dashboard.import_progress_completed + dashboard.import_progress_failed);
-    const percent = total > 0 ? Math.round((finished / total) * 100) : 0;
-    progress = Math.max(0, Math.min(100, dashboard.import_running_jobs > 0 && percent === 0 ? 6 : percent));
-    label = "Imports";
+    const display = importProgressDisplay(dashboard);
+    progress = display.progress;
+    label = display.total > 0 ? `Importing ${display.displayed} of ${display.total} (${display.percent}%)` : "Importing";
     activeClass = dashboard.import_running_jobs > 0 ? "running" : "queued";
     const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
-    const activeElapsed = formatDuration(dashboard.import_active_elapsed_seconds);
-    const activeCost = dashboard.import_active_cost_usd > 0 ? ` - ${formatUsd(dashboard.import_active_cost_usd)}` : "";
-    detail = activeStep
-      ? `${activeStep}${activeElapsed ? ` - ${activeElapsed}` : ""}${activeCost}`
-      : `${dashboard.import_running_jobs} importing / ${dashboard.import_queued_jobs} queued`;
+    const activeEta = formatEtaMinutes(display.etaSeconds);
+    const activeCost = dashboard.import_active_cost_usd > 0 ? formatUsd(dashboard.import_active_cost_usd) : "";
+    detail = [activeStep, activeEta, activeCost].filter(Boolean).join(" - ");
+    if (!detail) detail = `${dashboard.import_running_jobs} importing / ${dashboard.import_queued_jobs} queued`;
+  } else if (completedImport) {
+    progress = 100;
+    activeClass = "complete";
+    label = completedImport.label ? `Import complete: ${completedImport.label}` : "Import complete";
+    detail = ingestionCompletionSummary(completedImport);
+    tooltip = "Open Queue to inspect completed and active import work.";
   } else {
     const job = activeJobs[0];
     progress = backgroundProgress(job);
@@ -1299,33 +1322,46 @@ function HeaderWorkProgress({
 
   return (
     <div className="header-work-slot">
-      <button
-        className={`header-work-progress ${activeClass}`}
-        data-tooltip="Open Queue to inspect active imports, Concordance runs, backups, restores, and citation review work."
-        type="button"
-        aria-label="Open import queue"
-        onClick={onOpenQueue}
-      >
-        <span className="header-work-main">
-          <span className="header-work-icon">
-            <RefreshCw className={activeClass === "running" ? "spin" : ""} size={15} />
-          </span>
-          <span className="header-work-copy">
-            <strong>{label}</strong>
-            <small>{detail}</small>
-          </span>
-        </span>
-        <span
-          aria-label={`${label}: ${progress}%`}
-          aria-valuemax={100}
-          aria-valuemin={0}
-          aria-valuenow={progress}
-          className="header-work-track"
-          role="progressbar"
+      <div className={`header-work-progress-wrap ${completedImport && !importActive && !activeJobs.length ? "dismissible" : ""}`}>
+        <button
+          className={`header-work-progress ${activeClass}`}
+          data-tooltip={tooltip}
+          type="button"
+          aria-label="Open import queue"
+          onClick={onOpenQueue}
         >
-          <span style={{ width: `${progress}%` }} />
-        </span>
-      </button>
+          <span className="header-work-main">
+            <span className="header-work-icon">
+              {activeClass === "complete" ? <CheckCircle2 size={15} /> : <RefreshCw className={activeClass === "running" ? "spin" : ""} size={15} />}
+            </span>
+            <span className="header-work-copy">
+              <strong>{label}</strong>
+              <small>{detail}</small>
+            </span>
+          </span>
+          <span
+            aria-label={`${label}: ${progress}%`}
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={progress}
+            className="header-work-track"
+            role="progressbar"
+          >
+            <span style={{ width: `${progress}%` }} />
+          </span>
+        </button>
+        {completedImport && !importActive && !activeJobs.length && onDismissCompletedImport ? (
+          <button
+            aria-label="Dismiss completed import notice"
+            className="header-work-dismiss"
+            data-tooltip="Dismiss this completed import notice."
+            onClick={() => onDismissCompletedImport(completedImport.batch_id)}
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -2052,6 +2088,36 @@ function formatDuration(seconds?: number | null) {
 function formatDurationMs(ms?: number | null) {
   if (!ms) return "";
   return formatDuration(ms / 1000);
+}
+
+function formatEtaMinutes(seconds?: number | null) {
+  if (seconds === undefined || seconds === null || !Number.isFinite(seconds)) return "";
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return `ETA ${formatMetric(minutes)}m`;
+}
+
+function importProgressDisplay(dashboard: Dashboard) {
+  const total = Math.max(0, dashboard.import_progress_total || dashboard.active_import_jobs || 0);
+  const finished = Math.min(total, Math.max(0, dashboard.import_progress_completed + dashboard.import_progress_failed));
+  const inProgress = Math.min(Math.max(0, dashboard.import_running_jobs), Math.max(0, total - finished));
+  const displayed = Math.min(total, finished + inProgress);
+  const percent = total > 0 ? Math.round((displayed / total) * 100) : 0;
+  const progress = Math.max(0, Math.min(100, dashboard.import_running_jobs > 0 && percent === 0 ? 6 : percent));
+  let etaSeconds: number | null = null;
+  const elapsed = dashboard.import_active_elapsed_seconds;
+  if (elapsed !== undefined && elapsed !== null && elapsed > 0 && total > 0 && displayed > 0 && displayed < total) {
+    etaSeconds = (elapsed / displayed) * (total - displayed);
+  }
+  return { total, finished, displayed, percent, progress, etaSeconds };
+}
+
+function ingestionCompletionSummary(batch: IngestionHistory) {
+  const pieces = [
+    `${formatMetric(batch.total_files)} ${batch.total_files === 1 ? "file" : "files"}`,
+    formatUsd(batch.actual_cost_usd),
+    batch.duration_seconds ? formatDuration(batch.duration_seconds) : "",
+  ].filter(Boolean);
+  return pieces.join(" - ");
 }
 
 const COMPOSITION_COLORS = ["#2563eb", "#14b8a6", "#f59e0b", "#8b5cf6", "#ef4444", "#64748b", "#22c55e"];
@@ -3481,7 +3547,9 @@ function Login() {
 
 function Header({
   backgroundJobs,
+  completedImport,
   dashboard,
+  onDismissCompletedImport,
   onOpenQueue,
   onOpenStatus,
   onReleaseUpgrade,
@@ -3495,7 +3563,9 @@ function Header({
   onLogout,
 }: {
   backgroundJobs: BackgroundJob[];
+  completedImport?: IngestionHistory | null;
   dashboard?: Dashboard;
+  onDismissCompletedImport?: (batchId: string) => void;
   onOpenQueue: () => void;
   onOpenStatus: () => void;
   onReleaseUpgrade: () => void;
@@ -3523,7 +3593,13 @@ function Header({
         />
       </label>
       <div className="topbar-actions">
-        <HeaderWorkProgress dashboard={dashboard} jobs={backgroundJobs} onOpenQueue={onOpenQueue} />
+        <HeaderWorkProgress
+          completedImport={completedImport}
+          dashboard={dashboard}
+          jobs={backgroundJobs}
+          onDismissCompletedImport={onDismissCompletedImport}
+          onOpenQueue={onOpenQueue}
+        />
         <ReleaseUpgradeButton busy={releaseUpgradeBusy} status={releaseStatus} onUpgrade={onReleaseUpgrade} />
         <button
           aria-label="Open Medusa status"
@@ -13884,9 +13960,11 @@ function DatabaseBackupRestorePanel({
 
 function UtilitiesView({
   backupRuns,
+  ingestionHistory,
   preferences,
 }: {
   backupRuns: BackupRun[];
+  ingestionHistory: IngestionHistory[];
   preferences?: AppPreferences;
 }) {
   const queryClient = useQueryClient();
@@ -13917,6 +13995,8 @@ function UtilitiesView({
   const status: DatabaseMaintenanceStatus | undefined = maintenanceStatus.data;
   const container: ContainerFootprintStatus | undefined = containerStatus.data;
   const haproxy: HAProxyStatsStatus | undefined = haproxyStatus.data;
+  const ingestionRows = ingestionHistory.slice(0, 12);
+  const latestIngestion = ingestionRows[0];
   const refreshMaintenanceQueries = (result: DatabaseMaintenanceStatus & { message?: string; database_size_after_bytes?: number | null }) => {
     setLastResult(result.message || "");
     queryClient.setQueryData<DatabaseMaintenanceStatus>(["database-maintenance-status"], {
@@ -14082,6 +14162,14 @@ function UtilitiesView({
   const containerLoading = containerStatus.isFetching && !container;
   const haproxyLoading = haproxyStatus.isFetching && !haproxy;
   const utilitiesLoading = maintenanceLoading || containerLoading || haproxyLoading;
+  const ingestionStatusLine = latestIngestion
+    ? `${latestIngestion.label || "Latest batch"} / ${latestIngestion.active ? "running" : latestIngestion.status.replaceAll("_", " ")}`
+    : "No ingestion history yet";
+  const latestIngestionDuration = latestIngestion?.duration_seconds ? formatDuration(latestIngestion.duration_seconds) : latestIngestion?.active ? "Running" : "Pending";
+  const latestIngestionCostPerDocument =
+    latestIngestion?.cost_per_document_usd !== undefined && latestIngestion?.cost_per_document_usd !== null
+      ? formatUsd(latestIngestion.cost_per_document_usd)
+      : "Pending";
   const cacheCountLabel = maintenanceLoading ? "..." : formatMetric(importCacheCount);
   const hiddenProjectRowsLabel = maintenanceLoading ? "..." : formatMetric(status?.hidden_project_item_count);
   const terminalJobsLabel = maintenanceLoading
@@ -14344,6 +14432,76 @@ function UtilitiesView({
           </div>
         </section>
         <DatabaseBackupRestorePanel backupRuns={backupRuns} preferences={preferences} />
+        <section className="utilities-section">
+          <div className="panel-title-row utility-section-title">
+            <div>
+              <h3>Ingestion History</h3>
+              <span>{ingestionStatusLine}</span>
+            </div>
+            <UploadCloud size={19} />
+          </div>
+          <div className="utilities-status-grid">
+            <div>
+              <span>Latest files</span>
+              <strong>{latestIngestion ? formatMetric(latestIngestion.total_files) : "0"}</strong>
+            </div>
+            <div>
+              <span>Actual cost</span>
+              <strong>{latestIngestion ? formatUsd(latestIngestion.actual_cost_usd) : "$0.00"}</strong>
+            </div>
+            <div>
+              <span>Cost / document</span>
+              <strong>{latestIngestionCostPerDocument}</strong>
+            </div>
+            <div>
+              <span>Time taken</span>
+              <strong>{latestIngestionDuration}</strong>
+            </div>
+          </div>
+          <div className="ingestion-history-list">
+            {ingestionRows.length ? (
+              ingestionRows.map((row) => {
+                const statusLabel = row.active ? row.latest_stage?.replaceAll("_", " ") || "running" : row.status.replaceAll("_", " ");
+                const processedFiles = row.completed_files + row.failed_files;
+                const costDetail = [
+                  row.estimated_cost_usd > 0 ? `${formatUsd(row.estimated_cost_usd)} estimate` : "",
+                  row.cost_per_document_usd !== undefined && row.cost_per_document_usd !== null ? `${formatUsd(row.cost_per_document_usd)} / doc` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" / ");
+                const presetLabel = row.processing_preset_name || row.processing_preset_id || "Preset unknown";
+                const timingLabel = [
+                  row.duration_seconds ? formatDuration(row.duration_seconds) : row.active ? "Running" : "",
+                  formatDatabaseSize(row.total_size_bytes),
+                ]
+                  .filter(Boolean)
+                  .join(" / ");
+                return (
+                  <div className={`ingestion-history-row ${row.active ? "active" : ""}`} key={row.batch_id}>
+                    <div>
+                      <strong>{row.label || "Unlabeled batch"}</strong>
+                      <span>{backupDateLabel(row.completed_at || row.started_at || row.created_at) || "No timestamp"}</span>
+                    </div>
+                    <div>
+                      <strong>{`${formatMetric(processedFiles)} of ${formatMetric(row.total_files)}`}</strong>
+                      <span>{`${statusLabel}${row.failed_files ? ` / ${formatMetric(row.failed_files)} failed` : ""}`}</span>
+                    </div>
+                    <div>
+                      <strong>{formatUsd(row.actual_cost_usd)}</strong>
+                      <span>{costDetail || "Actual cost pending"}</span>
+                    </div>
+                    <div>
+                      <strong>{presetLabel}</strong>
+                      <span>{timingLabel || row.processing_preset_mode || "Pending"}</span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="container-path-empty">No ingestion batches have been recorded.</div>
+            )}
+          </div>
+        </section>
         <section className="utilities-section">
           <div className="panel-title-row utility-section-title">
             <div>
@@ -16370,6 +16528,7 @@ export default function App() {
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
+  const [dismissedIngestionHistoryIds, setDismissedIngestionHistoryIds] = useState<Set<string>>(() => readDismissedIngestionHistoryIds());
   const [viewTitleSubjects, setViewTitleSubjects] = useState<Partial<Record<View, string>>>({});
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
   const releaseReloadScheduledRef = useRef(false);
@@ -16401,6 +16560,16 @@ export default function App() {
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
   const needsConcordanceData = activeView === "settings" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
+  const ingestionHistory = useQuery({
+    queryKey: ["ingestion-history"],
+    queryFn: api.ingestionHistory,
+    enabled: Boolean(me.data),
+    refetchInterval: (query) => {
+      const rows = query.state.data as IngestionHistory[] | undefined;
+      if (activeDashboardWork || rows?.some((row) => row.active)) return ACTIVE_WORK_REFETCH_INTERVAL_MS;
+      return activeView === "utilities" ? WORKSPACE_REFETCH_INTERVAL_MS : IDLE_SHELL_REFETCH_INTERVAL_MS;
+    },
+  });
   const backupRuns = useQuery({
     queryKey: ["backup-runs"],
     queryFn: api.backupRuns,
@@ -16963,12 +17132,25 @@ export default function App() {
       Number(isTerminalBackgroundStatus(left.status)) - Number(isTerminalBackgroundStatus(right.status)) ||
       right.createdAt - left.createdAt,
   );
+  const completedIngestionNotice = (ingestionHistory.data || []).find(
+    (row) => !row.active && row.total_files > 0 && !dismissedIngestionHistoryIds.has(row.batch_id),
+  );
+  const dismissCompletedIngestion = useCallback((batchId: string) => {
+    setDismissedIngestionHistoryIds((current) => {
+      const next = new Set(current);
+      next.add(batchId);
+      writeDismissedIngestionHistoryIds(next);
+      return next;
+    });
+  }, []);
   return (
     <AppTooltipProvider>
       <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
+        completedImport={completedIngestionNotice}
         dashboard={dashboard.data}
+        onDismissCompletedImport={dismissCompletedIngestion}
         onOpenQueue={() => void requestActiveViewChange("queue")}
         onOpenStatus={() => void requestActiveViewChange("status")}
         onReleaseUpgrade={handleReleaseUpgrade}
@@ -17054,7 +17236,9 @@ export default function App() {
           />
         ) : null}
         {activeView === "budget" ? <BudgetView /> : null}
-        {activeView === "utilities" ? <UtilitiesView backupRuns={backupRuns.data || []} preferences={preferences.data} /> : null}
+        {activeView === "utilities" ? (
+          <UtilitiesView backupRuns={backupRuns.data || []} ingestionHistory={ingestionHistory.data || []} preferences={preferences.data} />
+        ) : null}
         {activeView === "status" ? <StatusView dashboard={dashboard.data} /> : null}
         {activeView === "settings" ? (
           <SettingsView

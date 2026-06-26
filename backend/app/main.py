@@ -108,6 +108,7 @@ from app.schemas import (
     DomainOut,
     DomainPatch,
     DomainReorder,
+    IngestionHistoryOut,
     ImportBatchOut,
     ImportDuplicateCheckOut,
     ImportDuplicateDocumentOut,
@@ -4631,6 +4632,139 @@ def document_import_processing_preset(document: Document | None, batch: ImportBa
         if preset_id or preset_name:
             return {"id": preset_id or "balanced", "name": preset_name or str(preset_id), "mode": preset_mode or "balanced"}
     return None
+
+
+ACTIVE_IMPORT_HISTORY_STATUSES = {"staged", "queued", "running", "restored_paused"}
+
+
+def ingestion_history_timestamp(value: datetime | None) -> datetime | None:
+    if not value:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def ingestion_history_sort_time(value: datetime | None) -> float:
+    normalized = ingestion_history_timestamp(value)
+    return normalized.timestamp() if normalized else 0.0
+
+
+def latest_import_estimate_for_job(job: ImportJob) -> float:
+    estimate_records = [
+        record
+        for record in (job.composition_records or [])
+        if record.record_kind == "estimate" and record.stage_key == "import_cost_estimate"
+    ]
+    if estimate_records:
+        estimate = max(estimate_records, key=lambda record: record.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        try:
+            return max(0.0, float(estimate.amount_usd or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    persisted = document_persisted_cost_estimate(job.document)
+    return persisted[0] if persisted else 0.0
+
+
+def ingestion_history_row(batch: ImportBatch, *, actual_costs_by_job: dict[str, float]) -> dict[str, Any]:
+    jobs = list(batch.jobs or [])
+    status_counts: dict[str, int] = {}
+    for job in jobs:
+        status_counts[job.status] = status_counts.get(job.status, 0) + 1
+
+    started_candidates = [
+        ingestion_history_timestamp(event.created_at)
+        for job in jobs
+        for event in (job.events or [])
+        if event.event_type == "manual_import_process_uploads" and event.created_at
+    ]
+    if not started_candidates:
+        started_candidates = [
+            ingestion_history_timestamp(event.created_at)
+            for job in jobs
+            for event in (job.events or [])
+            if event.event_type == "started" and event.created_at
+        ]
+    if not started_candidates:
+        started_candidates = [ingestion_history_timestamp(job.locked_at) for job in jobs if job.locked_at]
+    started_candidates = [candidate for candidate in started_candidates if candidate]
+    started_at = min(started_candidates) if started_candidates else None
+
+    active = any(job.status in ACTIVE_IMPORT_HISTORY_STATUSES for job in jobs)
+    completed_at = None
+    if jobs and not active:
+        terminal_updates = [ingestion_history_timestamp(job.updated_at) for job in jobs if job.updated_at]
+        terminal_updates = [candidate for candidate in terminal_updates if candidate]
+        completed_at = max(terminal_updates) if terminal_updates else ingestion_history_timestamp(batch.updated_at)
+
+    duration_seconds = None
+    if started_at:
+        duration_end = completed_at or (utc_now() if active else None)
+        if duration_end:
+            duration_seconds = max(0, int((duration_end - started_at).total_seconds()))
+
+    running_jobs = [job for job in jobs if job.status == "running"]
+    latest_stage_job = (
+        max(running_jobs or jobs, key=lambda job: ingestion_history_sort_time(job.updated_at or job.created_at or batch.created_at))
+        if jobs
+        else None
+    )
+    total_size = sum(import_job_file_size(job.document) or 0 for job in jobs)
+    estimated_cost = round(sum(latest_import_estimate_for_job(job) for job in jobs), 6)
+    actual_cost = round(sum(actual_costs_by_job.get(job.id, 0.0) for job in jobs), 6)
+    processed_files = status_counts.get("complete", 0) + status_counts.get("failed", 0)
+    cost_per_document = round(actual_cost / processed_files, 6) if processed_files > 0 else None
+    preset = document_import_processing_preset(None, batch)
+
+    return {
+        "batch_id": batch.id,
+        "label": batch.label,
+        "status": batch.status,
+        "active": active,
+        "total_files": batch.total_files,
+        "completed_files": status_counts.get("complete", batch.completed_files),
+        "failed_files": status_counts.get("failed", batch.failed_files),
+        "queued_files": status_counts.get("queued", 0),
+        "running_files": status_counts.get("running", 0),
+        "staged_files": status_counts.get("staged", 0),
+        "cleared_files": status_counts.get("cleared", 0),
+        "estimated_cost_usd": estimated_cost,
+        "actual_cost_usd": actual_cost,
+        "cost_variance_usd": round(actual_cost - estimated_cost, 6) if estimated_cost > 0 else None,
+        "cost_per_document_usd": cost_per_document,
+        "total_size_bytes": total_size,
+        "processing_preset_id": str(preset.get("id")) if preset and preset.get("id") is not None else None,
+        "processing_preset_name": str(preset.get("name")) if preset and preset.get("name") is not None else None,
+        "processing_preset_mode": str(preset.get("mode")) if preset and preset.get("mode") is not None else None,
+        "latest_stage": latest_stage_job.current_step if latest_stage_job else None,
+        "duration_seconds": duration_seconds,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "created_at": batch.created_at,
+        "updated_at": batch.updated_at,
+    }
+
+
+@app.get("/api/utilities/ingestion-history", response_model=list[IngestionHistoryOut])
+def list_ingestion_history(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[dict[str, Any]]:
+    batches = (
+        db.query(ImportBatch)
+        .options(
+            selectinload(ImportBatch.jobs).joinedload(ImportJob.document),
+            selectinload(ImportBatch.jobs).selectinload(ImportJob.events),
+            selectinload(ImportBatch.jobs).selectinload(ImportJob.composition_records),
+        )
+        .order_by(ImportBatch.created_at.desc(), ImportBatch.id.desc())
+        .limit(limit)
+        .all()
+    )
+    job_ids = [job.id for batch in batches for job in (batch.jobs or [])]
+    actual_costs_by_job = import_job_costs_usd(db, job_ids)
+    return [ingestion_history_row(batch, actual_costs_by_job=actual_costs_by_job) for batch in batches]
 
 
 def import_estimate_calibration(db: Session) -> tuple[float, int]:

@@ -42,6 +42,7 @@ import type {
   DuplicateImportStrategy,
   FigurePatchPayload,
   HAProxyStatsStatus,
+  IngestionHistory,
   ImportDuplicateCheck,
   ImportJob,
   ImportQueueActionResult,
@@ -112,6 +113,7 @@ export const api = {
   containerFootprintStatus: () => request<ContainerFootprintStatus>("/api/utilities/container/status"),
   restartContainer: () => request<ContainerRestartResult>("/api/utilities/container/restart", { method: "POST" }),
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
+  ingestionHistory: () => request<IngestionHistory[]>("/api/utilities/ingestion-history"),
   gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
   startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),
   startDatabaseRestore: (gcsUri: string) =>

@@ -340,6 +340,108 @@ def test_import_estimates_reflect_processing_preset_steps(monkeypatch, tmp_path)
     assert deep_estimate["estimated_cost_usd"] > strict_estimate["estimated_cost_usd"]
 
 
+def test_ingestion_history_aggregates_batch_costs_and_preset(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app import main as main_module
+    from app.main import list_ingestion_history
+    from app.models import Document, DocumentCompositionRecord, ImportBatch, ImportJob, OpenAIUsageRecord, ProcessingEvent, utc_now
+
+    monkeypatch.setattr(main_module, "estimated_cost_usd_for_record", lambda _record, _db=None: 0.42)
+    started = utc_now() - timedelta(minutes=12)
+    completed = utc_now() - timedelta(minutes=2)
+    with Session() as db:
+        batch = ImportBatch(
+            label="filename sync 2026-06-25",
+            status="complete",
+            total_files=1,
+            completed_files=1,
+            shared_defaults={"processing_preset_snapshot": {"id": "balanced", "name": "Balanced", "mode": "balanced"}},
+        )
+        document = Document(
+            title="Completed",
+            original_filename="completed.pdf",
+            checksum_sha256="a" * 64,
+            metadata_evidence={"file_size_bytes": 2048},
+            processing_status="ready",
+        )
+        job = ImportJob(
+            batch=batch,
+            document=document,
+            status="complete",
+            current_step="complete",
+            created_at=started,
+            updated_at=completed,
+        )
+        db.add_all([batch, document, job])
+        db.flush()
+        db.add_all(
+            [
+                ProcessingEvent(import_job_id=job.id, document_id=document.id, event_type="manual_import_process_uploads", message="released", created_at=started),
+                DocumentCompositionRecord(
+                    document_id=document.id,
+                    import_job_id=job.id,
+                    sequence=1,
+                    record_kind="estimate",
+                    stage_key="import_cost_estimate",
+                    stage_label="Import cost estimate",
+                    provider="medusa",
+                    method="preset",
+                    status="estimated",
+                    amount_usd=0.75,
+                ),
+                OpenAIUsageRecord(
+                    document_id=document.id,
+                    import_job_id=job.id,
+                    source="import",
+                    task_key="summary_topics",
+                    operation="summary",
+                    endpoint="responses",
+                    model="gpt-5.4",
+                    input_tokens=100,
+                    output_tokens=50,
+                    total_tokens=150,
+                ),
+            ]
+        )
+        db.commit()
+
+        rows = list_ingestion_history(object(), db)
+
+    row = rows[0]
+    assert row["label"] == "filename sync 2026-06-25"
+    assert row["total_files"] == 1
+    assert row["completed_files"] == 1
+    assert row["estimated_cost_usd"] == 0.75
+    assert row["actual_cost_usd"] == 0.42
+    assert row["cost_per_document_usd"] == 0.42
+    assert row["total_size_bytes"] == 2048
+    assert row["processing_preset_name"] == "Balanced"
+    assert row["duration_seconds"] is not None
+
+
+def test_refresh_import_batch_progress_logs_completion_event_once(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import Document, ImportBatch, ImportJob, ProcessingEvent
+    from app.services.processing import refresh_import_batch_progress
+
+    with Session() as db:
+        batch = ImportBatch(label="finished", total_files=1, shared_defaults={})
+        document = Document(title="Done", original_filename="done.pdf", checksum_sha256="b" * 64)
+        job = ImportJob(batch=batch, document=document, status="complete", current_step="complete")
+        db.add_all([batch, document, job])
+        db.commit()
+
+        refresh_import_batch_progress(db, batch)
+        refresh_import_batch_progress(db, batch)
+        db.flush()
+
+        events = db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "import_batch_complete").all()
+
+    assert len(events) == 1
+    assert events[0].payload["batch_id"] == batch.id
+    assert events[0].payload["completed_files"] == 1
+
+
 def test_import_exemplar_estimates_keep_per_document_model_floor(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import estimate_import_job_cost

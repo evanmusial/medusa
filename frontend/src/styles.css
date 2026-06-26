@@ -701,6 +701,17 @@ textarea {
   pointer-events: none;
 }
 
+.header-work-progress-wrap {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.header-work-progress-wrap.dismissible .header-work-progress {
+  padding-right: 2px;
+}
+
 .header-work-progress {
   width: 100%;
   min-height: 46px;
@@ -716,6 +727,29 @@ textarea {
 
 .header-work-progress:hover {
   background: transparent;
+}
+
+.header-work-progress.complete .header-work-icon {
+  color: var(--action-success);
+}
+
+.header-work-progress.complete .header-work-track span {
+  background: var(--action-success);
+}
+
+.header-work-dismiss {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+}
+
+.header-work-dismiss:hover {
+  background: var(--panel-2);
+  color: var(--ink);
 }
 
 .header-work-main {
@@ -7554,6 +7588,60 @@ pre {
   gap: 6px;
 }
 
+.ingestion-history-list {
+  display: grid;
+  gap: 6px;
+}
+
+.ingestion-history-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(112px, 0.7fr) minmax(132px, 0.8fr) minmax(150px, 1fr);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 9px 12px;
+}
+
+.ingestion-history-row.active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+}
+
+.ingestion-history-row > div {
+  min-width: 0;
+}
+
+.ingestion-history-row > div:not(:first-child) {
+  text-align: right;
+}
+
+.ingestion-history-row strong {
+  display: block;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ingestion-history-row span {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
 .container-path-row,
 .container-version-row,
 .container-path-empty {
@@ -9365,6 +9453,7 @@ button.history-row,
   .container-control-row,
   .container-path-row,
   .container-version-row,
+  .ingestion-history-row,
   .status-fact-row,
   .haproxy-stat-row,
   .usage-metric-grid {
@@ -9394,6 +9483,7 @@ button.history-row,
 
   .container-path-row > div:last-child,
   .container-version-row > div:last-child,
+  .ingestion-history-row > div:not(:first-child),
   .status-fact-row > span {
     text-align: left;
   }

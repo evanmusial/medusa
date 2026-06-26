@@ -458,6 +458,26 @@ def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
         batch.status = "staged"
     else:
         batch.status = "queued"
+    if batch.status in {"complete", "complete_with_errors", "cleared"}:
+        existing_events = db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "import_batch_complete").all()
+        already_logged = any((event.payload or {}).get("batch_id") == batch.id for event in existing_events)
+        if not already_logged:
+            db.add(
+                ProcessingEvent(
+                    level="info" if batch.status == "complete" else "warning",
+                    event_type="import_batch_complete",
+                    message=f"Import batch {batch.label or batch.id} finished with status {batch.status}.",
+                    payload={
+                        "batch_id": batch.id,
+                        "label": batch.label,
+                        "status": batch.status,
+                        "total_files": batch.total_files,
+                        "completed_files": batch.completed_files,
+                        "failed_files": batch.failed_files,
+                        "cleared_files": cleared_files,
+                    },
+                )
+            )
 
 
 class DocumentProcessor:

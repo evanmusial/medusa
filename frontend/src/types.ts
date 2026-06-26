@@ -127,6 +127,34 @@ export type ImportProcessingStep = {
   configurable: boolean;
 };
 
+export type IngestionHistory = {
+  batch_id: string;
+  label?: string | null;
+  status: string;
+  active: boolean;
+  total_files: number;
+  completed_files: number;
+  failed_files: number;
+  queued_files: number;
+  running_files: number;
+  staged_files: number;
+  cleared_files: number;
+  estimated_cost_usd: number;
+  actual_cost_usd: number;
+  cost_variance_usd?: number | null;
+  cost_per_document_usd?: number | null;
+  total_size_bytes: number;
+  processing_preset_id?: string | null;
+  processing_preset_name?: string | null;
+  processing_preset_mode?: string | null;
+  latest_stage?: string | null;
+  duration_seconds?: number | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DocumentCacheStatus = {
   current_size_bytes: number;
   current_size_mb: number;
