@@ -30,6 +30,32 @@ BACKUP_FOLDER = "backups"
 BACKUP_SCHEMA_VERSION = 1
 RESTORE_STATE_FILE = "latest-restore-state.json"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+BACKUP_RUN_SNAPSHOT_FIELDS = (
+    "id",
+    "kind",
+    "reason",
+    "status",
+    "phase",
+    "progress",
+    "status_detail",
+    "hostname",
+    "filename",
+    "object_key",
+    "gcs_uri",
+    "size_bytes",
+    "sha256",
+    "source_kind",
+    "source_filename",
+    "source_uri",
+    "source_local_path",
+    "source_sha256",
+    "safety_backup_id",
+    "backup_metadata",
+    "last_error",
+    "started_at",
+    "completed_at",
+    "created_at",
+)
 
 
 def short_hostname(value: str | None = None) -> str:
@@ -355,15 +381,25 @@ def _execute_restore_run(run_id: str) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     raw_path: Path | None = None
     downloaded_path: Path | None = None
+    restore_started_at: datetime | None = None
+    safety_snapshot: dict[str, Any] | None = None
+    safety_id: str | None = None
+    source_kind: str | None = None
+    source_filename: str | None = None
+    source_uri: str | None = None
+    source_local_path: str | None = None
+    source_sha256: str | None = None
+    source_size_bytes: int | None = None
     try:
         ensure_backup_tools_available()
+        restore_started_at = utc_now()
         _write_restore_state(run_id, "running", "safety_backup", "Creating pre-restore safety backup.")
         _update_run(
             run_id,
             status="running",
             phase="safety_backup",
             progress=6,
-            started_at=utc_now(),
+            started_at=restore_started_at,
             status_detail="Creating and verifying a pre-restore safety backup.",
         )
         with session_scope() as db:
@@ -383,8 +419,10 @@ def _execute_restore_run(run_id: str) -> None:
             safety = db.get(BackupRun, safety_id)
             if not safety or safety.status != "complete" or not safety.sha256 or not safety.gcs_uri:
                 raise RuntimeError("Pre-restore safety backup did not complete and verify.")
+            safety_snapshot = _backup_run_snapshot(safety)
             restore_run = db.get(BackupRun, run_id)
             source_kind = restore_run.source_kind if restore_run else None
+            source_filename = restore_run.source_filename if restore_run else None
             source_uri = restore_run.source_uri if restore_run else None
             source_local_path = restore_run.source_local_path if restore_run else None
             source_sha256 = restore_run.source_sha256 if restore_run else None
@@ -399,6 +437,8 @@ def _execute_restore_run(run_id: str) -> None:
             actual_sha256 = sha256_file(downloaded_path)
             if expected_sha256 and expected_sha256 != actual_sha256:
                 raise RuntimeError("Downloaded GCS backup checksum did not match its manifest.")
+            source_sha256 = actual_sha256
+            source_size_bytes = downloaded_path.stat().st_size
             source_path = downloaded_path
         else:
             if not source_local_path:
@@ -409,6 +449,8 @@ def _execute_restore_run(run_id: str) -> None:
             actual_sha256 = sha256_file(source_path)
             if source_sha256 and actual_sha256 != source_sha256:
                 raise RuntimeError("Uploaded restore file changed before restore could start.")
+            source_sha256 = actual_sha256
+            source_size_bytes = source_path.stat().st_size
 
         _update_run(run_id, phase="checking", progress=48, status_detail="Checking and decompressing restore dump.")
         _write_restore_state(run_id, "running", "checking", "Checking and decompressing restore dump.")
@@ -426,13 +468,18 @@ def _execute_restore_run(run_id: str) -> None:
         run_migrations()
         engine.dispose()
 
-        _update_run(
+        completed_at = utc_now()
+        _finalize_restored_database_state(
             run_id,
-            status="complete",
-            phase="complete",
-            progress=100,
-            status_detail="Restore applied. Sign in again if your session changed.",
-            completed_at=utc_now(),
+            source_kind=source_kind,
+            source_filename=source_filename,
+            source_uri=source_uri,
+            source_sha256=source_sha256,
+            source_size_bytes=source_size_bytes,
+            safety_backup_id=safety_id,
+            safety_snapshot=safety_snapshot,
+            started_at=restore_started_at,
+            completed_at=completed_at,
         )
         _write_restore_state(run_id, "complete", "complete", "Restore applied.")
     except Exception as exc:
@@ -451,6 +498,105 @@ def _execute_restore_run(run_id: str) -> None:
             downloaded_path.unlink(missing_ok=True)
         if raw_path and raw_path.exists() and downloaded_path and raw_path != downloaded_path:
             raw_path.unlink(missing_ok=True)
+
+
+def _backup_run_snapshot(run: BackupRun) -> dict[str, Any]:
+    snapshot = {field: getattr(run, field) for field in BACKUP_RUN_SNAPSHOT_FIELDS}
+    snapshot["backup_metadata"] = dict(run.backup_metadata or {})
+    return snapshot
+
+
+def _upsert_backup_run_snapshot(db: Session, snapshot: dict[str, Any]) -> BackupRun:
+    run_id = snapshot.get("id")
+    run = db.get(BackupRun, run_id) if run_id else None
+    if not run:
+        run = BackupRun(id=run_id, backup_metadata={})
+        db.add(run)
+    for field in BACKUP_RUN_SNAPSHOT_FIELDS:
+        if field in snapshot:
+            setattr(run, field, snapshot[field])
+    return run
+
+
+def _finalize_restored_database_state(
+    run_id: str,
+    *,
+    source_kind: str | None,
+    source_filename: str | None,
+    source_uri: str | None,
+    source_sha256: str | None,
+    source_size_bytes: int | None,
+    safety_backup_id: str | None,
+    safety_snapshot: dict[str, Any] | None,
+    started_at: datetime | None,
+    completed_at: datetime,
+) -> None:
+    with session_scope() as db:
+        if safety_snapshot:
+            _upsert_backup_run_snapshot(db, safety_snapshot)
+
+        completed_source_ids: set[str] = set()
+        if source_uri:
+            restored_source_runs = (
+                db.query(BackupRun)
+                .filter(
+                    BackupRun.kind == "backup",
+                    BackupRun.status.in_(ACTIVE_BACKUP_STATUSES),
+                    BackupRun.gcs_uri == source_uri,
+                )
+                .all()
+            )
+            for run in restored_source_runs:
+                run.status = "complete"
+                run.phase = "complete"
+                run.progress = 100
+                run.status_detail = "Backup uploaded and verified before restore."
+                run.completed_at = run.completed_at or completed_at
+                if source_sha256 and not run.sha256:
+                    run.sha256 = source_sha256
+                if source_size_bytes and not run.size_bytes:
+                    run.size_bytes = source_size_bytes
+                completed_source_ids.add(run.id)
+
+        stale_runs = (
+            db.query(BackupRun)
+            .filter(BackupRun.status.in_(ACTIVE_BACKUP_STATUSES), BackupRun.id != run_id)
+            .all()
+        )
+        for run in stale_runs:
+            if run.id in completed_source_ids:
+                continue
+            run.status = "failed"
+            run.phase = "restored_snapshot"
+            run.progress = 100
+            run.status_detail = "Run was active in the restored snapshot and is not running on this host."
+            run.last_error = run.last_error or "Marked inactive after database restore."
+            run.completed_at = run.completed_at or completed_at
+
+        restore_run = db.get(BackupRun, run_id)
+        if not restore_run:
+            restore_run = BackupRun(id=run_id, kind="restore", reason="manual", backup_metadata={})
+            db.add(restore_run)
+        restore_run.kind = "restore"
+        restore_run.reason = "manual"
+        restore_run.status = "complete"
+        restore_run.phase = "complete"
+        restore_run.progress = 100
+        restore_run.status_detail = "Restore applied. Sign in again if your session changed."
+        restore_run.hostname = short_hostname()
+        restore_run.source_kind = source_kind
+        restore_run.source_filename = source_filename
+        restore_run.source_uri = source_uri
+        restore_run.source_sha256 = source_sha256
+        restore_run.safety_backup_id = safety_backup_id
+        restore_run.size_bytes = source_size_bytes
+        restore_run.started_at = started_at or completed_at
+        restore_run.completed_at = completed_at
+        restore_run.created_at = started_at or completed_at
+        restore_run.backup_metadata = {
+            "post_restore_reconstructed": True,
+            "source_size_bytes": source_size_bytes,
+        }
 
 
 def _ensure_no_active_backup_or_restore(db: Session) -> None:

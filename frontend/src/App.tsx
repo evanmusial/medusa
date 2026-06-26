@@ -3,6 +3,7 @@ import type {
   ChangeEvent,
   CSSProperties,
   DragEvent,
+  FormEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
@@ -268,7 +269,7 @@ type ConcordanceRunRequest = {
 };
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
 type SettingsSaveHandler = () => Promise<boolean>;
-type SelectMenuOption = { id: string; name: string };
+type SelectMenuOption = { id: string; name: string; depth?: number; meta?: string };
 
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
 const RELEASE_POLL_INTERVAL_MS = 1000;
@@ -299,6 +300,7 @@ const MEDUSA_FRONTEND_VITE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_VITE_V
 const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Metadata-Enhanced Document Understanding, Search, and Analysis";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
+const LIVE_IMPORT_JOB_STATUSES = new Set(["queued", "running"]);
 const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
 const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
@@ -536,6 +538,33 @@ function recommendationAuthorLine(item: DocumentRecommendation) {
     .join(", ");
 }
 
+function stashAuthorLine(stash: DoiStash) {
+  const authors = stash.authors || [];
+  if (!authors.length) return "";
+  return authors
+    .slice(0, 3)
+    .map((author) => [author.given, author.family].filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function stashPageCountLabel(stash: DoiStash) {
+  if (!stash.page_count || stash.page_count <= 0) return "";
+  return `${stash.page_count} ${stash.page_count === 1 ? "page" : "pages"}`;
+}
+
+function stashMetadataSourceLabel(value?: string | null) {
+  if (!value) return "";
+  if (value === "library") return "Library";
+  return recommendationProviderLabel(value);
+}
+
+function stashDescriptionPreview(stash: DoiStash) {
+  const text = decodeHtmlEntities(stash.description || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 360 ? `${text.slice(0, 357).trim()}...` : text;
+}
+
 function recommendationProviderLabel(value: string) {
   return value
     .split(",")
@@ -713,6 +742,10 @@ function formatNavCount(value: number | undefined) {
 
 function isQueueImportJob(job: ImportJob) {
   return QUEUE_IMPORT_JOB_STATUSES.has(job.status);
+}
+
+function importJobsHaveLiveWork(jobs?: ImportJob[] | null) {
+  return Boolean(jobs?.some((job) => LIVE_IMPORT_JOB_STATUSES.has(job.status)));
 }
 
 function dashboardHasActiveWork(dashboard?: Dashboard | null) {
@@ -1836,17 +1869,17 @@ function cleanFilters(filters: DocumentFilters): DocumentFilters {
   return Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value))) as DocumentFilters;
 }
 
-function selectOptionSearchText(option: SelectMenuOption | { id: string; name: string }) {
-  return `${option.name} ${option.id}`.toLowerCase();
+function selectOptionSearchText(option: SelectMenuOption) {
+  return `${option.name} ${option.meta || ""} ${option.id}`.toLowerCase();
 }
 
-function matchingSelectOptions<T extends SelectMenuOption | { id: string; name: string }>(options: T[], query: string) {
+function matchingSelectOptions<T extends SelectMenuOption>(options: T[], query: string) {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return options;
   return options.filter((option) => selectOptionSearchText(option).includes(normalizedQuery));
 }
 
-function visibleSelectOptions<T extends SelectMenuOption | { id: string; name: string }>(options: T[]) {
+function visibleSelectOptions<T extends SelectMenuOption>(options: T[]) {
   return options.slice(0, DROPDOWN_VISIBLE_OPTION_LIMIT);
 }
 
@@ -3709,7 +3742,7 @@ function domainDocumentCountLabel(domain: Domain, children: Record<string, Domai
   return `${directCount} (${descendantCount})`;
 }
 
-function domainPathLabel(domain: Domain, domains: Domain[]) {
+function domainPathParts(domain: Domain, domains: Domain[]) {
   const byId = new Map(domains.map((item) => [item.id, item]));
   const parts: string[] = [];
   let current: Domain | undefined = domain;
@@ -3719,7 +3752,11 @@ function domainPathLabel(domain: Domain, domains: Domain[]) {
     parts.unshift(current.name);
     current = current.parent_id ? byId.get(current.parent_id) : undefined;
   }
-  return parts.join(" / ");
+  return parts;
+}
+
+function domainPathLabel(domain: Domain, domains: Domain[]) {
+  return domainPathParts(domain, domains).join(" / ");
 }
 
 function descendantDomainIds(domainId: string, domains: Domain[]) {
@@ -4588,7 +4625,7 @@ function BulkMultiSelect({
   onCreateFromSearch?: (value: string) => void;
   onChange: (ids: string[]) => void;
   onPasteText?: (value: string) => void;
-  options: Array<{ id: string; name: string }>;
+  options: SelectMenuOption[];
   selectedIds: string[];
   searchPlaceholder?: string;
 }) {
@@ -4687,12 +4724,18 @@ function BulkMultiSelect({
         value={searchText}
       />
       {visibleOptions.length ? (
-        visibleOptions.map((option, index) => (
-          <label className={index === activeIndex ? "active" : ""} key={option.id}>
-            <input type="checkbox" checked={selectedIds.includes(option.id)} onChange={() => toggleId(option.id)} />
-            <span>{option.name}</span>
-          </label>
-        ))
+        visibleOptions.map((option, index) => {
+          const optionDepth = Math.max(0, option.depth || 0);
+          const optionClasses = [index === activeIndex ? "active" : "", optionDepth ? "has-hierarchy" : ""].filter(Boolean).join(" ");
+          return (
+            <label className={optionClasses} data-depth={optionDepth} key={option.id}>
+              <input type="checkbox" checked={selectedIds.includes(option.id)} onChange={() => toggleId(option.id)} />
+              <span className="bulk-multi-option-text" style={optionDepth ? { paddingLeft: `${optionDepth * 14}px` } : undefined}>
+                {option.name}
+              </span>
+            </label>
+          );
+        })
       ) : (
         <div className="bulk-multi-empty">
           {searchText.trim() && onCreateFromSearch ? `${createFromSearchLabel || "Add"} "${searchText.trim()}" with Enter` : emptyLabel}
@@ -4816,19 +4859,23 @@ function LibrarySingleSelect({
         <span>{placeholder}</span>
       </button>
       {visibleOptions.length ? (
-        visibleOptions.map((option, index) => (
-          <button
-            aria-selected={value === option.id}
-            className={[value === option.id ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
-            data-tooltip={`Choose ${option.name} for this ${placeholder.toLocaleLowerCase()} filter.`}
-            key={option.id}
-            role="option"
-            type="button"
-            onClick={() => choose(option.id)}
-          >
-            <span>{option.name}</span>
-          </button>
-        ))
+        visibleOptions.map((option, index) => {
+          const optionDepth = Math.max(0, option.depth || 0);
+          return (
+            <button
+              aria-selected={value === option.id}
+              className={[value === option.id ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
+              data-depth={optionDepth}
+              data-tooltip={`Choose ${option.name} for this ${placeholder.toLocaleLowerCase()} filter.`}
+              key={option.id}
+              role="option"
+              type="button"
+              onClick={() => choose(option.id)}
+            >
+              <span style={optionDepth ? { paddingLeft: `${optionDepth * 14}px` } : undefined}>{option.name}</span>
+            </button>
+          );
+        })
       ) : (
         <div className="bulk-multi-empty">{emptyLabel}</div>
       )}
@@ -4927,16 +4974,20 @@ function DuplicateDocumentCard({
 
 function DuplicateReviewDialog({
   error,
+  dismissingPairId,
   loading,
   onClose,
+  onDismiss,
   onRefresh,
   onResolve,
   resolvingPairId,
   scan,
 }: {
   error?: string | null;
+  dismissingPairId?: string | null;
   loading: boolean;
   onClose: () => void;
+  onDismiss: (pair: DuplicatePair) => void;
   onRefresh: () => void;
   onResolve: (pair: DuplicatePair, keepId: string, duplicateId: string) => void;
   resolvingPairId?: string | null;
@@ -4945,7 +4996,8 @@ function DuplicateReviewDialog({
   const [pairIndex, setPairIndex] = useState(0);
   const pairs = scan?.pairs || [];
   const pair = pairs[Math.min(pairIndex, Math.max(0, pairs.length - 1))];
-  const resolving = Boolean(pair && resolvingPairId === pair.id);
+  const busy = Boolean(pair && (resolvingPairId === pair.id || dismissingPairId === pair.id));
+  const dismissing = Boolean(pair && dismissingPairId === pair.id);
   useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
   useEffect(() => {
     if (pairIndex >= pairs.length) setPairIndex(Math.max(0, pairs.length - 1));
@@ -5000,12 +5052,12 @@ function DuplicateReviewDialog({
             </div>
             <div className="duplicate-review-body">
               <DuplicateDocumentCard
-                disabled={resolving}
+                disabled={busy}
                 document={pair.left}
                 onKeep={() => onResolve(pair, pair.left.id, pair.right.id)}
               />
               <DuplicateDocumentCard
-                disabled={resolving}
+                disabled={busy}
                 document={pair.right}
                 onKeep={() => onResolve(pair, pair.right.id, pair.left.id)}
               />
@@ -5015,7 +5067,7 @@ function DuplicateReviewDialog({
                 className="secondary-button compact"
                 data-disabled-reason={pairIndex <= 0 ? "this is the first duplicate pair." : undefined}
                 data-tooltip="Show the previous duplicate pair."
-                disabled={pairIndex <= 0 || resolving}
+                disabled={pairIndex <= 0 || busy}
                 onClick={() => setPairIndex((index) => Math.max(0, index - 1))}
                 type="button"
               >
@@ -5024,9 +5076,20 @@ function DuplicateReviewDialog({
               </button>
               <button
                 className="secondary-button compact"
+                data-disabled-reason={busy ? "duplicate review is already saving." : undefined}
+                data-tooltip="Mark this pair as different documents and remove their Duplicate labels from Library."
+                disabled={busy}
+                onClick={() => onDismiss(pair)}
+                type="button"
+              >
+                <X className={dismissing ? "spin" : ""} size={14} />
+                Different documents
+              </button>
+              <button
+                className="secondary-button compact"
                 data-disabled-reason={pairIndex >= pairs.length - 1 ? "this is the last duplicate pair." : undefined}
                 data-tooltip="Show the next duplicate pair."
-                disabled={pairIndex >= pairs.length - 1 || resolving}
+                disabled={pairIndex >= pairs.length - 1 || busy}
                 onClick={() => setPairIndex((index) => Math.min(pairs.length - 1, index + 1))}
                 type="button"
               >
@@ -5095,6 +5158,7 @@ function LibraryView({
   const queryClient = useQueryClient();
   const titleCleanupFeedback = useAsyncActionFeedback();
   const duplicateScanFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const trashFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const duplicateScan = useQuery({
     queryKey: ["document-duplicates"],
     queryFn: api.scanDocumentDuplicates,
@@ -5111,6 +5175,17 @@ function LibraryView({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => duplicateScanFeedback.showError(actionFailureMessage("Could not resolve duplicate", error)),
+  });
+  const dismissDuplicate = useMutation({
+    mutationFn: ({ pair }: { pair: DuplicatePair }) => api.dismissDocumentDuplicate(pair.left.id, pair.right.id),
+    onSuccess: () => {
+      duplicateScanFeedback.showSuccess();
+      void duplicateScan.refetch();
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => duplicateScanFeedback.showError(actionFailureMessage("Could not dismiss duplicate match", error)),
   });
   const saveSearch = useMutation({
     mutationFn: () => api.createSavedSearch({ name: saveName, query, filters: cleanFilters(filters) }),
@@ -5133,6 +5208,34 @@ function LibraryView({
     },
     onError: (error) => {
       titleCleanupFeedback.showError(actionFailureMessage("Could not clean up titles", error));
+    },
+  });
+  const trashDocuments = useMutation({
+    mutationFn: (documentIds: string[]) => api.trashDocuments(documentIds),
+    onSuccess: (result) => {
+      trashFeedback.showSuccess();
+      const trashedIds = new Set(result.document_ids);
+      queryClient.setQueriesData<DocumentSummary[]>({ queryKey: ["documents"] }, (current) =>
+        current ? current.filter((item) => !trashedIds.has(item.id)) : current,
+      );
+      setReaderOpen(false);
+      setSelectedIds((current) => current.filter((id) => !trashedIds.has(id)));
+      if (selectedId && trashedIds.has(selectedId)) {
+        const nextDocument = documents.find((item) => !trashedIds.has(item.id) && item.id !== selectedId);
+        if (nextDocument) setSelectedId(nextDocument.id);
+        else setSelectedId("", { updateUrl: false });
+      }
+      result.document_ids.forEach((id) => queryClient.removeQueries({ queryKey: ["document", id] }));
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-duplicates"] });
+    },
+    onError: (error) => {
+      trashFeedback.showError(actionFailureMessage("Could not move documents to Trash", error));
     },
   });
   const bulkUpdate = useMutation({
@@ -5219,7 +5322,7 @@ function LibraryView({
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
   const libraryPageCount = sortedDocuments.reduce((total, item) => total + Math.max(0, item.page_count || 0), 0);
   const libraryCountLabel = `Browsing ${formatWholeNumber(sortedDocuments.length)} document${sortedDocuments.length === 1 ? "" : "s"} (${formatWholeNumber(libraryPageCount)} page${libraryPageCount === 1 ? "" : "s"})`;
-  const domainOptions = useMemo(() => domainPickerItems(domains).map(({ id, name }) => ({ id, name })), [domains]);
+  const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
@@ -5272,6 +5375,26 @@ function LibraryView({
     setDuplicateReviewOpen(true);
   };
 
+  const confirmTrashDocuments = (documentIds: string[], label: string) => {
+    const uniqueIds = uniqueValues(documentIds);
+    if (!uniqueIds.length || trashDocuments.isPending) return;
+    const ok = window.confirm(
+      `Move ${label} to Trash?\n\nThe document${uniqueIds.length === 1 ? "" : "s"} will leave Library, search, domains, projects, recommendations, and Concordance scopes. Originals and history are preserved for a future restore flow.`,
+    );
+    if (ok) trashDocuments.mutate(uniqueIds);
+  };
+
+  const trashSelectedDocuments = () => {
+    confirmTrashDocuments(
+      selectedIds,
+      selectedIds.length === 1 ? "this document" : `${selectedIds.length} selected documents`,
+    );
+  };
+
+  const trashFocusedDocument = (target: DocumentDetail) => {
+    confirmTrashDocuments([target.id], `"${target.title}"`);
+  };
+
   const applySavedSearch = (savedSearch: SavedSearch) => {
     setQuery(savedSearch.query || "");
     setFilters({ ...emptyFilters(), ...savedSearch.filters });
@@ -5301,6 +5424,7 @@ function LibraryView({
           document={document}
           domains={domains}
           onCloseReader={() => setReaderOpen(false)}
+          onTrashDocument={trashFocusedDocument}
           preferences={preferences}
           projects={projects}
           query={query}
@@ -5460,7 +5584,11 @@ function LibraryView({
               Title Cleanup
             </button>
           </AsyncActionSlot>
-          <AsyncActionSlot busy={duplicateScan.isFetching || resolveDuplicate.isPending} feedback={duplicateScanFeedback.feedback} label="Duplicate scan in progress">
+          <AsyncActionSlot
+            busy={duplicateScan.isFetching || resolveDuplicate.isPending || dismissDuplicate.isPending}
+            feedback={duplicateScanFeedback.feedback}
+            label="Duplicate scan in progress"
+          >
             <button
               className={asyncFeedbackClass("secondary-button", duplicateScanFeedback.feedback, duplicateScan.isFetching || resolveDuplicate.isPending)}
               data-disabled-reason={duplicateScan.isFetching ? "duplicate scan is already running." : ""}
@@ -5573,6 +5701,19 @@ function LibraryView({
                 <CheckSquare size={15} />
                 Apply
               </button>
+              <AsyncActionSlot busy={trashDocuments.isPending} feedback={trashFeedback.feedback} label="Trash move in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button danger", trashFeedback.feedback, trashDocuments.isPending)}
+                  data-disabled-reason={trashDocuments.isPending ? "a trash request is already running." : ""}
+                  data-tooltip="Move the selected Library documents to Trash. Originals, history, and stored assets are preserved."
+                  disabled={trashDocuments.isPending}
+                  onClick={trashSelectedDocuments}
+                  type="button"
+                >
+                  <Trash2 className={trashDocuments.isPending ? "spin" : ""} size={15} />
+                  Trash
+                </button>
+              </AsyncActionSlot>
             </div>
           ) : null}
         </div>
@@ -5645,6 +5786,7 @@ function LibraryView({
         citationJobs={citationJobs}
         document={document}
         domains={domains}
+        onTrashDocument={trashFocusedDocument}
         onOpenReader={() => setReaderOpen(true)}
         preferences={preferences}
         projects={projects}
@@ -5654,9 +5796,11 @@ function LibraryView({
       />
       {duplicateReviewOpen ? (
         <DuplicateReviewDialog
+          dismissingPairId={dismissDuplicate.isPending ? dismissDuplicate.variables?.pair.id : null}
           error={duplicateScan.error instanceof Error ? duplicateScan.error.message : null}
           loading={duplicateScan.isFetching}
           onClose={() => setDuplicateReviewOpen(false)}
+          onDismiss={(pair) => dismissDuplicate.mutate({ pair })}
           onRefresh={() => void duplicateScan.refetch()}
           onResolve={(pair, keepId, duplicateId) => resolveDuplicate.mutate({ pair, keepId, duplicateId })}
           resolvingPairId={resolveDuplicate.isPending ? resolveDuplicate.variables?.pair.id : null}
@@ -5756,6 +5900,7 @@ function DocumentPanel({
   domains,
   onCloseReader,
   onOpenReader,
+  onTrashDocument,
   preferences,
   projects,
   query,
@@ -5768,6 +5913,7 @@ function DocumentPanel({
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
+  onTrashDocument?: (document: DocumentDetail) => void;
   preferences?: AppPreferences;
   projects: Project[];
   query: string;
@@ -5791,6 +5937,7 @@ function DocumentPanel({
       domains={domains}
       onCloseReader={onCloseReader}
       onOpenReader={onOpenReader}
+      onTrashDocument={onTrashDocument}
       preferences={preferences}
       projects={projects}
       query={query}
@@ -6571,6 +6718,7 @@ function DocumentPanelContent({
   domains,
   onCloseReader,
   onOpenReader,
+  onTrashDocument,
   preferences,
   projects,
   query,
@@ -6583,6 +6731,7 @@ function DocumentPanelContent({
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
+  onTrashDocument?: (document: DocumentDetail) => void;
   preferences?: AppPreferences;
   projects: Project[];
   query: string;
@@ -7024,13 +7173,6 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setCitationEditError(actionFailureMessage("Could not save citation", error)),
-  });
-  const deleteAnnotation = useMutation({
-    mutationFn: (annotationId: string) => api.deleteAnnotation(annotationId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    },
   });
   const updateFigure = useMutation({
     mutationFn: ({ figureId, draft }: { figureId: string; draft: FigureEditDraft }) =>
@@ -8032,7 +8174,6 @@ function DocumentPanelContent({
     const normalizedKey = name.trim().toLocaleLowerCase();
     setDocumentTags(currentTagNames.filter((tagName) => tagName.toLocaleLowerCase() !== normalizedKey));
   };
-  const annotations = document.annotations || [];
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
   const renderDomainsSection = () => (
     <section className="detail-section detail-domains-section">
@@ -9093,6 +9234,17 @@ function DocumentPanelContent({
       Open Original
     </a>
   );
+  const trashDocumentButton = onTrashDocument ? (
+    <button
+      className="secondary-button danger"
+      data-tooltip="Move this document to Trash. Originals, stored assets, and history are preserved."
+      onClick={() => onTrashDocument(document)}
+      type="button"
+    >
+      <Trash2 size={15} />
+      Trash
+    </button>
+  ) : null;
   const closeReaderButton =
     onCloseReader && readerExpanded ? (
       <button
@@ -9136,6 +9288,7 @@ function DocumentPanelContent({
                 {formulaCaptureButton}
                 {downloadOriginalLink}
                 {openOriginalLink}
+                {trashDocumentButton}
               </div>
               {closeReaderButton}
             </>
@@ -9155,6 +9308,7 @@ function DocumentPanelContent({
               <div className="detail-actions-row">
                 {downloadOriginalLink}
                 {openOriginalLink}
+                {trashDocumentButton}
               </div>
             </>
           )}
@@ -9476,39 +9630,6 @@ function DocumentPanelContent({
         ) : null}
       </section>
       <section className="detail-section">
-        <h3>Annotations</h3>
-        {annotations.length ? (
-          <div className="annotation-list">
-            {annotations.map((annotation) => (
-              <article key={annotation.id}>
-                <span className="annotation-swatch" style={{ backgroundColor: annotation.color || "#f6c343" }} />
-                <div>
-                  <strong>
-                    {annotation.kind}
-                    {annotation.page_number ? ` / page ${annotation.page_number}` : ""}
-                  </strong>
-                  <p>{annotation.body || "No note body"}</p>
-                </div>
-                <button
-                  className="icon-button"
-                  data-disabled-reason="an annotation delete request is already running."
-                  data-tooltip="Delete this annotation from the document; deleted annotations are removed from active search."
-                  onClick={() => deleteAnnotation.mutate(annotation.id)}
-                  disabled={deleteAnnotation.isPending}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-inline">
-            <Bookmark size={17} />
-            <span>No annotations yet.</span>
-          </div>
-        )}
-      </section>
-      <section className="detail-section">
         <h3>Figures</h3>
         {document.figures.length ? (
           <div className="figure-grid">
@@ -9786,6 +9907,7 @@ function DocumentPanelContent({
 type ImportPickerItem = {
   id: string;
   name: string;
+  depth?: number;
   meta?: string;
 };
 
@@ -9921,7 +10043,15 @@ function ImportDefaultPicker({
 
 function domainPickerItems(domains: Domain[]): ImportPickerItem[] {
   return domains
-    .map((domain) => ({ id: domain.id, name: domainPathLabel(domain, domains), meta: `${domain.document_count} documents` }))
+    .map((domain) => {
+      const pathParts = domainPathParts(domain, domains);
+      return {
+        id: domain.id,
+        name: pathParts.join(" / "),
+        depth: Math.max(0, pathParts.length - 1),
+        meta: `${domain.document_count} documents`,
+      };
+    })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -9978,9 +10108,11 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [draggingStashId, setDraggingStashId] = useState<string | null>(null);
   const [uploadingStashId, setUploadingStashId] = useState<string | null>(null);
+  const [manualDoi, setManualDoi] = useState("");
   const [notice, setNotice] = useState("");
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
+  const addFeedback = useAsyncActionFeedback();
   const uploadFeedback = useAsyncActionFeedbackMap();
   const importFeedback = useAsyncActionFeedbackMap();
   const removeFeedback = useAsyncActionFeedbackMap();
@@ -10007,6 +10139,25 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
       return String(leftValue).localeCompare(String(rightValue)) * direction;
     });
   }, [sortDirection, sortKey, stashes]);
+
+  const createManualStash = useMutation({
+    mutationFn: (doi: string) => api.createDoiStash({ doi }),
+    onMutate: (doi) => {
+      setNotice(`Looking up ${doi}`);
+    },
+    onSuccess: (stash) => {
+      addFeedback.showSuccess();
+      setManualDoi("");
+      setNotice(stash.title && stash.title !== stash.doi ? `Saved ${stash.title}` : `Saved ${stash.doi}`);
+      void queryClient.invalidateQueries({ queryKey: ["doi-stashes"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not add DOI stash", error);
+      addFeedback.showError(message);
+      setNotice(message);
+    },
+  });
 
   const upload = useMutation({
     mutationFn: ({ stash, file }: { stash: DoiStash; file: File }) => api.uploadDoiStashPdf(stash.id, file),
@@ -10102,6 +10253,18 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
     upload.mutate({ stash, file: pdf });
   };
 
+  const handleManualSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const doi = manualDoi.trim();
+    if (!doi) {
+      const message = "Enter a DOI to stash.";
+      addFeedback.showError(message);
+      setNotice(message);
+      return;
+    }
+    createManualStash.mutate(doi);
+  };
+
   return (
     <section className="workbench stashes-view">
       <div className="stashes-head">
@@ -10125,6 +10288,28 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
           ))}
         </div>
       </div>
+      <form className="stash-manual-form" onSubmit={handleManualSubmit}>
+        <label htmlFor="manual-stash-doi">Add DOI</label>
+        <input
+          id="manual-stash-doi"
+          data-tooltip="Paste a DOI to save it in Stashes and look up public bibliographic metadata."
+          placeholder="10.1145/example"
+          value={manualDoi}
+          onChange={(event) => setManualDoi(event.target.value)}
+        />
+        <AsyncActionSlot busy={createManualStash.isPending} feedback={addFeedback.feedback} label="DOI lookup in progress">
+          <button
+            className={asyncFeedbackClass("secondary-button compact", addFeedback.feedback, createManualStash.isPending)}
+            data-disabled-reason="a DOI stash lookup is already running."
+            data-tooltip="Save this DOI and look up title, authors, year, venue, and open-source metadata when public databases have it."
+            disabled={createManualStash.isPending}
+            type="submit"
+          >
+            <Plus className={createManualStash.isPending ? "spin" : ""} size={14} />
+            Add
+          </button>
+        </AsyncActionSlot>
+      </form>
       {notice ? <p className="stash-notice">{notice}</p> : null}
       {sortedStashes.length ? (
         <div className="stash-list">
@@ -10136,6 +10321,14 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
             const doiCopied = copiedKey === `stash-doi-${stash.id}`;
             const sciHubTitleCopied = copiedKey === `stash-sci-hub-title-${stash.id}`;
             const libraryMatchLabel = stashLibraryMatchLabel(stash);
+            const metadataItems = [
+              stashAuthorLine(stash),
+              stash.publication_year ? String(stash.publication_year) : "",
+              stashPageCountLabel(stash),
+              stash.journal || "",
+            ].filter(Boolean);
+            const description = stashDescriptionPreview(stash);
+            const metadataSource = stashMetadataSourceLabel(stash.metadata_source || stash.source_provider);
             return (
               <article key={stash.id} className="stash-row">
                 <div className="stash-main">
@@ -10158,9 +10351,21 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                       <StatusPill value={stashStatusLabel(stash)} tone={stashStatusTone(stash)} />
                     </div>
                   </div>
+                  {metadataItems.length ? (
+                    <div className="stash-doc-meta" aria-label="Stashed document metadata">
+                      {metadataItems.map((item) => (
+                        <span key={item}>{item}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="stash-doc-meta quiet" aria-label="Stashed document metadata">
+                      <span>Metadata pending</span>
+                    </div>
+                  )}
+                  {description ? <p className="stash-description">{description}</p> : null}
                   <code>{stash.doi}</code>
-                  <span>
-                    {[stash.source_provider, stash.imported_document_title, backupDateLabel(stash.created_at)].filter(Boolean).join(" / ")}
+                  <span className="stash-source-line">
+                    {[metadataSource, stash.imported_document_title, backupDateLabel(stash.created_at)].filter(Boolean).join(" / ")}
                   </span>
                 </div>
                 <div className="stash-actions">
@@ -16611,11 +16816,13 @@ export default function App() {
     queryKey: ["jobs"],
     queryFn: api.jobs,
     enabled: Boolean(me.data && needsImportJobs),
-    refetchInterval: needsImportJobs
-      ? (dashboard.data?.queue_import_jobs ?? 0) > 0
-        ? ACTIVE_WORK_REFETCH_INTERVAL_MS
-        : WORKSPACE_REFETCH_INTERVAL_MS
-      : false,
+    refetchInterval: (query) => {
+      if (!needsImportJobs) return false;
+      const currentJobs = query.state.data as ImportJob[] | undefined;
+      if (importJobsHaveLiveWork(currentJobs) || (dashboard.data?.active_import_jobs ?? 0) > 0) return ACTIVE_WORK_REFETCH_INTERVAL_MS;
+      return WORKSPACE_REFETCH_INTERVAL_MS;
+    },
+    refetchIntervalInBackground: needsImportJobs,
   });
   const concordanceCapabilities = useQuery({
     queryKey: ["concordance-capabilities"],
@@ -17085,6 +17292,15 @@ export default function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [activeView, requestActiveViewChange, requestDocumentFocus]);
 
+  const dismissCompletedIngestion = useCallback((batchId: string) => {
+    setDismissedIngestionHistoryIds((current) => {
+      const next = new Set(current);
+      next.add(batchId);
+      writeDismissedIngestionHistoryIds(next);
+      return next;
+    });
+  }, []);
+
   if (me.isLoading) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) {
     return (
@@ -17135,14 +17351,6 @@ export default function App() {
   const completedIngestionNotice = (ingestionHistory.data || []).find(
     (row) => !row.active && row.total_files > 0 && !dismissedIngestionHistoryIds.has(row.batch_id),
   );
-  const dismissCompletedIngestion = useCallback((batchId: string) => {
-    setDismissedIngestionHistoryIds((current) => {
-      const next = new Set(current);
-      next.add(batchId);
-      writeDismissedIngestionHistoryIds(next);
-      return next;
-    });
-  }, []);
   return (
     <AppTooltipProvider>
       <div className="app-shell" style={shellStyle}>

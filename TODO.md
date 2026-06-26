@@ -115,6 +115,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Reader And Annotation Experience
 
+- [ ] Restore the withdrawn annotation UI as a complete Reader workflow.
+  - Acceptance: Library and Reader do not show annotation lists, empty states, or controls until users can create, edit, delete, and search page-aware annotations from selected parsed text or an explicit note composer with kind, color, page, and body controls.
+
 - [ ] Add geometric PDF highlight overlays.
   - Acceptance: highlights can be created from selected PDF text/regions, persisted in `Annotation.geometry`, rendered on the page, and searched by body text.
 
@@ -133,8 +136,8 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 ## Library Organization And Search
 
 - [x] Add robust duplicate detection, review, and resolution.
-  - Acceptance: Library has a left-pane duplicate scan action; duplicate matching uses SHA-256, MD5, DOI, case-insensitive normalized titles, and supporting metadata; duplicate documents are labeled in Library rows and Reader/detail mode; duplicate review shows side-by-side recency and identity details; choosing which document to keep removes the unkept duplicate from active Library/search without destroying files or history; import-time duplicate checks use the same matching basis; Utilities can backfill MD5 hashes for existing documents by hydrating originals through the document cache.
-  - Completed: `Document.checksum_md5` is persisted with an Alembic migration, imports and stash/recommendation download paths write MD5, `/api/documents/duplicates/scan` and `/api/documents/duplicates/resolve` power the Library review dialog, duplicate row/detail labels include match basis, and `/api/utilities/document-hashes/backfill` computes missing MD5 hashes from cache or durable storage.
+  - Acceptance: Library has a left-pane duplicate scan action; duplicate matching uses SHA-256, MD5, DOI, case-insensitive normalized titles, and supporting metadata; duplicate documents are labeled in Library rows and Reader/detail mode; duplicate review shows side-by-side recency and identity details; choosing which document to keep removes the unkept duplicate from active Library/search without destroying files or history; marking a pair as different keeps both documents and removes the Duplicate label from that pair; import-time duplicate checks use the same matching basis; Utilities can backfill MD5 hashes for existing documents by hydrating originals through the document cache.
+  - Completed: `Document.checksum_md5` is persisted with an Alembic migration, imports and stash/recommendation download paths write MD5, `/api/documents/duplicates/scan`, `/api/documents/duplicates/resolve`, and `/api/documents/duplicates/dismiss` power the Library review dialog, duplicate row/detail labels include match basis, false-positive pair dismissals suppress future Library duplicate labels, and `/api/utilities/document-hashes/backfill` computes missing MD5 hashes from cache or durable storage.
 
 - [ ] Add optional duplicate metadata merge during resolution.
   - Acceptance: before hiding the unkept duplicate, the review dialog can selectively copy newer DOI/citation/summary/tags/domains/notes/project links or other non-conflicting metadata onto the kept document with `DocumentVersion` history and a clear before/after preview.
@@ -222,6 +225,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add original object cleanup and restore workflow.
   - Acceptance: soft-deleted documents can be restored, and permanent deletion can optionally remove original/assets after confirmation.
+  - Completed: Library selection and detail/Reader Trash actions move ready Library documents to soft-deleted Trash with history/composition audit while preserving originals and stored assets.
 
 - [ ] Add GCS manifest validation.
   - Acceptance: Medusa can check that every stored URI in Postgres exists in GCS/local storage and report missing objects.

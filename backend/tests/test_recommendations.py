@@ -583,7 +583,7 @@ def test_queue_recommendation_imports_records_download_failures(monkeypatch, tmp
         db.commit()
 
         job = db.query(ImportJob).one()
-        event = db.query(ProcessingEvent).one()
+        event = db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "download_failed").one()
         db.refresh(recommendation)
 
         assert result["failed_count"] == 1
@@ -737,6 +737,88 @@ def test_doi_stash_library_match_records_doi_and_title_basis(monkeypatch, tmp_pa
         assert rendered.imported_document_title == "Both Ways Paper"
 
 
+def test_create_doi_stash_snapshots_recommendation_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import create_doi_stash
+    from app.models import Document, DocumentRecommendation
+    from app.schemas import DoiStashCreate
+
+    Session = make_session()
+    with Session() as db:
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="c" * 64,
+            processing_status="ready",
+        )
+        db.add(source)
+        db.flush()
+        recommendation = DocumentRecommendation(
+            source_document_id=source.id,
+            match_key="doi:10.1000/recommended",
+            title="Recommended Paper",
+            doi="10.1000/recommended",
+            authors=[{"given": "Ada", "family": "Lovelace", "affiliation": None}],
+            publication_year=1843,
+            journal="Notes Journal",
+            description="A public recommendation abstract.",
+            source_provider="openalex",
+            source_url="https://example.test/recommended",
+            raw_metadata={},
+        )
+        db.add(recommendation)
+        db.commit()
+
+        rendered = create_doi_stash(
+            DoiStashCreate(doi="10.1000/recommended", recommendation_id=recommendation.id),
+            object(),
+            db,
+        )
+
+        assert rendered.title == "Recommended Paper"
+        assert rendered.authors == [{"given": "Ada", "family": "Lovelace", "affiliation": None, "email": None}]
+        assert rendered.publication_year == 1843
+        assert rendered.journal == "Notes Journal"
+        assert rendered.description == "A public recommendation abstract."
+        assert rendered.metadata_source == "openalex"
+
+
+def test_create_manual_doi_stash_enriches_public_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.schemas import DoiStashCreate
+
+    class FakeCandidate:
+        title = "Resolved Manual Paper"
+        authors = [{"given": "Grace", "family": "Hopper", "affiliation": None}]
+        publication_year = 1952
+        journal = "Compiler Studies"
+        description = "Metadata found from a public DOI database."
+        source_url = "https://publisher.test/manual"
+        pdf_url = None
+        provider = "crossref"
+        relation = "doi_lookup"
+
+    monkeypatch.setattr(main, "resolve_doi_metadata_candidate", lambda *_args, **_kwargs: FakeCandidate())
+
+    Session = make_session()
+    with Session() as db:
+        rendered = main.create_doi_stash(DoiStashCreate(doi="10.1000/manual"), object(), db)
+
+        assert rendered.title == "Resolved Manual Paper"
+        assert rendered.authors == [{"given": "Grace", "family": "Hopper", "affiliation": None, "email": None}]
+        assert rendered.publication_year == 1952
+        assert rendered.journal == "Compiler Studies"
+        assert rendered.description == "Metadata found from a public DOI database."
+        assert rendered.metadata_source == "crossref"
+        assert rendered.stash_metadata["bibliographic_lookup"]["status"] == "complete"
+
+
 def test_queue_doi_stash_open_pdf_import_queues_normal_import(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -816,7 +898,7 @@ def test_queue_doi_stash_open_pdf_import_records_unavailable(monkeypatch, tmp_pa
         db.commit()
 
         job = db.query(ImportJob).one()
-        event = db.query(ProcessingEvent).one()
+        event = db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "download_unavailable").one()
         db.refresh(stash)
 
         assert result["unavailable_count"] == 1

@@ -100,3 +100,56 @@ def test_duplicate_resolution_soft_deletes_unkept_document_with_history(monkeypa
     assert [row.id for row in remaining] == [keep.id]
     assert removed_version.change_note == "Duplicate resolution removed"
     assert removed_version.metadata_snapshot["kept_document_id"] == keep.id
+
+
+def test_duplicate_dismissal_keeps_documents_and_removes_duplicate_labels(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import dismiss_document_duplicate, list_documents, scan_document_duplicates
+    from app.models import Document, DocumentVersion
+    from app.schemas import DuplicateDismissCreate
+
+    with Session() as db:
+        first = Document(
+            title="Shared Title",
+            authors=[{"given": "A.", "family": "Researcher"}],
+            publication_year=2024,
+            original_filename="first.pdf",
+            checksum_sha256="f" * 64,
+            processing_status="ready",
+        )
+        second = Document(
+            title="shared title",
+            authors=[{"given": "A.", "family": "Researcher"}],
+            publication_year=2024,
+            original_filename="second.pdf",
+            checksum_sha256="0" * 64,
+            processing_status="ready",
+        )
+        db.add_all([first, second])
+        db.commit()
+
+        assert scan_document_duplicates(object(), db).pair_count == 1
+
+        result = dismiss_document_duplicate(
+            DuplicateDismissCreate(left_document_id=first.id, right_document_id=second.id),
+            object(),
+            db,
+        )
+        scan = scan_document_duplicates(object(), db)
+        all_rows = list_documents(object(), db)
+        duplicate_rows = list_documents(object(), db, duplicate_status="duplicates")
+        unique_rows = list_documents(object(), db, duplicate_status="unique")
+        versions = db.query(DocumentVersion).filter(DocumentVersion.change_note == "Duplicate match dismissed").all()
+        db.refresh(first)
+        db.refresh(second)
+
+    assert result.status == "dismissed"
+    assert first.deleted_at is None
+    assert second.deleted_at is None
+    assert scan.pair_count == 0
+    assert {row.duplicate_count for row in all_rows} == {0}
+    assert duplicate_rows == []
+    assert {row.id for row in unique_rows} == {first.id, second.id}
+    assert second.id in {item["document_id"] for item in first.metadata_evidence["duplicate_false_positives"]}
+    assert first.id in {item["document_id"] for item in second.metadata_evidence["duplicate_false_positives"]}
+    assert len(versions) == 2

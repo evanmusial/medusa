@@ -96,6 +96,15 @@ class DomainDeleteOut(BaseModel):
     updated_documents: int
 
 
+class DocumentTrashRequest(BaseModel):
+    document_ids: list[str] = Field(min_length=1)
+
+
+class DocumentTrashOut(BaseModel):
+    trashed: int
+    document_ids: list[str] = Field(default_factory=list)
+
+
 class TagCreate(BaseModel):
     name: str
     color: str | None = None
@@ -582,6 +591,12 @@ class DoiStashOut(ApiModel):
     id: str
     doi: str
     title: str | None = None
+    authors: list[dict[str, Any]] = Field(default_factory=list)
+    publication_year: int | None = None
+    journal: str | None = None
+    description: str | None = None
+    page_count: int | None = None
+    metadata_source: str | None = None
     source_url: str | None = None
     source_provider: str | None = None
     source_document_id: str | None = None
@@ -598,7 +613,7 @@ class DoiStashOut(ApiModel):
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("doi", "title", "source_url", "source_provider", "uploaded_filename", mode="before")
+    @field_validator("doi", "title", "journal", "description", "metadata_source", "source_url", "source_provider", "uploaded_filename", mode="before")
     @classmethod
     def decode_stash_text_fields(cls, value: Any) -> Any:
         return decode_html_entity_text(value)
@@ -686,6 +701,17 @@ class DuplicateResolveOut(BaseModel):
     keep_document_id: str
     duplicate_document_id: str
     status: str = "resolved"
+
+
+class DuplicateDismissCreate(BaseModel):
+    left_document_id: str
+    right_document_id: str
+
+
+class DuplicateDismissOut(BaseModel):
+    left_document_id: str
+    right_document_id: str
+    status: str = "dismissed"
 
 
 class ProjectItemOut(ApiModel):

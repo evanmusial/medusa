@@ -643,7 +643,7 @@ def queue_recommendation_imports(
     return {"batch_id": batch.id, **counts}
 
 
-def resolve_open_pdf_candidate_for_doi(
+def resolve_doi_metadata_candidate(
     doi: str,
     *,
     title: str | None = None,
@@ -654,23 +654,47 @@ def resolve_open_pdf_candidate_for_doi(
     if not normalized:
         return None
     candidates: dict[str, RecommendationCandidate] = {}
-    _merge_candidate(
-        candidates,
-        RecommendationCandidate(
-            title=title or normalized,
-            provider=source_provider or "doi_stash",
-            relation="doi_lookup",
-            doi=normalized,
-            source_url=source_url or doi_url(normalized),
-            raw_metadata={"provider": source_provider or "doi_stash", "relation": "doi_lookup", "doi": normalized},
-        ),
-    )
     for resolver in (_fetch_openalex_doi_candidate, _fetch_semantic_scholar_doi_candidate, _fetch_crossref_doi_candidate):
         try:
             if candidate := resolver(normalized):
                 _merge_candidate(candidates, candidate)
         except Exception:
             continue
+    if candidates:
+        candidate = sorted(candidates.values(), key=_candidate_metadata_priority, reverse=True)[0]
+        if title and (not candidate.title or normalize_title_key(candidate.title) == normalize_title_key(normalized)):
+            candidate.title = title
+        if source_url and not candidate.source_url:
+            candidate.source_url = source_url
+        if source_provider:
+            candidate.provider = unique_join(candidate.provider, source_provider)
+        return candidate
+    return RecommendationCandidate(
+        title=title or normalized,
+        provider=source_provider or "doi_stash",
+        relation="doi_lookup",
+        doi=normalized,
+        source_url=source_url or doi_url(normalized),
+        raw_metadata={"provider": source_provider or "doi_stash", "relation": "doi_lookup", "doi": normalized},
+    )
+
+
+def resolve_open_pdf_candidate_for_doi(
+    doi: str,
+    *,
+    title: str | None = None,
+    source_url: str | None = None,
+    source_provider: str | None = None,
+) -> RecommendationCandidate | None:
+    candidate = resolve_doi_metadata_candidate(
+        doi,
+        title=title,
+        source_url=source_url,
+        source_provider=source_provider,
+    )
+    if not candidate:
+        return None
+    candidates: dict[str, RecommendationCandidate] = {candidate.match_key: candidate}
     for _name, enricher in _enabled_enrichers():
         try:
             for candidate in enricher(list(candidates.values()), 1):
@@ -1116,6 +1140,21 @@ def _candidate_pdf_priority(candidate: RecommendationCandidate) -> int:
     for provider in str(candidate.provider or "").split(","):
         priority = max(priority, PDF_PROVIDER_PRIORITY.get(provider.strip(), 1))
     return priority
+
+
+def _candidate_metadata_priority(candidate: RecommendationCandidate) -> int:
+    score = 0
+    if candidate.title and normalize_title_key(candidate.title) != normalize_title_key(candidate.doi):
+        score += 8
+    if candidate.authors:
+        score += 6
+    if candidate.publication_year:
+        score += 3
+    if candidate.journal:
+        score += 2
+    if candidate.description:
+        score += 1
+    return score
 
 
 def _unpaywall_contact_email() -> str | None:

@@ -82,6 +82,8 @@ from app.schemas import (
     DatabaseMaintenanceStatusOut,
     DocumentDetail,
     DuplicateDocumentOut,
+    DuplicateDismissCreate,
+    DuplicateDismissOut,
     DuplicatePairOut,
     DuplicateResolveCreate,
     DuplicateResolveOut,
@@ -95,6 +97,8 @@ from app.schemas import (
     DocumentRecommendationOut,
     DocumentRecommendationRefreshOut,
     DocumentTextScrub,
+    DocumentTrashOut,
+    DocumentTrashRequest,
     DocumentVisualPageScanApplyCreate,
     DocumentVisualPageScanCreate,
     DocumentVisualPageScanReviewOut,
@@ -194,9 +198,11 @@ from app.services.document_visibility import (
     library_visible_document_filter,
 )
 from app.services.duplicates import (
+    DUPLICATE_FALSE_POSITIVES_KEY,
     DuplicateMatch,
     active_duplicate_matches_for_profile,
     document_duplicate_profile,
+    duplicate_false_positive_document_ids,
     duplicate_document_id_set,
     duplicate_document_version_stats,
     duplicate_match_reasons,
@@ -242,6 +248,7 @@ from app.services.recommendations import (
     queue_doi_stash_open_pdf_import,
     queue_recommendation_imports,
     refresh_document_recommendations,
+    resolve_doi_metadata_candidate,
 )
 from app.services.release_status import release_status, request_release_upgrade
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
@@ -661,6 +668,32 @@ def duplicate_pair_out(left: Document, right: Document, match: DuplicateMatch, s
         match_basis=match.match_basis,
         match_score=match.match_score,
     )
+
+
+def append_duplicate_false_positive_evidence(
+    document: Document,
+    *,
+    other_document: Document,
+    dismissed_at,
+    match_reasons: list[str],
+    match_score: int,
+    match_basis_text: str,
+) -> None:
+    evidence = dict(document.metadata_evidence or {})
+    existing_records = evidence.get(DUPLICATE_FALSE_POSITIVES_KEY)
+    records = [record for record in existing_records if isinstance(record, dict) and record.get("document_id") != other_document.id] if isinstance(existing_records, list) else []
+    records.append(
+        {
+            "document_id": other_document.id,
+            "document_title": other_document.title,
+            "dismissed_at": dismissed_at.isoformat(),
+            "match_reasons": match_reasons,
+            "match_basis": match_basis_text,
+            "match_score": match_score,
+        }
+    )
+    evidence[DUPLICATE_FALSE_POSITIVES_KEY] = records
+    document.metadata_evidence = evidence
 
 
 def normalize_tag_name(name: str) -> str:
@@ -2777,6 +2810,81 @@ def resolve_document_duplicate(
     return DuplicateResolveOut(keep_document_id=keep_document.id, duplicate_document_id=duplicate_document.id)
 
 
+@app.post("/api/documents/duplicates/dismiss", response_model=DuplicateDismissOut)
+def dismiss_document_duplicate(
+    payload: DuplicateDismissCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DuplicateDismissOut:
+    if payload.left_document_id == payload.right_document_id:
+        raise HTTPException(status_code=400, detail="Choose two different documents")
+    left_document = db.get(Document, payload.left_document_id)
+    right_document = db.get(Document, payload.right_document_id)
+    if not document_is_library_visible(left_document) or not document_is_library_visible(right_document):
+        raise HTTPException(status_code=404, detail="Duplicate pair not found")
+    if (
+        right_document.id in duplicate_false_positive_document_ids(left_document)
+        and left_document.id in duplicate_false_positive_document_ids(right_document)
+    ):
+        return DuplicateDismissOut(left_document_id=left_document.id, right_document_id=right_document.id)
+
+    reasons = duplicate_match_reasons(document_duplicate_profile(left_document), document_duplicate_profile(right_document))
+    score = duplicate_match_score(reasons)
+    basis = match_basis(reasons) if reasons else "manual review"
+    dismissed_at = utc_now()
+    left_before = document_correction_snapshot(left_document)
+    right_before = document_correction_snapshot(right_document)
+    append_duplicate_false_positive_evidence(
+        left_document,
+        other_document=right_document,
+        dismissed_at=dismissed_at,
+        match_reasons=reasons,
+        match_score=score,
+        match_basis_text=basis,
+    )
+    append_duplicate_false_positive_evidence(
+        right_document,
+        other_document=left_document,
+        dismissed_at=dismissed_at,
+        match_reasons=reasons,
+        match_score=score,
+        match_basis_text=basis,
+    )
+    db.flush()
+    record_document_version(
+        db,
+        document=left_document,
+        change_note="Duplicate match dismissed",
+        changed_fields={"metadata_evidence"},
+        before=left_before,
+        after=document_correction_snapshot(left_document),
+        extra={"operation": "duplicate_false_positive", "other_document_id": right_document.id, "match_reasons": reasons},
+    )
+    record_document_version(
+        db,
+        document=right_document,
+        change_note="Duplicate match dismissed",
+        changed_fields={"metadata_evidence"},
+        before=right_before,
+        after=document_correction_snapshot(right_document),
+        extra={"operation": "duplicate_false_positive", "other_document_id": left_document.id, "match_reasons": reasons},
+    )
+    record_manual_edit(
+        db,
+        document=left_document,
+        message="Duplicate match marked different",
+        metadata={"other_document_id": right_document.id, "match_reasons": reasons, "match_basis": basis},
+    )
+    record_manual_edit(
+        db,
+        document=right_document,
+        message="Duplicate match marked different",
+        metadata={"other_document_id": left_document.id, "match_reasons": reasons, "match_basis": basis},
+    )
+    db.commit()
+    return DuplicateDismissOut(left_document_id=left_document.id, right_document_id=right_document.id)
+
+
 @app.get("/api/documents/{document_id}/composition", response_model=DocumentCompositionOut)
 def get_document_composition(
     document_id: str,
@@ -2947,6 +3055,234 @@ def sync_doi_stash_import_status(stash: DoiStash) -> bool:
 
 
 DOI_STASH_TITLE_MATCH_THRESHOLD = 0.94
+DOI_STASH_BIBLIOGRAPHIC_METADATA_KEY = "bibliographic"
+DOI_STASH_BIBLIOGRAPHIC_LOOKUP_KEY = "bibliographic_lookup"
+DOI_STASH_LIST_LOOKUP_LIMIT = 3
+
+
+def _clean_stash_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split()).strip()
+    return text or None
+
+
+def _clean_stash_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _clean_stash_authors(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    authors: list[dict[str, Any]] = []
+    for author in value:
+        if not isinstance(author, dict):
+            continue
+        cleaned = {
+            "given": _clean_stash_text(author.get("given")) or "",
+            "family": _clean_stash_text(author.get("family")) or "",
+            "affiliation": _clean_stash_text(author.get("affiliation")),
+            "email": _clean_stash_text(author.get("email")),
+        }
+        if cleaned["given"] or cleaned["family"]:
+            authors.append(cleaned)
+    return authors
+
+
+def _doi_stash_title_is_placeholder(title: str | None, doi: str | None) -> bool:
+    normalized_doi = normalize_doi(doi)
+    if not title or not normalized_doi:
+        return not bool(title)
+    return normalized_title_similarity(title, normalized_doi) >= 0.98
+
+
+def _doi_stash_bibliographic_metadata(stash: DoiStash) -> dict[str, Any]:
+    metadata = stash.stash_metadata if isinstance(stash.stash_metadata, dict) else {}
+    bibliographic = metadata.get(DOI_STASH_BIBLIOGRAPHIC_METADATA_KEY)
+    return bibliographic if isinstance(bibliographic, dict) else {}
+
+
+def _doi_stash_recommendation_snapshot(recommendation: DocumentRecommendation | None) -> dict[str, Any]:
+    if not recommendation:
+        return {}
+    return {
+        "title": _clean_stash_text(recommendation.title),
+        "authors": _clean_stash_authors(recommendation.authors),
+        "publication_year": recommendation.publication_year,
+        "journal": _clean_stash_text(recommendation.journal),
+        "description": _clean_stash_text(recommendation.description),
+        "source_url": _clean_stash_text(recommendation.source_url),
+        "provider": _clean_stash_text(recommendation.source_provider),
+        "source": "recommendation",
+        "captured_at": utc_now().isoformat(),
+    }
+
+
+def _doi_stash_candidate_snapshot(candidate: Any | None) -> dict[str, Any]:
+    if not candidate:
+        return {}
+    return {
+        "title": _clean_stash_text(getattr(candidate, "title", None)),
+        "authors": _clean_stash_authors(getattr(candidate, "authors", None)),
+        "publication_year": _clean_stash_int(getattr(candidate, "publication_year", None)),
+        "journal": _clean_stash_text(getattr(candidate, "journal", None)),
+        "description": _clean_stash_text(getattr(candidate, "description", None)),
+        "source_url": _clean_stash_text(getattr(candidate, "source_url", None)),
+        "pdf_url": _clean_stash_text(getattr(candidate, "pdf_url", None)),
+        "provider": _clean_stash_text(getattr(candidate, "provider", None)),
+        "relation": _clean_stash_text(getattr(candidate, "relation", None)),
+        "source": "public_doi_metadata",
+        "captured_at": utc_now().isoformat(),
+    }
+
+
+def _apply_doi_stash_bibliographic_snapshot(stash: DoiStash, snapshot: dict[str, Any]) -> bool:
+    cleaned = {
+        "title": _clean_stash_text(snapshot.get("title")),
+        "authors": _clean_stash_authors(snapshot.get("authors")),
+        "publication_year": _clean_stash_int(snapshot.get("publication_year")),
+        "journal": _clean_stash_text(snapshot.get("journal")),
+        "description": _clean_stash_text(snapshot.get("description")),
+        "page_count": _clean_stash_int(snapshot.get("page_count")),
+        "source_url": _clean_stash_text(snapshot.get("source_url")),
+        "pdf_url": _clean_stash_text(snapshot.get("pdf_url")),
+        "provider": _clean_stash_text(snapshot.get("provider")),
+        "relation": _clean_stash_text(snapshot.get("relation")),
+        "source": _clean_stash_text(snapshot.get("source")),
+        "captured_at": _clean_stash_text(snapshot.get("captured_at")) or utc_now().isoformat(),
+    }
+    compact = {key: value for key, value in cleaned.items() if value not in (None, "", [])}
+    if not compact:
+        return False
+
+    metadata = dict(stash.stash_metadata or {})
+    previous = metadata.get(DOI_STASH_BIBLIOGRAPHIC_METADATA_KEY)
+    merged = dict(previous) if isinstance(previous, dict) else {}
+    changed = False
+    for key, value in compact.items():
+        if key not in merged or merged.get(key) in (None, "", []):
+            merged[key] = value
+            changed = True
+    if changed:
+        metadata[DOI_STASH_BIBLIOGRAPHIC_METADATA_KEY] = merged
+        stash.stash_metadata = metadata
+    if merged.get("title") and _doi_stash_title_is_placeholder(stash.title, stash.doi):
+        stash.title = str(merged["title"])[:800]
+        changed = True
+    if merged.get("source_url") and not stash.source_url:
+        stash.source_url = str(merged["source_url"])
+        changed = True
+    if merged.get("provider") and not stash.source_provider:
+        stash.source_provider = str(merged["provider"])[:160]
+        changed = True
+    return changed
+
+
+def enrich_doi_stash_from_public_metadata(stash: DoiStash) -> bool:
+    metadata = dict(stash.stash_metadata or {})
+    lookup = metadata.get(DOI_STASH_BIBLIOGRAPHIC_LOOKUP_KEY)
+    if isinstance(lookup, dict) and lookup.get("status") in {"complete", "unavailable", "failed"}:
+        return False
+    try:
+        candidate = resolve_doi_metadata_candidate(
+            stash.doi,
+            title=stash.title,
+            source_url=stash.source_url,
+            source_provider=stash.source_provider,
+        )
+    except Exception as exc:
+        metadata[DOI_STASH_BIBLIOGRAPHIC_LOOKUP_KEY] = {
+            "status": "failed",
+            "message": str(exc),
+            "attempted_at": utc_now().isoformat(),
+        }
+        stash.stash_metadata = metadata
+        return True
+
+    snapshot = _doi_stash_candidate_snapshot(candidate)
+    has_identity_metadata = bool(
+        (snapshot.get("title") and not _doi_stash_title_is_placeholder(str(snapshot.get("title")), stash.doi))
+        or snapshot.get("authors")
+        or snapshot.get("publication_year")
+        or snapshot.get("journal")
+        or snapshot.get("description")
+    )
+    if has_identity_metadata:
+        _apply_doi_stash_bibliographic_snapshot(stash, snapshot)
+    metadata = dict(stash.stash_metadata or {})
+    metadata[DOI_STASH_BIBLIOGRAPHIC_LOOKUP_KEY] = {
+        "status": "complete" if has_identity_metadata else "unavailable",
+        "provider": snapshot.get("provider"),
+        "attempted_at": utc_now().isoformat(),
+    }
+    stash.stash_metadata = metadata
+    return True
+
+
+def doi_stash_needs_public_metadata_lookup(stash: DoiStash) -> bool:
+    if stash.imported_document or stash.recommendation:
+        return False
+    if _doi_stash_bibliographic_metadata(stash):
+        return False
+    metadata = stash.stash_metadata if isinstance(stash.stash_metadata, dict) else {}
+    lookup = metadata.get(DOI_STASH_BIBLIOGRAPHIC_LOOKUP_KEY)
+    return not (isinstance(lookup, dict) and lookup.get("status") in {"complete", "unavailable", "failed"})
+
+
+def doi_stash_document_info(stash: DoiStash) -> dict[str, Any]:
+    bibliographic = _doi_stash_bibliographic_metadata(stash)
+    recommendation = stash.recommendation
+    imported_document = stash.imported_document
+    title = stash.title
+    authors: list[dict[str, Any]] = []
+    publication_year: int | None = None
+    journal: str | None = None
+    description: str | None = None
+    page_count: int | None = None
+    metadata_source: str | None = None
+
+    if imported_document:
+        title = imported_document.title or title
+        authors = _clean_stash_authors(imported_document.authors)
+        publication_year = imported_document.publication_year
+        journal = _clean_stash_text(imported_document.journal)
+        description = _clean_stash_text(imported_document.abstract or imported_document.rich_summary)
+        page_count = imported_document.page_count if imported_document.page_count > 0 else None
+        metadata_source = "library"
+    if recommendation and not imported_document:
+        if _doi_stash_title_is_placeholder(title, stash.doi):
+            title = recommendation.title or title
+        authors = authors or _clean_stash_authors(recommendation.authors)
+        publication_year = publication_year or recommendation.publication_year
+        journal = journal or _clean_stash_text(recommendation.journal)
+        description = description or _clean_stash_text(recommendation.description)
+        metadata_source = metadata_source or _clean_stash_text(recommendation.source_provider) or "recommendation"
+
+    title = title if not _doi_stash_title_is_placeholder(title, stash.doi) else _clean_stash_text(bibliographic.get("title")) or title
+    authors = authors or _clean_stash_authors(bibliographic.get("authors"))
+    publication_year = publication_year or _clean_stash_int(bibliographic.get("publication_year"))
+    journal = journal or _clean_stash_text(bibliographic.get("journal"))
+    description = description or _clean_stash_text(bibliographic.get("description"))
+    page_count = page_count or _clean_stash_int(bibliographic.get("page_count"))
+    metadata_source = metadata_source or _clean_stash_text(bibliographic.get("provider")) or _clean_stash_text(stash.source_provider)
+
+    return {
+        "title": title,
+        "authors": authors,
+        "publication_year": publication_year,
+        "journal": journal,
+        "description": description,
+        "page_count": page_count,
+        "metadata_source": metadata_source,
+        "source_url": stash.source_url
+        or _clean_stash_text(bibliographic.get("source_url"))
+        or (recommendation.source_url if recommendation else None),
+        "source_provider": stash.source_provider or _clean_stash_text(bibliographic.get("provider")),
+    }
 
 
 def _doi_stash_match_basis(stash: DoiStash, document: Document | None) -> str | None:
@@ -3068,18 +3404,25 @@ def sync_doi_stash_library_matches(db: Session, stashes: list[DoiStash]) -> bool
 def doi_stash_query(db: Session):
     return (
         db.query(DoiStash)
-        .options(joinedload(DoiStash.imported_document), joinedload(DoiStash.import_job))
+        .options(joinedload(DoiStash.imported_document), joinedload(DoiStash.import_job), joinedload(DoiStash.recommendation))
         .filter(DoiStash.deleted_at.is_(None))
     )
 
 
 def doi_stash_out(stash: DoiStash) -> DoiStashOut:
+    document_info = doi_stash_document_info(stash)
     return DoiStashOut(
         id=stash.id,
         doi=stash.doi,
-        title=stash.title,
-        source_url=stash.source_url,
-        source_provider=stash.source_provider,
+        title=document_info["title"],
+        authors=document_info["authors"],
+        publication_year=document_info["publication_year"],
+        journal=document_info["journal"],
+        description=document_info["description"],
+        page_count=document_info["page_count"],
+        metadata_source=document_info["metadata_source"],
+        source_url=document_info["source_url"],
+        source_provider=document_info["source_provider"],
         source_document_id=stash.source_document_id,
         recommendation_id=stash.recommendation_id,
         imported_document_id=stash.imported_document_id,
@@ -3103,8 +3446,12 @@ def list_doi_stashes(
 ) -> list[DoiStashOut]:
     stashes = doi_stash_query(db).order_by(DoiStash.created_at.desc()).all()
     changed = False
+    lookup_budget = DOI_STASH_LIST_LOOKUP_LIMIT
     for stash in stashes:
         changed = sync_doi_stash_import_status(stash) or changed
+        if lookup_budget > 0 and doi_stash_needs_public_metadata_lookup(stash):
+            changed = enrich_doi_stash_from_public_metadata(stash) or changed
+            lookup_budget -= 1
     changed = sync_doi_stash_library_matches(db, stashes) or changed
     if changed:
         db.commit()
@@ -3125,7 +3472,7 @@ def create_doi_stash(
         raise HTTPException(status_code=404, detail="Recommendation not found")
     title = payload.title or (recommendation.title if recommendation else None)
     source_url = payload.source_url or (recommendation.source_url if recommendation else None) or doi_url(doi)
-    source_provider = payload.source_provider or (recommendation.provider if recommendation else None)
+    source_provider = payload.source_provider or (recommendation.source_provider if recommendation else None)
     source_document_id = payload.source_document_id or (recommendation.source_document_id if recommendation else None)
     stash = db.query(DoiStash).filter(DoiStash.doi == doi).one_or_none()
     if stash:
@@ -3137,6 +3484,8 @@ def create_doi_stash(
         stash.recommendation_id = (payload.recommendation_id if recommendation else None) or stash.recommendation_id
         if stash.status == "removed":
             stash.status = "active"
+        if recommendation:
+            _apply_doi_stash_bibliographic_snapshot(stash, _doi_stash_recommendation_snapshot(recommendation))
     else:
         stash = DoiStash(
             doi=doi,
@@ -3149,6 +3498,10 @@ def create_doi_stash(
             stash_metadata={"created_from": "recommendation" if payload.recommendation_id else "manual"},
         )
         db.add(stash)
+        if recommendation:
+            _apply_doi_stash_bibliographic_snapshot(stash, _doi_stash_recommendation_snapshot(recommendation))
+    if not recommendation:
+        enrich_doi_stash_from_public_metadata(stash)
     db.commit()
     db.refresh(stash)
     return doi_stash_out(stash)
@@ -4029,18 +4382,77 @@ def restore_document_version(
     return document_detail_out(document, db)
 
 
+def trash_documents_by_id(db: Session, document_ids: list[str], *, source: str) -> DocumentTrashOut:
+    unique_ids = list(dict.fromkeys(document_ids))
+    if not unique_ids:
+        return DocumentTrashOut(trashed=0, document_ids=[])
+    documents = (
+        filter_library_visible_documents(
+            db.query(Document).options(
+                selectinload(Document.tags),
+                selectinload(Document.domains),
+                selectinload(Document.attributes).selectinload(DocumentAttributeValue.definition),
+                selectinload(Document.figures),
+            )
+        )
+        .filter(Document.id.in_(unique_ids))
+        .all()
+    )
+    by_id = {document.id: document for document in documents}
+    ordered_documents = [by_id[document_id] for document_id in unique_ids if document_id in by_id]
+    trashed_at = utc_now()
+    trashed_ids: list[str] = []
+    for document in ordered_documents:
+        before = document_correction_snapshot(document)
+        evidence = dict(document.metadata_evidence or {})
+        trash_events = list(evidence.get("trash_events") or [])
+        trash_events.append({"source": source, "trashed_at": trashed_at.isoformat()})
+        evidence["trash_events"] = trash_events
+        document.metadata_evidence = evidence
+        document.deleted_at = trashed_at
+        db.flush()
+        record_document_version(
+            db,
+            document=document,
+            change_note="Moved to Trash",
+            changed_fields={"deleted_at", "metadata_evidence"},
+            before=before,
+            after=document_correction_snapshot(document),
+            extra={"operation": "document_trash", "source": source, "deleted_at": trashed_at.isoformat()},
+        )
+        record_manual_edit(
+            db,
+            document=document,
+            message="Moved to Trash",
+            metadata={"operation": "document_trash", "source": source, "deleted_at": trashed_at.isoformat()},
+        )
+        trashed_ids.append(document.id)
+    db.commit()
+    return DocumentTrashOut(trashed=len(trashed_ids), document_ids=trashed_ids)
+
+
 @app.delete("/api/documents/{document_id}")
 def delete_document(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> dict[str, str]:
-    document = db.get(Document, document_id)
-    if not document_is_library_visible(document):
+) -> dict[str, str | int | list[str]]:
+    result = trash_documents_by_id(db, [document_id], source="detail")
+    if result.trashed <= 0:
         raise HTTPException(status_code=404, detail="Document not found")
-    document.deleted_at = utc_now()
-    db.commit()
-    return {"status": "deleted"}
+    return {"status": "trashed", "trashed": result.trashed, "document_ids": result.document_ids}
+
+
+@app.post("/api/documents/trash", response_model=DocumentTrashOut)
+def trash_documents(
+    payload: DocumentTrashRequest,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentTrashOut:
+    result = trash_documents_by_id(db, payload.document_ids, source="library_selection")
+    if result.trashed <= 0:
+        raise HTTPException(status_code=404, detail="No selected Library documents were found")
+    return result
 
 
 @app.post("/api/documents/bulk")

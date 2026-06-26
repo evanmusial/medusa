@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
@@ -161,3 +162,97 @@ def test_backup_estimate_uses_latest_completed_backup_ratio(monkeypatch, tmp_pat
     assert estimate["estimated_size_bytes"] == 800
     assert estimate["latest_backup_size_bytes"] == 400
     assert estimate["basis"] == "latest_backup_ratio"
+
+
+def test_finalize_restored_database_state_closes_restored_active_source(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.models import BackupRun, utc_now
+    from app.services import backups
+
+    get_settings.cache_clear()
+    Session = make_session()
+
+    @contextmanager
+    def scoped_session():
+        with Session() as db:
+            try:
+                yield db
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    monkeypatch.setattr(backups, "session_scope", scoped_session)
+    source_uri = "gs://bucket/medusa/backups/medusa-postgres-20260626.dump.zst"
+    started_at = utc_now() - timedelta(minutes=2)
+    completed_at = utc_now()
+
+    with Session() as db:
+        db.add_all(
+            [
+                BackupRun(
+                    id="source-backup",
+                    kind="backup",
+                    reason="manual",
+                    status="running",
+                    phase="dumping",
+                    progress=18,
+                    filename="medusa-postgres-20260626.dump.zst",
+                    gcs_uri=source_uri,
+                    backup_metadata={},
+                    created_at=started_at,
+                ),
+                BackupRun(
+                    id="other-active",
+                    kind="backup",
+                    reason="manual",
+                    status="running",
+                    phase="dumping",
+                    progress=18,
+                    backup_metadata={},
+                    created_at=started_at,
+                ),
+            ]
+        )
+        db.commit()
+
+    backups._finalize_restored_database_state(
+        "restore-run",
+        source_kind="gcs",
+        source_filename="medusa-postgres-20260626.dump.zst",
+        source_uri=source_uri,
+        source_sha256="a" * 64,
+        source_size_bytes=123,
+        safety_backup_id=None,
+        safety_snapshot=None,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+
+    with Session() as db:
+        source = db.get(BackupRun, "source-backup")
+        other = db.get(BackupRun, "other-active")
+        restore = db.get(BackupRun, "restore-run")
+
+        assert source is not None
+        assert source.status == "complete"
+        assert source.phase == "complete"
+        assert source.progress == 100
+        assert source.sha256 == "a" * 64
+        assert source.size_bytes == 123
+
+        assert other is not None
+        assert other.status == "failed"
+        assert other.phase == "restored_snapshot"
+        assert "not running on this host" in (other.status_detail or "")
+
+        assert restore is not None
+        assert restore.kind == "restore"
+        assert restore.status == "complete"
+        assert restore.phase == "complete"
+        assert restore.progress == 100
+        assert restore.source_uri == source_uri
+        assert restore.source_sha256 == "a" * 64

@@ -772,6 +772,11 @@ export type DocumentTextScrubPayload = {
   text: string;
 };
 
+export type DocumentTrashResult = {
+  trashed: number;
+  document_ids: string[];
+};
+
 export type Annotation = {
   id: string;
   document_id: string;
@@ -928,6 +933,12 @@ export type DoiStash = {
   id: string;
   doi: string;
   title?: string | null;
+  authors: Array<Record<string, string | null>>;
+  publication_year?: number | null;
+  journal?: string | null;
+  description?: string | null;
+  page_count?: number | null;
+  metadata_source?: string | null;
   source_url?: string | null;
   source_provider?: string | null;
   source_document_id?: string | null;
@@ -1124,6 +1135,12 @@ export type DuplicateScan = {
 export type DuplicateResolveResult = {
   keep_document_id: string;
   duplicate_document_id: string;
+  status: string;
+};
+
+export type DuplicateDismissResult = {
+  left_document_id: string;
+  right_document_id: string;
   status: string;
 };
 

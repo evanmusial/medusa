@@ -24,6 +24,7 @@ REASON_LABELS = {
     "page_count": "page count",
 }
 REASON_ORDER = ["sha256", "md5", "doi", "title", "authors", "publication_year", "journal", "publisher", "source_url", "page_count"]
+DUPLICATE_FALSE_POSITIVES_KEY = "duplicate_false_positives"
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,26 @@ def match_basis(reasons: list[str]) -> str:
     return " + ".join(labels)
 
 
+def duplicate_false_positive_document_ids(document: Document) -> set[str]:
+    evidence = document.metadata_evidence if isinstance(document.metadata_evidence, dict) else {}
+    records = evidence.get(DUPLICATE_FALSE_POSITIVES_KEY)
+    if not isinstance(records, list):
+        return set()
+    ids: set[str] = set()
+    for record in records:
+        if isinstance(record, dict):
+            other_id = record.get("document_id")
+        else:
+            other_id = record
+        if isinstance(other_id, str) and other_id:
+            ids.add(other_id)
+    return ids
+
+
+def duplicate_pair_dismissed(left: Document, right: Document) -> bool:
+    return right.id in duplicate_false_positive_document_ids(left) or left.id in duplicate_false_positive_document_ids(right)
+
+
 def duplicate_matches_by_document(db: Session, *, documents: list[Document] | None = None) -> dict[str, list[DuplicateMatch]]:
     visible_documents = documents or filter_library_visible_documents(db.query(Document)).all()
     profiles = {document.id: document_duplicate_profile(document) for document in visible_documents}
@@ -248,6 +269,8 @@ def duplicate_matches_by_document(db: Session, *, documents: list[Document] | No
     for index, left_document in enumerate(visible_documents):
         left_profile = profiles[left_document.id]
         for right_document in visible_documents[index + 1 :]:
+            if duplicate_pair_dismissed(left_document, right_document):
+                continue
             reasons = duplicate_match_reasons(left_profile, profiles[right_document.id])
             if not is_duplicate_match(reasons):
                 continue

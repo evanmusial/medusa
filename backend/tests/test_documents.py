@@ -508,6 +508,47 @@ def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypa
     assert clean_versions == []
 
 
+def test_trash_documents_soft_deletes_visible_documents_with_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_documents, trash_documents
+    from app.models import Document, DocumentCompositionRecord, DocumentVersion
+    from app.schemas import DocumentTrashRequest
+
+    Session = make_session()
+    with Session() as db:
+        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready")
+        second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, processing_status="ready")
+        queued = Document(title="Queued", original_filename="queued.pdf", checksum_sha256="3" * 64, processing_status="queued")
+        db.add_all([first, second, queued])
+        db.commit()
+
+        result = trash_documents(
+            DocumentTrashRequest(document_ids=[first.id, queued.id, second.id, first.id]),
+            object(),
+            db,
+        )
+        visible = list_documents(object(), db)
+        first_versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == first.id).all()
+        second_versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == second.id).all()
+        queued_versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == queued.id).all()
+        first_composition = db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == first.id).all()
+
+    assert result.trashed == 2
+    assert result.document_ids == [first.id, second.id]
+    assert first.deleted_at is not None
+    assert second.deleted_at is not None
+    assert queued.deleted_at is None
+    assert {document.title for document in visible} == set()
+    assert first.metadata_evidence["trash_events"][0]["source"] == "library_selection"
+    assert first_versions[0].change_note == "Moved to Trash"
+    assert first_versions[0].metadata_snapshot["changed_fields"] == ["deleted_at", "metadata_evidence"]
+    assert second_versions[0].change_note == "Moved to Trash"
+    assert queued_versions == []
+    assert first_composition[0].message == "Moved to Trash"
+
+
 def test_document_original_serves_storage_bytes(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

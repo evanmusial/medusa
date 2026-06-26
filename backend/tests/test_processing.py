@@ -14,11 +14,11 @@ def test_refresh_import_batch_progress_flushes_pending_job_status(monkeypatch, t
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import ImportBatch, ImportJob
+    from app.models import ImportBatch, ImportJob, ProcessingEvent
     from app.services.processing import refresh_import_batch_progress
 
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine, tables=[ImportBatch.__table__, ImportJob.__table__])
+    Base.metadata.create_all(engine, tables=[ImportBatch.__table__, ImportJob.__table__, ProcessingEvent.__table__])
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
     with Session() as db:
@@ -42,11 +42,11 @@ def test_refresh_import_batch_progress_treats_cleared_jobs_as_terminal(monkeypat
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.database import Base
-    from app.models import ImportBatch, ImportJob
+    from app.models import ImportBatch, ImportJob, ProcessingEvent
     from app.services.processing import refresh_import_batch_progress
 
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine, tables=[ImportBatch.__table__, ImportJob.__table__])
+    Base.metadata.create_all(engine, tables=[ImportBatch.__table__, ImportJob.__table__, ProcessingEvent.__table__])
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
     with Session() as db:

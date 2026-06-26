@@ -27,10 +27,12 @@ import type {
   DocumentRecommendation,
   DocumentRecommendationDownload,
   DocumentRecommendationRefresh,
+  DuplicateDismissResult,
   DuplicateResolveResult,
   DuplicateScan,
   DocumentSummary,
   DocumentTextScrubPayload,
+  DocumentTrashResult,
   DocumentUpdatePayload,
   DoiStash,
   DoiStashImportResult,
@@ -214,6 +216,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keep_document_id: keepDocumentId, duplicate_document_id: duplicateDocumentId }),
     }),
+  dismissDocumentDuplicate: (leftDocumentId: string, rightDocumentId: string) =>
+    request<DuplicateDismissResult>("/api/documents/duplicates/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ left_document_id: leftDocumentId, right_document_id: rightDocumentId }),
+    }),
   documentComposition: (id: string) => request<DocumentComposition>(`/api/documents/${id}/composition`),
   cleanupDocumentTitles: () => request<{ updated: number }>("/api/documents/title-cleanup", { method: "POST" }),
   updateDocument: (id: string, body: DocumentUpdatePayload) =>
@@ -280,6 +287,8 @@ export const api = {
   updateAnnotation: (id: string, body: AnnotationPayload) =>
     request<Annotation>(`/api/annotations/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteAnnotation: (id: string) => request<{ status: string }>(`/api/annotations/${id}`, { method: "DELETE" }),
+  trashDocuments: (documentIds: string[]) =>
+    request<DocumentTrashResult>("/api/documents/trash", { method: "POST", body: JSON.stringify({ document_ids: documentIds }) }),
   bulkUpdateDocuments: (documentIds: string[], updates: Record<string, unknown>) =>
     request<{ updated: number }>("/api/documents/bulk", {
       method: "POST",
