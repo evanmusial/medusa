@@ -161,6 +161,8 @@ def report_env(repo: Path) -> None:
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
     ]
     for key in important_keys:
         value = values.get(key, "")
@@ -174,6 +176,19 @@ def report_env(repo: Path) -> None:
     if credentials.startswith("/app/data/secrets/"):
         host_path = repo / "data" / "secrets" / credentials.removeprefix("/app/data/secrets/")
         report_path(host_path, "Google service-account file")
+    gemini_secret_path = repo / "data" / "secrets" / "gemini.env"
+    if values.get("GEMINI_API_KEY"):
+        status("Gemini API key source", "OK", "GEMINI_API_KEY is set in .env")
+    elif gemini_secret_path.exists():
+        gemini_values = read_env(gemini_secret_path)
+        if gemini_values.get("GEMINI_API_KEY"):
+            status("Gemini API key source", "OK", f"GEMINI_API_KEY is set in {gemini_secret_path}")
+        else:
+            status("Gemini API key source", "WARN", f"{gemini_secret_path} exists but does not set GEMINI_API_KEY")
+    elif values.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true" and credentials:
+        status("Gemini API key source", "OK", "Gemini is configured for Vertex AI with Google credentials")
+    else:
+        status("Gemini API key source", "WARN", "GEMINI_API_KEY is not set and data/secrets/gemini.env is missing")
 
 
 def main() -> int:
