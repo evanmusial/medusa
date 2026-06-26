@@ -2104,8 +2104,16 @@ function importQueueEstimateTotal(jobs: ImportJob[]) {
   }, 0);
 }
 
+const UPLOAD_COST_ESTIMATE_ROUNDING_USD = 2.5;
+
+function formatUploadCostEstimate(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "Unpriced";
+  const rounded = Math.round(Math.max(0, value) / UPLOAD_COST_ESTIMATE_ROUNDING_USD) * UPLOAD_COST_ESTIMATE_ROUNDING_USD;
+  return formatUsd(Number(rounded.toFixed(2)));
+}
+
 function importQueueEstimateLabel(jobs: ImportJob[]) {
-  return `Rough total ${formatUsd(importQueueEstimateTotal(jobs))}`;
+  return `Total:  ~${formatUploadCostEstimate(importQueueEstimateTotal(jobs))}`;
 }
 
 function formatDuration(seconds?: number | null) {
@@ -10942,8 +10950,8 @@ function ImportView({
                   ? `${retainedProcessingJobCount} visible`
                   : "No recent import jobs"}
             </span>
-            <span className="queue-estimate-total" title="Rough total for staged and queued imports. Estimates use page count and prior import cost exemplars when available.">
-              {costPreviewJobs.length ? `${importQueueEstimateLabel(costPreviewJobs)} for ${costPreviewJobs.length}` : "Rough total $0.00"}
+            <span className="queue-estimate-total" title="Rounded cost total for staged and queued imports. The displayed amount is rounded to the nearest $2.50 because per-document estimates are directional.">
+              {costPreviewJobs.length ? `${importQueueEstimateLabel(costPreviewJobs)} for ${costPreviewJobs.length}` : "Total:  ~$0.00"}
             </span>
             <AsyncActionSlot busy={processUploadsBusy} feedback={processUploadsFeedback.feedback} label="Process uploads in progress">
               <button
