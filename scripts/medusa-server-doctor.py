@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -110,6 +111,39 @@ def check_port(bind_ip: str, port: int) -> bool:
     return True
 
 
+def check_haproxy_ports(repo: Path, bind_ip: str, port: int) -> bool:
+    config = run_command(
+        ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.server.yml", "config", "--format", "json"],
+        cwd=repo,
+    )
+    if config.returncode != 0:
+        status("HAProxy published ports", "WARN", "could not inspect rendered Compose JSON")
+        return True
+    try:
+        rendered = json.loads(config.stdout)
+        ports = rendered["services"]["haproxy"].get("ports") or []
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        status("HAProxy published ports", "WARN", f"could not parse rendered Compose ports: {exc}")
+        return True
+
+    matches = [
+        item
+        for item in ports
+        if str(item.get("published")) == str(port)
+        and int(item.get("target", 0)) == port
+        and item.get("protocol", "tcp") == "tcp"
+    ]
+    if len(matches) != 1:
+        status("HAProxy published ports", "FAIL", f"expected 1 host binding for {port}/tcp, found {len(matches)}")
+        return False
+    host_ip = matches[0].get("host_ip") or "0.0.0.0"
+    if host_ip != bind_ip:
+        status("HAProxy published ports", "FAIL", f"renders {host_ip}:{port}, expected {bind_ip}:{port}")
+        return False
+    status("HAProxy published ports", "OK", f"renders {host_ip}:{port}->{port}/tcp")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check a dedicated server before starting Medusa.")
     parser.add_argument("--repo", type=Path, default=repo_default(), help="Medusa repository path.")
@@ -203,6 +237,8 @@ def main() -> int:
     config = run_command(["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.server.yml", "config"], cwd=repo)
     if config.returncode == 0:
         status("Server Compose config", "OK", "base plus server override renders")
+        if not check_haproxy_ports(repo, bind_ip, args.port):
+            failures += 1
     else:
         failures += 1
         status("Server Compose config", "FAIL", config.stderr.strip() or config.stdout.strip())

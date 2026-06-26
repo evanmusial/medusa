@@ -98,7 +98,7 @@ services:
     environment:
       MEDUSA_PUBLIC_HOST: ${MEDUSA_PUBLIC_HOST:-medusa.home.musial.io}
     ports:
-      - "3737:3737"
+      - "${MEDUSA_BIND_IP:-0.0.0.0}:3737:3737"
     volumes:
       - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - ./data/haproxy:/usr/local/etc/haproxy/certs:ro

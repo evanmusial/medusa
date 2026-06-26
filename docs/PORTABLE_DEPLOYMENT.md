@@ -10,10 +10,10 @@ The default `docker-compose.yml` remains the local-development shape. Dedicated 
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-The server override:
+The server environment and override:
 
 - pins all Medusa services to `MEDUSA_CPUSET`, defaulting to logical CPUs `0-5`;
-- binds HAProxy to `MEDUSA_BIND_IP`, defaulting to `0.0.0.0`;
+- binds HAProxy through `MEDUSA_BIND_IP`, defaulting to `0.0.0.0`;
 - starts backend and worker with `MEDUSA_IMPORT_WORKER_CONCURRENCY=2` unless `.env` overrides it;
 - starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
 
@@ -44,7 +44,7 @@ data/haproxy/fullchain.pem
 data/haproxy/privatekey.pem
 ```
 
-Use `deploy/server/medusa-certbot.sh` on the target server to keep the certbot commands reproducible. The script reads `MEDUSA_PUBLIC_HOST` and `MEDUSA_BIND_IP` from the server `.env`, requests or renews the certificate with standalone HTTP-01 validation bound to that IP, copies the live Let's Encrypt files into `data/haproxy/`, and installs a certbot deploy hook that repeats the copy after automatic renewals. Standalone HTTP-01 validation requires public TCP port `80` on the bind IP to be free and reachable; Medusa itself continues to run on HTTPS port `3737`.
+Use `deploy/server/medusa-certbot.sh` on the target server to keep the certbot commands reproducible. The script reads `MEDUSA_PUBLIC_HOST` and `MEDUSA_BIND_IP` from the server `.env`, requests or renews the certificate with standalone HTTP-01 validation bound to that IP, copies the live Let's Encrypt files into `data/haproxy/`, and installs a certbot deploy hook that repeats the copy after automatic renewals. The HAProxy image reads the mounted certificate files as group `99`, so the helper installs `data/haproxy` as `0750` and the PEM files as `0640` with group `99`. Standalone HTTP-01 validation requires public TCP port `80` on the bind IP to be free and reachable; Medusa itself continues to run on HTTPS port `3737`.
 
 First issuance or replacement:
 

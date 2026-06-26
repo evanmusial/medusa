@@ -27,6 +27,9 @@ Environment:
   MEDUSA_CERTBOT_CERT_NAME Cert name override. Defaults to the domain.
   MEDUSA_CERTBOT_BIND_IP   HTTP-01 bind IP override. Defaults to MEDUSA_BIND_IP.
   MEDUSA_CERTBOT_EMAIL     Contact email for first-time certbot registration.
+  MEDUSA_HAPROXY_CERT_GROUP
+                           Group that may read the mounted cert files.
+                           Defaults to 99, the haproxy image group.
 
 Standalone HTTP-01 validation requires inbound TCP/80 on the bind IP to be free
 and publicly reachable. Medusa itself normally uses HTTPS port 3737.
@@ -110,7 +113,7 @@ privatekey_target="$haproxy_dir/privatekey.pem"
 lineage="/etc/letsencrypt/live/$cert_name"
 hook_path="${MEDUSA_CERTBOT_HOOK_PATH:-/etc/letsencrypt/renewal-hooks/deploy/medusa-copy-cert.sh}"
 repo_owner="${MEDUSA_CERT_OWNER:-$(stat_owner "$repo")}"
-repo_group="${MEDUSA_CERT_GROUP:-$(stat_group "$repo")}"
+haproxy_cert_group="${MEDUSA_HAPROXY_CERT_GROUP:-99}"
 
 if (( EUID == 0 )); then
   sudo_cmd=()
@@ -137,10 +140,10 @@ install_cert_files() {
   "${sudo_cmd[@]}" test -f "$lineage/fullchain.pem" || die "missing $lineage/fullchain.pem"
   "${sudo_cmd[@]}" test -f "$lineage/privkey.pem" || die "missing $lineage/privkey.pem"
 
-  "${sudo_cmd[@]}" install -d -m 700 -o "$repo_owner" -g "$repo_group" "$haproxy_dir"
-  "${sudo_cmd[@]}" install -m 600 -o "$repo_owner" -g "$repo_group" \
+  "${sudo_cmd[@]}" install -d -m 750 -o "$repo_owner" -g "$haproxy_cert_group" "$haproxy_dir"
+  "${sudo_cmd[@]}" install -m 640 -o "$repo_owner" -g "$haproxy_cert_group" \
     "$lineage/fullchain.pem" "$fullchain_target"
-  "${sudo_cmd[@]}" install -m 600 -o "$repo_owner" -g "$repo_group" \
+  "${sudo_cmd[@]}" install -m 640 -o "$repo_owner" -g "$haproxy_cert_group" \
     "$lineage/privkey.pem" "$privatekey_target"
   printf 'Installed certificate files:\n  %s\n  %s\n' "$fullchain_target" "$privatekey_target"
 }
@@ -155,16 +158,16 @@ set -eu
 CERT_NAME=$(shell_quote "$cert_name")
 REPO=$(shell_quote "$repo")
 OWNER=$(shell_quote "$repo_owner")
-GROUP=$(shell_quote "$repo_group")
+HAPROXY_CERT_GROUP=$(shell_quote "$haproxy_cert_group")
 LINEAGE="/etc/letsencrypt/live/\${CERT_NAME}"
 
 if [ "\${RENEWED_LINEAGE:-}" != "\${LINEAGE}" ]; then
   exit 0
 fi
 
-install -d -m 700 -o "\${OWNER}" -g "\${GROUP}" "\${REPO}/data/haproxy"
-install -m 600 -o "\${OWNER}" -g "\${GROUP}" "\${RENEWED_LINEAGE}/fullchain.pem" "\${REPO}/data/haproxy/fullchain.pem"
-install -m 600 -o "\${OWNER}" -g "\${GROUP}" "\${RENEWED_LINEAGE}/privkey.pem" "\${REPO}/data/haproxy/privatekey.pem"
+install -d -m 750 -o "\${OWNER}" -g "\${HAPROXY_CERT_GROUP}" "\${REPO}/data/haproxy"
+install -m 640 -o "\${OWNER}" -g "\${HAPROXY_CERT_GROUP}" "\${RENEWED_LINEAGE}/fullchain.pem" "\${REPO}/data/haproxy/fullchain.pem"
+install -m 640 -o "\${OWNER}" -g "\${HAPROXY_CERT_GROUP}" "\${RENEWED_LINEAGE}/privkey.pem" "\${REPO}/data/haproxy/privatekey.pem"
 
 if command -v docker >/dev/null 2>&1 && [ -f "\${REPO}/docker-compose.server.yml" ]; then
   cd "\${REPO}"

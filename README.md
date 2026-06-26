@@ -60,7 +60,9 @@ Install the HAProxy TLS certificate material under ignored local data storage:
 mkdir -p data/haproxy
 cp /path/to/fullchain.pem data/haproxy/fullchain.pem
 cp /path/to/privatekey.pem data/haproxy/privatekey.pem
-chmod 600 data/haproxy/*.pem
+chgrp 99 data/haproxy data/haproxy/*.pem
+chmod 750 data/haproxy
+chmod 640 data/haproxy/*.pem
 ```
 
 Then run:
@@ -85,7 +87,7 @@ The login email defaults to `admin@medusa.local` and the first admin password co
 
 Docker Compose runs HAProxy as the only host-exposed service on port `3737`. HAProxy terminates TLS, redirects plain HTTP on the same port to HTTPS, and proxies Medusa to the internal frontend service. Backend, worker, database, and frontend ports stay on the Compose network.
 
-Certificate files belong in ignored `data/haproxy/fullchain.pem` and `data/haproxy/privatekey.pem`. Compose combines them into HAProxy's runtime PEM inside the container; do not commit certificate private keys.
+Certificate files belong in ignored `data/haproxy/fullchain.pem` and `data/haproxy/privatekey.pem`. Compose combines them into HAProxy's runtime PEM inside the container; the HAProxy image reads these files as UID/GID `99`, so server installs should make `data/haproxy` group-executable and the PEM files group-readable by group `99` without making the private key world-readable. Do not commit certificate private keys.
 
 ```bash
 MEDUSA_PUBLIC_HOST=medusa.home.musial.io
