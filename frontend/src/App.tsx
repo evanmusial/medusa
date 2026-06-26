@@ -40,6 +40,7 @@ import {
   ChevronRight,
   CheckCircle2,
   CheckSquare,
+  CircleUserRound,
   CircleDollarSign,
   Clipboard,
   Cloud,
@@ -3716,6 +3717,7 @@ function Header({
   dashboard,
   onDismissCompletedImport,
   onOpenQueue,
+  onOpenSettings,
   onOpenStatus,
   onReleaseUpgrade,
   query,
@@ -3732,6 +3734,7 @@ function Header({
   dashboard?: Dashboard;
   onDismissCompletedImport?: (batchId: string) => void;
   onOpenQueue: () => void;
+  onOpenSettings: () => void;
   onOpenStatus: () => void;
   onReleaseUpgrade: () => void;
   query: string;
@@ -3743,6 +3746,34 @@ function Header({
   setTheme: (theme: "day" | "night") => void;
   onLogout: () => void;
 }) {
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEscapeLayer(userMenuOpen, () => setUserMenuOpen(false), ESCAPE_PRIORITY_MENU);
+
+  useEffect(() => {
+    if (!userMenuOpen) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && userMenuRef.current?.contains(target)) return;
+      setUserMenuOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [userMenuOpen]);
+
+  const openSettingsFromUserMenu = () => {
+    setUserMenuOpen(false);
+    onOpenSettings();
+  };
+
+  const logoutFromUserMenu = () => {
+    setUserMenuOpen(false);
+    onLogout();
+  };
+
   return (
     <header className="topbar">
       <div className="topbar-brand-area">
@@ -3783,9 +3814,31 @@ function Header({
         >
           {theme === "day" ? <Moon size={18} /> : <Sun size={18} />}
         </button>
-        <button className="icon-button" data-tooltip="Sign out of this Medusa session." onClick={onLogout} type="button">
-          <LogOut size={18} />
-        </button>
+        <div className="user-menu-shell" ref={userMenuRef}>
+          <button
+            aria-expanded={userMenuOpen}
+            aria-haspopup="menu"
+            aria-label="Open user options"
+            className={`icon-button user-menu-button${userMenuOpen ? " active" : ""}`}
+            data-tooltip="Open user options."
+            onClick={() => setUserMenuOpen((current) => !current)}
+            type="button"
+          >
+            <CircleUserRound size={18} />
+          </button>
+          {userMenuOpen ? (
+            <div className="user-options-menu" data-escape-layer="menu" role="menu">
+              <button className="user-options-menu-item" onClick={openSettingsFromUserMenu} role="menuitem" type="button">
+                <Settings size={16} aria-hidden="true" />
+                <span>Settings</span>
+              </button>
+              <button className="user-options-menu-item" onClick={logoutFromUserMenu} role="menuitem" type="button">
+                <LogOut size={16} aria-hidden="true" />
+                <span>Sign out</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </header>
   );
@@ -18173,6 +18226,7 @@ export default function App() {
         dashboard={dashboard.data}
         onDismissCompletedImport={dismissCompletedIngestion}
         onOpenQueue={() => void requestActiveViewChange("queue")}
+        onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
