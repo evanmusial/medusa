@@ -2686,9 +2686,12 @@ textarea {
 
 .doc-row-pages,
 .doc-row-year {
+  width: max-content;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  grid-template-columns: 12px max-content;
+  justify-self: end;
+  text-align: left;
 }
 
 .doc-row-authors {
