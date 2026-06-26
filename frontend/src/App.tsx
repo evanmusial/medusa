@@ -30,6 +30,7 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUpDown,
+  Ban,
   Bold,
   Bookmark,
   BookOpen,
@@ -5751,7 +5752,7 @@ function LibraryView({
               </a>
               <div className="row-meta">
                 {showLibraryPriorityPill(item.priority) ? <PriorityPill value={item.priority} /> : null}
-                {!item.doi ? <MissingDoiPill /> : null}
+                {item.no_doi ? <MissingDoiPill /> : null}
                 {item.duplicate_count > 0 ? (
                   <span data-tooltip={duplicateTooltip(item.duplicate_reasons)}>
                     <StatusPill value={duplicateBadgeLabel(item.duplicate_count)} tone="warn" />
@@ -6832,6 +6833,7 @@ function DocumentPanelContent({
         apa_in_text_citation: updatedDocument.apa_in_text_citation,
         citation_status: updatedDocument.citation_status,
         doi: updatedDocument.doi,
+        no_doi: updatedDocument.no_doi,
         priority: updatedDocument.priority,
         read_status: updatedDocument.read_status,
         rich_summary: updatedDocument.rich_summary,
@@ -6883,12 +6885,34 @@ function DocumentPanelContent({
       setDoiEditError(null);
       setDraft(draftFromDocument(updatedDocument));
       queryClient.setQueryData(["document", document.id], updatedDocument);
-      patchCachedDocumentSummaries(queryClient, { id: updatedDocument.id, doi: updatedDocument.doi });
+      patchCachedDocumentSummaries(queryClient, { id: updatedDocument.id, doi: updatedDocument.doi, no_doi: updatedDocument.no_doi });
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setDoiEditError(actionFailureMessage("Could not save DOI", error)),
+  });
+  const markNoDoi = useMutation({
+    mutationFn: () => api.updateDocument(document.id, { no_doi: true }),
+    onSuccess: (updatedDocument) => {
+      setEditingDoi(false);
+      setDoiDraft(updatedDocument.doi || "");
+      setDoiEditError(null);
+      setDraft(draftFromDocument(updatedDocument));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      patchCachedDocumentSummaries(queryClient, {
+        id: updatedDocument.id,
+        apa_citation: updatedDocument.apa_citation,
+        apa_in_text_citation: updatedDocument.apa_in_text_citation,
+        citation_status: updatedDocument.citation_status,
+        doi: updatedDocument.doi,
+        no_doi: updatedDocument.no_doi,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setDoiEditError(actionFailureMessage("Could not mark No DOI", error)),
   });
   const updateSummary = useMutation({
     mutationFn: (value: string) => api.updateDocument(document.id, { rich_summary: value.trim() || null }),
@@ -8336,7 +8360,9 @@ function DocumentPanelContent({
   const renderDoiSection = () => (
     <section className="detail-section doi-section">
       <h3>DOI</h3>
-      <div className="doi-value">{document.doi ? <code>{document.doi}</code> : <span>No DOI recorded.</span>}</div>
+      <div className="doi-value">
+        {document.doi ? <code>{document.doi}</code> : <span>{document.no_doi ? "No DOI flagged." : "No DOI recorded."}</span>}
+      </div>
       {editingDoi ? (
         <form
           className="doi-editor"
@@ -8422,7 +8448,27 @@ function DocumentPanelContent({
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, APA_CITATION_MODEL_KEY, "gpt-5.5")}</span>
+        <button
+          className="secondary-button doi-no-doi-button"
+          data-disabled-reason={
+            markNoDoi.isPending
+              ? "the No DOI flag is already saving."
+              : updateDoi.isPending
+                ? "the DOI change is already saving."
+                : document.no_doi
+                  ? "this document is already flagged as having no DOI."
+                  : ""
+          }
+          data-tooltip={document.doi ? "Clear the stored DOI and flag this document as confirmed to have no DOI." : "Flag this document as confirmed to have no DOI without storing a placeholder value."}
+          disabled={markNoDoi.isPending || updateDoi.isPending || document.no_doi}
+          onClick={() => markNoDoi.mutate()}
+          type="button"
+        >
+          <Ban size={15} />
+          {markNoDoi.isPending ? "Saving" : "No DOI"}
+        </button>
       </div>
+      {!editingDoi && doiEditError ? <p className="form-error">{doiEditError}</p> : null}
     </section>
   );
   const renderSummarySection = () => (

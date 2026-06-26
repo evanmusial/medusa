@@ -837,6 +837,7 @@ export type DocumentSummary = {
   apa_in_text_citation_source?: string | null;
   citation_status: string;
   metadata_confidence?: number | null;
+  no_doi: boolean;
   original_filename: string;
   checksum_sha256: string;
   checksum_md5?: string | null;

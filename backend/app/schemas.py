@@ -476,6 +476,7 @@ class DocumentSummary(ApiModel):
     apa_in_text_citation_source: str | None = None
     citation_status: str
     metadata_confidence: float | None = None
+    no_doi: bool = False
     original_filename: str
     checksum_sha256: str
     checksum_md5: str | None = None
@@ -748,6 +749,7 @@ class DocumentPatch(BaseModel):
     apa_citation: str | None = None
     apa_in_text_citation: str | None = None
     citation_status: str | None = None
+    no_doi: bool | None = None
     read_status: str | None = None
     priority: str | None = None
     tag_ids: list[str] | None = None

@@ -114,6 +114,47 @@ def test_patch_document_marks_inline_citation_edits_user_provided(monkeypatch, t
         ]
 
 
+def test_patch_document_marks_no_doi_without_placeholder(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import patch_document
+    from app.models import Document, DocumentVersion
+    from app.schemas import DocumentPatch
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="No DOI Paper",
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            publication_year=1843,
+            doi="10.1000/example",
+            original_filename="no-doi.pdf",
+            checksum_sha256="n" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.commit()
+
+        updated = patch_document(document.id, DocumentPatch(no_doi=True), object(), db)
+
+        assert updated.doi is None
+        assert updated.no_doi is True
+        assert updated.metadata_evidence["no_doi"]["status"] == "confirmed"
+        assert updated.metadata_evidence["no_doi"]["source"] == "manual"
+
+        first_version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+        assert "doi" in first_version.metadata_snapshot["changed_fields"]
+        assert "metadata_evidence" in first_version.metadata_snapshot["changed_fields"]
+        assert first_version.metadata_snapshot["after"]["doi"] is None
+
+        updated = patch_document(document.id, DocumentPatch(doi="10.1000/real"), object(), db)
+
+        assert updated.doi == "10.1000/real"
+        assert updated.no_doi is False
+        assert "no_doi" not in updated.metadata_evidence
+
+
 def test_create_document_note_updates_search_text(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

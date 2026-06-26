@@ -617,6 +617,22 @@ def same_drop_duplicate_reasons(left: Any, right: Any) -> list[str]:
     return reasons if {"sha256", "md5", "doi"}.intersection(reasons) else []
 
 
+NO_DOI_METADATA_KEY = "no_doi"
+
+
+def no_doi_flag_from_evidence(evidence: dict[str, Any] | None, doi: str | None = None) -> bool:
+    if doi:
+        return False
+    marker = (evidence or {}).get(NO_DOI_METADATA_KEY)
+    if isinstance(marker, dict):
+        return marker.get("status") == "confirmed" or marker.get("confirmed") is True
+    return marker is True
+
+
+def document_no_doi(document: Document) -> bool:
+    return no_doi_flag_from_evidence(document.metadata_evidence, document.doi)
+
+
 def document_summary_out(
     document: Document,
     duplicate_count: int = 0,
@@ -624,7 +640,12 @@ def document_summary_out(
     duplicate_reasons: list[str] | None = None,
 ) -> DocumentSummary:
     return DocumentSummary.model_validate(document).model_copy(
-        update={"duplicate_count": duplicate_count, "duplicate_reasons": duplicate_reasons or [], "projects": projects or []}
+        update={
+            "duplicate_count": duplicate_count,
+            "duplicate_reasons": duplicate_reasons or [],
+            "projects": projects or [],
+            "no_doi": document_no_doi(document),
+        }
     )
 
 
@@ -638,6 +659,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "duplicate_reasons": duplicate_summary.get("duplicate_reasons", []),
             "duplicate_document_ids": duplicate_ids,
             "projects": projects,
+            "no_doi": document_no_doi(document),
         }
     )
 
@@ -4124,12 +4146,35 @@ def patch_document(
     domain_ids = data.pop("domain_ids", None)
     project_ids = data.pop("project_ids", None)
     attribute_values = data.pop("attribute_values", None)
+    no_doi = data.pop("no_doi", None)
     before = document_correction_snapshot(document)
     changed_fields: set[str] = set()
     for key, value in data.items():
         if getattr(document, key) != value:
             setattr(document, key, value)
             changed_fields.add(key)
+    if "doi" in data and document.doi:
+        evidence = dict(document.metadata_evidence or {})
+        if evidence.pop(NO_DOI_METADATA_KEY, None) is not None:
+            document.metadata_evidence = evidence
+            changed_fields.add("metadata_evidence")
+    if no_doi is not None:
+        evidence = dict(document.metadata_evidence or {})
+        if no_doi:
+            if document.doi:
+                document.doi = None
+                changed_fields.add("doi")
+            if not no_doi_flag_from_evidence(evidence, document.doi):
+                evidence[NO_DOI_METADATA_KEY] = {
+                    "status": "confirmed",
+                    "source": "manual",
+                    "updated_at": utc_now().isoformat(),
+                }
+                document.metadata_evidence = evidence
+                changed_fields.add("metadata_evidence")
+        elif evidence.pop(NO_DOI_METADATA_KEY, None) is not None:
+            document.metadata_evidence = evidence
+            changed_fields.add("metadata_evidence")
     if "apa_citation" in changed_fields:
         document.apa_citation_source = "user"
         document.apa_citation_model = None
