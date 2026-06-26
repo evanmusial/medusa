@@ -6029,6 +6029,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const rows = useMemo(() => recommendations.data || [], [recommendations.data]);
   const otherRows = useMemo(() => rows.filter((item) => !isBibliographyRecommendation(item)), [rows]);
   const bibliographyItems = useMemo(() => bibliographyReferenceItems(document.bibliography, rows), [document.bibliography, rows]);
+  const hasBibliographyOnlyRows = rows.length > 0 && otherRows.length === 0;
   const newRows = useMemo(() => rows.filter((item) => !isKnownRecommendation(item)), [rows]);
   const selectableRows = newRows;
   const allSelectableSelected =
@@ -6053,14 +6054,17 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   }, [rows, selectableRows]);
 
   useEffect(() => {
-    const autoRefreshKey = `${document.id}:${view}:${family}`;
+    const hasDoi = Boolean(document.doi?.trim());
+    const needsProviderRefresh = hasDoi && hasBibliographyOnlyRows;
+    const needsInitialRefresh = rows.length === 0;
+    const autoRefreshKey = `${document.id}:${document.doi || "no-doi"}:${view}:${family}:${needsProviderRefresh ? "provider" : "initial"}`;
     if (
       !canRefresh ||
       recommendations.isFetching ||
       recommendations.isError ||
       refresh.isPending ||
       recommendations.data === undefined ||
-      rows.length > 0 ||
+      (!needsInitialRefresh && !needsProviderRefresh) ||
       autoRefreshKeyRef.current === autoRefreshKey
     ) {
       return;
@@ -6070,7 +6074,9 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   }, [
     canRefresh,
     document.id,
+    document.doi,
     family,
+    hasBibliographyOnlyRows,
     recommendations.data,
     recommendations.isError,
     recommendations.isFetching,
