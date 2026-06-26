@@ -287,6 +287,7 @@ const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
 const WORKSPACE_REFETCH_INTERVAL_MS = 15000;
 const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
 const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
+const COMPLETED_INGESTION_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -500,12 +501,19 @@ function ingestionHistoryCompletionTime(row: IngestionHistory) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function latestCompletedIngestionNotice(rows: IngestionHistory[], dismissedIds: Set<string>) {
+function latestCompletedIngestionNotice(rows: IngestionHistory[], dismissedIds: Set<string>, now = Date.now()) {
   const latest = rows
-    .filter((row) => !row.active && row.total_files > 0)
-    .sort((left, right) => ingestionHistoryCompletionTime(right) - ingestionHistoryCompletionTime(left))[0];
-  if (!latest || dismissedIds.has(latest.batch_id)) return undefined;
-  return latest;
+    .map((row) => ({ row, completedAt: ingestionHistoryCompletionTime(row) }))
+    .filter(
+      ({ row, completedAt }) =>
+        !row.active &&
+        row.total_files > 0 &&
+        completedAt > 0 &&
+        now - completedAt <= COMPLETED_INGESTION_NOTICE_MAX_AGE_MS &&
+        !dismissedIds.has(row.batch_id),
+    )
+    .sort((left, right) => right.completedAt - left.completedAt)[0];
+  return latest?.row;
 }
 
 function syncBrowserUrl(path: string, state: Record<string, string | undefined>, mode: Exclude<BrowserHistoryMode, "none">) {
