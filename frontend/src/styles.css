@@ -7097,11 +7097,11 @@ pre {
 
 .budget-view {
   display: grid;
-  justify-items: center;
+  justify-items: stretch;
 }
 
 .budget-panel {
-  width: min(100%, 1480px);
+  width: 100%;
   display: grid;
   gap: 14px;
   align-content: start;
@@ -7131,8 +7131,8 @@ pre {
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
   text-transform: none;
 }
 
@@ -7140,7 +7140,7 @@ pre {
   min-height: 36px;
   background: var(--panel);
   color: var(--ink);
-  font-size: 13px;
+  font-size: 14px;
   text-transform: none;
 }
 
@@ -7164,22 +7164,23 @@ pre {
 
 .budget-metric-grid span {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
   text-transform: none;
 }
 
 .budget-metric-grid strong {
   min-width: 0;
   color: var(--ink);
-  font-size: 18px;
+  font-size: 17px;
+  font-weight: 500;
   line-height: 1.1;
   overflow-wrap: anywhere;
 }
 
 .budget-chart-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(310px, 0.52fr);
+  grid-template-columns: minmax(430px, 1.35fr) repeat(2, minmax(300px, 0.85fr));
   gap: 12px;
   align-items: stretch;
 }
@@ -7196,7 +7197,6 @@ pre {
 }
 
 .budget-trend-panel {
-  grid-row: span 2;
   min-height: 302px;
 }
 
@@ -7211,7 +7211,8 @@ pre {
 .budget-chart-head h3 {
   margin: 0;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.15;
 }
 
@@ -7219,14 +7220,15 @@ pre {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 400;
   text-transform: none;
 }
 
 .budget-chart-head strong {
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 500;
   line-height: 1.15;
   text-align: right;
   overflow-wrap: anywhere;
@@ -7278,8 +7280,8 @@ pre {
   gap: 8px;
   align-items: center;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   text-transform: none;
 }
 
@@ -7296,7 +7298,8 @@ pre {
 
 .budget-trend-axis strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
   text-transform: none;
   white-space: nowrap;
 }
@@ -7306,8 +7309,8 @@ pre {
   display: grid;
   place-items: center;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .budget-pie-wrap {
@@ -7341,8 +7344,8 @@ pre {
   z-index: 1;
   max-width: 66px;
   color: var(--ink);
-  font-size: 12px;
-  font-weight: 850;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.1;
   overflow-wrap: anywhere;
   text-align: center;
@@ -7361,7 +7364,7 @@ pre {
   gap: 7px;
   align-items: center;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .budget-chart-legend-row i {
@@ -7378,13 +7381,14 @@ pre {
 }
 
 .budget-chart-legend-row strong {
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: 500;
   white-space: nowrap;
 }
 
 .budget-chart-legend-row em {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-style: normal;
   font-weight: 500;
   white-space: nowrap;
@@ -7392,13 +7396,13 @@ pre {
 
 .budget-chart-empty {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .budget-lower-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.72fr) minmax(300px, 0.28fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
   gap: 12px;
   align-items: start;
 }
@@ -7425,7 +7429,8 @@ pre {
 .budget-section-head h3 {
   margin: 0;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.15;
 }
 
@@ -7433,8 +7438,8 @@ pre {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 400;
   text-transform: none;
 }
 
@@ -7452,33 +7457,36 @@ pre {
 }
 
 .budget-row {
-  width: max-content;
-  min-width: unset;
+  width: 100%;
+  min-width: 720px;
   display: grid;
   align-items: center;
   gap: 7px;
   border-bottom: 1px solid var(--line);
   color: var(--ink);
-  font-size: 12px;
+  font-size: 14px;
   padding: 8px 6px;
 }
 
 .budget-row.tokens_cost {
-  grid-template-columns: minmax(210px, 280px) 54px 74px 74px 74px 74px 86px 64px;
+  min-width: 940px;
+  grid-template-columns: minmax(260px, 1fr) 64px 82px 82px 82px 82px 94px 76px;
 }
 
 .budget-row.tokens {
-  grid-template-columns: minmax(210px, 280px) 54px 74px 74px 74px 74px;
+  min-width: 760px;
+  grid-template-columns: minmax(260px, 1fr) 64px 82px 82px 82px 82px;
 }
 
 .budget-row.cost {
-  grid-template-columns: minmax(210px, 280px) 54px 86px 64px 64px;
+  min-width: 680px;
+  grid-template-columns: minmax(260px, 1fr) 64px 94px 76px 76px;
 }
 
 .budget-row.header {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 500;
   text-transform: none;
 }
 
@@ -7534,21 +7542,21 @@ pre {
 
 .budget-recent-row strong {
   color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .budget-recent-row span {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 400;
 }
 
 .budget-recent-row em {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 14px;
   font-style: normal;
-  font-weight: 650;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -7558,7 +7566,7 @@ pre {
   flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
 }
 
@@ -8135,11 +8143,11 @@ pre {
 
 .status-workbench {
   display: grid;
-  justify-items: center;
+  justify-items: stretch;
 }
 
 .status-panel {
-  width: min(100%, 1180px);
+  width: 100%;
   display: grid;
   gap: 14px;
   align-content: start;
@@ -8158,57 +8166,23 @@ pre {
   color: var(--ink);
 }
 
-.status-acronym-panel {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-2);
-  padding: 16px;
-}
-
-.status-acronym-panel > div {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-
-.status-acronym-panel span:not(.pill) {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.status-acronym-panel h3 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 22px;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
 .status-metric-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .status-metric-card {
   min-width: 0;
-  min-height: 126px;
+  min-height: 118px;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   align-items: start;
-  gap: 9px;
+  gap: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
-  padding: 12px;
+  padding: 14px;
 }
 
 .status-metric-icon {
@@ -8238,7 +8212,9 @@ pre {
   font-size: 17px;
   font-weight: 900;
   line-height: 1.15;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-metric-card em {
@@ -8248,7 +8224,9 @@ pre {
   font-style: normal;
   font-weight: 650;
   line-height: 1.25;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-detail-grid {
@@ -8277,7 +8255,7 @@ pre {
 .status-fact-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(118px, max-content);
+  grid-template-columns: minmax(260px, 1fr) minmax(12rem, max-content);
   align-items: center;
   gap: 12px;
   border: 1px solid var(--line);
@@ -8305,7 +8283,9 @@ pre {
   color: var(--ink);
   font-weight: 850;
   text-align: right;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .haproxy-stat-list {
@@ -9375,7 +9355,6 @@ pre {
 .backup-history-main small,
 .backup-history-row > span:not(.pill),
 .legacy-export-actions a,
-.status-acronym-panel span:not(.pill),
 .status-metric-card span:not(.status-metric-icon),
 .status-metric-card em,
 .status-fact-row span,
@@ -9459,7 +9438,6 @@ pre {
 }
 
 .status-panel .panel-title-row span,
-.status-acronym-panel span:not(.pill),
 .status-metric-card span:not(.status-metric-icon),
 .status-metric-card em,
 .status-fact-row span {
@@ -9478,11 +9456,6 @@ pre {
   font-size: 17px;
   font-weight: 600;
   line-height: 1.2;
-}
-
-.status-acronym-panel h3 {
-  font-size: 21px;
-  font-weight: 500;
 }
 
 .status-metric-card strong {

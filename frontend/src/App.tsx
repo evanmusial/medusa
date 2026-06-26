@@ -58,7 +58,6 @@ import {
   FolderPlus,
   FolderTree,
   Gauge,
-  GitCommit,
   IndentDecrease,
   IndentIncrease,
   Info,
@@ -14283,6 +14282,7 @@ function BackupSizeTrend({ points }: { points: BackupSizeTrendPoint[] }) {
           <svg
             aria-label="Completed database backup sizes over time"
             className="backup-trend-chart"
+            preserveAspectRatio="none"
             role="img"
             viewBox={`0 0 ${width} ${height}`}
           >
@@ -15762,10 +15762,10 @@ function HAProxyStatRow({ row }: { row: HAProxyServiceStat }) {
 }
 
 function releaseCommitLabel(status?: ReleaseStatus) {
-  if (status?.running.git_sha) return status.running.git_sha;
   if (status?.running.git_sha_short) return status.running.git_sha_short;
+  if (status?.running.git_sha) return status.running.git_sha.replace(/^sha256:/, "").slice(0, 12);
   const stampHash = MEDUSA_BUILD_VERSION.match(/\(([^)]+)\)/)?.[1];
-  return stampHash || "Unavailable";
+  return stampHash ? stampHash.slice(0, 12) : "Unavailable";
 }
 
 function StatusMetricCard({
@@ -15784,8 +15784,8 @@ function StatusMetricCard({
       <span className="status-metric-icon">{icon}</span>
       <div>
         <span>{label}</span>
-        <strong>{value}</strong>
-        {detail ? <em>{detail}</em> : null}
+        <strong title={value}>{value}</strong>
+        {detail ? <em title={detail}>{detail}</em> : null}
       </div>
     </div>
   );
@@ -15798,7 +15798,7 @@ function StatusFactRow({ label, value, detail }: { label: string; value: string;
         <strong>{label}</strong>
         {detail ? <span>{detail}</span> : null}
       </div>
-      <span>{value}</span>
+      <span title={value}>{value}</span>
     </div>
   );
 }
@@ -15892,12 +15892,17 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
   const runningVersion = release?.running.version || release?.running.git_sha_short || MEDUSA_BUILD_VERSION;
   const commitHash = releaseCommitLabel(release);
   const builtAt = releaseDateLabel(release?.running.built_at);
+  const buildIdentityDetail = [
+    commitHash !== "Unavailable" ? `Commit ${commitHash}` : "Commit unavailable",
+    release?.running.branch ? `Branch ${release.running.branch}` : "",
+    builtAt ? `Built ${builtAt}` : `Browser ${MEDUSA_BUILD_VERSION}`,
+  ]
+    .filter(Boolean)
+    .join(" / ");
   const processCountDetail =
     container?.process_count !== undefined && container?.process_count !== null
       ? `${formatMetric(container.process_count)} processes / ${formatMetric(container?.thread_count)} threads`
       : "Process counts unavailable";
-  const statusPillLabel = haproxy?.available ? "online" : statusLoading && !haproxy ? "loading" : "unavailable";
-
   return (
     <section className="workbench status-workbench">
       <div className="status-panel">
@@ -15908,21 +15913,13 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
           </div>
           <Info size={20} />
         </div>
-        <section className="status-acronym-panel">
-          <div>
-            <span>medusa</span>
-            <h3>{MEDUSA_EXPANSION}</h3>
-          </div>
-          <StatusPill value={statusPillLabel} tone={haproxy?.available ? "good" : "neutral"} />
-        </section>
         <div className="status-metric-grid">
           <StatusMetricCard
             icon={<Sparkles size={17} />}
-            label="Version"
+            label="Version / commit"
             value={runningVersion}
-            detail={builtAt ? `Built ${builtAt}` : `Browser ${MEDUSA_BUILD_VERSION}`}
+            detail={buildIdentityDetail}
           />
-          <StatusMetricCard icon={<GitCommit size={17} />} label="Commit hash" value={commitHash} detail={release?.running.branch ? `Branch ${release.running.branch}` : "Current build identity"} />
           <StatusMetricCard
             icon={<Timer size={17} />}
             label="Uptime"

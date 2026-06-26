@@ -8,7 +8,7 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 - React research cockpit UI with day/night modes, darker light-theme contrast grays, and restrained icon-left action buttons
 - Lowercase contextual browser titles such as `medusa | DOCUMENT_TITLE`, `medusa | PROJECT_TITLE`, or the current workspace name
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected
-- Icon-only header Status button linking to `/status`, with the Medusa acronym, version, commit hash, uptime, memory and disk footprints, runtime versions, proxy status, and storage path details
+- Icon-only header Status button linking to `/status`, with build/version identity, short commit hash, uptime, memory and disk footprints, runtime versions, proxy status, and storage path details
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs
 - Batch PDF, HTML, and plain-text/Markdown upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, robust duplicate detection using SHA-256, MD5, DOI, normalized title, and supporting metadata, explicit skip/overwrite/import-anyway choices, local PDF mezzanine conversion for non-PDF sources, staged upload rows with rough per-file and grand-total cost previews, Process Uploads and staged-upload cleanup actions, staged-document invisibility from Library/search until import completion, and active-first progress-shaded import processing rows with model/cost detail
