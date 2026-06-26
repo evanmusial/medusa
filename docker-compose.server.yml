@@ -1,0 +1,33 @@
+# Server-only override for a dedicated Medusa host.
+#
+# Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+#
+# The base docker-compose.yml remains the default for local development.
+
+x-server-cpu: &server-cpu
+  cpuset: "${MEDUSA_CPUSET:-0-5}"
+
+services:
+  db:
+    <<: *server-cpu
+
+  backend:
+    <<: *server-cpu
+    environment:
+      MEDUSA_IMPORT_WORKER_CONCURRENCY: ${MEDUSA_IMPORT_WORKER_CONCURRENCY:-2}
+      MEDUSA_DOCUMENT_CACHE_SIZE_MB: ${MEDUSA_DOCUMENT_CACHE_SIZE_MB:-51200}
+
+  worker:
+    <<: *server-cpu
+    environment:
+      MEDUSA_IMPORT_WORKER_CONCURRENCY: ${MEDUSA_IMPORT_WORKER_CONCURRENCY:-2}
+      MEDUSA_DOCUMENT_CACHE_SIZE_MB: ${MEDUSA_DOCUMENT_CACHE_SIZE_MB:-51200}
+
+  frontend:
+    <<: *server-cpu
+
+  haproxy:
+    <<: *server-cpu
+    ports:
+      - "${MEDUSA_BIND_IP:-0.0.0.0}:3737:3737"

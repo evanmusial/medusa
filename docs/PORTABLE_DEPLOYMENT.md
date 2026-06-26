@@ -2,26 +2,64 @@
 
 Medusa can run from a normal Ubuntu server checkout, including carrot, as long as database state, ignored runtime files, and release refreshes are treated as separate concerns.
 
+## Server-Specific Files
+
+The default `docker-compose.yml` remains the local-development shape. Dedicated hosts can layer in `docker-compose.server.yml` to set server-only runtime constraints without changing the MacBook instance:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+```
+
+The server override:
+
+- pins all Medusa services to `MEDUSA_CPUSET`, defaulting to logical CPUs `0-5`;
+- binds HAProxy to `MEDUSA_BIND_IP`, defaulting to `0.0.0.0`;
+- starts backend and worker with `MEDUSA_IMPORT_WORKER_CONCURRENCY=2` unless `.env` overrides it;
+- starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
+
+Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked.
+
+Before moving from the local machine, run:
+
+```bash
+python3 scripts/medusa-portability-audit.py
+```
+
+The audit prints the files to copy, local cache/model-cache sizes, live job counts when the local Compose database is reachable, and the latest verified full database backup recorded in PostgreSQL.
+
+On the target server after cloning and copying runtime files, run:
+
+```bash
+python3 scripts/medusa-server-doctor.py
+```
+
+The doctor checks Docker, Compose, the configured CPU set, the dedicated bind IP, port `3737`, required cert/secret files, and whether the base-plus-server Compose config renders.
+
 ## Move A Library To Another Host
 
-1. Stop or pause active imports, Concordance Runs, backups, and restores on the source machine.
-2. Create a full PostgreSQL backup from Utilities and verify it completed.
-3. Clone the repository on the target server.
-4. Copy ignored runtime files from the source:
+1. Run the portability audit on the source machine.
+2. Stop or pause active imports, Concordance Runs, backups, and restores on the source machine.
+3. Create a full PostgreSQL backup from Utilities and verify it completed.
+4. Clone the repository on the target server.
+5. Copy ignored runtime files from the source:
    - `.env`
    - `data/secrets/`
    - `data/managed-secrets/`
    - `data/haproxy/fullchain.pem`
    - `data/haproxy/privatekey.pem`
-   - optionally all of `data/` to preserve local originals, processing cache files, model weights, and local home/cache data.
-5. Start Medusa on the target:
+   - optionally `data/model-cache/` to avoid first-run model downloads.
+   - optionally `data/processing-cache/` to avoid rehydrating recent PDFs.
+   - copy `data/originals/` when local fallback storage contains authoritative originals that are not in GCS.
+6. Fill the target `.env` from `deploy/server/.env.server.example`, including `MEDUSA_BIND_IP`, `MEDUSA_CPUSET`, host/domain values, GCS, and model-provider credentials.
+7. Run the server doctor on the target.
+8. Start Medusa on the target:
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-6. Restore the full PostgreSQL backup from Utilities on the target.
-7. Confirm health:
+9. Restore the full PostgreSQL backup from Utilities on the target.
+10. Confirm health:
 
 ```bash
 curl -kfsS https://medusa.home.musial.io:3737/api/health
@@ -65,7 +103,14 @@ The agent fetches the configured upstream, refuses to deploy from a dirty checko
 
 A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
 
-Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if carrot uses a different checkout location, then enable:
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if carrot uses a different checkout location, and adjust `medusa.service` to use the server override if this host should run with `docker-compose.server.yml`:
+
+```ini
+ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+```
+
+Then enable:
 
 ```bash
 sudo systemctl enable --now medusa.service
