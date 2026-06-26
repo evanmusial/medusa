@@ -494,6 +494,19 @@ function writeDismissedIngestionHistoryIds(ids: Set<string>) {
   window.localStorage.setItem(DISMISSED_INGESTION_HISTORY_KEY, JSON.stringify([...ids]));
 }
 
+function ingestionHistoryCompletionTime(row: IngestionHistory) {
+  const parsed = new Date(row.completed_at || row.updated_at || row.created_at).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function latestCompletedIngestionNotice(rows: IngestionHistory[], dismissedIds: Set<string>) {
+  const latest = rows
+    .filter((row) => !row.active && row.total_files > 0)
+    .sort((left, right) => ingestionHistoryCompletionTime(right) - ingestionHistoryCompletionTime(left))[0];
+  if (!latest || dismissedIds.has(latest.batch_id)) return undefined;
+  return latest;
+}
+
 function syncBrowserUrl(path: string, state: Record<string, string | undefined>, mode: Exclude<BrowserHistoryMode, "none">) {
   if (mode === "replace") {
     window.history.replaceState(state, "", path);
@@ -18150,9 +18163,7 @@ export default function App() {
       Number(isTerminalBackgroundStatus(left.status)) - Number(isTerminalBackgroundStatus(right.status)) ||
       right.createdAt - left.createdAt,
   );
-  const completedIngestionNotice = (ingestionHistory.data || []).find(
-    (row) => !row.active && row.total_files > 0 && !dismissedIngestionHistoryIds.has(row.batch_id),
-  );
+  const completedIngestionNotice = latestCompletedIngestionNotice(ingestionHistory.data || [], dismissedIngestionHistoryIds);
   return (
     <AppTooltipProvider>
       <div className="app-shell" style={shellStyle}>
