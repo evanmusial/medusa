@@ -1684,9 +1684,9 @@ function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgrad
   }
   if (status.browser_reload_recommended) {
     return {
-      detail: "The updated server is healthy. This browser tab is reloading into the new build.",
-      message: "Reloading Medusa",
-      stage: "reloading",
+      detail: "The updated server is healthy. Reload when you are ready to enter the new browser build.",
+      message: "Reload ready",
+      stage: "health",
       targetVersion: status.running.version || targetVersion,
     };
   }
@@ -18067,21 +18067,8 @@ export default function App() {
         }
         if (cancelled) return;
         if (status.browser_reload_recommended) {
-          setReleaseUpgradeLock((current) =>
-            current
-              ? {
-                  ...current,
-                  detail: "The updated server is healthy. This browser tab is reloading into the new build.",
-                  message: "Reloading Medusa",
-                  stage: "reloading",
-                  targetVersion: status.running.version || nextLock.targetVersion,
-                }
-              : current,
-          );
-          if (!releaseReloadScheduledRef.current) {
-            releaseReloadScheduledRef.current = true;
-            scheduleReleaseReload(status);
-          }
+          releaseReloadScheduledRef.current = false;
+          setReleaseUpgradeLock(null);
           return;
         }
         releaseReloadScheduledRef.current = false;
