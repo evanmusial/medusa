@@ -371,7 +371,12 @@ def current_user(
     return user
 
 
-def domain_out(domain: Domain, db: Session | None = None) -> DomainOut:
+def domain_out(domain: Domain, db: Session | None = None, subtree_document_count: int | None = None) -> DomainOut:
+    document_count = (
+        domain_document_count(db, domain.id)
+        if db
+        else len([document for document in domain.documents if document_is_library_visible(document)])
+    )
     return DomainOut(
         id=domain.id,
         parent_id=domain.parent_id,
@@ -379,9 +384,10 @@ def domain_out(domain: Domain, db: Session | None = None) -> DomainOut:
         description=domain.description,
         color=domain.color,
         sort_order=domain.sort_order,
-        document_count=domain_document_count(db, domain.id)
-        if db
-        else len([document for document in domain.documents if document_is_library_visible(document)]),
+        document_count=document_count,
+        subtree_document_count=subtree_document_count
+        if subtree_document_count is not None
+        else (domain_subtree_document_count(db, domain.id) if db else document_count),
         tags=[tag_out(tag, db) for tag in sorted(domain.tags, key=lambda item: item.name.lower())] if db else [],
     )
 
@@ -723,6 +729,57 @@ def domain_document_count(db: Session | None, domain_id: str) -> int:
         .filter(library_visible_document_filter(), Document.domains.any(Domain.id == domain_id))
         .count()
     )
+
+
+def domain_subtree_document_counts(db: Session, domains: list[Domain]) -> dict[str, int]:
+    domain_ids = {domain.id for domain in domains}
+    if not domain_ids:
+        return {}
+    children_by_parent: dict[str | None, list[str]] = {}
+    for domain in domains:
+        children_by_parent.setdefault(domain.parent_id, []).append(domain.id)
+
+    subtree_ids_by_domain: dict[str, set[str]] = {}
+    visiting: set[str] = set()
+
+    def collect(domain_id: str) -> set[str]:
+        if domain_id in subtree_ids_by_domain:
+            return subtree_ids_by_domain[domain_id]
+        if domain_id in visiting:
+            return {domain_id}
+        visiting.add(domain_id)
+        ids = {domain_id}
+        for child_id in children_by_parent.get(domain_id, []):
+            ids.update(collect(child_id))
+        visiting.remove(domain_id)
+        subtree_ids_by_domain[domain_id] = ids
+        return ids
+
+    for domain_id in domain_ids:
+        collect(domain_id)
+
+    rows = (
+        db.query(document_domains.c.domain_id, document_domains.c.document_id)
+        .join(Document, Document.id == document_domains.c.document_id)
+        .filter(library_visible_document_filter(), document_domains.c.domain_id.in_(domain_ids))
+        .all()
+    )
+    document_ids_by_domain: dict[str, set[str]] = {}
+    for domain_id, document_id in rows:
+        document_ids_by_domain.setdefault(domain_id, set()).add(document_id)
+
+    counts: dict[str, int] = {}
+    for domain_id in domain_ids:
+        subtree_document_ids: set[str] = set()
+        for subtree_domain_id in subtree_ids_by_domain.get(domain_id, {domain_id}):
+            subtree_document_ids.update(document_ids_by_domain.get(subtree_domain_id, set()))
+        counts[domain_id] = len(subtree_document_ids)
+    return counts
+
+
+def domain_subtree_document_count(db: Session, domain_id: str) -> int:
+    domains = db.query(Domain).filter(Domain.deleted_at.is_(None)).all()
+    return domain_subtree_document_counts(db, domains).get(domain_id, 0)
 
 
 def get_active_domain(db: Session, domain_id: str) -> Domain:
@@ -1555,7 +1612,8 @@ def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Sessio
         .order_by(func.lower(Domain.name), Domain.name, Domain.sort_order)
         .all()
     )
-    return [domain_out(domain, db) for domain in domains]
+    subtree_counts = domain_subtree_document_counts(db, domains)
+    return [domain_out(domain, db, subtree_document_count=subtree_counts.get(domain.id, 0)) for domain in domains]
 
 
 @app.post("/api/domains", response_model=DomainOut)
@@ -1696,7 +1754,8 @@ def reorder_domains(
         .order_by(func.lower(Domain.name), Domain.name, Domain.sort_order)
         .all()
     )
-    return [domain_out(domain, db) for domain in domains]
+    subtree_counts = domain_subtree_document_counts(db, domains)
+    return [domain_out(domain, db, subtree_document_count=subtree_counts.get(domain.id, 0)) for domain in domains]
 
 
 @app.delete("/api/domains/{domain_id}", response_model=DomainDeleteOut)

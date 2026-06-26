@@ -531,6 +531,7 @@ export type Domain = {
   color?: string | null;
   sort_order: number;
   document_count: number;
+  subtree_document_count: number;
   tags: Tag[];
 };
 

@@ -88,6 +88,7 @@ class DomainOut(ApiModel):
     color: str | None = None
     sort_order: int
     document_count: int = 0
+    subtree_document_count: int = 0
     tags: list[TagOut] = Field(default_factory=list)
 
 

@@ -121,6 +121,59 @@ def test_list_domains_returns_alphabetical_names_before_manual_sort_order(monkey
     assert [domain.name for domain in result] == ["Alpha", "Alpha Child", "Beta Child", "Zeta"]
 
 
+def test_list_domains_includes_unique_subtree_document_counts(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_domains
+    from app.models import Document, Domain
+
+    Session = make_session()
+    with Session() as db:
+        root = Domain(name="Research")
+        child = Domain(name="Methods", parent=root)
+        grandchild = Domain(name="Surveys", parent=child)
+        dual_assigned = Document(
+            title="Direct And Child",
+            original_filename="direct-child.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+            domains=[root, child],
+        )
+        child_only = Document(
+            title="Child Only",
+            original_filename="child.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+            domains=[child],
+        )
+        grandchild_only = Document(
+            title="Grandchild Only",
+            original_filename="grandchild.pdf",
+            checksum_sha256="c" * 64,
+            processing_status="ready",
+            domains=[grandchild],
+        )
+        queued = Document(
+            title="Queued",
+            original_filename="queued.pdf",
+            checksum_sha256="d" * 64,
+            processing_status="queued",
+            domains=[grandchild],
+        )
+        db.add_all([root, child, grandchild, dual_assigned, child_only, grandchild_only, queued])
+        db.commit()
+
+        result = {domain.name: domain for domain in list_domains(object(), db)}
+
+    assert result["Research"].document_count == 1
+    assert result["Research"].subtree_document_count == 3
+    assert result["Methods"].document_count == 2
+    assert result["Methods"].subtree_document_count == 3
+    assert result["Surveys"].document_count == 1
+    assert result["Surveys"].subtree_document_count == 1
+
+
 def test_domain_tags_create_patch_and_clear(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

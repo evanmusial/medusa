@@ -34,6 +34,7 @@ import {
   Bookmark,
   BookOpen,
   BrainCircuit,
+  Calendar,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -93,6 +94,7 @@ import {
   Underline,
   Upload,
   UploadCloud,
+  Users,
   Wrench,
   X,
 } from "lucide-react";
@@ -374,11 +376,10 @@ const navItems: WorkspaceNavItem[] = [
   { id: "domains", label: "Domains", icon: FolderTree, shortcut: "D" },
   { id: "projects", label: "Projects", icon: ListChecks, shortcut: "P" },
   { id: "tags", label: "Tags", icon: Tags, shortcut: "T" },
-  { id: "queue", label: "Queue", icon: Inbox, shortcut: "Q" },
-  { id: "notes", label: "Notes", icon: BookOpen, shortcut: "N" },
-  { id: "import", label: "Import", icon: Upload, shortcut: "I" },
   { id: "stashes", label: "Stashes", icon: Bookmark, shortcut: "A" },
-  { id: "budget", label: "Budget & Costs", icon: CircleDollarSign, shortcut: "B" },
+  { id: "queue", label: "Queue", icon: Inbox, shortcut: "Q" },
+  { id: "import", label: "Import", icon: Upload, shortcut: "I" },
+  { id: "budget", label: "Finances", icon: CircleDollarSign, shortcut: "B" },
   { id: "utilities", label: "Utilities", icon: Wrench, shortcut: "U" },
   { id: "settings", label: "Settings", icon: Settings, shortcut: "S", align: "end" },
 ];
@@ -407,7 +408,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   notes: "Notes",
   import: "Import",
   stashes: "DOI Stashes",
-  budget: "Budget & Costs",
+  budget: "Finances",
   utilities: "Utilities",
   status: "Status",
   settings: "Settings",
@@ -3716,30 +3717,9 @@ function domainChildrenByParent(domains: Domain[]) {
   }, {});
 }
 
-function domainSubtreeDocumentCounts(domains: Domain[], children: Record<string, Domain[]>) {
-  const counts: Record<string, number> = {};
-  const visiting = new Set<string>();
-  const visit = (domain: Domain): number => {
-    if (counts[domain.id] !== undefined) return counts[domain.id];
-    if (visiting.has(domain.id)) return domain.document_count || 0;
-    visiting.add(domain.id);
-    const total =
-      (domain.document_count || 0) +
-      (children[domain.id] || []).reduce((sum, child) => sum + visit(child), 0);
-    visiting.delete(domain.id);
-    counts[domain.id] = total;
-    return total;
-  };
-  domains.forEach((domain) => visit(domain));
-  return counts;
-}
-
-function domainDocumentCountLabel(domain: Domain, children: Record<string, Domain[]>, subtreeCounts: Record<string, number>) {
-  const directCount = domain.document_count || 0;
-  const childCount = (children[domain.id] || []).length;
-  if (!childCount) return String(directCount);
-  const descendantCount = Math.max(0, (subtreeCounts[domain.id] ?? directCount) - directCount);
-  return `${directCount} (${descendantCount})`;
+function domainDocumentCountLabel(domain: Domain) {
+  const totalCount = domain.subtree_document_count ?? domain.document_count ?? 0;
+  return `(${totalCount})`;
 }
 
 function domainPathParts(domain: Domain, domains: Domain[]) {
@@ -3931,14 +3911,13 @@ function DomainTree({
   onAssignDocumentToDomain?: (documentId: string, domainId: string) => void;
 }) {
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
-  const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const roots = children.root || [];
   const domainIds = useMemo(() => new Set(domains.map((domain) => domain.id)), [domains]);
   const [dropHoverDomainId, setDropHoverDomainId] = useState<string | null>(null);
   const dropReady = Boolean(draggedDocumentId && onAssignDocumentToDomain);
 
   const render = (domain: Domain, depth = 0) => {
-    const countLabel = domainDocumentCountLabel(domain, children, subtreeCounts);
+    const countLabel = domainDocumentCountLabel(domain);
     const label = `${domain.name} ${countLabel}`;
     const alreadyAssigned = Boolean(dropReady && draggedDocumentAssignedDomainIds?.has(domain.id));
     const assigning = assigningDomainId === domain.id;
@@ -4038,7 +4017,6 @@ function DomainsView({
   const [tagPasteReview, setTagPasteReview] = useState<DomainTagPasteReview | null>(null);
   const descriptionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const children = useMemo(() => domainChildrenByParent(domains), [domains]);
-  const subtreeCounts = useMemo(() => domainSubtreeDocumentCounts(domains, children), [domains, children]);
   const selected = domains.find((domain) => domain.id === selectedId) || null;
   const selectedDescendants = useMemo(() => (selected ? descendantDomainIds(selected.id, domains) : new Set<string>()), [domains, selected]);
   const parentOptions = useMemo(
@@ -4210,8 +4188,7 @@ function DomainsView({
     } as CSSProperties;
   };
   const renderDomainButton = (domain: Domain, depth: number, pathOverride?: string) => {
-    const childCount = (children[domain.id] || []).length;
-    const countLabel = domainDocumentCountLabel(domain, children, subtreeCounts);
+    const countLabel = domainDocumentCountLabel(domain);
     const selectedRow = selected?.id === domain.id;
     return (
       <button
@@ -4225,9 +4202,9 @@ function DomainsView({
         <span className="domain-dot" style={{ background: domain.color || "var(--blue)" }} />
         <span className="domain-manager-row-text">
           <strong>{domain.name}</strong>
-          <small>{pathOverride || `${childCount} child${childCount === 1 ? "" : "ren"} / ${countLabel} documents`}</small>
+          {pathOverride ? <small>{pathOverride}</small> : null}
         </span>
-        <small>{countLabel}</small>
+        <small className="domain-count">{countLabel}</small>
       </button>
     );
   };
@@ -5750,9 +5727,18 @@ function LibraryView({
               >
                 <span className="doc-row-title">{item.title}</span>
                 <span className="doc-row-byline">
-                  <span className="doc-row-pages">{pageCountMarker(item)}</span>
-                  <span className="doc-row-year">{item.publication_year || "n.d."}</span>
-                  <span className="doc-row-authors">{authorLine(item)}</span>
+                  <span className="doc-row-pages" aria-label={`Pages: ${pageCountMarker(item)}`}>
+                    <FileText size={12} aria-hidden="true" />
+                    <span>{pageCountMarker(item)}</span>
+                  </span>
+                  <span className="doc-row-year" aria-label={`Year: ${item.publication_year || "n.d."}`}>
+                    <Calendar size={12} aria-hidden="true" />
+                    <span>{item.publication_year || "n.d."}</span>
+                  </span>
+                  <span className="doc-row-authors" aria-label={`Authors: ${authorLine(item)}`}>
+                    <Users size={12} aria-hidden="true" />
+                    <span>{authorLine(item)}</span>
+                  </span>
                 </span>
               </a>
               <div className="row-meta">
@@ -10318,6 +10304,7 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
             const busy = uploadingStashId === stash.id;
             const importBusy = importingStashId === stash.id;
             const importUnavailable = stash.status === "import_queued" || stash.status === "imported";
+            const matchedLibraryDocumentId = stash.imported_document_id || "";
             const doiCopied = copiedKey === `stash-doi-${stash.id}`;
             const sciHubTitleCopied = copiedKey === `stash-sci-hub-title-${stash.id}`;
             const libraryMatchLabel = stashLibraryMatchLabel(stash);
@@ -10474,17 +10461,35 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                       Source
                     </a>
                   ) : null}
+                  {matchedLibraryDocumentId ? (
+                    <a
+                      className="secondary-button compact stash-library-link"
+                      data-tooltip={
+                        stash.imported_document_title
+                          ? `Open ${stash.imported_document_title} in Library to validate this stash match.`
+                          : "Open the matching Library document to validate this stash match."
+                      }
+                      href={pathForDocument(matchedLibraryDocumentId)}
+                    >
+                      <Library size={14} />
+                      Library
+                    </a>
+                  ) : null}
                   <AsyncActionSlot feedback={removeFeedback.feedbackFor(stash.id)}>
                     <button
                       className={asyncFeedbackClass("secondary-button compact", removeFeedback.feedbackFor(stash.id))}
                       data-disabled-reason="a DOI stash remove request is already running."
-                      data-tooltip="Remove this DOI from Stashes without deleting any imported document."
+                      data-tooltip={
+                        matchedLibraryDocumentId
+                          ? "Delete this stash record now that it matches a Library document. The imported Library document is not deleted."
+                          : "Remove this DOI from Stashes without deleting any imported document."
+                      }
                       disabled={remove.isPending}
                       onClick={() => remove.mutate(stash)}
                       type="button"
                     >
                       <Trash2 size={14} />
-                      Remove
+                      {matchedLibraryDocumentId ? "Delete Stash" : "Remove"}
                     </button>
                   </AsyncActionSlot>
                 </div>
@@ -13684,7 +13689,7 @@ function BudgetView() {
         <div className="budget-command-surface">
           <div className="panel-title-row">
             <div>
-              <h2>Budget & Costs</h2>
+              <h2>Finances</h2>
               <span>{summary ? `${formatMetric(summary.request_count)} recorded calls` : usage.isLoading ? "Loading usage" : "No recorded calls"}</span>
             </div>
             <CircleDollarSign size={20} />
@@ -13692,7 +13697,7 @@ function BudgetView() {
           <div className="budget-controls">
             <label>
               Period
-              <select data-tooltip="Choose the time window used for Budget & Costs usage totals and rollups." value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
+              <select data-tooltip="Choose the time window used for Finances usage totals and rollups." value={period} onChange={(event) => setPeriod(event.target.value as OpenAIUsagePeriod)}>
                 {USAGE_PERIOD_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -13702,7 +13707,7 @@ function BudgetView() {
             </label>
             <label>
               Metric
-              <select data-tooltip="Choose whether Budget & Costs tables show tokens, estimated cost, or both." value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
+              <select data-tooltip="Choose whether Finances tables show tokens, estimated cost, or both." value={metricMode} onChange={(event) => setMetricMode(event.target.value as BudgetMetricMode)}>
                 <option value="tokens_cost">Tokens + cost</option>
                 <option value="tokens">Tokens</option>
                 <option value="cost">Cost</option>
@@ -13710,7 +13715,7 @@ function BudgetView() {
             </label>
             <label>
               Group
-              <select data-tooltip="Choose how Budget & Costs usage rows are grouped." value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
+              <select data-tooltip="Choose how Finances usage rows are grouped." value={groupMode} onChange={(event) => setGroupMode(event.target.value as BudgetGroupMode)}>
                 <option value="model">By model</option>
                 <option value="task">By task</option>
                 <option value="document">By document</option>
@@ -14163,6 +14168,283 @@ function DatabaseBackupRestorePanel({
   );
 }
 
+function bulkIntakeRowExists(file: ImportDuplicateFile) {
+  return file.duplicate_in_upload || file.existing_documents.length > 0;
+}
+
+function bulkIntakeDetail(file: ImportDuplicateFile) {
+  const primaryMatch = file.existing_documents[0];
+  return [
+    formatFileSize(file.file_size_bytes),
+    file.source_kind && file.source_kind !== "pdf" && file.stored_filename ? `${file.source_kind.toUpperCase()} -> ${file.stored_filename}` : "",
+    file.duplicate_in_upload ? "duplicate in this drop" : "",
+    primaryMatch?.title ? `matches ${primaryMatch.title}` : "",
+    primaryMatch?.match_basis || file.duplicate_reasons.join(", "),
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function UtilitiesBulkIntakePanel() {
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [duplicateCheck, setDuplicateCheck] = useState<ImportDuplicateCheck | null>(null);
+  const [dragDepth, setDragDepth] = useState(0);
+  const [notice, setNotice] = useState("Drop a large batch to check it against the corpus before staging anything.");
+  const [stageCompleted, setStageCompleted] = useState(false);
+  const stageFeedback = useAsyncActionFeedback({ successMs: 6000, errorMs: 9000 });
+  const rows = useMemo(
+    () =>
+      duplicateCheck
+        ? duplicateCheck.files.map((file, index) => ({
+            file,
+            sourceFile: files[index],
+            exists: bulkIntakeRowExists(file),
+          }))
+        : [],
+    [duplicateCheck, files],
+  );
+  const newRows = rows.filter((row) => !row.exists && row.sourceFile);
+  const existingRows = rows.filter((row) => row.file.existing_documents.length > 0);
+  const repeatedRows = rows.filter((row) => row.file.duplicate_in_upload);
+  const hasDraggedFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
+  const preflight = useMutation({
+    mutationFn: (incomingFiles: File[]) => api.checkImportDuplicates(incomingFiles),
+    onMutate: (incomingFiles) => {
+      setFiles(incomingFiles);
+      setDuplicateCheck(null);
+      setStageCompleted(false);
+      setNotice(`Checking ${importFileCountLabel(incomingFiles.length)} against Library and Queue.`);
+    },
+    onSuccess: (result, incomingFiles) => {
+      setFiles(incomingFiles);
+      setDuplicateCheck(result);
+      const stageableCount = result.files.filter((file) => !bulkIntakeRowExists(file)).length;
+      const existingCount = result.files.filter((file) => file.existing_documents.length > 0).length;
+      const repeatedCount = result.files.filter((file) => file.duplicate_in_upload).length;
+      setNotice(
+        `${stageableCount} new ${stageableCount === 1 ? "document" : "documents"} can be staged; ${existingCount} already ${existingCount === 1 ? "exists" : "exist"}; ${repeatedCount} repeated in this drop.`,
+      );
+    },
+    onError: (error) => {
+      setDuplicateCheck(null);
+      setNotice(error instanceof Error ? error.message : "Bulk intake check failed.");
+    },
+  });
+  const stageNew = useMutation({
+    mutationFn: (stageFiles: File[]) =>
+      api.uploadBatch(stageFiles, {
+        duplicate_strategy: "skip",
+        label: `Utilities bulk intake ${new Date().toLocaleString()}`,
+        priority: "normal",
+        read_status: "unread",
+      }),
+    onSuccess: (_batch, stageFiles) => {
+      setStageCompleted(true);
+      stageFeedback.showSuccess();
+      setNotice(`Staged ${importFileCountLabel(stageFiles.length)} in the Import queue.`);
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["ingestion-history"] });
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not stage new documents", error);
+      stageFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+  const intakeBusy = preflight.isPending || stageNew.isPending;
+  const isDraggingFiles = dragDepth > 0;
+  const stageDisabledReason = stageNew.isPending
+    ? "new documents are already being staged."
+    : preflight.isPending
+      ? "bulk duplicate checking is still running."
+    : !duplicateCheck
+      ? "drop or choose documents before staging."
+      : stageCompleted
+        ? "new documents from this review are already staged."
+      : newRows.length <= 0
+        ? "no new documents are available to stage."
+        : "";
+  const handleFiles = (incomingFiles: FileList | File[]) => {
+    const allFiles = Array.from(incomingFiles);
+    const supportedFiles = allFiles.filter(isSupportedImportFile);
+    if (intakeBusy) {
+      setNotice("Bulk intake is already working.");
+      return;
+    }
+    if (!supportedFiles.length) {
+      setNotice(allFiles.length ? "PDF, HTML, TXT, or MD only." : "No files selected.");
+      return;
+    }
+    const rejectedCount = allFiles.length - supportedFiles.length;
+    if (rejectedCount > 0) setNotice(`Checking ${supportedFiles.length}; ignored ${rejectedCount} unsupported ${rejectedCount === 1 ? "file" : "files"}.`);
+    preflight.mutate(supportedFiles);
+  };
+  const stageNewRows = () => {
+    const stageFiles = newRows.map((row) => row.sourceFile).filter((file): file is File => Boolean(file));
+    if (!stageFiles.length) {
+      setNotice("No new documents are available to stage.");
+      return;
+    }
+    stageNew.mutate(stageFiles);
+  };
+  const clearResults = () => {
+    setFiles([]);
+    setDuplicateCheck(null);
+    setDragDepth(0);
+    setStageCompleted(false);
+    setNotice("Drop a large batch to check it against the corpus before staging anything.");
+  };
+
+  return (
+    <section className="utilities-section bulk-intake-panel">
+      <div className="panel-title-row utility-section-title">
+        <div>
+          <h3>Bulk Intake</h3>
+          <span>{notice}</span>
+        </div>
+        <FileSearch size={19} />
+      </div>
+      <div
+        className={`bulk-intake-dropzone${isDraggingFiles ? " active" : ""}${intakeBusy ? " uploading" : ""}`}
+        onDragEnter={(event) => {
+          if (!hasDraggedFiles(event)) return;
+          event.preventDefault();
+          setDragDepth((depth) => depth + 1);
+        }}
+        onDragOver={(event) => {
+          if (!hasDraggedFiles(event)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(event) => {
+          if (!hasDraggedFiles(event)) return;
+          event.preventDefault();
+          setDragDepth((depth) => Math.max(0, depth - 1));
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragDepth(0);
+          handleFiles(event.dataTransfer.files);
+        }}
+      >
+        <div>
+          <span className="bulk-intake-icon">
+            <UploadCloud size={22} />
+          </span>
+          <div>
+            <strong>{isDraggingFiles ? "Release to check" : preflight.isPending ? "Checking corpus" : "Drop documents"}</strong>
+            <span>Medusa reviews the whole batch and stages only new files.</span>
+          </div>
+        </div>
+        <div className="bulk-intake-drop-actions">
+          <button
+            className="secondary-button compact"
+            data-disabled-reason="bulk intake is already checking or staging files."
+            data-tooltip="Choose many PDF, HTML, Markdown, or plain text files to compare against existing Library and Queue records."
+            disabled={intakeBusy}
+            onClick={() => fileInputRef.current?.click()}
+            type="button"
+          >
+            <Upload size={14} />
+            Choose Files
+          </button>
+          {duplicateCheck ? (
+            <button className="secondary-button compact" onClick={clearResults} type="button">
+              <X size={14} />
+              Clear
+            </button>
+          ) : null}
+        </div>
+        <input
+          ref={fileInputRef}
+          aria-label="Choose documents for bulk intake duplicate checking"
+          className="hidden-file-input"
+          multiple
+          accept={IMPORT_ACCEPT}
+          type="file"
+          onChange={(event) => {
+            handleFiles(event.target.files || []);
+            event.currentTarget.value = "";
+          }}
+        />
+      </div>
+      <div className="bulk-intake-summary">
+        <div>
+          <span>Checked</span>
+          <strong>{duplicateCheck ? formatMetric(rows.length) : "0"}</strong>
+        </div>
+        <div>
+          <span>Already known</span>
+          <strong>{formatMetric(existingRows.length)}</strong>
+        </div>
+        <div>
+          <span>New to stage</span>
+          <strong>{formatMetric(newRows.length)}</strong>
+        </div>
+        <div>
+          <span>Repeated here</span>
+          <strong>{formatMetric(repeatedRows.length)}</strong>
+        </div>
+      </div>
+      {duplicateCheck ? (
+        <div className="bulk-intake-results">
+          <div className="bulk-intake-results-head">
+            <strong>Batch Review</strong>
+            <span>{rows.length ? `${formatMetric(rows.length)} ${rows.length === 1 ? "file" : "files"}` : "No files"}</span>
+          </div>
+          <div className="bulk-intake-list">
+            {rows.map((row, index) => {
+              const primaryMatch = row.file.existing_documents[0];
+              const statusLabel = row.exists ? importDuplicateSourceLabel(row.file) : "New";
+              const statusTone: "warn" | "good" = row.exists ? "warn" : "good";
+              return (
+                <div className={`bulk-intake-row ${row.exists ? "matched" : "new"}`} key={`${row.file.checksum_sha256}-${row.file.filename}-${index}`}>
+                  <div className="bulk-intake-row-main">
+                    <strong>{row.file.filename}</strong>
+                    <span>{bulkIntakeDetail(row.file) || "Ready to stage"}</span>
+                  </div>
+                  <div className="bulk-intake-row-actions">
+                    <StatusPill value={statusLabel} tone={statusTone} />
+                    {primaryMatch ? (
+                      <a
+                        className="secondary-button compact"
+                        data-tooltip="Open the matching document so this bulk-intake result can be validated."
+                        href={pathForDocument(primaryMatch.id)}
+                      >
+                        <Library size={14} />
+                        Library
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      <div className="bulk-intake-footer">
+        <span>Non-duplicate files are staged only; processing still starts from Import.</span>
+        <AsyncActionSlot busy={stageNew.isPending} feedback={stageFeedback.feedback} label="Staging new documents">
+          <button
+            className={asyncFeedbackClass("primary-button", stageFeedback.feedback, stageNew.isPending)}
+            data-disabled-reason={stageDisabledReason}
+            data-tooltip="Stage only files with no existing Library or Queue match and no repeated copy in this drop."
+            disabled={Boolean(stageDisabledReason)}
+            onClick={stageNewRows}
+            type="button"
+          >
+            <Plus className={stageNew.isPending ? "spin" : ""} size={15} />
+            {stageNew.isPending ? "Staging" : `Stage New (${formatMetric(newRows.length)})`}
+          </button>
+        </AsyncActionSlot>
+      </div>
+    </section>
+  );
+}
+
 function UtilitiesView({
   backupRuns,
   ingestionHistory,
@@ -14517,10 +14799,11 @@ function UtilitiesView({
         <div className="panel-title-row">
           <div>
             <h2>Utilities</h2>
-            <span>{utilitiesLoading ? "Loading utility status" : "Database and container"}</span>
+            <span>{utilitiesLoading ? "Loading utility status" : "Bulk intake, database, and container"}</span>
           </div>
           <Wrench size={20} />
         </div>
+        <UtilitiesBulkIntakePanel />
         <section className="utilities-section">
           <div className="panel-title-row utility-section-title">
             <div>
