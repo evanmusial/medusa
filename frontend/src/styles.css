@@ -2638,7 +2638,7 @@ textarea {
 
 .doc-row .doc-row-title {
   color: var(--document-title-ink);
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 560;
   line-height: 1.28;
 }
