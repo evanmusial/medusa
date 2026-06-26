@@ -134,8 +134,8 @@ ensure_certbot_registration_ready() {
 }
 
 install_cert_files() {
-  [[ -f "$lineage/fullchain.pem" ]] || die "missing $lineage/fullchain.pem"
-  [[ -f "$lineage/privkey.pem" ]] || die "missing $lineage/privkey.pem"
+  "${sudo_cmd[@]}" test -f "$lineage/fullchain.pem" || die "missing $lineage/fullchain.pem"
+  "${sudo_cmd[@]}" test -f "$lineage/privkey.pem" || die "missing $lineage/privkey.pem"
 
   "${sudo_cmd[@]}" install -d -m 700 -o "$repo_owner" -g "$repo_group" "$haproxy_dir"
   "${sudo_cmd[@]}" install -m 600 -o "$repo_owner" -g "$repo_group" \
