@@ -6,4 +6,4 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/medusa
-ExecStart=/opt/medusa/scripts/medusa-release-agent.py apply --repo /opt/medusa --data-dir /opt/medusa/data
+ExecStart=/opt/medusa/scripts/medusa-release-agent.py apply --repo /opt/medusa --data-dir /opt/medusa/data --compose-file docker-compose.yml --compose-file docker-compose.server.yml

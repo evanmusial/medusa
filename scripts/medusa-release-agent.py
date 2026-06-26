@@ -207,10 +207,37 @@ def check(args: argparse.Namespace) -> int:
         return 1
 
 
+def release_healthcheck_ip(repo: Path) -> str:
+    configured = os.environ.get("MEDUSA_RELEASE_HEALTHCHECK_IP") or env_file_value(repo, "MEDUSA_RELEASE_HEALTHCHECK_IP")
+    if configured:
+        return configured
+    bind_ip = os.environ.get("MEDUSA_BIND_IP") or env_file_value(repo, "MEDUSA_BIND_IP")
+    if bind_ip and bind_ip not in {"0.0.0.0", "::"}:
+        return bind_ip
+    bind_ipv6 = os.environ.get("MEDUSA_BIND_IPV6") or env_file_value(repo, "MEDUSA_BIND_IPV6")
+    if bind_ipv6 and bind_ipv6 not in {"::", "::1"}:
+        return bind_ipv6
+    return "127.0.0.1"
+
+
+def curl_resolve_address(address: str) -> str:
+    return f"[{address}]" if ":" in address and not address.startswith("[") else address
+
+
 def health_url(repo: Path) -> tuple[list[str], str]:
     host = os.environ.get("MEDUSA_PUBLIC_HOST") or env_file_value(repo, "MEDUSA_PUBLIC_HOST") or "medusa.home.musial.io"
+    address = curl_resolve_address(release_healthcheck_ip(repo))
     url = f"https://{host}:3737/api/health"
-    return ["curl", "-kfsS", "--resolve", f"{host}:3737:127.0.0.1", url], url
+    return ["curl", "-kfsS", "--resolve", f"{host}:3737:{address}", url], url
+
+
+def compose_up_command(args: argparse.Namespace) -> list[str]:
+    command = ["docker", "compose"]
+    compose_files = args.compose_file or ["docker-compose.yml"]
+    for compose_file in compose_files:
+        command.extend(["-f", compose_file])
+    command.extend(["up", "-d", "--build"])
+    return command
 
 
 def wait_for_health(repo: Path, timeout_seconds: int) -> None:
@@ -256,7 +283,7 @@ def apply(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env.update(build_identity)
         write_phase(args, "building", f"Building Medusa {target['version']}.")
-        run_command(["docker", "compose", "up", "-d", "--build"], cwd=repo, env=env)
+        run_command(compose_up_command(args), cwd=repo, env=env)
         write_phase(args, "verifying", "Waiting for Medusa health after upgrade.")
         wait_for_health(repo, args.health_timeout_seconds)
         request_path.unlink(missing_ok=True)
@@ -284,6 +311,12 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--request-file", type=Path, default=None, help="Release request JSON path.")
         command.add_argument("--remote", default="origin", help="Git remote to fetch.")
         command.add_argument("--upstream", default=None, help="Git ref to compare/apply, overriding @{upstream}.")
+        command.add_argument(
+            "--compose-file",
+            action="append",
+            default=None,
+            help="Compose file to include for apply; repeat for overrides. Defaults to docker-compose.yml.",
+        )
     subcommands.choices["check"].add_argument("--no-fetch", action="store_true", help="Do not fetch before checking.")
     subcommands.choices["apply"].add_argument("--force", action="store_true", help="Apply even when no request file exists.")
     subcommands.choices["apply"].add_argument("--health-timeout-seconds", type=int, default=120)

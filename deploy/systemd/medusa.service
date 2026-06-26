@@ -8,9 +8,9 @@ Requires=docker.service
 Type=oneshot
 WorkingDirectory=/opt/medusa
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
-ExecStart=/usr/bin/env docker compose up -d --build
-ExecReload=/usr/bin/env docker compose up -d --build
-ExecStop=/usr/bin/env docker compose stop
+ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+ExecStop=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml stop
 RemainAfterExit=yes
 TimeoutStartSec=900
 TimeoutStopSec=120

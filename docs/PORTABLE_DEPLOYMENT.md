@@ -133,18 +133,19 @@ scripts/medusa-release-agent.py check --repo /path/to/medusa --data-dir /path/to
 Apply a requested upgrade:
 
 ```bash
-scripts/medusa-release-agent.py apply --repo /path/to/medusa --data-dir /path/to/medusa/data
+scripts/medusa-release-agent.py apply --repo /path/to/medusa --data-dir /path/to/medusa/data --compose-file docker-compose.yml --compose-file docker-compose.server.yml
 ```
 
-The agent fetches the configured upstream, refuses to deploy from a dirty checkout, fast-forwards only, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with `docker compose up -d --build`, then waits for `/api/health`.
+The agent fetches the configured upstream, refuses to deploy from a dirty checkout, fast-forwards only, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with the requested Compose files, then waits for `/api/health`. Its health probe resolves `MEDUSA_PUBLIC_HOST` to `MEDUSA_RELEASE_HEALTHCHECK_IP` when set, otherwise to `MEDUSA_BIND_IP`, then `MEDUSA_BIND_IPV6`, then localhost.
 
 A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
 
-Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and adjust `medusa.service` to use the server override if this host should run with `docker-compose.server.yml`:
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and run them as the checkout owner so Git SSH credentials and Docker group membership are available.
 
 ```ini
 ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+ExecStop=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml stop
 ```
 
 Then enable:
