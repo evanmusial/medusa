@@ -92,6 +92,11 @@ services:
   haproxy:
     image: haproxy:3.0-alpine
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MEDUSA_PUBLIC_HOST: ${MEDUSA_PUBLIC_HOST:-medusa.home.musial.io}
     ports:
       - "3737:3737"
     volumes:
@@ -103,13 +108,15 @@ services:
       - /bin/sh
       - -ec
       - |
+        export MEDUSA_PUBLIC_HOST="$${MEDUSA_PUBLIC_HOST:-medusa.home.musial.io}"
+        awk -v host="$${MEDUSA_PUBLIC_HOST}" '{ gsub(/__MEDUSA_PUBLIC_HOST__/, host); print }' /usr/local/etc/haproxy/haproxy.cfg > /tmp/haproxy.cfg
         cat /usr/local/etc/haproxy/certs/fullchain.pem > /tmp/medusa.pem
         printf '\n' >> /tmp/medusa.pem
         cat /usr/local/etc/haproxy/certs/privatekey.pem >> /tmp/medusa.pem
         chmod 600 /tmp/medusa.pem
-        exec haproxy -f /usr/local/etc/haproxy/haproxy.cfg
+        exec haproxy -f /tmp/haproxy.cfg
     healthcheck:
-      test: ["CMD-SHELL", "test -s /tmp/medusa.pem && haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"]
+      test: ["CMD-SHELL", "test -s /tmp/medusa.pem && test -s /tmp/haproxy.cfg && haproxy -c -f /tmp/haproxy.cfg"]
       interval: 10s
       timeout: 5s
       retries: 6

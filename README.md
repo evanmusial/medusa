@@ -77,7 +77,7 @@ Open:
 https://medusa.home.musial.io:3737
 ```
 
-Plain HTTP requests on port `3737` redirect to `https://medusa.home.musial.io:3737` on the same port. The bundled deployment expects a certificate that covers `*.home.musial.io`; change `MEDUSA_PUBLIC_HOST`, the HAProxy redirect/check host, and the certificate files together for another local domain.
+Plain HTTP requests on port `3737` redirect to `https://medusa.home.musial.io:3737` on the same port. HAProxy renders the redirect and health-check host from `MEDUSA_PUBLIC_HOST` at container startup. The bundled local deployment expects a certificate that covers `*.home.musial.io`; change `MEDUSA_PUBLIC_HOST`, `MEDUSA_ALLOWED_HOSTS`, and the certificate files together for another domain.
 
 The login email defaults to `admin@medusa.local` and the first admin password comes from `MEDUSA_PASSWORD` in `.env`. Those `.env` values seed the account when Medusa creates it for the first time; after that, Medusa uses the hashed password stored on the PostgreSQL `users` row, and Settings > Account changes the live login email or password without rewriting the seed. Settings > Account can also enable authenticator-app 2FA, show a setup key for manual entry, require a current TOTP code before enabling, and issue one-time recovery codes for later login or disablement.
 
@@ -92,6 +92,8 @@ MEDUSA_PUBLIC_HOST=medusa.home.musial.io
 MEDUSA_HAPROXY_STATS_URL=http://haproxy:8404/stats;csv
 MEDUSA_ALLOWED_HOSTS=medusa.home.musial.io
 ```
+
+`MEDUSA_ALLOWED_HOSTS` accepts a comma-separated Vite allowed-host list, or `*` / `all` / `true` to allow any Host header during a controlled migration window.
 
 HAProxy's stats listener is internal-only. Utilities reads the authenticated backend endpoint `/api/utilities/haproxy/status`, which summarizes the internal CSV stats feed.
 

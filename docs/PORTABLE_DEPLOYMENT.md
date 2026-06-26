@@ -17,7 +17,7 @@ The server override:
 - starts backend and worker with `MEDUSA_IMPORT_WORKER_CONCURRENCY=2` unless `.env` overrides it;
 - starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
 
-Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked.
+Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. For the Dallas host, the planned public URL is `https://medusa.evan.engineer:3737`, the bind IP is `23.227.185.85`, the CPU set is `2-7`, the document cache is `51200` MB, and import worker concurrency is `2`. `MEDUSA_ALLOWED_HOSTS=*` intentionally leaves frontend Host checks open during the migration window.
 
 Before moving from the local machine, run:
 
@@ -50,7 +50,7 @@ The doctor checks Docker, Compose, the configured CPU set, the dedicated bind IP
    - optionally `data/model-cache/` to avoid first-run model downloads.
    - optionally `data/processing-cache/` to avoid rehydrating recent PDFs.
    - copy `data/originals/` when local fallback storage contains authoritative originals that are not in GCS.
-6. Fill the target `.env` from `deploy/server/.env.server.example`, including `MEDUSA_BIND_IP`, `MEDUSA_CPUSET`, host/domain values, GCS, and model-provider credentials.
+6. Fill the target `.env` from `deploy/server/.env.server.example`, including `MEDUSA_PUBLIC_HOST`, `MEDUSA_ALLOWED_HOSTS`, `MEDUSA_BIND_IP`, `MEDUSA_CPUSET`, GCS, and model-provider credentials.
 7. Run the server doctor on the target.
 8. Start Medusa on the target:
 

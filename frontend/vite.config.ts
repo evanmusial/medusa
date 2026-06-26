@@ -78,10 +78,18 @@ const buildHash = normalizeBuildHash(process.env.MEDUSA_BUILD_HASH) || buildCont
 const buildVersion = (process.env.MEDUSA_BUILD_VERSION || "").trim() || `${buildDate} (${buildHash})`;
 const frontendNodeVersion = process.version;
 const frontendViteVersion = vitePackage.version || "unknown";
-const allowedHosts = (process.env.MEDUSA_ALLOWED_HOSTS || "medusa.home.musial.io")
-  .split(",")
-  .map((host) => host.trim())
-  .filter(Boolean);
+function parseAllowedHosts(value: string | undefined): true | string[] {
+  const raw = (value || "medusa.home.musial.io").trim();
+  if (["*", "all", "true"].includes(raw.toLowerCase())) {
+    return true;
+  }
+  return raw
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+}
+
+const allowedHosts = parseAllowedHosts(process.env.MEDUSA_ALLOWED_HOSTS);
 
 export default defineConfig({
   plugins: [react()],

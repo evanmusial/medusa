@@ -121,6 +121,8 @@ def main() -> int:
         return 2
 
     env = read_env(repo / ".env")
+    public_host = env.get("MEDUSA_PUBLIC_HOST") or os.environ.get("MEDUSA_PUBLIC_HOST") or ""
+    allowed_hosts = env.get("MEDUSA_ALLOWED_HOSTS") or os.environ.get("MEDUSA_ALLOWED_HOSTS") or ""
     bind_ip = env.get("MEDUSA_BIND_IP") or os.environ.get("MEDUSA_BIND_IP") or "0.0.0.0"
     cpuset_value = env.get("MEDUSA_CPUSET") or os.environ.get("MEDUSA_CPUSET") or "0-5"
     failures = 0
@@ -161,6 +163,15 @@ def main() -> int:
         if result.returncode == 0:
             status("CPU topology", "INFO", "run `lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE` to choose sibling-aware CPU IDs")
 
+    if public_host:
+        status("MEDUSA_PUBLIC_HOST", "OK", public_host)
+    else:
+        status("MEDUSA_PUBLIC_HOST", "WARN", "not set; HAProxy will fall back to medusa.home.musial.io")
+    if allowed_hosts:
+        detail = "open to all Host headers" if allowed_hosts.strip().lower() in {"*", "all", "true"} else allowed_hosts
+        status("MEDUSA_ALLOWED_HOSTS", "OK", detail)
+    else:
+        status("MEDUSA_ALLOWED_HOSTS", "WARN", "not set; frontend will allow medusa.home.musial.io only")
     ips = host_ips()
     if bind_ip in ips:
         status("MEDUSA_BIND_IP", "OK", bind_ip)
