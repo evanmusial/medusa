@@ -2835,6 +2835,8 @@ def patch_preferences(
             valkey_maxmemory=payload.valkey_maxmemory,
             library_alternating_rows=payload.library_alternating_rows,
             library_page_size=payload.library_page_size,
+            library_density=payload.library_density,
+            detail_sticky_fields=payload.detail_sticky_fields,
             download_naming_template=payload.download_naming_template,
             citation_convention=payload.citation_convention,
             gcs_bucket=payload.gcs_bucket,

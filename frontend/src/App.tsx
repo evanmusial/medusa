@@ -100,7 +100,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { api, ApiError } from "./lib/api";
+import { api, apiPath, ApiError } from "./lib/api";
 import type {
   AccessorySummary,
   AIFailureNotice,
@@ -366,6 +366,28 @@ const FILTER_PANE_MAX = 420;
 const MIN_LIBRARY_PAGE_SIZE = 10;
 type LibraryPageSize = number;
 const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 50;
+type LibraryDensity = "compact" | "comfortable" | "reading";
+const DEFAULT_LIBRARY_DENSITY: LibraryDensity = "comfortable";
+const LIBRARY_DENSITY_OPTIONS: Array<{ value: LibraryDensity; label: string; description: string }> = [
+  { value: "compact", label: "Compact", description: "Tighter rows for fast scanning." },
+  { value: "comfortable", label: "Comfortable", description: "The current balanced Library row spacing." },
+  { value: "reading", label: "Reading", description: "More summary room for browsing dense papers." },
+];
+const LIBRARY_ROW_HEIGHT_BY_DENSITY: Record<LibraryDensity, number> = {
+  compact: 88,
+  comfortable: 118,
+  reading: 154,
+};
+type DetailStickyField = "title" | "authors" | "year" | "doi" | "priority" | "status";
+const DETAIL_STICKY_FIELD_OPTIONS: Array<{ value: DetailStickyField; label: string }> = [
+  { value: "title", label: "Title" },
+  { value: "authors", label: "Authors" },
+  { value: "year", label: "Year" },
+  { value: "doi", label: "DOI" },
+  { value: "priority", label: "Priority" },
+  { value: "status", label: "Status" },
+];
+const DEFAULT_DETAIL_STICKY_FIELDS: DetailStickyField[] = ["title", "authors"];
 const LIBRARY_PAGE_SIZE_SUGGESTIONS: Array<{ value: LibraryPageSize; label: string }> = [
   { value: 25, label: "25" },
   { value: 50, label: "50" },
@@ -375,7 +397,6 @@ const LIBRARY_PAGE_SIZE_SUGGESTIONS: Array<{ value: LibraryPageSize; label: stri
   { value: 250, label: "250" },
   { value: 500, label: "500" },
 ];
-const LIBRARY_ROW_HEIGHT = 118;
 const LIBRARY_ROW_OVERSCAN = 6;
 const EMPTY_LIBRARY_ROWS: DocumentListRow[] = [];
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
@@ -560,6 +581,19 @@ function useAppDialogController() {
 function parseLibraryPageSize(value: string | null): LibraryPageSize {
   const numericValue = Number(value);
   return Number.isInteger(numericValue) && numericValue >= MIN_LIBRARY_PAGE_SIZE ? numericValue : DEFAULT_LIBRARY_PAGE_SIZE;
+}
+
+function normalizeLibraryDensity(value?: string | null): LibraryDensity {
+  return LIBRARY_DENSITY_OPTIONS.some((option) => option.value === value) ? (value as LibraryDensity) : DEFAULT_LIBRARY_DENSITY;
+}
+
+function normalizeDetailStickyFields(value?: string[] | null): DetailStickyField[] {
+  const valid = new Set(DETAIL_STICKY_FIELD_OPTIONS.map((option) => option.value));
+  const fields = (value || [])
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter((item): item is DetailStickyField => valid.has(item as DetailStickyField));
+  const unique = Array.from(new Set(fields));
+  return unique.length ? unique : DEFAULT_DETAIL_STICKY_FIELDS;
 }
 
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
@@ -4188,6 +4222,7 @@ function ResizeHandle({
   setValue,
   min,
   max,
+  resetValue,
   invert = false,
   className = "",
 }: {
@@ -4196,6 +4231,7 @@ function ResizeHandle({
   setValue: (value: number) => void;
   min: number;
   max: number;
+  resetValue?: number;
   invert?: boolean;
   className?: string;
 }) {
@@ -4225,6 +4261,9 @@ function ResizeHandle({
   const nudge = (direction: -1 | 1) => {
     setValue(clamp(value + (invert ? -direction : direction) * 16, min, max));
   };
+  const reset = () => {
+    if (typeof resetValue === "number") setValue(clamp(resetValue, min, max));
+  };
 
   return (
     <button
@@ -4234,7 +4273,8 @@ function ResizeHandle({
       aria-valuemin={min}
       aria-valuenow={Math.round(value)}
       className={`resize-handle ${className}`}
-      data-tooltip={`Drag or use Left and Right arrow keys to ${label.toLocaleLowerCase()}.`}
+      data-tooltip={`Drag or use Left and Right arrow keys to ${label.toLocaleLowerCase()}.${typeof resetValue === "number" ? " Double-click to reset." : ""}`}
+      onDoubleClick={reset}
       onKeyDown={(event) => {
         if (event.key === "ArrowLeft") {
           event.preventDefault();
@@ -4243,6 +4283,10 @@ function ResizeHandle({
         if (event.key === "ArrowRight") {
           event.preventDefault();
           nudge(1);
+        }
+        if (event.key === "Home" && typeof resetValue === "number") {
+          event.preventDefault();
+          reset();
         }
       }}
       onPointerDown={startResize}
@@ -6398,6 +6442,8 @@ function LibraryView({
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
   } as CSSProperties;
+  const libraryDensity = normalizeLibraryDensity(preferences?.library_density);
+  const libraryRowHeight = LIBRARY_ROW_HEIGHT_BY_DENSITY[libraryDensity];
   const sortedDocuments = useMemo(
     () =>
       [...documents].sort((left, right) => {
@@ -6413,13 +6459,13 @@ function LibraryView({
     totalDocumentCount === sortedDocuments.length && pageOffset === 0
       ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
       : `Browsing ${formatWholeNumber(visibleStart)}-${formatWholeNumber(visibleEnd)} of ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
-  const virtualStartIndex = Math.max(0, Math.floor(rowsScrollTop / LIBRARY_ROW_HEIGHT) - LIBRARY_ROW_OVERSCAN);
+  const virtualStartIndex = Math.max(0, Math.floor(rowsScrollTop / libraryRowHeight) - LIBRARY_ROW_OVERSCAN);
   const virtualEndIndex = Math.min(
     sortedDocuments.length,
-    Math.ceil((rowsScrollTop + rowsViewportHeight) / LIBRARY_ROW_HEIGHT) + LIBRARY_ROW_OVERSCAN,
+    Math.ceil((rowsScrollTop + rowsViewportHeight) / libraryRowHeight) + LIBRARY_ROW_OVERSCAN,
   );
   const virtualDocuments = sortedDocuments.slice(virtualStartIndex, virtualEndIndex);
-  const virtualSpacerHeight = sortedDocuments.length * LIBRARY_ROW_HEIGHT;
+  const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
   const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
@@ -6477,6 +6523,58 @@ function LibraryView({
   const setFilterValue = (key: keyof DocumentFilters, value: string) => {
     setFilters({ ...filters, [key]: value });
   };
+  const activeResultChips = [
+    query.trim()
+      ? {
+          key: "query",
+          label: `Search: ${query.trim()}`,
+          onClear: () => setQuery(""),
+        }
+      : null,
+    filters.domain_id
+      ? {
+          key: "domain",
+          label: `Domain: ${domainOptions.find((option) => option.id === filters.domain_id)?.name || "selected"}`,
+          onClear: () => setFilterValue("domain_id", ""),
+        }
+      : null,
+    filters.tag_id
+      ? {
+          key: "tag",
+          label: `Tag: ${tagOptions.find((option) => option.id === filters.tag_id)?.name || "selected"}`,
+          onClear: () => setFilterValue("tag_id", ""),
+        }
+      : null,
+    filters.read_status
+      ? {
+          key: "read",
+          label: `Read: ${filters.read_status.replaceAll("_", " ")}`,
+          onClear: () => setFilterValue("read_status", ""),
+        }
+      : null,
+    filters.priority
+      ? {
+          key: "priority",
+          label: `Priority: ${priorityLabel(filters.priority)}`,
+          onClear: () => setFilterValue("priority", ""),
+        }
+      : null,
+    filters.citation_status
+      ? {
+          key: "citation",
+          label: `Citation: ${filters.citation_status.replaceAll("_", " ")}`,
+          onClear: () => setFilterValue("citation_status", ""),
+        }
+      : null,
+    filters.duplicate_status
+      ? {
+          key: "duplicate",
+          label: `Duplicates: ${filters.duplicate_status.replaceAll("_", " ")}`,
+          onClear: () => setFilterValue("duplicate_status", ""),
+        }
+      : null,
+  ].filter((chip): chip is { key: string; label: string; onClear: () => void } => Boolean(chip));
+  const hasResultChips = activeResultChips.length > 0;
 
   const openDuplicateReview = () => {
     setDuplicateReviewOpen(true);
@@ -6551,7 +6649,7 @@ function LibraryView({
   }
 
   return (
-    <section className="library-grid" style={paneStyle}>
+    <section className={`library-grid library-density-${libraryDensity}${query.trim() ? " search-results-mode" : ""}`} style={paneStyle}>
       <aside className="filter-pane">
         <div className="pane-heading">
           <Filter size={17} />
@@ -6731,11 +6829,13 @@ function LibraryView({
         label="Resize filters pane"
         max={FILTER_PANE_MAX}
         min={FILTER_PANE_MIN}
+        resetValue={FILTER_PANE_DEFAULT}
         setValue={setFilterWidth}
         value={filterWidth}
       />
       <section className="document-list">
-        <div className="list-toolbar">
+        <div className="document-list-head">
+          <div className="list-toolbar">
           <label className="select-all-row">
             <input
               data-tooltip={allVisibleSelected ? "Clear the selection for every visible document." : "Select every visible document in the current Library result list."}
@@ -6873,6 +6973,35 @@ function LibraryView({
               <ChevronRight size={15} />
             </button>
           </div>
+          </div>
+          {hasResultChips ? (
+            <div className="active-result-bar" aria-label="Active Library result filters">
+              <span>Results scoped by</span>
+              {activeResultChips.map((chip) => (
+                <button
+                  key={chip.key}
+                  className="active-result-chip"
+                  data-tooltip={`Clear ${chip.label}.`}
+                  onClick={chip.onClear}
+                  type="button"
+                >
+                  <span>{chip.label}</span>
+                  <X size={13} />
+                </button>
+              ))}
+              <button
+                className="active-result-clear"
+                data-tooltip="Clear the active search and every Library filter."
+                onClick={() => {
+                  setQuery("");
+                  setFilters(emptyFilters());
+                }}
+                type="button"
+              >
+                Clear all
+              </button>
+            </div>
+          ) : null}
         </div>
         <div
           ref={rowsViewportRef}
@@ -6887,7 +7016,7 @@ function LibraryView({
               key={item.id}
               className={`doc-row virtual-doc-row ${alternatingRows && actualIndex % 2 === 1 ? "even-row" : ""} ${selectedId === item.id ? "selected" : ""} ${draggedDocumentId === item.id ? "dragging" : ""}`}
               draggable
-              style={{ height: LIBRARY_ROW_HEIGHT, transform: `translateY(${actualIndex * LIBRARY_ROW_HEIGHT}px)` }}
+              style={{ height: libraryRowHeight, transform: `translateY(${actualIndex * libraryRowHeight}px)` }}
               onDragEnd={() => setDraggedDocumentId(null)}
               onDragStart={(event) => {
                 setDraggedDocumentId(item.id);
@@ -6955,6 +7084,7 @@ function LibraryView({
         label="Resize document detail pane"
         max={560}
         min={300}
+        resetValue={384}
         setValue={setDetailWidth}
         value={detailWidth}
       />
@@ -7960,6 +8090,8 @@ function DocumentPanelContent({
   const accessorySummaryTask = preferences?.analysis_model_tasks.find((task) => task.key === ACCESSORY_SUMMARIES_MODEL_KEY);
   const accessorySummaryDefaultModel =
     preferences?.analysis_models[ACCESSORY_SUMMARIES_MODEL_KEY] || accessorySummaryTask?.selected_model || accessorySummaryTask?.default_model || "gpt-5.4";
+  const stickyFields = normalizeDetailStickyFields(preferences?.detail_sticky_fields);
+  const stickyFieldSet = new Set(stickyFields);
   const [accessoryComposerOpen, setAccessoryComposerOpen] = useState(false);
   const [accessoryPrompt, setAccessoryPrompt] = useState("");
   const [accessoryModel, setAccessoryModel] = useState(accessorySummaryDefaultModel);
@@ -10471,33 +10603,47 @@ function DocumentPanelContent({
       {renderReaderActions("bottom")}
     </section>
   );
-  const readerButton = onOpenReader ? (
+  const stickyFactItems = [
+    stickyFieldSet.has("year") ? { key: "year", label: "Year", value: document.publication_year || "n.d." } : null,
+    stickyFieldSet.has("doi") ? { key: "doi", label: "DOI", value: document.doi || "No DOI" } : null,
+  ].filter((item): item is { key: string; label: string; value: string | number } => Boolean(item));
+  const readerButton =
+    readerExpanded && onCloseReader ? (
+      <button
+        className="secondary-button reader-mode-button"
+        data-tooltip="Close expanded Reader mode and return to the normal Library panes."
+        onClick={onCloseReader}
+        type="button"
+      >
+        <X size={15} />
+        Close Reader
+      </button>
+    ) : onOpenReader ? (
     <button
-      className="secondary-button"
-      data-disabled-reason={readerExpanded ? "expanded Reader mode is already open." : undefined}
-      data-tooltip={readerExpanded ? "Expanded Reader mode is already open." : "Expand this document into full Reader mode."}
-      disabled={readerExpanded}
-      onClick={readerExpanded ? undefined : onOpenReader}
+      className="secondary-button reader-mode-button"
+      data-tooltip="Expand this document into full Reader mode."
+      onClick={onOpenReader}
       type="button"
     >
       <BookOpen size={15} />
       Reader
     </button>
-  ) : null;
+    ) : null;
   const editButton = (
     <button
-      className="secondary-button"
+      aria-label={editing ? "Cancel document metadata editing" : "Edit document metadata"}
+      className="icon-button"
       data-tooltip={editing ? "Close the document metadata correction form without saving." : "Open the document metadata correction form."}
       onClick={toggleDocumentEditing}
       type="button"
     >
       {editing ? <X size={15} /> : <Edit3 size={15} />}
-      {editing ? "Cancel" : "Edit"}
     </button>
   );
   const linkButton = (
     <button
-      className="secondary-button"
+      aria-label={copiedKey === "document-link" ? "Document link copied" : "Copy document link"}
+      className="icon-button"
       data-tooltip={
         readerExpanded
           ? "Copy a bookmarkable link that opens this document in expanded Reader mode."
@@ -10507,7 +10653,6 @@ function DocumentPanelContent({
       type="button"
     >
       {copiedKey === "document-link" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-      {copiedKey === "document-link" ? "Copied" : "Link"}
     </button>
   );
   const relatedButton = (
@@ -10575,25 +10720,13 @@ function DocumentPanelContent({
   );
   const downloadOriginalLink = (
     <a
-      className="secondary-button"
+      aria-label="Download original document"
+      className="icon-button"
       data-tooltip="Download the authenticated original PDF using the Settings Download Naming template."
       href={`/api/documents/${document.id}/original?download=1`}
       download
     >
       <Download size={15} />
-      Download Original
-    </a>
-  );
-  const openOriginalLink = (
-    <a
-      className="secondary-button"
-      data-tooltip="Open the authenticated original PDF in a new browser tab."
-      href={`/api/documents/${document.id}/original`}
-      target="_blank"
-      rel="noreferrer"
-    >
-      <FileSearch size={15} />
-      Open Original
     </a>
   );
   const trashDocumentButton = onTrashDocument ? (
@@ -10607,73 +10740,75 @@ function DocumentPanelContent({
       Trash
     </button>
   ) : null;
-  const closeReaderButton =
-    onCloseReader && readerExpanded ? (
-      <button
-        className="secondary-button reader-close-action"
-        data-tooltip="Close expanded Reader mode and return to the normal Library panes."
-        onClick={onCloseReader}
-        type="button"
-      >
-        <X size={15} />
-        Close
-      </button>
-    ) : null;
+  const workflowActions = (
+    <div className="detail-actions-row detail-workflow-actions">
+      {relatedButton}
+      {compositionButton}
+      {concordButton}
+      {formulaCaptureButton}
+    </div>
+  );
+  const utilityActions = (
+    <div className="detail-actions-row detail-utility-actions">
+      {readerButton}
+      {editButton}
+      {linkButton}
+      {downloadOriginalLink}
+      {trashDocumentButton}
+    </div>
+  );
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
       <div className={readerExpanded ? "reader-frame" : undefined}>
-        <div className="detail-head">
-          <div>
-            <h2>{document.title}</h2>
-            <p>{authorLine(document)}</p>
+        <div className="detail-sticky-zone">
+          <div className="detail-head">
+            <div className="detail-identity">
+              {stickyFieldSet.has("title") ? <h2>{document.title}</h2> : null}
+              {stickyFieldSet.has("authors") ? <p>{authorLine(document)}</p> : null}
+              {stickyFactItems.length ? (
+                <div className="detail-sticky-facts">
+                  {stickyFactItems.map((item) => (
+                    <span key={item.key}>
+                      <strong>{item.label}</strong>
+                      <em>{item.value}</em>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {!stickyFieldSet.has("title") && !stickyFieldSet.has("authors") && !stickyFactItems.length ? <h2>{document.title}</h2> : null}
+            </div>
+            <div className="detail-status">
+              {document.duplicate_count > 0 ? (
+                <span data-tooltip={duplicateTooltip(document.duplicate_reasons)}>
+                  <StatusPill value={duplicateBadgeLabel(document.duplicate_count)} tone="warn" />
+                </span>
+              ) : null}
+              {stickyFieldSet.has("priority") ? <PriorityPill value={document.priority} /> : null}
+              {stickyFieldSet.has("status") ? <StatusPill value={document.processing_status} tone="blue" /> : null}
+              {stickyFieldSet.has("status") ? <StatusPill value={document.citation_status} tone="warn" /> : null}
+            </div>
           </div>
-          <div className="detail-status">
-            {document.duplicate_count > 0 ? (
-              <span data-tooltip={duplicateTooltip(document.duplicate_reasons)}>
-                <StatusPill value={duplicateBadgeLabel(document.duplicate_count)} tone="warn" />
-              </span>
-            ) : null}
-            <PriorityPill value={document.priority} />
-          </div>
-        </div>
-        <div className={`detail-actions ${readerExpanded ? "detail-actions-expanded" : ""}`}>
-          {readerExpanded ? (
-            <>
-              <div className="detail-actions-row">
+          <div className={`detail-actions ${readerExpanded ? "detail-actions-expanded" : ""}`}>
+            {readerExpanded ? (
+              <div className="detail-actions-row detail-expanded-actions">
                 {readerButton}
                 {editButton}
                 {linkButton}
+                {downloadOriginalLink}
                 {relatedButton}
                 {compositionButton}
                 {concordButton}
                 {formulaCaptureButton}
-                {downloadOriginalLink}
-                {openOriginalLink}
                 {trashDocumentButton}
               </div>
-              {closeReaderButton}
-            </>
-          ) : (
-            <>
-              <div className="detail-actions-row">
-                {readerButton}
-                {editButton}
-                {linkButton}
-              </div>
-              <div className="detail-actions-row">
-                {relatedButton}
-                {compositionButton}
-                {concordButton}
-                {formulaCaptureButton}
-              </div>
-              <div className="detail-actions-row">
-                {downloadOriginalLink}
-                {openOriginalLink}
-                {trashDocumentButton}
-              </div>
-            </>
-          )}
+            ) : (
+              <>
+                {utilityActions}
+                {workflowActions}
+              </>
+            )}
+          </div>
         </div>
         {compositionOpen ? (
           <CompositionDialog
@@ -16814,7 +16949,7 @@ function UtilitiesView({
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline && restartPollTokenRef.current === token) {
         try {
-          const response = await fetch(`/api/health?restart_check=${Date.now()}`, {
+          const response = await fetch(apiPath(`/api/health?restart_check=${Date.now()}`), {
             cache: "no-store",
             credentials: "include",
           });
@@ -18749,6 +18884,8 @@ function SettingsView({
   const [valkeyMaxmemory, setValkeyMaxmemory] = useState(preferences?.valkey_maxmemory || "8gb");
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
   const [settingsLibraryPageSize, setSettingsLibraryPageSize] = useState(preferences?.library_page_size || DEFAULT_LIBRARY_PAGE_SIZE);
+  const [libraryDensity, setLibraryDensity] = useState<LibraryDensity>(() => normalizeLibraryDensity(preferences?.library_density));
+  const [detailStickyFields, setDetailStickyFields] = useState<DetailStickyField[]>(() => normalizeDetailStickyFields(preferences?.detail_sticky_fields));
   const [downloadNamingTemplate, setDownloadNamingTemplate] = useState(preferences?.download_naming_template || "$title ($year)");
   const [citationConvention, setCitationConvention] = useState(preferences?.citation_convention || CITATION_CONVENTION_APA_7);
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
@@ -18797,6 +18934,8 @@ function SettingsView({
       setValkeyMaxmemory(preferences.valkey_maxmemory || "8gb");
       setLibraryAlternatingRows(preferences.library_alternating_rows);
       setSettingsLibraryPageSize(preferences.library_page_size || DEFAULT_LIBRARY_PAGE_SIZE);
+      setLibraryDensity(normalizeLibraryDensity(preferences.library_density));
+      setDetailStickyFields(normalizeDetailStickyFields(preferences.detail_sticky_fields));
       setDownloadNamingTemplate(preferences.download_naming_template);
       setCitationConvention(preferences.citation_convention || CITATION_CONVENTION_APA_7);
       setGcsBucket(preferences.gcs_bucket);
@@ -18960,6 +19099,8 @@ function SettingsView({
         valkey_maxmemory: valkeyMaxmemory,
         library_alternating_rows: libraryAlternatingRows,
         library_page_size: settingsLibraryPageSize,
+        library_density: libraryDensity,
+        detail_sticky_fields: detailStickyFields,
         download_naming_template: downloadNamingTemplate,
         citation_convention: citationConvention,
         gcs_bucket: gcsBucket,
@@ -19095,6 +19236,8 @@ function SettingsView({
         preferences.valkey_maxmemory !== valkeyMaxmemory ||
         preferences.library_alternating_rows !== libraryAlternatingRows ||
         preferences.library_page_size !== settingsLibraryPageSize ||
+        normalizeLibraryDensity(preferences.library_density) !== libraryDensity ||
+        !sameStringValues(normalizeDetailStickyFields(preferences.detail_sticky_fields), detailStickyFields) ||
         preferences.download_naming_template !== downloadNamingTemplate ||
         preferences.citation_convention !== citationConvention ||
         preferences.gcs_bucket !== gcsBucket ||
@@ -19204,13 +19347,20 @@ function SettingsView({
     const file = event.target.files?.[0];
     if (file) uploadServiceAccount.mutate(file);
   };
+  const toggleDetailStickyField = (field: DetailStickyField, checked: boolean) => {
+    setDetailStickyFields((current) => {
+      if (checked) return current.includes(field) ? current : [...current, field];
+      const next = current.filter((item) => item !== field);
+      return next.length ? next : current;
+    });
+  };
   const renderSaveAllButton = (placement: "top" | "bottom") => (
     <AsyncActionSlot feedback={savePreferencesFeedback.feedback}>
       <button
         aria-label={`Save all preferences from the ${placement} of Settings`}
         className={asyncFeedbackClass("primary-button settings-save-all", savePreferencesFeedback.feedback)}
         data-disabled-reason={savePreferencesDisabledReason}
-        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, Library rows, cache, runtime, accent, citation convention, download naming, model selections, and Import Processing presets.`}
+        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, Library rows and density, sticky detail fields, cache, runtime, accent, citation convention, download naming, model selections, and Import Processing presets.`}
         disabled={savePreferencesDisabled}
         onClick={() => void saveAllPreferences()}
         type="button"
@@ -19606,6 +19756,38 @@ function SettingsView({
           </datalist>
           <p>(Default: 50) Controls the Library page size after Save All.</p>
         </div>
+        <fieldset className="preference-choice-group">
+          <legend>Library density</legend>
+          {LIBRARY_DENSITY_OPTIONS.map((option) => (
+            <label key={option.value} className="radio-row">
+              <input
+                checked={libraryDensity === option.value}
+                data-tooltip={`Use the ${option.label} Library row density. ${option.description}`}
+                name="library-density"
+                onChange={(event) => setLibraryDensity(event.target.value as LibraryDensity)}
+                type="radio"
+                value={option.value}
+              />
+              <span>{option.label}</span>
+              <small>{option.description}</small>
+            </label>
+          ))}
+        </fieldset>
+        <fieldset className="preference-choice-group sticky-field-settings">
+          <legend>Sticky document fields</legend>
+          {DETAIL_STICKY_FIELD_OPTIONS.map((option) => (
+            <label key={option.value} className="checkbox-row">
+              <input
+                checked={detailStickyFields.includes(option.value)}
+                data-tooltip={`Keep ${option.label} visible in the sticky document identity strip when available.`}
+                onChange={(event) => toggleDetailStickyField(option.value, event.target.checked)}
+                type="checkbox"
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+          <p>At least one field stays selected. Defaults: Title and Authors.</p>
+        </fieldset>
         <div className="accent-settings">
           <label>
             <span>Day accent</span>
@@ -20443,6 +20625,7 @@ export default function App() {
   const me = useQuery({
     queryKey: ["me"],
     queryFn: api.me,
+    networkMode: "always",
     retry: (failureCount, error) => isTransientAppStartupError(error) && failureCount < STARTUP_HEALTH_RETRY_LIMIT,
     retryDelay: 1000,
   });

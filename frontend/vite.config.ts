@@ -90,6 +90,25 @@ function parseAllowedHosts(value: string | undefined): true | string[] {
 }
 
 const allowedHosts = parseAllowedHosts(process.env.MEDUSA_ALLOWED_HOSTS);
+const apiProxyTarget = process.env.MEDUSA_API_PROXY || "http://localhost:8000";
+const devApiPrefix = normalizeApiPrefix(process.env.VITE_MEDUSA_API_PREFIX);
+
+function normalizeApiPrefix(value: string | undefined) {
+  const trimmed = (value || "/api").trim();
+  if (!trimmed || trimmed === "/") return "/api";
+  return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
+}
+
+function apiProxy(prefix: string) {
+  return {
+    target: apiProxyTarget,
+    changeOrigin: true,
+    secure: false,
+    rewrite: prefix === "/api" ? undefined : (requestPath: string) => requestPath.replace(prefix, "/api"),
+    timeout: 300_000,
+    proxyTimeout: 300_000,
+  };
+}
 
 export default defineConfig({
   plugins: [react()],
@@ -112,12 +131,8 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 3737,
     proxy: {
-      "/api": {
-        target: process.env.MEDUSA_API_PROXY || "http://localhost:8000",
-        changeOrigin: true,
-        timeout: 300_000,
-        proxyTimeout: 300_000,
-      },
+      "/api": apiProxy("/api"),
+      ...(devApiPrefix === "/api" ? {} : { [devApiPrefix]: apiProxy(devApiPrefix) }),
     },
   },
 });

@@ -5,7 +5,7 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 ## What Is Implemented
 
 - Password-protected LAN web app behind HAProxy TLS on port `3737`, with database-backed password hashes and optional authenticator-app 2FA
-- React research cockpit UI with day/night modes, darker light-theme contrast grays, and restrained icon-left action buttons
+- React research cockpit UI with day/night modes, open-canvas workbenches, Library density preferences, darker light-theme contrast grays, and restrained icon-left action buttons
 - Lowercase contextual browser titles such as `medusa | DOCUMENT_TITLE`, `medusa | PROJECT_TITLE`, or the current workspace name
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected and `/documents/{document_id}/reader` for expanded Reader mode
 - Icon-only header Status button linking to `/status`, with build/version identity, short commit hash, uptime, memory and disk footprints, runtime versions, proxy status, and storage path details
@@ -35,9 +35,9 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Domains management with searchable alphabetized nested trees, top-level/child creation, rename, move, description and tag metadata, color, soft delete, document-count visibility, description/document-based tag suggestions, comma-list tag paste review, and affected-document search/history updates
 - Tags management with sortable counts and governance status, scoped tag search, shift-click range selection for visible sorted/filtered rows, audited rename, confirmed merge into an existing or newly named tag, remembered merge aliases for future tag suggestions, flattened keyword/topic distinctions, and a right-side Optimize workbench using the same Tag Suggestions model as import tag creation that keeps the user in the loop for merge suggestions, orphaned-tag merge/prune cleanup, semantic relationships, candidate promotion/retirement, and weak document-tag pruning, with individual approvals or one-click approval of the current plan plus top progress feedback while the plan is building or bulk apply runs
-- Saved searches, smart filters, searchable filter/bulk dropdowns with Enter-to-select behavior, visible priority flags and confirmed `No DOI` flags in Library rows, audited title cleanup, selection-based Trash, and bulk-edit controls with custom tag nomination
+- Saved searches, smart filters, visible active search/filter chips, searchable filter/bulk dropdowns with Enter-to-select behavior, visible priority flags and confirmed `No DOI` flags in Library rows, audited title cleanup, selection-based Trash, and bulk-edit controls with custom tag nomination
 - Concordance Runs for retroactively updating already-imported documents to current capability versions, including manual Formula Capture refinement, with pre-run cost estimates and same-model no-op planning
-- Document correction pane for metadata, inline alphabetical tag add/remove/Refresh controls, DOI Copy/Edit/Refresh/No DOI, domains, custom attributes, rendered Markdown summaries/citations, rich Markdown summary editing, inline citation edits, extracted-text cleanup, single-document Trash, duplicate visibility plus side-by-side duplicate resolution or false-positive dismissal from Library, and complete correction history with Restore as Current
+- Document correction pane with configurable sticky identity fields, organized preview/Reader actions, metadata correction, inline alphabetical tag add/remove/Refresh controls, DOI Copy/Edit/Refresh/No DOI, domains, custom attributes, rendered Markdown summaries/citations, rich Markdown summary editing, inline citation edits, extracted-text cleanup, confirmation-gated single-document Trash, duplicate visibility plus side-by-side duplicate resolution or false-positive dismissal from Library, and complete correction history with Restore as Current
 - Accessory Summaries for user-prompted focused summaries, queued as durable worker jobs with the Settings-selected default model and inline optional titles
 - Notes and reminders attached to documents, domains, projects, or the general library
 - Full PostgreSQL database backup/restore from Utilities, using GCS, zstd compression, likely backup-size estimates, backup-size trend graph, total listed-backup size, SHA-256 upload verification, header progress, and mandatory pre-restore safety backups
@@ -261,6 +261,12 @@ Frontend:
 cd frontend
 npm install
 MEDUSA_API_PROXY=http://localhost:8000 npm run dev
+```
+
+When previewing the frontend against the Compose HTTPS endpoint instead of a directly exposed backend, use an alternate browser-visible API prefix and let Vite rewrite it back to `/api`:
+
+```bash
+VITE_MEDUSA_API_PREFIX=/_medusa_api MEDUSA_API_PROXY=https://localhost:3737 npm run dev -- --port 3747
 ```
 
 Worker:

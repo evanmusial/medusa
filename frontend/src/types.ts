@@ -325,6 +325,8 @@ export type AppPreferences = {
   valkey_maxmemory: string;
   library_alternating_rows: boolean;
   library_page_size: number;
+  library_density: "compact" | "comfortable" | "reading";
+  detail_sticky_fields: string[];
   download_naming_template: string;
   citation_convention: string;
   gcs_bucket: string;

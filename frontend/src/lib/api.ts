@@ -101,8 +101,23 @@ export class ApiError extends Error {
   }
 }
 
+const DEFAULT_API_PREFIX = "/api";
+
+function normalizeApiPrefix(value: string | undefined) {
+  const trimmed = (value || DEFAULT_API_PREFIX).trim();
+  if (!trimmed || trimmed === "/") return DEFAULT_API_PREFIX;
+  return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
+}
+
+const apiPrefix = normalizeApiPrefix(import.meta.env.VITE_MEDUSA_API_PREFIX);
+
+export function apiPath(path: string) {
+  if (!path.startsWith(DEFAULT_API_PREFIX)) return path;
+  return `${apiPrefix}${path.slice(DEFAULT_API_PREFIX.length)}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(apiPath(path), {
     ...init,
     credentials: "include",
     headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...init?.headers },
@@ -193,6 +208,8 @@ export const api = {
         | "valkey_maxmemory"
         | "library_alternating_rows"
         | "library_page_size"
+        | "library_density"
+        | "detail_sticky_fields"
         | "download_naming_template"
         | "citation_convention"
         | "gcs_bucket"

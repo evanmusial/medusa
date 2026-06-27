@@ -34,6 +34,8 @@ DOCUMENT_CACHE_SIZE_MB_KEY = "document_cache_size_mb"
 VALKEY_MAXMEMORY_KEY = "valkey_maxmemory"
 LIBRARY_ALTERNATING_ROWS_KEY = "library_alternating_rows"
 LIBRARY_PAGE_SIZE_KEY = "library_page_size"
+LIBRARY_DENSITY_KEY = "library_density"
+DETAIL_STICKY_FIELDS_KEY = "detail_sticky_fields"
 DOWNLOAD_NAMING_TEMPLATE_KEY = "download_naming_template"
 CITATION_CONVENTION_KEY = "citation_convention"
 ANALYSIS_MODEL_KEY_PREFIX = "analysis_model_"
@@ -50,6 +52,13 @@ DEFAULT_DOCUMENT_CACHE_SIZE_MB = 1024
 DEFAULT_VALKEY_MAXMEMORY = "8gb"
 MIN_LIBRARY_PAGE_SIZE = 10
 DEFAULT_LIBRARY_PAGE_SIZE = 50
+LIBRARY_DENSITY_COMPACT = "compact"
+LIBRARY_DENSITY_COMFORTABLE = "comfortable"
+LIBRARY_DENSITY_READING = "reading"
+LIBRARY_DENSITIES = {LIBRARY_DENSITY_COMPACT, LIBRARY_DENSITY_COMFORTABLE, LIBRARY_DENSITY_READING}
+DEFAULT_LIBRARY_DENSITY = LIBRARY_DENSITY_COMFORTABLE
+DETAIL_STICKY_FIELD_OPTIONS = {"title", "authors", "year", "doi", "priority", "status"}
+DEFAULT_DETAIL_STICKY_FIELDS = ["title", "authors"]
 DEFAULT_DAY_ACCENT = "#2563eb"
 DEFAULT_NIGHT_ACCENT = "#6ea8ff"
 DEFAULT_DOWNLOAD_NAMING_TEMPLATE = "$title ($year)"
@@ -69,6 +78,8 @@ SAFE_PREFERENCE_KEYS = {
     VALKEY_MAXMEMORY_KEY,
     LIBRARY_ALTERNATING_ROWS_KEY,
     LIBRARY_PAGE_SIZE_KEY,
+    LIBRARY_DENSITY_KEY,
+    DETAIL_STICKY_FIELDS_KEY,
     DOWNLOAD_NAMING_TEMPLATE_KEY,
     CITATION_CONVENTION_KEY,
     GCS_BUCKET_KEY,
@@ -356,6 +367,26 @@ def clamp_library_page_size(value: Any, default: int = DEFAULT_LIBRARY_PAGE_SIZE
     except (TypeError, ValueError):
         parsed = default
     return max(MIN_LIBRARY_PAGE_SIZE, parsed)
+
+
+def normalize_library_density(value: Any, default: str = DEFAULT_LIBRARY_DENSITY) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in LIBRARY_DENSITIES else default
+
+
+def normalize_detail_sticky_fields(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = list(value)
+    else:
+        candidates = DEFAULT_DETAIL_STICKY_FIELDS
+    fields: list[str] = []
+    for candidate in candidates:
+        field = str(candidate or "").strip().lower()
+        if field in DETAIL_STICKY_FIELD_OPTIONS and field not in fields:
+            fields.append(field)
+    return fields or list(DEFAULT_DETAIL_STICKY_FIELDS)
 
 
 def normalize_valkey_maxmemory(value: Any, default: str | None = DEFAULT_VALKEY_MAXMEMORY) -> str | None:
@@ -667,6 +698,14 @@ def get_library_page_size(db: Session) -> int:
     return clamp_library_page_size(_get_preference_value(db, LIBRARY_PAGE_SIZE_KEY))
 
 
+def get_library_density(db: Session) -> str:
+    return normalize_library_density(_get_preference_value(db, LIBRARY_DENSITY_KEY))
+
+
+def get_detail_sticky_fields(db: Session) -> list[str]:
+    return normalize_detail_sticky_fields(_get_preference_value(db, DETAIL_STICKY_FIELDS_KEY))
+
+
 def get_download_naming_template(db: Session) -> str:
     return normalize_download_naming_template(_get_preference_value(db, DOWNLOAD_NAMING_TEMPLATE_KEY))
 
@@ -894,6 +933,8 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "valkey_maxmemory": get_valkey_maxmemory(db),
         "library_alternating_rows": normalize_bool(_get_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY), True),
         "library_page_size": get_library_page_size(db),
+        "library_density": get_library_density(db),
+        "detail_sticky_fields": get_detail_sticky_fields(db),
         "download_naming_template": get_download_naming_template(db),
         "citation_convention": get_citation_convention(db),
         "gcs_bucket": gcs_bucket,
@@ -920,6 +961,8 @@ def update_app_preferences(
     valkey_maxmemory: str | None = None,
     library_alternating_rows: bool | None = None,
     library_page_size: int | None = None,
+    library_density: str | None = None,
+    detail_sticky_fields: list[str] | None = None,
     download_naming_template: str | None = None,
     citation_convention: str | None = None,
     gcs_bucket: str | None = None,
@@ -949,6 +992,10 @@ def update_app_preferences(
         _set_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY, bool(library_alternating_rows))
     if library_page_size is not None:
         _set_preference_value(db, LIBRARY_PAGE_SIZE_KEY, clamp_library_page_size(library_page_size))
+    if library_density is not None:
+        _set_preference_value(db, LIBRARY_DENSITY_KEY, normalize_library_density(library_density))
+    if detail_sticky_fields is not None:
+        _set_preference_value(db, DETAIL_STICKY_FIELDS_KEY, normalize_detail_sticky_fields(detail_sticky_fields))
     if download_naming_template is not None:
         _set_preference_value(db, DOWNLOAD_NAMING_TEMPLATE_KEY, normalize_download_naming_template(download_naming_template))
     if citation_convention is not None:
