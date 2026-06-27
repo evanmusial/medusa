@@ -337,8 +337,21 @@ def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresse
         assert capability.evidence["status"] == "rejected_regression_existing_bibliography"
         assert DocumentCompositionRecord.__table__.c.status.type.length >= len("rejected_regression_existing_bibliography")
         composition = db.query(DocumentCompositionRecord).filter_by(document_id=document.id, record_kind="concordance").one()
-        assert composition.status == "rejected_regression_existing_bibliography"
+        assert composition.status == "warning"
+        assert composition.record_metadata["status"] == "rejected_regression_existing_bibliography"
         assert not document.versions
+
+
+def test_concordance_stage_status_uses_bounded_composition_statuses(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.concordance import concordance_stage_status
+
+    assert concordance_stage_status({"status": "rejected_regression_existing_bibliography"}) == "warning"
+    assert concordance_stage_status({"status": "model_no_op", "skipped": True}) == "skipped"
+    assert concordance_stage_status({"status": "not_found"}) == "skipped"
+    assert concordance_stage_status({"status": "a_future_detailed_evidence_label_that_should_not_become_db_state"}) == "complete"
 
 
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
@@ -1112,7 +1125,8 @@ def test_concordance_worker_completes_same_model_noop_without_model_call(monkeyp
         assert job.status == "complete"
         assert run.status == "complete"
         assert record.stage_key == "summary_refresh"
-        assert record.status == "model_no_op"
+        assert record.status == "skipped"
+        assert record.record_metadata["status"] == "model_no_op"
 
 
 def test_concordance_search_index_job_marks_capability(monkeypatch, tmp_path):

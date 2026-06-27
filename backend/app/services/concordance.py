@@ -333,9 +333,26 @@ def concordance_stage_model(db: Session, capability_key: str) -> str | None:
 
 def concordance_stage_status(evidence: dict[str, Any]) -> str:
     status = evidence.get("status")
-    if isinstance(status, str) and status:
-        return status
     if evidence.get("skipped"):
+        return "skipped"
+    if not isinstance(status, str) or not status:
+        return "complete"
+    if status in {"failed", "error"}:
+        return "failed"
+    if status.startswith("rejected_"):
+        return "warning"
+    if status in {
+        "already_sorted",
+        "disabled_by_preset",
+        "empty",
+        "model_no_op",
+        "no_formulas",
+        "not_found",
+        "not_needed",
+        "skipped_existing_bibliography",
+        "skipped_large_bibliography",
+        "unconfigured",
+    }:
         return "skipped"
     return "complete"
 
