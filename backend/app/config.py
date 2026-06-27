@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="medusa", validation_alias="MEDUSA_PASSWORD")
     allow_default_password: bool = Field(default=True, validation_alias="MEDUSA_ALLOW_DEFAULT_PASSWORD")
     local_auto_login: bool = Field(default=False, validation_alias="MEDUSA_LOCAL_AUTO_LOGIN")
+    database_backup_storage: str = Field(default="local", validation_alias="MEDUSA_DATABASE_BACKUP_STORAGE")
 
     data_dir: Path = Field(default=Path("./data"), validation_alias="MEDUSA_DATA_DIR")
     local_storage_dir: Path = Field(default=Path("./data/originals"), validation_alias="MEDUSA_LOCAL_STORAGE_DIR")

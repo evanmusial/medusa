@@ -458,7 +458,10 @@ export type BackupArtifact = {
   id: string;
   filename: string;
   object_key: string;
-  gcs_uri: string;
+  uri: string;
+  storage_kind: string;
+  gcs_uri?: string | null;
+  local_path?: string | null;
   size_bytes: number;
   sha256?: string | null;
   created_at?: string | null;
@@ -474,6 +477,8 @@ export type BackupEstimate = {
   latest_backup_size_bytes?: number | null;
   latest_backup_completed_at?: string | null;
   basis: "latest_backup_ratio" | "latest_backup" | "database_size_upper_bound" | "unavailable" | string;
+  storage_kind?: string | null;
+  storage_label?: string | null;
 };
 
 export type DatabaseMaintenanceStatus = {

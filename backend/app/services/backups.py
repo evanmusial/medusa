@@ -27,9 +27,13 @@ from app.services.preferences import get_gcs_bucket, get_google_project_id, get_
 
 ACTIVE_BACKUP_STATUSES = {"queued", "running"}
 BACKUP_FOLDER = "backups"
+LOCAL_BACKUP_ARTIFACT_FOLDER = "database"
 BACKUP_SCHEMA_VERSION = 1
 RESTORE_STATE_FILE = "latest-restore-state.json"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+BACKUP_STORAGE_GCS = "gcs"
+BACKUP_STORAGE_LOCAL = "local"
+BACKUP_STORAGE_VALUES = {BACKUP_STORAGE_GCS, BACKUP_STORAGE_LOCAL}
 BACKUP_RUN_SNAPSHOT_FIELDS = (
     "id",
     "kind",
@@ -80,6 +84,33 @@ def backup_object_prefix(gcs_prefix: str | None = None) -> str:
 
 def backup_storage_uri(bucket_name: str, object_key: str) -> str:
     return f"gs://{bucket_name}/{object_key}"
+
+
+def database_backup_storage_kind() -> str:
+    settings = get_settings()
+    storage_kind = (settings.database_backup_storage or BACKUP_STORAGE_LOCAL).strip().lower()
+    if storage_kind not in BACKUP_STORAGE_VALUES:
+        raise ValueError("MEDUSA_DATABASE_BACKUP_STORAGE must be 'local' or 'gcs'.")
+    if settings.local_auto_login and storage_kind == BACKUP_STORAGE_GCS:
+        raise ValueError("GCS database backups are disabled when MEDUSA_LOCAL_AUTO_LOGIN=true.")
+    return storage_kind
+
+
+def database_backup_storage_label(storage_kind: str | None = None) -> str:
+    kind = storage_kind or database_backup_storage_kind()
+    return "GCS" if kind == BACKUP_STORAGE_GCS else "local disk"
+
+
+def local_backup_artifact_dir() -> Path:
+    return get_settings().data_dir / BACKUP_FOLDER / LOCAL_BACKUP_ARTIFACT_FOLDER
+
+
+def local_backup_artifact_key(filename: str) -> str:
+    return f"{BACKUP_FOLDER}/{LOCAL_BACKUP_ARTIFACT_FOLDER}/{Path(filename).name}"
+
+
+def local_backup_uri(object_key: str) -> str:
+    return f"local://{object_key.lstrip('/')}"
 
 
 def ensure_backup_tools_available() -> None:
@@ -184,13 +215,19 @@ def backup_run_is_verified(run: BackupRun | None) -> bool:
     if not run or run.status != "complete":
         return False
     if not run.gcs_uri or not run.sha256 or not run.size_bytes or run.size_bytes <= 0:
-        return False
+        metadata = run.backup_metadata if isinstance(run.backup_metadata, dict) else {}
+        if not metadata.get("local_path") or not run.sha256 or not run.size_bytes or run.size_bytes <= 0:
+            return False
+    else:
+        metadata = run.backup_metadata if isinstance(run.backup_metadata, dict) else {}
+    storage_kind = metadata.get("storage_kind") or (BACKUP_STORAGE_GCS if run.gcs_uri else BACKUP_STORAGE_LOCAL)
+    expected_uri = run.gcs_uri if storage_kind == BACKUP_STORAGE_GCS else metadata.get("uri") or local_backup_uri(str(metadata.get("object_key") or ""))
     metadata = run.backup_metadata if isinstance(run.backup_metadata, dict) else {}
     return bool(
         metadata.get("verified_at")
         and metadata.get("verification_sha256")
         and metadata.get("verification_sha256") == run.sha256
-        and metadata.get("gcs_uri") == run.gcs_uri
+        and (metadata.get("uri") == expected_uri or metadata.get("gcs_uri") == expected_uri)
         and metadata.get("size_bytes") == run.size_bytes
     )
 
@@ -228,6 +265,8 @@ def estimate_backup_size(db: Session) -> dict[str, Any]:
         "latest_backup_size_bytes": latest_backup_size,
         "latest_backup_completed_at": latest_backup.completed_at.isoformat() if latest_backup and latest_backup.completed_at else None,
         "basis": basis,
+        "storage_kind": database_backup_storage_kind(),
+        "storage_label": database_backup_storage_label(),
     }
 
 
@@ -241,7 +280,51 @@ def current_database_size_bytes(db: Session) -> int | None:
     return int(value) if isinstance(value, int) and value > 0 else None
 
 
+def list_backup_artifacts(db: Session, limit: int | None = None) -> list[dict[str, Any]]:
+    if database_backup_storage_kind() == BACKUP_STORAGE_GCS:
+        return list_gcs_backup_artifacts(db, limit=limit)
+    return list_local_backup_artifacts(limit=limit)
+
+
+def list_local_backup_artifacts(limit: int | None = None) -> list[dict[str, Any]]:
+    root = local_backup_artifact_dir()
+    if not root.exists():
+        return []
+    artifacts: list[dict[str, Any]] = []
+    for path in root.glob("*.dump.zst"):
+        manifest_path = path.with_suffix("").with_suffix(".manifest.json")
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                manifest = {}
+        object_key = str(manifest.get("object_key") or local_backup_artifact_key(path.name))
+        uri = str(manifest.get("uri") or local_backup_uri(object_key))
+        artifacts.append(
+            {
+                "id": manifest.get("backup_id") or path.name,
+                "filename": path.name,
+                "object_key": object_key,
+                "uri": uri,
+                "storage_kind": BACKUP_STORAGE_LOCAL,
+                "gcs_uri": None,
+                "local_path": str(path),
+                "size_bytes": int(manifest.get("size_bytes") or path.stat().st_size or 0),
+                "sha256": manifest.get("sha256"),
+                "created_at": manifest.get("completed_at") or manifest.get("created_at"),
+                "completed_at": manifest.get("completed_at"),
+                "hostname": manifest.get("hostname"),
+                "verified": bool(manifest.get("verified_at")),
+                "manifest": manifest,
+            }
+        )
+    sorted_artifacts = sorted(artifacts, key=lambda item: item.get("created_at") or "", reverse=True)
+    return sorted_artifacts if limit is None else sorted_artifacts[:limit]
+
+
 def list_gcs_backup_artifacts(db: Session, limit: int | None = None) -> list[dict[str, Any]]:
+    _ensure_gcs_database_backups_allowed()
     bucket, bucket_name, prefix = _gcs_bucket_from_db(db)
     artifacts: list[dict[str, Any]] = []
     manifest_by_dump_key: dict[str, dict[str, Any]] = {}
@@ -266,7 +349,10 @@ def list_gcs_backup_artifacts(db: Session, limit: int | None = None) -> list[dic
                 "id": manifest.get("backup_id") or metadata.get("backup_id") or blob.name,
                 "filename": blob.name.rsplit("/", 1)[-1],
                 "object_key": blob.name,
+                "uri": backup_storage_uri(bucket_name, blob.name),
+                "storage_kind": BACKUP_STORAGE_GCS,
                 "gcs_uri": backup_storage_uri(bucket_name, blob.name),
+                "local_path": None,
                 "size_bytes": int(blob.size or manifest.get("size_bytes") or 0),
                 "sha256": manifest.get("sha256") or metadata.get("sha256"),
                 "created_at": created_at,
@@ -280,32 +366,73 @@ def list_gcs_backup_artifacts(db: Session, limit: int | None = None) -> list[dic
     return sorted_artifacts if limit is None else sorted_artifacts[:limit]
 
 
+def restore_source_from_artifact_uri(db: Session, artifact_uri: str) -> dict[str, Any]:
+    if not artifact_uri:
+        raise ValueError("Choose a backup artifact to restore.")
+    for artifact in list_backup_artifacts(db):
+        if artifact_uri not in {artifact.get("uri"), artifact.get("gcs_uri"), artifact.get("local_path")}:
+            continue
+        if artifact.get("storage_kind") == BACKUP_STORAGE_GCS:
+            return {
+                "source_kind": BACKUP_STORAGE_GCS,
+                "source_filename": artifact.get("filename"),
+                "source_uri": artifact.get("gcs_uri") or artifact.get("uri"),
+                "source_sha256": artifact.get("sha256"),
+            }
+        return {
+            "source_kind": BACKUP_STORAGE_LOCAL,
+            "source_filename": artifact.get("filename"),
+            "source_uri": artifact.get("uri"),
+            "source_local_path": artifact.get("local_path"),
+            "source_sha256": artifact.get("sha256"),
+        }
+    raise ValueError("The selected backup artifact is not available.")
+
+
 def _execute_backup_run(run_id: str) -> None:
     work_dir = get_settings().data_dir / BACKUP_FOLDER / "work" / run_id
     raw_path: Path | None = None
     compressed_path: Path | None = None
     try:
         ensure_backup_tools_available()
+        storage_kind = database_backup_storage_kind()
         with session_scope() as db:
             run = db.get(BackupRun, run_id)
             if not run:
                 return
-            bucket, bucket_name, prefix = _gcs_bucket_from_db(db)
             basename = Path(run.filename or f"{backup_basename()}.dump.zst").name.removesuffix(".dump.zst")
-            object_key = f"{prefix}/{basename}.dump.zst"
-            manifest_key = f"{prefix}/{basename}.manifest.json"
+            if storage_kind == BACKUP_STORAGE_GCS:
+                bucket, bucket_name, prefix = _gcs_bucket_from_db(db)
+                object_key = f"{prefix}/{basename}.dump.zst"
+                manifest_key = f"{prefix}/{basename}.manifest.json"
+                storage_uri = backup_storage_uri(bucket_name, object_key)
+                backup_metadata = {
+                    "storage_kind": BACKUP_STORAGE_GCS,
+                    "uri": storage_uri,
+                    "gcs_uri": storage_uri,
+                    "manifest_key": manifest_key,
+                    "bucket": bucket_name,
+                    "database_size_bytes": current_database_size_bytes(db),
+                }
+            else:
+                object_key = local_backup_artifact_key(f"{basename}.dump.zst")
+                manifest_key = local_backup_artifact_key(f"{basename}.manifest.json")
+                storage_uri = local_backup_uri(object_key)
+                backup_metadata = {
+                    "storage_kind": BACKUP_STORAGE_LOCAL,
+                    "uri": storage_uri,
+                    "local_path": str(local_backup_artifact_dir() / f"{basename}.dump.zst"),
+                    "manifest_path": str(local_backup_artifact_dir() / f"{basename}.manifest.json"),
+                    "database_size_bytes": current_database_size_bytes(db),
+                }
             run.status = "running"
             run.phase = "initializing"
             run.progress = 4
             run.started_at = utc_now()
             run.status_detail = "Initializing database backup."
             run.object_key = object_key
-            run.gcs_uri = backup_storage_uri(bucket_name, object_key)
-            run.backup_metadata = {
-                "manifest_key": manifest_key,
-                "bucket": bucket_name,
-                "database_size_bytes": current_database_size_bytes(db),
-            }
+            run.gcs_uri = storage_uri if storage_kind == BACKUP_STORAGE_GCS else None
+            run.backup_metadata = backup_metadata
 
         work_dir.mkdir(parents=True, exist_ok=True)
         raw_path = work_dir / f"{basename}.dump"
@@ -323,54 +450,98 @@ def _execute_backup_run(run_id: str) -> None:
             run = db.get(BackupRun, run_id)
             if not run:
                 return
-            bucket, bucket_name, prefix = _gcs_bucket_from_db(db)
-            object_key = run.object_key or f"{prefix}/{compressed_path.name}"
+            if storage_kind == BACKUP_STORAGE_GCS:
+                _bucket, _bucket_name, prefix = _gcs_bucket_from_db(db)
+                object_key = run.object_key or f"{prefix}/{compressed_path.name}"
+            else:
+                object_key = run.object_key or local_backup_artifact_key(compressed_path.name)
             manifest_key = (run.backup_metadata or {}).get("manifest_key") or object_key.removesuffix(".dump.zst") + ".manifest.json"
             run.size_bytes = size_bytes
             run.sha256 = sha256
-            run.status_detail = "Uploading compressed dump to GCS."
+            run.status_detail = (
+                "Uploading compressed dump to GCS."
+                if storage_kind == BACKUP_STORAGE_GCS
+                else "Writing compressed dump to local backup storage."
+            )
 
-        _update_run(run_id, phase="uploading", progress=72, status_detail="Uploading compressed dump to GCS.")
-        blob = bucket.blob(object_key)
-        blob.metadata = {
-            "backup_id": run_id,
-            "hostname": short_hostname(),
-            "sha256": sha256,
-            "compression": "zstd",
-            "dump_format": "pg_dump_custom",
-        }
-        blob.upload_from_filename(str(compressed_path), content_type="application/zstd")
+        if storage_kind == BACKUP_STORAGE_GCS:
+            with session_scope() as db:
+                bucket, bucket_name, _prefix = _gcs_bucket_from_db(db)
 
-        _update_run(run_id, phase="verifying", progress=88, status_detail="Verifying uploaded checksum.")
-        verified_sha256 = _sha256_gcs_blob(blob)
-        if verified_sha256 != sha256:
-            raise RuntimeError("Uploaded GCS object checksum did not match the local backup checksum.")
+            _update_run(run_id, phase="uploading", progress=72, status_detail="Uploading compressed dump to GCS.")
+            blob = bucket.blob(object_key)
+            blob.metadata = {
+                "backup_id": run_id,
+                "hostname": short_hostname(),
+                "sha256": sha256,
+                "compression": "zstd",
+                "dump_format": "pg_dump_custom",
+            }
+            blob.upload_from_filename(str(compressed_path), content_type="application/zstd")
 
-        database_size_bytes = None
-        with session_scope() as db:
-            database_size_bytes = current_database_size_bytes(db)
-        manifest = _backup_manifest(
-            run_id,
-            object_key,
-            backup_storage_uri(bucket_name, object_key),
-            size_bytes,
-            sha256,
-            database_size_bytes=database_size_bytes,
-        )
-        manifest["verified_at"] = datetime.now(timezone.utc).isoformat()
-        manifest["verification_sha256"] = verified_sha256
-        manifest_blob = bucket.blob(manifest_key)
-        manifest_blob.upload_from_string(
-            json.dumps(manifest, indent=2, sort_keys=True),
-            content_type="application/json",
-        )
+            _update_run(run_id, phase="verifying", progress=88, status_detail="Verifying uploaded checksum.")
+            verified_sha256 = _sha256_gcs_blob(blob)
+            if verified_sha256 != sha256:
+                raise RuntimeError("Uploaded GCS object checksum did not match the local backup checksum.")
+
+            database_size_bytes = None
+            with session_scope() as db:
+                database_size_bytes = current_database_size_bytes(db)
+            storage_uri = backup_storage_uri(bucket_name, object_key)
+            manifest = _backup_manifest(
+                run_id,
+                object_key,
+                storage_uri,
+                size_bytes,
+                sha256,
+                database_size_bytes=database_size_bytes,
+                storage_kind=BACKUP_STORAGE_GCS,
+            )
+            manifest["verified_at"] = datetime.now(timezone.utc).isoformat()
+            manifest["verification_sha256"] = verified_sha256
+            manifest_blob = bucket.blob(manifest_key)
+            manifest_blob.upload_from_string(
+                json.dumps(manifest, indent=2, sort_keys=True),
+                content_type="application/json",
+            )
+            complete_detail = "Backup uploaded and verified."
+        else:
+            destination_path = local_backup_artifact_dir() / compressed_path.name
+            manifest_path = destination_path.with_suffix("").with_suffix(".manifest.json")
+            local_backup_artifact_dir().mkdir(parents=True, exist_ok=True)
+            _update_run(run_id, phase="storing", progress=72, status_detail="Writing compressed dump to local backup storage.")
+            shutil.copy2(compressed_path, destination_path)
+
+            _update_run(run_id, phase="verifying", progress=88, status_detail="Verifying local backup checksum.")
+            verified_sha256 = sha256_file(destination_path)
+            if verified_sha256 != sha256:
+                raise RuntimeError("Local backup checksum did not match the compressed dump checksum.")
+
+            database_size_bytes = None
+            with session_scope() as db:
+                database_size_bytes = current_database_size_bytes(db)
+            storage_uri = local_backup_uri(object_key)
+            manifest = _backup_manifest(
+                run_id,
+                object_key,
+                storage_uri,
+                size_bytes,
+                sha256,
+                database_size_bytes=database_size_bytes,
+                storage_kind=BACKUP_STORAGE_LOCAL,
+                local_path=str(destination_path),
+            )
+            manifest["verified_at"] = datetime.now(timezone.utc).isoformat()
+            manifest["verification_sha256"] = verified_sha256
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            complete_detail = "Backup written and verified locally."
 
         _update_run(
             run_id,
             status="complete",
             phase="complete",
             progress=100,
-            status_detail="Backup uploaded and verified.",
+            status_detail=complete_detail,
             completed_at=utc_now(),
             backup_metadata=manifest,
         )
@@ -432,7 +603,7 @@ def _execute_restore_run(run_id: str) -> None:
         _execute_backup_run(safety_id)
         with session_scope() as db:
             safety = db.get(BackupRun, safety_id)
-            if not safety or safety.status != "complete" or not safety.sha256 or not safety.gcs_uri:
+            if not backup_run_is_verified(safety):
                 raise RuntimeError("Pre-restore safety backup did not complete and verify.")
             safety_snapshot = _backup_run_snapshot(safety)
             restore_run = db.get(BackupRun, run_id)
@@ -444,7 +615,7 @@ def _execute_restore_run(run_id: str) -> None:
 
         _update_run(run_id, phase="fetching", progress=34, status_detail="Fetching restore source.")
         _write_restore_state(run_id, "running", "fetching", "Fetching restore source.")
-        if source_kind == "gcs":
+        if source_kind == BACKUP_STORAGE_GCS:
             if not source_uri:
                 raise RuntimeError("Restore source is missing a GCS URI.")
             downloaded_path = work_dir / Path(urlparse(source_uri).path).name
@@ -623,11 +794,13 @@ def _ensure_no_active_backup_or_restore(db: Session) -> None:
 def _backup_manifest(
     run_id: str,
     object_key: str,
-    gcs_uri: str,
+    uri: str,
     size_bytes: int,
     sha256: str,
     *,
     database_size_bytes: int | None = None,
+    storage_kind: str = BACKUP_STORAGE_GCS,
+    local_path: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     database = _database_identity()
@@ -639,7 +812,10 @@ def _backup_manifest(
         "hostname": short_hostname(),
         "filename": Path(object_key).name,
         "object_key": object_key,
-        "gcs_uri": gcs_uri,
+        "uri": uri,
+        "storage_kind": storage_kind,
+        "gcs_uri": uri if storage_kind == BACKUP_STORAGE_GCS else None,
+        "local_path": local_path,
         "size_bytes": size_bytes,
         "sha256": sha256,
         "database_size_bytes": database_size_bytes,
@@ -699,6 +875,7 @@ def _database_identity() -> dict[str, Any]:
 
 
 def _gcs_bucket_from_db(db: Session):
+    _ensure_gcs_database_backups_allowed()
     bucket_name = get_gcs_bucket(db)
     if not bucket_name:
         raise ValueError("Save a GCS bucket in Settings before running database backups.")
@@ -719,7 +896,14 @@ def _gcs_credentials_from_db(db: Session):
     return credentials, project
 
 
+def _ensure_gcs_database_backups_allowed() -> None:
+    storage_kind = database_backup_storage_kind()
+    if storage_kind != BACKUP_STORAGE_GCS:
+        raise ValueError("GCS database backups are disabled. Set MEDUSA_DATABASE_BACKUP_STORAGE=gcs on a non-local instance to enable them.")
+
+
 def _download_gcs_backup(gcs_uri: str, destination: Path) -> str | None:
+    _ensure_gcs_database_backups_allowed()
     parsed = urlparse(gcs_uri)
     if parsed.scheme != "gs" or not parsed.netloc or not parsed.path:
         raise RuntimeError("Restore source must be a gs:// URI.")

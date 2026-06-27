@@ -1,8 +1,19 @@
+import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_cache():
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def make_session():
@@ -68,6 +79,9 @@ def test_backup_manifest_records_non_secret_settings(monkeypatch, tmp_path):
     rendered = str(manifest)
     assert manifest["compression"] == "zstd"
     assert manifest["dump_format"] == "pg_dump_custom"
+    assert manifest["storage_kind"] == "gcs"
+    assert manifest["uri"] == "gs://bucket/medusa/backups/medusa-postgres-20260619-1405-host.dump.zst"
+    assert manifest["gcs_uri"] == "gs://bucket/medusa/backups/medusa-postgres-20260619-1405-host.dump.zst"
     assert manifest["database_size_bytes"] == 456
     assert manifest["database"]["username"] == "medusa"
     assert "secret-openai-key" not in rendered
@@ -77,6 +91,87 @@ def test_backup_manifest_records_non_secret_settings(monkeypatch, tmp_path):
     assert manifest["safety"]["plaintext_passwords_included"] is False
     assert manifest["safety"]["password_hashes_included"] is True
     assert manifest["safety"]["database_dump_includes_auth_tables"] is True
+
+
+def test_local_backup_artifacts_are_verified_and_restorable(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_DATABASE_BACKUP_STORAGE", "local")
+
+    from app.config import get_settings
+    from app.models import BackupRun
+    from app.services.backups import (
+        _backup_manifest,
+        backup_run_is_verified,
+        list_backup_artifacts,
+        local_backup_artifact_dir,
+        local_backup_artifact_key,
+        local_backup_uri,
+        restore_source_from_artifact_uri,
+        sha256_file,
+    )
+
+    get_settings.cache_clear()
+    backup_dir = local_backup_artifact_dir()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    dump_path = backup_dir / "medusa-postgres-20260627-120000-local.dump.zst"
+    dump_path.write_bytes(b"local-backup")
+    digest = sha256_file(dump_path)
+    object_key = local_backup_artifact_key(dump_path.name)
+    uri = local_backup_uri(object_key)
+    manifest = _backup_manifest(
+        "backup-id",
+        object_key,
+        uri,
+        dump_path.stat().st_size,
+        digest,
+        storage_kind="local",
+        local_path=str(dump_path),
+    )
+    manifest["verified_at"] = "2026-06-27T12:00:00+00:00"
+    manifest["verification_sha256"] = digest
+    dump_path.with_suffix("").with_suffix(".manifest.json").write_text(json.dumps(manifest))
+
+    run = BackupRun(
+        id="backup-id",
+        kind="backup",
+        status="complete",
+        phase="complete",
+        progress=100,
+        filename=dump_path.name,
+        object_key=object_key,
+        size_bytes=dump_path.stat().st_size,
+        sha256=digest,
+        backup_metadata=manifest,
+    )
+    assert backup_run_is_verified(run) is True
+
+    Session = make_session()
+    with Session() as db:
+        artifacts = list_backup_artifacts(db)
+        source = restore_source_from_artifact_uri(db, uri)
+
+    assert artifacts[0]["storage_kind"] == "local"
+    assert artifacts[0]["uri"] == uri
+    assert artifacts[0]["local_path"] == str(dump_path)
+    assert source["source_kind"] == "local"
+    assert source["source_uri"] == uri
+    assert source["source_local_path"] == str(dump_path)
+    assert source["source_sha256"] == digest
+
+
+def test_local_auto_login_blocks_gcs_database_backups(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_AUTO_LOGIN", "true")
+    monkeypatch.setenv("MEDUSA_DATABASE_BACKUP_STORAGE", "gcs")
+
+    from app.config import get_settings
+    from app.services.backups import database_backup_storage_kind
+
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="GCS database backups are disabled"):
+        database_backup_storage_kind()
 
 
 def test_backup_runs_block_overlapping_work(monkeypatch, tmp_path):

@@ -1425,13 +1425,18 @@ class BackupEstimateOut(BaseModel):
     latest_backup_size_bytes: int | None = None
     latest_backup_completed_at: str | None = None
     basis: str
+    storage_kind: str | None = None
+    storage_label: str | None = None
 
 
 class BackupArtifactOut(BaseModel):
     id: str
     filename: str
     object_key: str
-    gcs_uri: str
+    uri: str
+    storage_kind: str = "local"
+    gcs_uri: str | None = None
+    local_path: str | None = None
     size_bytes: int
     sha256: str | None = None
     created_at: str | None = None
@@ -1642,7 +1647,8 @@ class HAProxyStatsStatusOut(BaseModel):
 
 
 class RestoreDatabaseCreate(BaseModel):
-    gcs_uri: str
+    uri: str | None = None
+    gcs_uri: str | None = None
 
 
 class ModelOptionGroupOut(BaseModel):

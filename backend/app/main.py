@@ -239,8 +239,10 @@ from app.services.backups import (
     estimate_backup_size,
     launch_database_backup,
     launch_database_restore,
+    list_backup_artifacts,
     list_backup_runs,
     list_gcs_backup_artifacts,
+    restore_source_from_artifact_uri,
     save_restore_upload,
 )
 from app.services.cache import (
@@ -9241,6 +9243,17 @@ def read_gcs_backups(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/backups/artifacts", response_model=list[BackupArtifactOut])
+def read_backup_artifacts(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, Any]]:
+    try:
+        return list_backup_artifacts(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/restores/database", response_model=BackupRunOut)
 def start_database_restore(
     payload: RestoreDatabaseCreate,
@@ -9248,11 +9261,10 @@ def start_database_restore(
     db: Annotated[Session, Depends(get_db)],
 ) -> BackupRun:
     try:
+        source = restore_source_from_artifact_uri(db, payload.uri or payload.gcs_uri or "")
         run = create_restore_run(
             db,
-            source_kind="gcs",
-            source_filename=Path(payload.gcs_uri).name,
-            source_uri=payload.gcs_uri,
+            **source,
         )
         db.commit()
         db.refresh(run)

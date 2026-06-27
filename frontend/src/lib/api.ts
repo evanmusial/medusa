@@ -188,10 +188,11 @@ export const api = {
   cancelSlipstreamLease: (id: string) =>
     request<SlipstreamStatus>(`/api/slipstream/leases/${id}/cancel`, { method: "POST" }).then(() => api.slipstreamStatus()),
   ingestionHistory: () => request<IngestionHistory[]>("/api/utilities/ingestion-history"),
+  backupArtifacts: () => request<BackupArtifact[]>("/api/backups/artifacts"),
   gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
   startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),
-  startDatabaseRestore: (gcsUri: string) =>
-    request<BackupRun>("/api/restores/database", { method: "POST", body: JSON.stringify({ gcs_uri: gcsUri }) }),
+  startDatabaseRestore: (uri: string) =>
+    request<BackupRun>("/api/restores/database", { method: "POST", body: JSON.stringify({ uri }) }),
   startDatabaseRestoreUpload: (file: File) => {
     const form = new FormData();
     form.append("file", file);

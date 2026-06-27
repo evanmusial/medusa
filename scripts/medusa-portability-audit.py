@@ -130,18 +130,23 @@ def report_database_state(repo: Path) -> None:
     latest_backup = psql(
         repo,
         """
-        select coalesce(filename, '') || '|' || coalesce(gcs_uri, '') || '|' || coalesce(sha256, '') || '|' || coalesce(completed_at::text, '')
+        select coalesce(filename, '') || '|' || coalesce(gcs_uri, backup_metadata->>'uri', backup_metadata->>'local_path', '') || '|' || coalesce(sha256, '') || '|' || coalesce(completed_at::text, '')
         from backup_runs
-        where kind = 'backup' and status = 'complete' and gcs_uri is not null and sha256 is not null
+        where kind = 'backup'
+          and status = 'complete'
+          and sha256 is not null
+          and size_bytes is not null
+          and backup_metadata->>'verified_at' is not null
+          and backup_metadata->>'verification_sha256' = sha256
         order by completed_at desc nulls last, created_at desc
         limit 1;
         """,
     )
     if latest_backup:
-        filename, gcs_uri, sha256, completed_at = (latest_backup.split("|") + ["", "", "", ""])[:4]
-        status("Latest verified full DB backup", "OK", f"{filename or gcs_uri} completed {completed_at}; sha256 {sha256[:12]}...")
+        filename, backup_uri, sha256, completed_at = (latest_backup.split("|") + ["", "", "", ""])[:4]
+        status("Latest verified full DB backup", "OK", f"{filename or backup_uri} completed {completed_at}; sha256 {sha256[:12]}...")
     else:
-        status("Latest verified full DB backup", "WARN", "no complete GCS backup with checksum was found in backup_runs")
+        status("Latest verified full DB backup", "WARN", "no complete verified database backup with checksum was found in backup_runs")
 
 
 def report_env(repo: Path) -> None:

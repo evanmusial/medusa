@@ -23,7 +23,10 @@ def _run_payload(run: BackupRun | None) -> dict[str, Any]:
         "status": run.status if run else "missing",
         "phase": run.phase if run else None,
         "progress": run.progress if run else 0,
+        "storage_kind": metadata.get("storage_kind"),
+        "uri": metadata.get("uri") or (run.gcs_uri if run else None),
         "gcs_uri": run.gcs_uri if run else None,
+        "local_path": metadata.get("local_path"),
         "sha256": run.sha256 if run else None,
         "size_bytes": run.size_bytes if run else None,
         "status_detail": run.status_detail if run else None,
@@ -66,7 +69,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(payload, sort_keys=True))
     elif payload["verified"]:
-        print(f"Backup verified: {payload['gcs_uri']}")
+        print(f"Backup verified: {payload.get('uri') or payload.get('gcs_uri') or payload.get('local_path')}")
     else:
         print(payload.get("last_error") or payload.get("status_detail") or "Backup was not verified.", file=sys.stderr)
     return 0 if payload["verified"] else 1

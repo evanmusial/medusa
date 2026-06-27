@@ -1821,6 +1821,22 @@ function backupArtifactLabel(artifact: BackupArtifact) {
   return `${timestamp} - ${size}`;
 }
 
+function backupArtifactUri(artifact: BackupArtifact) {
+  return artifact.uri || artifact.gcs_uri || artifact.local_path || "";
+}
+
+function backupRunStorageKind(run?: BackupRun | null) {
+  const metadata = run?.backup_metadata || {};
+  const kind = metadata.storage_kind;
+  return typeof kind === "string" ? kind : run?.gcs_uri ? "gcs" : "local";
+}
+
+function backupRunStored(run?: BackupRun | null) {
+  if (!run || run.kind !== "backup" || run.status !== "complete" || !run.sha256 || !run.size_bytes) return false;
+  const metadata = run.backup_metadata || {};
+  return Boolean(run.gcs_uri || metadata.uri || metadata.local_path);
+}
+
 function backupRunLabel(run: BackupRun) {
   if (run.kind === "restore") return "Database restore";
   if (run.reason === "pre_restore") return "Safety backup";
@@ -1858,7 +1874,7 @@ type BackupSizeTrendPoint = {
 function backupSizeTrendPoints(artifacts: BackupArtifact[], runs: BackupRun[]): BackupSizeTrendPoint[] {
   const artifactPoints = artifacts
     .map((artifact) => ({
-      id: artifact.id || artifact.gcs_uri,
+      id: artifact.id || backupArtifactUri(artifact) || artifact.filename,
       timestamp: artifact.completed_at || artifact.created_at || "",
       sizeBytes: artifact.size_bytes || 0,
       detail: artifact.filename,
@@ -18080,10 +18096,10 @@ function DatabaseBackupRestorePanel({
     activeRestoreRun ||
     (trackedRestoreRun && !isTerminalBackupRun(trackedRestoreRun) ? trackedRestoreRun : undefined) ||
     (trackedRestoreRunId ? activeSafetyBackupRun : undefined);
-  const gcsBackupArtifacts = useQuery({
-    queryKey: ["gcs-backups"],
-    queryFn: api.gcsBackups,
-    enabled: Boolean(preferences?.gcs_bucket),
+  const backupArtifactsQuery = useQuery({
+    queryKey: ["backup-artifacts"],
+    queryFn: api.backupArtifacts,
+    enabled: Boolean(preferences),
     refetchInterval: 15000,
     retry: false,
   });
@@ -18096,17 +18112,17 @@ function DatabaseBackupRestorePanel({
   });
 
   useEffect(() => {
-    const artifacts = gcsBackupArtifacts.data || [];
+    const artifacts = backupArtifactsQuery.data || [];
     if (!artifacts.length && selectedBackupUri) setSelectedBackupUri("");
-    if (!selectedBackupUri && artifacts.length) setSelectedBackupUri(artifacts[0].gcs_uri);
-    if (selectedBackupUri && artifacts.length && !artifacts.some((artifact) => artifact.gcs_uri === selectedBackupUri)) {
-      setSelectedBackupUri(artifacts[0].gcs_uri);
+    if (!selectedBackupUri && artifacts.length) setSelectedBackupUri(backupArtifactUri(artifacts[0]));
+    if (selectedBackupUri && artifacts.length && !artifacts.some((artifact) => backupArtifactUri(artifact) === selectedBackupUri)) {
+      setSelectedBackupUri(backupArtifactUri(artifacts[0]));
     }
-  }, [gcsBackupArtifacts.data, selectedBackupUri]);
+  }, [backupArtifactsQuery.data, selectedBackupUri]);
 
   useEffect(() => {
     const completedBackupIds = backupRuns
-      .filter((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri)
+      .filter((run) => backupRunStored(run))
       .map((run) => run.id);
     const seen = completedBackupArtifactIdsRef.current;
     const hasNewCompletedBackup = completedBackupIds.some((id) => !seen.has(id));
@@ -18116,7 +18132,7 @@ function DatabaseBackupRestorePanel({
       return;
     }
     if (hasNewCompletedBackup) {
-      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-artifacts"] });
       void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
     }
   }, [backupRuns, queryClient]);
@@ -18129,7 +18145,7 @@ function DatabaseBackupRestorePanel({
       else setTrackedBackupRunId(run.id);
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
-      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-artifacts"] });
     },
     onError: (error) => {
       backupFeedback.showError(actionFailureMessage("Could not start backup", error));
@@ -18143,30 +18159,31 @@ function DatabaseBackupRestorePanel({
       else setTrackedRestoreRunId(run.id);
       void queryClient.invalidateQueries({ queryKey: ["backup-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["backup-estimate"] });
-      void queryClient.invalidateQueries({ queryKey: ["gcs-backups"] });
+      void queryClient.invalidateQueries({ queryKey: ["backup-artifacts"] });
     },
     onError: (error) => {
       restoreFeedback.showError(actionFailureMessage("Could not start restore", error));
     },
   });
 
-  const backupArtifacts = gcsBackupArtifacts.data || [];
+  const backupArtifacts = backupArtifactsQuery.data || [];
   const backupTrendPoints = backupSizeTrendPoints(backupArtifacts, backupRuns);
   const latestBackupRun = backupRuns[0];
   const backupHistoryRuns = backupRuns.slice(0, 10);
-  const latestVerifiedBackupRun = backupRuns.find((run) => run.kind === "backup" && run.status === "complete" && run.gcs_uri);
+  const latestVerifiedBackupRun = backupRuns.find((run) => backupRunStored(run));
   const verifiedBackupComplete = Boolean(latestVerifiedBackupRun);
   const verifiedBackupFilename = verifiedBackupComplete ? latestVerifiedBackupRun?.filename || "Complete" : "Waiting";
   const verifiedBackupSize = verifiedBackupComplete ? formatFileSize(latestVerifiedBackupRun?.size_bytes) : "";
   const backupArtifactTotalBytes = backupArtifacts.reduce((total, artifact) => total + Math.max(0, artifact.size_bytes || 0), 0);
   const backupArtifactTotalSize = formatFileSize(backupArtifactTotalBytes) || "0 B";
-  const backupArtifactCountLabel = gcsBackupArtifacts.isLoading && !backupArtifacts.length
+  const backupArtifactCountLabel = backupArtifactsQuery.isLoading && !backupArtifacts.length
     ? "Calculating"
     : backupArtifacts.length
       ? `${formatMetric(backupArtifacts.length)} ${backupArtifacts.length === 1 ? "backup" : "backups"}`
-      : preferences?.gcs_bucket
-        ? "No backups"
-        : "No bucket";
+      : "No backups";
+  const backupStorageKind = backupEstimate.data?.storage_kind || backupRunStorageKind(latestVerifiedBackupRun);
+  const backupStorageLabel = backupEstimate.data?.storage_label || (backupStorageKind === "gcs" ? "GCS" : "local disk");
+  const backupTargetLabel = backupStorageKind === "gcs" && preferences?.gcs_bucket ? `gs://${preferences.gcs_bucket}` : "data/backups/database";
   const backupButtonBusy = startBackup.isPending || Boolean(backupButtonRun) || Boolean(trackedBackupRunId && !trackedBackupRun);
   const restoreButtonBusy = startRestore.isPending || Boolean(restoreButtonRun) || Boolean(trackedRestoreRunId && !trackedRestoreRun);
   const backupButtonProgress = backupRunButtonProgress(backupButtonRun, startBackup.isPending || Boolean(trackedBackupRunId && !trackedBackupRun));
@@ -18175,21 +18192,19 @@ function DatabaseBackupRestorePanel({
     activeSafetyBackupRun,
     startRestore.isPending || Boolean(trackedRestoreRunId && !trackedRestoreRun),
   );
-  const backupDisabled = !preferences?.gcs_bucket || Boolean(activeBackupRun) || backupButtonBusy;
+  const backupDisabled = Boolean(activeBackupRun) || backupButtonBusy;
   const restoreDisabled = Boolean(activeBackupRun) || restoreButtonBusy || !selectedBackupUri;
   const backupDisabledReason = startBackup.isPending
     ? "a database backup request is already starting."
     : activeBackupRun || backupButtonBusy
       ? "a backup or restore is already running."
-      : !preferences?.gcs_bucket
-        ? "a GCS bucket must be saved before browser backups can start."
-        : "";
+      : "";
   const restoreDisabledReason = startRestore.isPending
     ? "a database restore request is already starting."
     : activeBackupRun || restoreButtonBusy
       ? "a backup or restore is already running."
       : !selectedBackupUri
-        ? "a GCS backup must be selected."
+        ? "a backup must be selected."
         : "";
   useEffect(() => {
     if (!trackedBackupRun || !isTerminalBackupRun(trackedBackupRun)) return;
@@ -18211,7 +18226,7 @@ function DatabaseBackupRestorePanel({
   }, [restoreFeedback, trackedRestoreRun]);
   const confirmDatabaseRestore = async () => {
     if (!selectedBackupUri) return;
-    const artifact = backupArtifacts.find((item) => item.gcs_uri === selectedBackupUri);
+    const artifact = backupArtifacts.find((item) => backupArtifactUri(item) === selectedBackupUri);
     const restoreLabel = artifact ? backupArtifactLabel(artifact) : selectedBackupUri;
     const ok = await dialogs.confirm({
       cancelLabel: "Cancel",
@@ -18229,7 +18244,7 @@ function DatabaseBackupRestorePanel({
       <div className="panel-title-row utility-section-title">
         <div>
           <h3>Database Backup & Restore</h3>
-          <span>{activeBackupRun ? `${backupPhaseLabel(activeBackupRun.phase)} - ${activeBackupRun.progress}%` : "Full PostgreSQL backups in GCS"}</span>
+          <span>{activeBackupRun ? `${backupPhaseLabel(activeBackupRun.phase)} - ${activeBackupRun.progress}%` : `Full PostgreSQL backups on ${backupStorageLabel}`}</span>
         </div>
         <Archive size={19} />
       </div>
@@ -18237,7 +18252,7 @@ function DatabaseBackupRestorePanel({
         <div className="backup-action-block">
           <div>
             <strong>Backup Database</strong>
-            <span>{preferences?.gcs_bucket ? `gs://${preferences.gcs_bucket}` : "Save a GCS bucket first"}</span>
+            <span>{backupTargetLabel}</span>
           </div>
           <AsyncActionSlot
             busy={backupButtonBusy}
@@ -18248,7 +18263,7 @@ function DatabaseBackupRestorePanel({
             <button
               className={asyncFeedbackClass("primary-button", backupFeedback.feedback, backupButtonBusy)}
               data-disabled-reason={backupDisabledReason}
-              data-tooltip="Start a full PostgreSQL database backup, compress it, upload it to the configured GCS bucket, and verify the checksum."
+              data-tooltip={`Start a full PostgreSQL database backup, compress it, store it on ${backupStorageLabel}, and verify the checksum.`}
               disabled={backupDisabled}
               onClick={() => startBackup.mutate()}
               type="button"
@@ -18262,30 +18277,30 @@ function DatabaseBackupRestorePanel({
         <div className="restore-action-block">
           <div className="restore-action-heading">
             <strong>Restore Database</strong>
-            <span>{backupArtifacts.length ? `${backupArtifactCountLabel} in GCS` : preferences?.gcs_bucket ? "No GCS backups found" : "Save a GCS bucket first"}</span>
+            <span>{backupArtifacts.length ? `${backupArtifactCountLabel} on ${backupStorageLabel}` : "No backups found"}</span>
           </div>
           <div className="restore-source-grid">
             <label>
-              GCS backup
+              Backup
               <select
                 data-disabled-reason={
                   activeBackupRun || restoreButtonBusy
                     ? "a backup or restore is already running."
-                    : "no GCS backup artifacts are available."
+                    : "no backup artifacts are available."
                 }
-                data-tooltip="Choose the GCS backup artifact to restore from."
+                data-tooltip="Choose the backup artifact to restore from."
                 disabled={!backupArtifacts.length || Boolean(activeBackupRun) || restoreButtonBusy}
                 onChange={(event) => setSelectedBackupUri(event.target.value)}
                 value={selectedBackupUri}
               >
                 {backupArtifacts.length ? (
                   backupArtifacts.map((artifact) => (
-                    <option key={artifact.gcs_uri} value={artifact.gcs_uri}>
+                    <option key={backupArtifactUri(artifact)} value={backupArtifactUri(artifact)}>
                       {backupArtifactLabel(artifact)}
                     </option>
                   ))
                 ) : (
-                  <option value="">No GCS backups found</option>
+                  <option value="">No backups found</option>
                 )}
               </select>
             </label>
@@ -18298,7 +18313,7 @@ function DatabaseBackupRestorePanel({
               <button
                 className={asyncFeedbackClass("secondary-button", restoreFeedback.feedback, restoreButtonBusy)}
                 data-disabled-reason={restoreDisabledReason}
-                data-tooltip="Restore the database from the selected GCS backup after Medusa first creates and verifies a fresh safety backup."
+                data-tooltip="Restore the database from the selected backup after Medusa first creates and verifies a fresh safety backup."
                 disabled={restoreDisabled}
                 onClick={confirmDatabaseRestore}
                 type="button"
@@ -18327,7 +18342,7 @@ function DatabaseBackupRestorePanel({
           </div>
         </div>
         <div>
-          <span>GCS backups</span>
+          <span>Stored backups</span>
           <div className="verified-backup-value">
             <strong>{backupArtifactCountLabel}</strong>
             <small>{backupArtifactTotalSize} total</small>
@@ -18369,7 +18384,7 @@ function DatabaseBackupRestorePanel({
           )}
         </div>
       </div>
-      {gcsBackupArtifacts.error ? <p className="preference-warning">{actionFailureMessage("Could not list GCS backups", gcsBackupArtifacts.error)}</p> : null}
+      {backupArtifactsQuery.error ? <p className="preference-warning">{actionFailureMessage("Could not list backups", backupArtifactsQuery.error)}</p> : null}
       <div className="legacy-export-actions">
         <a
           data-tooltip="Download an authenticated legacy metadata JSON export that omits secrets, password hashes, and session tokens."
