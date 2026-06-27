@@ -85,12 +85,6 @@ Preview routes stream the generated PDF mezzanine inline. Source routes download
 
 Settings includes a model task named `Portfolio Assessment`. The first implementation records selected-model provenance and local baseline findings for readiness, materials, rubric/prompt presence, resource suggestions, and extracted-text length. The data model is ready for richer multi-model LLM assessment, but deep rubric/reference scoring is a follow-up.
 
-## Follow-Ups
+## Roadmap
 
-- Improve DOCX/RTF fidelity beyond text-first parsing.
-- Add external search-backed Portfolio resource suggestions.
-- Add richer multi-model LLM assessment prompts, score normalization, and model comparison.
-- Add Portfolio export/restore coverage.
-- Add explicit include-Portfolio Concordance scopes.
-- Add stronger visual smoke tests for `/portfolio`.
-- Decide later whether Portfolio should gain editor-like interaction or stay source-upload centric.
+Portfolio-specific gaps and sequencing are tracked in `docs/PORTFOLIO_ROADMAP.md`. Keep `TODO.md` as the cross-feature work ledger and `docs/ARCHITECTURE.md` as the stable architecture record.

@@ -454,7 +454,7 @@ Known gaps:
 - Auth is single-user only; no roles or sharing model.
 - Full database backup/restore is implemented as authenticated Utilities controls backed by GCS, zstd, checksum verification, and mandatory pre-restore safety backups. Legacy metadata JSON exports remain available, and scheduled backup drills/retention policy remain future work.
 - Accessory Summaries are implemented for current-document Library detail runs. Batch Accessory Summary prompts across selected documents, saved searches, or Concordance scopes remain future work.
-- Portfolio is implemented as a dense upload/version/material/suggestion/assessment workbench. Remaining gaps are higher-fidelity DOCX/RTF layout preservation, external search-backed resource suggestions, richer multi-model LLM assessment prompts and comparison scoring, Portfolio export/restore coverage, explicit include-Portfolio Concordance scopes, and any later editor-like interaction.
+- Portfolio is implemented as a dense upload/version/material/suggestion/assessment workbench. Remaining gaps are higher-fidelity DOCX/RTF layout preservation, external search-backed resource suggestions, richer multi-model LLM assessment prompts and comparison scoring, Portfolio export/restore coverage, explicit include-Portfolio Concordance scopes, and any later editor-like interaction; the feature-specific roadmap lives in `docs/PORTFOLIO_ROADMAP.md`.
 
 High-value next steps:
 

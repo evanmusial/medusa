@@ -109,6 +109,8 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Portfolio
 
+Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
+
 - [ ] Improve Portfolio DOCX/RTF fidelity.
   - Acceptance: DOCX and RTF Portfolio uploads preserve useful headings, lists, tables, emphasis, page breaks, and source provenance in the generated PDF/text mezzanine beyond the current text-first parser; unavailable conversion tools produce clear processing events and retry-safe failure state.
 
