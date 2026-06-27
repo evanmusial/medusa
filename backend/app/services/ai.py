@@ -282,7 +282,8 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "Markdown italics where APA requires italics, such as book, "
     "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Preserve DOI "
     "links, stable URLs, retrieval notes, edition/series details, page ranges, publishers, and years when visible. "
-    "Do not invent missing authors, years, titles, venues, publishers, pages, DOI links, URLs, or access dates. If "
+    "Do not invent missing authors, years, titles, venues, publishers, pages, DOI links, URLs, or access dates. Omit "
+    "missing fields instead of writing placeholders such as n/a, unknown, not available, or page ranges that are not visible. If "
     "the supplied text is incomplete, keep the available source wording in the closest sensible APA order. Do not "
     "return bullets, numbering, blank lines, headings, explanations, or multiple sources in one reference string."
 )
@@ -427,10 +428,14 @@ _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\
 _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE = re.compile(
     r"^\s*(?P<initials>(?:[A-Z]\.(?:-[A-Z]\.)?\s*){1,5})(?P<surname>[^\W\d_][^\s,.;:()]*)"
 )
+_BIBLIOGRAPHY_MISSING_PAGES_RE = re.compile(
+    r"\s*\((?:pp?\.?|pages?)\s*(?:n/?a|not\s+available|not\s+visible|unknown|missing|\?+|[\d\s,–—-]*\?+)\)\.?",
+    re.IGNORECASE,
+)
 _BIBLIOGRAPHY_NO_AUTHOR_YEAR_RE = re.compile(r"^\s*\(?\d{4}[a-z]?\)?[.)]\s+(?P<title>.+)")
 _BIBLIOGRAPHY_SORT_LEADING_RE = re.compile(r"^[\s*_`\"'(\[]+")
 _BIBLIOGRAPHY_SORT_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+", re.IGNORECASE)
-_BIBLIOGRAPHY_SORT_KEY_RE = re.compile(r"[^a-z0-9]+")
+_BIBLIOGRAPHY_SORT_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 
 
 def normalize_obfuscated_email(value: Any) -> str | None:
@@ -500,6 +505,9 @@ def normalize_model_bibliography_entry(value: Any) -> str:
         return ""
     entry = normalize_extracted_text(value).replace("\n", " ").strip()
     entry = _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE.sub("", entry, count=1).strip()
+    entry = _BIBLIOGRAPHY_MISSING_PAGES_RE.sub(".", entry).strip()
+    entry = re.sub(r"\s+([,.;:!?])", r"\1", entry)
+    entry = re.sub(r"\.{2,}", ".", entry).strip()
     return entry
 
 
@@ -516,7 +524,7 @@ def bibliography_entry_sort_key(value: Any) -> tuple[str, str]:
         )
     key = unicodedata.normalize("NFKD", raw_key).encode("ascii", "ignore").decode("ascii").casefold()
     key = _BIBLIOGRAPHY_SORT_ARTICLE_RE.sub("", key)
-    key = _BIBLIOGRAPHY_SORT_KEY_RE.sub(" ", key).strip()
+    key = _BIBLIOGRAPHY_SORT_SEPARATOR_RE.sub("", key).strip()
     return (key or entry.casefold(), entry.casefold())
 
 

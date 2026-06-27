@@ -184,6 +184,41 @@ def test_bibliography_sort_fallback_uses_surname_for_initials_first_entries():
     ]
 
 
+def test_bibliography_sort_fallback_ignores_spacing_artifacts_for_group_authors():
+    from app.services.ai import sorted_bibliography_entries
+
+    entries = [
+        "B News. (2014). Edward Snowden: Leaks that exposed US spy programme.",
+        "D. J. Barret, Mediawiki. Sebastopol, CA, USA: O'Reilly Media 2008.",
+        "V C 2008. (2008). Mc3-Cell Phone Calls.",
+        "Y. Vardi, M. Theusan, A. F. Karr, W.-H. Ju, W. DuMouchel, and M. Schonlau. (2001). Computer intrusion.",
+        "ZDNet. (2019). Alexa and Google Home devices leveraged to phish.",
+    ]
+
+    assert sorted_bibliography_entries(entries) == [
+        "D. J. Barret, Mediawiki. Sebastopol, CA, USA: O'Reilly Media 2008.",
+        "B News. (2014). Edward Snowden: Leaks that exposed US spy programme.",
+        "Y. Vardi, M. Theusan, A. F. Karr, W.-H. Ju, W. DuMouchel, and M. Schonlau. (2001). Computer intrusion.",
+        "V C 2008. (2008). Mc3-Cell Phone Calls.",
+        "ZDNet. (2019). Alexa and Google Home devices leveraged to phish.",
+    ]
+
+
+def test_bibliography_cleanup_strips_missing_page_placeholders():
+    from app.services.ai import BIBLIOGRAPHY_CLEANUP_PROMPT, normalize_model_bibliography_entry
+
+    assert "Omit missing fields instead of writing placeholders" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert normalize_model_bibliography_entry(
+        "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference (pp. n/a). ACM Press."
+    ) == "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference. ACM Press."
+    assert normalize_model_bibliography_entry(
+        "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference (pp.?). ACM Press."
+    ) == "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference. ACM Press."
+    assert normalize_model_bibliography_entry(
+        "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference (pp. 1-?). ACM Press."
+    ) == "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference. ACM Press."
+
+
 def test_formula_capture_returns_latex_entries(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

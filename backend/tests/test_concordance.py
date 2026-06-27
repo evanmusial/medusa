@@ -267,6 +267,77 @@ def test_forced_bibliography_refresh_preserves_user_text_when_not_found(monkeypa
         assert not document.versions
 
 
+def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresses(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCapability
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+            raise AssertionError("regressed extraction should not be sent to model cleanup")
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+    monkeypatch.setattr(
+        concordance_service,
+        "extract_document_bibliography",
+        lambda _document, _pdf_path=None: {
+            "bibliography": "Adams, A. (2024). Surviving source.\nBrown, B. (2023). Surviving source.",
+            "evidence": {"source": "pdf_span_layout", "status": "extracted", "page_start": 10, "page_end": 11},
+        },
+    )
+
+    existing_bibliography = "\n".join(
+        [
+            "Adams, A. (2024). Existing source.",
+            "Brown, B. (2023). Existing source.",
+            "Clark, C. (2022). Existing source.",
+            "Davis, D. (2021). Existing source.",
+        ]
+    )
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Regression Guard Target",
+            original_filename="regression-guard.pdf",
+            checksum_sha256="q" * 64,
+            processing_status="ready",
+            bibliography=existing_bibliography,
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert job.status == "complete"
+        assert document.bibliography == existing_bibliography
+        evidence = document.metadata_evidence["bibliography_extraction"]
+        assert evidence["status"] == "rejected_regression_existing_bibliography"
+        assert evidence["existing_entry_count"] == 4
+        assert evidence["extracted_entry_count"] == 2
+        assert evidence["existing_bibliography_preserved"] is True
+        capability = db.query(DocumentCapability).filter_by(document_id=document.id, capability_key="bibliography_extraction").one()
+        assert capability.evidence["status"] == "rejected_regression_existing_bibliography"
+        assert not document.versions
+
+
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -455,6 +526,154 @@ def test_forced_bibliography_refresh_rejects_incomplete_model_cleanup(monkeypatc
         assert cleanup["status"] == "rejected_incomplete"
         assert cleanup["input_entry_count"] == 81
         assert cleanup["output_entry_count"] == 1
+        assert document.metadata_evidence["bibliography_extraction"]["formatting"] != "apa_markdown_model_cleanup"
+
+
+def test_forced_bibliography_refresh_rejects_cleanup_that_drops_coauthor(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentPage
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+            return {
+                "bibliography": "\n".join(
+                    [
+                        "Anderson, R. (1993). Why cryptosystems fail.",
+                        "Neumann, P. G. (1989). A Summary of Computer Misuse Techniques.",
+                    ]
+                ),
+                "confidence": 0.55,
+                "notes": ["The model dropped a coauthor while keeping the entry count."],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Author Loss Cleanup Target",
+            original_filename="author-loss-cleanup.pdf",
+            checksum_sha256="o" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                normalized_text=(
+                    "References\n"
+                    "[1] Neumann, P. G., and Parker, D. (1989). A Summary of Computer Misuse Techniques.\n"
+                    "[2] Anderson, R. (1993). Why cryptosystems fail."
+                ),
+            )
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        cleanup = document.metadata_evidence["bibliography_extraction"]["model_cleanup"]
+        assert job.status == "complete"
+        assert cleanup["status"] == "rejected_author_loss"
+        assert cleanup["input_entry_count"] == 2
+        assert cleanup["output_entry_count"] == 2
+        assert cleanup["missing_author_sets"] == [["Neumann", "Parker"]]
+        assert "Parker, D." in document.bibliography
+        assert document.metadata_evidence["bibliography_extraction"]["formatting"] != "apa_markdown_model_cleanup"
+
+
+def test_forced_bibliography_refresh_rejects_cleanup_that_adds_duplicate(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentPage
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+            return {
+                "bibliography": "\n".join(
+                    [
+                        "Anderson, R. (1993). Why cryptosystems fail.",
+                        "Neumann, P. G., & Parker, D. (1989). A Summary of Computer Misuse Techniques.",
+                        "Neumann, P. G., & Parker, D. (1989). A Summary of Computer Misuse Techniques.",
+                    ]
+                ),
+                "confidence": 0.48,
+                "notes": ["The model duplicated one entry."],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Duplicate Cleanup Target",
+            original_filename="duplicate-cleanup.pdf",
+            checksum_sha256="p" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                normalized_text=(
+                    "References\n"
+                    "[1] Neumann, P. G., and Parker, D. (1989). A Summary of Computer Misuse Techniques.\n"
+                    "[2] Anderson, R. (1993). Why cryptosystems fail."
+                ),
+            )
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        cleanup = document.metadata_evidence["bibliography_extraction"]["model_cleanup"]
+        bibliography_lines = [line for line in (document.bibliography or "").splitlines() if line.strip()]
+        assert job.status == "complete"
+        assert cleanup["status"] == "rejected_duplicate_cleanup"
+        assert cleanup["input_entry_count"] == 2
+        assert cleanup["output_entry_count"] == 3
+        assert len(cleanup["duplicate_entries"]) == 1
+        assert len(bibliography_lines) == 2
         assert document.metadata_evidence["bibliography_extraction"]["formatting"] != "apa_markdown_model_cleanup"
 
 

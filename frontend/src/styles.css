@@ -3870,6 +3870,22 @@ textarea {
   font-weight: 600;
 }
 
+.bibliography-refresh-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: -2px 0 10px;
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.bibliography-refresh-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .markdown-content {
   display: grid;
   gap: 8px;

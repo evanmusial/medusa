@@ -17,11 +17,19 @@ REFERENCE_COUNT_BOILERPLATE_RE = re.compile(
     r"^\s*references\s*:\s*this\s+document\s+contains\s+references\s+to\s+\d+\s+other\s+documents?\.?\s*$",
     re.IGNORECASE,
 )
+REFERENCE_METHOD_SECTION_RE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*\.?\s*)?(?:step\s+\d+[a-z]?\s*:\s*)?"
+    r"(?:reference\s+list\s+search|references\s*[:\-\u2013\u2014]?\s+cited\b)",
+    re.IGNORECASE,
+)
 STOP_HEADING_RE = re.compile(r"^\s*(?:appendix|appendices|acknowledg(?:e)?ments?|notes?|about\s+the\s+authors?)\b", re.IGNORECASE)
 REFERENCE_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)")
+REFERENCE_BRACKETED_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\])(?:\s+|(?=[A-Z])|$)")
+REFERENCE_NUMBERED_ENTRY_MARKER_RE = re.compile(r"^\s*\d{1,3}[.)]?(?:\s+|(?=[A-Z])|$)")
 REFERENCE_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)")
 REFERENCE_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*]|\u2013|\u2014|\u2022|\u2023|\u2043|\u25e6)\s+")
 REFERENCE_AUTHOR_WORD = r"[A-Z][A-Za-z\u00c0-\u024f'`\u2019.-]+"
+REFERENCE_ORGANIZATION_NAME = rf"{REFERENCE_AUTHOR_WORD}(?:\s+(?:{REFERENCE_AUTHOR_WORD}|of|the|and|for|in|on|&)){{0,10}}"
 REFERENCE_INITIAL_TOKEN = r"[A-Z](?:\.-[A-Z])?\."
 REFERENCE_INITIALS = rf"(?:{REFERENCE_INITIAL_TOKEN}\s*){{1,5}}"
 REFERENCE_AUTHOR_YEAR_RE = re.compile(
@@ -39,10 +47,18 @@ REFERENCE_INITIAL_AUTHOR_START_RE = re.compile(
     rf"^\s*{REFERENCE_INITIALS}{REFERENCE_AUTHOR_WORD}(?:,|\.|\s+and\b|\s+et\s+al\.,?|\s+{REFERENCE_INITIALS})",
     re.IGNORECASE,
 )
+REFERENCE_SURNAME_INITIALS_START_RE = re.compile(
+    rf"^\s*{REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.\s*){{1,5}}(?:,|\s+and\b).+",
+    re.IGNORECASE,
+)
 REFERENCE_ORGANIZATION_YEAR_RE = re.compile(r"^\s*[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b")
 REFERENCE_ORGANIZATION_DOT_YEAR_RE = re.compile(
-    rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_AUTHOR_WORD}(?:\s+{REFERENCE_AUTHOR_WORD}){{1,8}})\.\s+"
+    rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\.\s+"
     r".{0,240}\b(?:18|19|20)\d{2}[a-z]?\b"
+)
+REFERENCE_ORGANIZATION_PAREN_YEAR_RE = re.compile(
+    rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
+    r"\((?:18|19|20)\d{2}[a-z]?\)\.?\s+"
 )
 REFERENCE_UPPER_AUTHOR_LIST_RE = re.compile(
     r"^\s*[A-Z][A-Z'`.-]+,\s+[A-Z].*(?:\bAND\b|(?:,\s+[A-Z][A-Z'`.-]+,\s+[A-Z]))"
@@ -54,8 +70,22 @@ INLINE_REFERENCE_START_CANDIDATE_RE = re.compile(
 INLINE_ORGANIZATION_START_CANDIDATE_RE = re.compile(
     r"\s+(?=[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b)"
 )
+INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?=(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\.\s+"
+    r"\(?(?:18|19|20)\d{2}[a-z]?\b)"
+)
+INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?=(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
+    r"\((?:18|19|20)\d{2}[a-z]?\)\.?\s+)"
+)
 REFERENCE_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b")
 REFERENCE_URL_DOI_RE = re.compile(r"(?:https?://|doi:|10\.\d{4,9}/)", re.IGNORECASE)
+NON_REFERENCE_SECTION_TITLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]*")
+REFERENCE_CONTINUATION_PREFIX_RE = re.compile(
+    r"^\s*(?:in\s+proceedings|proceedings\b|retrieved\b|available\b|accessed\b|from\b|"
+    r"https?://|doi:|url\b|vol\.?\b|pp\.?\b)",
+    re.IGNORECASE,
+)
 ITALIC_FONT_RE = re.compile(r"(?:italic|oblique|kursiv)", re.IGNORECASE)
 AUTHOR_BIO_START_RE = re.compile(
     r"^[A-Z][A-Za-z'`.-]+(?:\s+[A-Z][A-Za-z'`.-]+){1,4}\s+"
@@ -64,8 +94,13 @@ AUTHOR_BIO_START_RE = re.compile(
 PAGE_FURNITURE_RE = re.compile(
     r"^(?:"
     r"\d{4}-\d{3,4}X\s+\(c\)|"
+    r"\d{4}-\d{4}\s+\(c\)\s+\d{4}\s+IEEE|"
+    r"Authorized\s+licensed\s+use\s+limited\s+to:|"
+    r"Downloaded\s+by\s+\[.+?\]\s+at\s+\d{1,2}:\d{2}\s+\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|"
     r"This article has been accepted for publication|"
     r"Citation information:\s*DOI|"
+    r"Engineering\s+Management\s+Review|"
+    r"Intelligent\s+Automation\s+And\s+Soft\s+Computing|"
     r"Communications Surveys\s*&\s*Tutorials|"
     r"IEEE COMMUNICATIONS SURVEY\s*&\s*TUTORIALS|"
     r"ACM Transactions on .+Publication date|"
@@ -84,6 +119,7 @@ PAGE_FURNITURE_RE = re.compile(
     re.IGNORECASE,
 )
 PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
+PDF_STANDALONE_REFERENCE_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*$")
 READABLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]{2,}")
 GARBLED_SYMBOL_RE = re.compile(r"[#@$%^&*=<>\\|~]{2,}|(?:[!?][!?#<>{}=])")
 
@@ -118,26 +154,48 @@ def _line_starts_unmarked_reference_entry(line: str) -> bool:
         or REFERENCE_AUTHOR_LIST_CONTINUED_RE.match(plain)
         or REFERENCE_INITIAL_AUTHOR_YEAR_RE.match(plain)
         or REFERENCE_INITIAL_AUTHOR_START_RE.match(plain)
+        or REFERENCE_SURNAME_INITIALS_START_RE.match(plain)
         or REFERENCE_ORGANIZATION_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_DOT_YEAR_RE.match(plain)
+        or REFERENCE_ORGANIZATION_PAREN_YEAR_RE.match(plain)
         or REFERENCE_UPPER_AUTHOR_LIST_RE.match(plain)
         or REFERENCE_UPPER_SINGLE_AUTHOR_RE.match(plain)
     )
 
 
-def _line_starts_reference_marker(line: str) -> bool:
+def _reference_marker_style(line: str) -> str | None:
     plain = _strip_markdown(_strip_reference_list_marker(line)).strip()
-    return bool(REFERENCE_ENTRY_MARKER_RE.match(plain))
+    if REFERENCE_BRACKETED_ENTRY_MARKER_RE.match(plain):
+        return "bracketed"
+    if REFERENCE_NUMBERED_ENTRY_MARKER_RE.match(plain):
+        return "numbered"
+    return None
+
+
+def _line_starts_reference_marker(line: str, marker_style: str | None = None) -> bool:
+    style = _reference_marker_style(line)
+    return bool(style and (marker_style is None or style == marker_style))
+
+
+def _line_looks_like_method_reference_section(line: str) -> bool:
+    plain = _strip_markdown(line).strip()
+    return bool(REFERENCE_METHOD_SECTION_RE.match(plain))
 
 
 def _line_is_reference_heading(line: str) -> bool:
     plain = _strip_markdown(line).strip()
+    if _line_looks_like_method_reference_section(plain):
+        return False
     return bool(REFERENCE_HEADING_RE.match(plain))
 
 
 def _line_starts_reference_section(line: str) -> bool:
     plain = _strip_markdown(line).strip()
-    return bool(REFERENCE_HEADING_INLINE_RE.match(plain) and not REFERENCE_COUNT_BOILERPLATE_RE.match(plain))
+    return bool(
+        REFERENCE_HEADING_INLINE_RE.match(plain)
+        and not REFERENCE_COUNT_BOILERPLATE_RE.match(plain)
+        and not _line_looks_like_method_reference_section(plain)
+    )
 
 
 def _line_stops_reference_section(line: str) -> bool:
@@ -336,6 +394,51 @@ def _markdown_span(text: str, italic: bool) -> str:
     return f"{leading}*{core}*{trailing}"
 
 
+PdfLineItem = tuple[float, float, float, float, str]
+
+
+def _pdf_line_column(page_width: float, item: PdfLineItem) -> int | None:
+    x0, _, x1, _, _ = item
+    midpoint = page_width / 2
+    width = max(0.0, x1 - x0)
+    if width >= page_width * 0.68 or (x0 < midpoint < x1):
+        return None
+    return 0 if x0 < midpoint else 1
+
+
+def _pdf_standalone_reference_marker_count(items: list[PdfLineItem]) -> int:
+    return sum(1 for *_, text in items if PDF_STANDALONE_REFERENCE_MARKER_RE.match(_strip_markdown(text).strip()))
+
+
+def _sort_pdf_page_line_items(page_width: float, items: list[PdfLineItem]) -> list[PdfLineItem]:
+    if len(items) < 8 or page_width <= 0:
+        return items
+    if _pdf_standalone_reference_marker_count(items) >= 6:
+        return items
+    columns = [_pdf_line_column(page_width, item) for item in items]
+    left_count = sum(1 for column in columns if column == 0)
+    right_count = sum(1 for column in columns if column == 1)
+    if left_count < 4 or right_count < 2:
+        return items
+    column_items = [item for item, column in zip(items, columns, strict=False) if column is not None]
+    top = min(item[1] for item in column_items)
+    bottom = max(item[3] for item in column_items)
+    midpoint = page_width / 2
+
+    def sort_key(item: PdfLineItem) -> tuple[int, float, float]:
+        column = _pdf_line_column(page_width, item)
+        if column is not None:
+            return column + 1, item[1], item[0]
+        if item[3] < top:
+            return 0, item[1], item[0]
+        if item[1] > bottom:
+            return 3, item[1], item[0]
+        center = (item[0] + item[2]) / 2
+        return (1 if center < midpoint else 2), item[1], item[0]
+
+    return sorted(items, key=sort_key)
+
+
 def _pdf_markdown_lines(path: Path) -> list[tuple[int, str]]:
     import fitz
 
@@ -343,6 +446,7 @@ def _pdf_markdown_lines(path: Path) -> list[tuple[int, str]]:
     with fitz.open(path) as pdf:
         for page_number, page in enumerate(pdf, start=1):
             page_dict = page.get_text("dict")
+            page_items: list[PdfLineItem] = []
             for block in page_dict.get("blocks", []):
                 for line in block.get("lines", []):
                     parts = [
@@ -351,7 +455,9 @@ def _pdf_markdown_lines(path: Path) -> list[tuple[int, str]]:
                     ]
                     text = sanitize_extracted_text("".join(parts)).strip()
                     if text:
-                        rows.append((page_number, text))
+                        x0, y0, x1, y1 = line.get("bbox") or block.get("bbox") or (0.0, 0.0, 0.0, 0.0)
+                        page_items.append((float(x0), float(y0), float(x1), float(y1), text))
+            rows.extend((page_number, text) for *_, text in _sort_pdf_page_line_items(float(page.rect.width), page_items))
     return rows
 
 
@@ -401,7 +507,12 @@ def _split_inline_reference_lines(line: str) -> list[str]:
         return [line]
     split_offsets: list[int] = []
     matches = sorted(
-        [*INLINE_REFERENCE_START_CANDIDATE_RE.finditer(line), *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line)],
+        [
+            *INLINE_REFERENCE_START_CANDIDATE_RE.finditer(line),
+            *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line),
+            *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
+            *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
+        ],
         key=lambda item: item.start(),
     )
     for match in matches:
@@ -428,7 +539,9 @@ def _split_inline_reference_lines(line: str) -> list[str]:
 
 def _normalize_reference_entry(parts: list[str]) -> str:
     entry = " ".join(part.strip() for part in parts if part.strip())
-    return _strip_reference_entry_prefix(normalize_extracted_text(entry).replace("\n", " ")).strip()
+    entry = re.sub(r"(?<=\d)([-\u2010-\u2015])\s+(?=\d)", r"\1", entry)
+    entry = _strip_reference_entry_prefix(normalize_extracted_text(entry).replace("\n", " ")).strip()
+    return re.sub(r"(?<=\d)([-\u2010-\u2015])\s+(?=\d)", r"\1", entry)
 
 
 def _reference_entry_has_terminal_evidence(parts: list[str]) -> bool:
@@ -453,6 +566,27 @@ def _reference_parts_have_signal(parts: list[str]) -> bool:
     )
 
 
+def _line_looks_like_new_section_after_references(line: str) -> bool:
+    plain = _reference_match_text(_strip_markdown(_strip_reference_list_marker(line)).strip())
+    if not plain or len(plain) > 180:
+        return False
+    if REFERENCE_CONTINUATION_PREFIX_RE.match(plain):
+        return False
+    if _line_is_page_furniture(plain) or _line_is_reference_heading(plain) or _line_starts_reference_section(plain):
+        return False
+    if _line_starts_reference_entry(plain) or REFERENCE_YEAR_RE.search(plain) or REFERENCE_URL_DOI_RE.search(plain):
+        return False
+    if any(mark in plain for mark in ("@", ":", "/", "\\", "(", ")", "[", "]")):
+        return False
+    if plain.endswith((".", ",", ";")):
+        return False
+    words = NON_REFERENCE_SECTION_TITLE_WORD_RE.findall(plain)
+    if not 5 <= len(words) <= 18:
+        return False
+    capitalized = sum(1 for word in words if word[:1].isupper())
+    return capitalized >= 3
+
+
 def _should_use_marker_bounded_mode(cleaned_lines: list[str], marker_offsets: list[int]) -> bool:
     if not marker_offsets:
         return False
@@ -470,6 +604,12 @@ def _should_use_marker_bounded_mode(cleaned_lines: list[str], marker_offsets: li
     )
 
 
+def _marker_bounded_style(cleaned_lines: list[str], marker_offsets: list[int]) -> str | None:
+    if not marker_offsets:
+        return None
+    return _reference_marker_style(cleaned_lines[marker_offsets[0]])
+
+
 def _format_reference_lines(lines: list[str]) -> str:
     entries: list[str] = []
     current: list[str] = []
@@ -485,6 +625,7 @@ def _format_reference_lines(lines: list[str]) -> str:
             cleaned_lines.extend(_split_inline_reference_lines(cleaned))
     marker_offsets = [index for index, line in enumerate(cleaned_lines) if _line_starts_reference_marker(line)]
     marker_bounded = _should_use_marker_bounded_mode(cleaned_lines, marker_offsets)
+    marker_style = _marker_bounded_style(cleaned_lines, marker_offsets) if marker_bounded else None
     for raw_line in lines:
         line = _clean_reference_line(raw_line)
         if not line:
@@ -498,7 +639,21 @@ def _format_reference_lines(lines: list[str]) -> str:
                 and not _strip_reference_entry_prefix(part)
             ):
                 continue
-            starts_entry = _line_starts_reference_marker(part) if marker_bounded else _line_starts_unmarked_reference_entry(part)
+            starts_entry = (
+                _line_starts_reference_marker(part, marker_style)
+                if marker_bounded
+                else _line_starts_unmarked_reference_entry(part)
+            )
+            if (
+                current
+                and len(entries) >= 2
+                and _reference_entry_has_terminal_evidence(current)
+                and _line_looks_like_new_section_after_references(part)
+            ):
+                entry = _normalize_reference_entry(current)
+                if entry:
+                    entries.append(entry)
+                return "\n".join(entries).strip()
             if starts_entry and current:
                 if not marker_bounded and not _reference_entry_has_terminal_evidence(current):
                     if _reference_parts_have_signal(current):

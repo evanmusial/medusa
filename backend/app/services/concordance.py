@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -72,6 +73,17 @@ from app.services.verifier import (
 
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 300
+BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
+BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
+BIBLIOGRAPHY_AUTHOR_STOPWORDS = {
+    "Accessed",
+    "Available",
+    "Conference",
+    "Journal",
+    "Proceedings",
+    "Retrieved",
+    "Version",
+}
 
 
 @dataclass(frozen=True)
@@ -80,6 +92,55 @@ class CapabilityDefinition:
     label: str
     version: int
     description: str
+
+
+def _bibliography_entry_count(bibliography: str | None) -> int:
+    return len([line for line in (bibliography or "").splitlines() if line.strip()])
+
+
+def _bibliography_author_tokens(entry: str) -> list[str]:
+    plain = decode_html_entities(str(entry or "")).replace("*", "")
+    year_match = BIBLIOGRAPHY_YEAR_RE.search(plain)
+    if not year_match:
+        return []
+    prefix = plain[: year_match.start()]
+    if "," not in prefix and " and " not in prefix.casefold():
+        return []
+    tokens: list[str] = []
+    for token in BIBLIOGRAPHY_AUTHOR_TOKEN_RE.findall(prefix):
+        cleaned = token.strip("'`\u2019-")
+        if cleaned in BIBLIOGRAPHY_AUTHOR_STOPWORDS:
+            continue
+        if cleaned.casefold() not in {existing.casefold() for existing in tokens}:
+            tokens.append(cleaned)
+    return tokens if len(tokens) >= 2 else []
+
+
+def _bibliography_cleanup_missing_author_sets(input_bibliography: str, cleanup_bibliography: str) -> list[list[str]]:
+    output_lines = [decode_html_entities(line).casefold() for line in cleanup_bibliography.splitlines() if line.strip()]
+    missing: list[list[str]] = []
+    for line in input_bibliography.splitlines():
+        tokens = _bibliography_author_tokens(line)
+        if not tokens:
+            continue
+        if any(all(token.casefold() in output_line for token in tokens) for output_line in output_lines):
+            continue
+        missing.append(tokens)
+    return missing
+
+
+def _bibliography_duplicate_cleanup_entries(cleanup_bibliography: str) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for line in cleanup_bibliography.splitlines():
+        normalized = re.sub(r"[^a-z0-9]+", " ", decode_html_entities(line).casefold()).strip()
+        if not normalized:
+            continue
+        if normalized in seen:
+            duplicates.append(line.strip())
+            continue
+        seen.add(normalized)
+    return duplicates
 
 
 @dataclass(frozen=True)
@@ -1174,6 +1235,22 @@ class ConcordanceProcessor:
         bibliography = result.get("bibliography")
         evidence = result.get("evidence") or {}
         if bibliography and run_force:
+            existing_entry_count = _bibliography_entry_count(document.bibliography)
+            extracted_entry_count = _bibliography_entry_count(bibliography)
+            if existing_entry_count >= 3 and extracted_entry_count < existing_entry_count:
+                evidence = {
+                    **evidence,
+                    "extraction_status": evidence.get("status"),
+                    "status": "rejected_regression_existing_bibliography",
+                    "existing_entry_count": existing_entry_count,
+                    "extracted_entry_count": extracted_entry_count,
+                    "existing_bibliography_preserved": True,
+                    "checked_at": utc_now().isoformat(),
+                }
+                metadata_evidence = dict(document.metadata_evidence or {})
+                metadata_evidence["bibliography_extraction"] = evidence
+                document.metadata_evidence = metadata_evidence
+                return {**evidence, "characters": len(document.bibliography or "")}
             sorted_bibliography = "\n".join(sorted_bibliography_entries(bibliography.splitlines())).strip()
             if sorted_bibliography:
                 evidence["deterministic_sort"] = {
@@ -1182,7 +1259,7 @@ class ConcordanceProcessor:
                 }
                 bibliography = sorted_bibliography
             cleanup_model = get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
-            bibliography_entry_count = len([line for line in bibliography.splitlines() if line.strip()])
+            bibliography_entry_count = _bibliography_entry_count(bibliography)
             if (
                 len(bibliography) > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS
                 or bibliography_entry_count > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES
@@ -1206,10 +1283,24 @@ class ConcordanceProcessor:
                         prompt_cache_key=f"medusa-bibliography:{document.id}",
                     )
                     cleanup_bibliography = cleanup.get("bibliography") or ""
-                    cleanup_entry_count = len([line for line in cleanup_bibliography.splitlines() if line.strip()])
+                    cleanup_entry_count = _bibliography_entry_count(cleanup_bibliography)
+                    missing_author_sets = _bibliography_cleanup_missing_author_sets(bibliography, cleanup_bibliography)
+                    duplicate_cleanup_entries = _bibliography_duplicate_cleanup_entries(cleanup_bibliography)
+                    cleanup_has_extra_duplicates = bool(
+                        duplicate_cleanup_entries and cleanup_entry_count > bibliography_entry_count
+                    )
                     cleanup_status = "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback"
-                    if cleanup_bibliography and cleanup_entry_count >= bibliography_entry_count:
+                    if (
+                        cleanup_bibliography
+                        and cleanup_entry_count >= bibliography_entry_count
+                        and not missing_author_sets
+                        and not cleanup_has_extra_duplicates
+                    ):
                         bibliography = cleanup_bibliography
+                    elif cleanup_bibliography and missing_author_sets:
+                        cleanup_status = "rejected_author_loss"
+                    elif cleanup_bibliography and cleanup_has_extra_duplicates:
+                        cleanup_status = "rejected_duplicate_cleanup"
                     elif cleanup_bibliography:
                         cleanup_status = "rejected_incomplete"
                     evidence["model_cleanup"] = {
@@ -1219,9 +1310,11 @@ class ConcordanceProcessor:
                         "notes": cleanup.get("notes") or [],
                         "input_entry_count": bibliography_entry_count,
                         "output_entry_count": cleanup_entry_count,
+                        **({"missing_author_sets": missing_author_sets[:5]} if missing_author_sets else {}),
+                        **({"duplicate_entries": duplicate_cleanup_entries[:5]} if cleanup_has_extra_duplicates else {}),
                         "formatting": "alphabetized_apa_markdown_one_source_per_line",
                     }
-                    if (cleanup.get("_openai") or {}).get("configured") and cleanup_status != "rejected_incomplete":
+                    if (cleanup.get("_openai") or {}).get("configured") and cleanup_status == "formatted":
                         evidence["formatting"] = "apa_markdown_model_cleanup"
                 except Exception as exc:
                     evidence["model_cleanup"] = {

@@ -219,6 +219,41 @@ def test_extract_document_bibliography_splits_ocr_glued_number_markers():
     assert result["evidence"]["entry_count_estimate"] == 3
 
 
+def test_extract_document_bibliography_stops_before_new_document_title_after_references():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="References Followed By Slides",
+        original_filename="references-followed-by-slides.pdf",
+        checksum_sha256="7" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=4,
+            normalized_text=(
+                "References\n"
+                "[1] McAfee (2009). Unsecured economies: protecting vital information. http://example.com/report.\n"
+                "[2] Neumann PG and Parker D (1989). A Summary of Computer Misuse Techniques. "
+                "Proceedings of the 12th National Computer Security Conference.\n"
+                "[3] Anderson R (1993). Why cryptosystems fail. 1st ACM conference on computer and communications security, ACM Press.\n"
+                "Combating the Insider Threat with a Systematic Security Architecture\n"
+                "Clive Blackwell\n"
+                "Information Security Group\n"
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+
+    assert result["bibliography"].splitlines() == [
+        "McAfee (2009). Unsecured economies: protecting vital information. http://example.com/report.",
+        "Neumann PG and Parker D (1989). A Summary of Computer Misuse Techniques. Proceedings of the 12th National Computer Security Conference.",
+        "Anderson R (1993). Why cryptosystems fail. 1st ACM conference on computer and communications security, ACM Press.",
+    ]
+    assert "Combating the Insider Threat" not in result["bibliography"]
+
+
 def test_extract_document_bibliography_splits_after_doi_url_without_terminal_punctuation():
     from app.models import Document, DocumentPage
     from app.services.bibliography import extract_document_bibliography
@@ -625,4 +660,270 @@ def test_extract_document_bibliography_numbered_entries_ignore_author_initial_co
             "IEEE/ACM Transactions on Networking (TON), vol. 23, no. 4, pp. 1257-1270, 2015."
         ),
     ]
+    assert result["evidence"]["entry_count_estimate"] == 2
+
+
+def test_extract_document_bibliography_keeps_numeric_continuations_in_bracketed_lists():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Bracketed Numeric Continuations Paper",
+        original_filename="bracketed-numeric-continuations.pdf",
+        checksum_sha256="9" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=60,
+            normalized_text=(
+                "References\n"
+                "[52] T. OConnor, C. Stricklan, Teaching a hands-on mobile and wireless cyber-\n"
+                "security course, in: Proceedings of the 26th ACM Conference on Innovation\n"
+                "and Technology in Computer Science Education V. 1, ACM, 2021, pp. 296-\n"
+                "302. doi:10.1145/3430665.3456346.\n"
+                "URL https://dl.acm.org/doi/10.1145/3430665.3456346\n"
+                "[56] A. Papanikolaou, V. Karakoidas, V. Vlachos, A. Venieris, C. Ilioudis,\n"
+                "G. Zouganelis, A hacker's perspective on educating future security experts,\n"
+                "in: 2011 15th Panhellenic Conference on Informatics, IEEE, 2011, pp. 68-\n"
+                "72. doi:10.1109/PCI.2011.47.\n"
+                "URL http://ieeexplore.ieee.org/document/6065066/\n"
+                "[57] D. R. Krathwohl, L. W. Anderson, B. Benjamin Samuel, A taxonomy for\n"
+                "learning, teaching, and assessing: a revision of Bloom's taxonomy of educational objectives."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert len(entries) == 3
+    assert result["evidence"]["entry_count_estimate"] == 3
+    assert entries[0].startswith("T. OConnor")
+    assert "296-302" in entries[0]
+    assert "302. doi:10.1145/3430665.3456346" in entries[0]
+    assert entries[1].startswith("A. Papanikolaou")
+    assert "68-72" in entries[1]
+    assert "72. doi:10.1109/PCI.2011.47" in entries[1]
+    assert not any(entry.startswith(("302. doi", "72. doi")) for entry in entries)
+
+
+def test_extract_document_bibliography_ignores_reference_list_search_method_section(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Systematic Review",
+        original_filename="systematic-review.pdf",
+        checksum_sha256="0" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="References\nPlain fallback."))
+    pdf_path = tmp_path / "systematic-review.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (10, "3.4. Step 4: Reference List Search References cited in articles identified from the initial evaluation were screened."),
+            (10, "References: cited in articles identified from the initial evaluation were included if they matched."),
+            (10, "1. Date Range and Cutoff: Must post-date the year 2000."),
+            (10, "2. Full Text Appraisal: Must discuss adversarial thinking."),
+            (53, "References"),
+            (53, "[1] R. Derbyshire, B. Green, D. Hutchison, Talking a different language, Computers & Security 103 (2021) 102163."),
+            (53, "[2] F. B. Schneider, Cybersecurity education in universities, IEEE Security & Privacy 11 (2013) 3-4."),
+            (53, "[3] J. T. F. on Cybersecurity Education, Cybersecurity Curricula 2017, ACM, 2018."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, pdf_path)
+
+    assert result["evidence"]["page_start"] == 53
+    assert result["evidence"]["entry_count_estimate"] == 3
+    assert result["bibliography"].splitlines()[0].startswith("R. Derbyshire")
+    assert "Reference List Search" not in result["bibliography"]
+    assert "Full Text Appraisal" not in result["bibliography"]
+
+
+def test_pdf_line_sort_orders_two_column_reference_page_by_column():
+    from app.services.bibliography import _sort_pdf_page_line_items
+
+    items = [
+        (303.0, 49.0, 549.0, 60.0, "Lee, S. (2008). Special report."),
+        (303.0, 70.0, 549.0, 81.0, "LinkedIn Group Partners. (2015). Insider threat spotlight report 2015."),
+        (48.0, 68.0, 232.0, 80.0, "Inhyun Cho http://orcid.org/0000-0001-6066-1140"),
+        (48.0, 96.0, 99.0, 109.0, "References"),
+        (48.0, 114.0, 293.0, 126.0, "Anderson, R. H., Bozek, T., Longstaff, T., Meitzler, W., & Skroch, M. (2000)."),
+        (48.0, 130.0, 293.0, 142.0, "BBC. (2014). Edward Snowden: Leaks that exposed US Spy Programme."),
+        (48.0, 490.0, 293.0, 502.0, "Humphreys, E. (2007). Implementing the ISO/IEC 27001 information security management system standard."),
+        (48.0, 512.0, 293.0, 524.0, "Kroll. (2014). Global Fraud Report 2013-2014."),
+    ]
+
+    sorted_text = [item[4] for item in _sort_pdf_page_line_items(595.0, items)]
+
+    assert sorted_text.index("References") < sorted_text.index(
+        "Anderson, R. H., Bozek, T., Longstaff, T., Meitzler, W., & Skroch, M. (2000)."
+    )
+    assert sorted_text.index("Kroll. (2014). Global Fraud Report 2013-2014.") < sorted_text.index(
+        "Lee, S. (2008). Special report."
+    )
+    assert sorted_text[-1] == "LinkedIn Group Partners. (2015). Insider threat spotlight report 2015."
+
+
+def test_pdf_line_sort_preserves_marker_heavy_reference_page_order():
+    from app.services.bibliography import _sort_pdf_page_line_items
+
+    items = [
+        (48.0, 92.0, 54.0, 103.0, "1."),
+        (72.0, 92.0, 288.0, 103.0, "Homoliak, I.; Toffalini, F. Insight into insiders."),
+        (48.0, 112.0, 54.0, 123.0, "2."),
+        (72.0, 112.0, 288.0, 123.0, "Al-Mhiqani, M.N.; Ahmad, R. A new taxonomy."),
+        (48.0, 132.0, 54.0, 143.0, "3."),
+        (72.0, 132.0, 288.0, 143.0, "Kim, J.; Park, M. User behavior modeling."),
+        (48.0, 152.0, 54.0, 163.0, "4."),
+        (72.0, 152.0, 288.0, 163.0, "Liu, L.; Zhang, X. Insider threat survey."),
+        (48.0, 172.0, 54.0, 183.0, "5."),
+        (72.0, 172.0, 288.0, 183.0, "Magklaras, G.B.; Furnell, S.M. Threat prediction."),
+        (48.0, 192.0, 54.0, 203.0, "6."),
+        (72.0, 192.0, 288.0, 203.0, "Park, J.; Stolfo, S. Masquerade detection."),
+        (318.0, 92.0, 326.0, 103.0, "7."),
+        (342.0, 92.0, 558.0, 103.0, "Pfleeger, S.L.; Caputo, D. Leveraging behavioral science."),
+    ]
+
+    sorted_text = [item[4] for item in _sort_pdf_page_line_items(595.0, items)]
+
+    assert sorted_text == [item[4] for item in items]
+    assert sorted_text.index("1.") + 1 == sorted_text.index(
+        "Homoliak, I.; Toffalini, F. Insight into insiders."
+    )
+
+
+def test_extract_document_bibliography_splits_single_word_organization_dot_year_entries():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Single Word Organization References Paper",
+        original_filename="single-word-organization-references.pdf",
+        checksum_sha256="1" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=10,
+            normalized_text=(
+                "References\n"
+                "Humphreys, E. (2007). Implementing the ISO/IEC 27001 information security management system standard. "
+                "Norwood, MA: Artech House Inc.\n"
+                "Downloaded by [University of Sussex Library] at 20:37 12 May 2016\n"
+                "Kroll. (2014). Global Fraud Report 2013-2014. Retrieved from http://fraud.example/report.pdf.\n"
+                "Intelligent Automation And Soft Computing\n"
+                "Lee, S. (2008). Special report. IT Standard & Test TTA Journal, 118, 82-88."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert entries == [
+        (
+            "Humphreys, E. (2007). Implementing the ISO/IEC 27001 information security management system standard. "
+            "Norwood, MA: Artech House Inc."
+        ),
+        "Kroll. (2014). Global Fraud Report 2013-2014. Retrieved from http://fraud.example/report.pdf.",
+        "Lee, S. (2008). Special report. IT Standard & Test TTA Journal, 118, 82-88.",
+    ]
+    assert result["evidence"]["entry_count_estimate"] == 3
+
+
+def test_extract_document_bibliography_keeps_in_proceedings_continuation_before_next_org_entry():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Proceedings Continuation References Paper",
+        original_filename="proceedings-continuation-references.pdf",
+        checksum_sha256="2" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=10,
+            normalized_text=(
+                "References\n"
+                "Ottis, R. & Lorents, P. (2010). Cyberspace: Definition and implications.\n"
+                "In Proceedings of the 5th International Conference on Information\n"
+                "Warfare and Security, pp. 267-270.\n"
+                "PwC. (2012). 2012 global economic crime survey. Retrieved from http://example.test/report.pdf.\n"
+                "Probst, C. W., Hunker, J., Gollmann, D., and Bishop, M. (2010). Aspects of insider threats.\n"
+                "In Probst et al. (Ed.), Insider Threats in Cyber Security (pp. 1-15). US: Springer.\n"
+                "Randazzo, M. R., Keeney, M., Kowalski, E., Cappelli, D., and Moore, A.\n"
+                "(2005). Insider threat study: Illicit cyber activity in the banking and finance sector.\n"
+                "United States Army (2010). Cyberspace operations concept capability plan 2016-2028.\n"
+                "United States Department of Defense. (2009). Joint Pub 1-02 2009: Department of Defense Dictionary."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert entries == [
+        (
+            "Ottis, R. & Lorents, P. (2010). Cyberspace: Definition and implications. "
+            "In Proceedings of the 5th International Conference on Information Warfare and Security, pp. 267-270."
+        ),
+        "PwC. (2012). 2012 global economic crime survey. Retrieved from http://example.test/report.pdf.",
+        (
+            "Probst, C. W., Hunker, J., Gollmann, D., and Bishop, M. (2010). Aspects of insider threats. "
+            "In Probst et al. (Ed.), Insider Threats in Cyber Security (pp. 1-15). US: Springer."
+        ),
+        (
+            "Randazzo, M. R., Keeney, M., Kowalski, E., Cappelli, D., and Moore, A. (2005). Insider threat study: "
+            "Illicit cyber activity in the banking and finance sector."
+        ),
+        "United States Army (2010). Cyberspace operations concept capability plan 2016-2028.",
+        "United States Department of Defense. (2009). Joint Pub 1-02 2009: Department of Defense Dictionary.",
+    ]
+    assert result["evidence"]["entry_count_estimate"] == 6
+
+
+def test_extract_document_bibliography_filters_ieee_footer_after_final_reference():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="IEEE Footer References Paper",
+        original_filename="ieee-footer-references.pdf",
+        checksum_sha256="3" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=15,
+            normalized_text=(
+                "REFERENCES\n"
+                "[77] C. H. Mason and W. D. Perreault, “Collinearity, Power, and Interpretation of Multiple Regression Analysis,” "
+                "Journal of Marketing Research, vol. XXVIII, pp. 268-280, Aug. 1991.\n"
+                "[78] StataCorp, Stata Statistical Software: Release 12. College Station, TX: StataCorp LP, 2011.\n"
+                "15\n"
+                "0360-8581 (c) 2020 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission.\n"
+                "Authorized licensed use limited to: University of Newcastle. Downloaded on June 01,2020 at 15:53:08 UTC from IEEE Xplore. Restrictions apply.\n"
+                "This article has been accepted for publication in a future issue of this journal.\n"
+                "Engineering Management Review\n"
+                "Michele Maasberg is an Assistant Professor of Computer Science."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert entries == [
+        (
+            "C. H. Mason and W. D. Perreault, “Collinearity, Power, and Interpretation of Multiple Regression Analysis,” "
+            "Journal of Marketing Research, vol. XXVIII, pp. 268-280, Aug. 1991."
+        ),
+        "StataCorp, Stata Statistical Software: Release 12. College Station, TX: StataCorp LP, 2011.",
+    ]
+    assert "IEEE" not in result["bibliography"]
+    assert "Authorized licensed use" not in result["bibliography"]
     assert result["evidence"]["entry_count_estimate"] == 2

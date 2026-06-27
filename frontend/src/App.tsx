@@ -3902,6 +3902,47 @@ function BibliographyBlock({ content, empty }: { content?: string | null; empty:
   );
 }
 
+function evidenceNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function bibliographyCleanupNotice(metadataEvidence: Record<string, unknown>): string | null {
+  const bibliographyEvidence = metadataEvidence.bibliography_extraction;
+  if (!isRecord(bibliographyEvidence)) return null;
+  const cleanup = bibliographyEvidence.model_cleanup;
+  if (!isRecord(cleanup)) return null;
+  const status = typeof cleanup.status === "string" ? cleanup.status : "";
+  if (status === "rejected_incomplete") {
+    const inputCount = evidenceNumber(cleanup.input_entry_count);
+    const outputCount = evidenceNumber(cleanup.output_entry_count);
+    const countDetail = inputCount && outputCount ? ` because the model returned ${outputCount} of ${inputCount} entries` : "";
+    return `Cleanup kept the complete extracted list${countDetail}. Deterministic APA sorting was applied instead.`;
+  }
+  if (status === "rejected_author_loss") {
+    return "Cleanup kept the complete extracted list because the model dropped visible author names. Deterministic APA sorting was applied instead.";
+  }
+  if (status === "rejected_duplicate_cleanup") {
+    return "Cleanup kept the complete extracted list because the model introduced duplicate references. Deterministic APA sorting was applied instead.";
+  }
+  if (status === "skipped_large_bibliography") {
+    const entryCount = evidenceNumber(cleanup.entry_count);
+    const maxEntries = evidenceNumber(cleanup.max_entries);
+    const characterCount = evidenceNumber(cleanup.characters);
+    const maxCharacters = evidenceNumber(cleanup.max_characters);
+    const entryDetail = entryCount && maxEntries ? `${entryCount} entries exceeds the cleanup limit of ${maxEntries}` : null;
+    const characterDetail =
+      characterCount && maxCharacters ? `${characterCount.toLocaleString()} characters exceeds the cleanup limit of ${maxCharacters.toLocaleString()}` : null;
+    const limitDetail = entryDetail || characterDetail || "the extracted bibliography exceeds the cleanup limit";
+    return `Cleanup skipped because ${limitDetail}. Deterministic APA sorting was applied instead.`;
+  }
+  return null;
+}
+
 function ResizeHandle({
   label,
   value,
@@ -8929,6 +8970,7 @@ function DocumentPanelContent({
   };
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
   const bibliographyGeneratedLabel = relativeTimeLabel(document.bibliography_generated_at, relativeTimeNow);
+  const bibliographyCleanupMessage = bibliographyCleanupNotice(document.metadata_evidence);
   const renderDomainsSection = () => (
     <section className="detail-section detail-domains-section">
       <h3>Domains</h3>
@@ -9399,6 +9441,12 @@ function DocumentPanelContent({
     <section className="detail-section bibliography-section">
       <h3>Bibliography</h3>
       {bibliographyGeneratedLabel ? <p className="section-kicker">Generated {bibliographyGeneratedLabel}</p> : null}
+      {bibliographyCleanupMessage ? (
+        <p className="bibliography-refresh-note">
+          <AlertTriangle size={14} />
+          <span>{bibliographyCleanupMessage}</span>
+        </p>
+      ) : null}
       <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
       <div className="citation-actions">
         <button
