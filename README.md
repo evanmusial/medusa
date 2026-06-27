@@ -208,7 +208,7 @@ The document cache size defaults to 1,024 MB. It controls how many completed imp
 
 ## Development
 
-Architecture and design context for future work lives in `docs/ARCHITECTURE.md`. Codex-specific project guidance lives in `AGENTS.md`; keep both current when design or architecture changes.
+Architecture and design context for future work lives in `docs/ARCHITECTURE.md`; performance scaling notes live in `docs/PERFORMANCE_ROADMAP.md`. Codex-specific project guidance lives in `AGENTS.md`; keep these current when design or architecture changes.
 
 Backend:
 

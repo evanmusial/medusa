@@ -171,6 +171,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Benchmark Library list/search at 10x and 50x scale before adding Valkey.
   - Acceptance: seed or synthesize representative document/tag/domain/project data at 10x and 50x current corpus size; capture `/api/documents/list`, `/api/documents`, `/api/dashboard`, `/api/domains`, `/api/tags`, search, duplicate-scan, and active-work polling timings with SQL counts; compare Postgres index/query/materialized-table options against Valkey read-through caches, pub/sub, ephemeral activity streams, and lock/coordination use cases; choose Valkey only for measured workloads it serves better than PostgreSQL.
+  - Notes: detailed phases, endpoint budgets, PostgreSQL/read-model candidates, frontend/runtime improvements, asset/provider considerations, and Valkey/external-search decision criteria live in `docs/PERFORMANCE_ROADMAP.md`.
 
 - [ ] Add saved-search management improvements.
   - Acceptance: saved searches can be renamed, reordered, edited, duplicated, and used as durable library views.

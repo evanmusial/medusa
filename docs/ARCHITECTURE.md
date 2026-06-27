@@ -452,7 +452,7 @@ High-value next steps:
 - Build out Notes into a document-linked and standalone topic/idea research-notes workspace.
 - Expand Related into a diverse discovery and acquisition workflow with already-known suppression and wishlist triage.
 - Add a Corpus Health dashboard for missing metadata, stale capabilities, failed work, and repair entry points.
-- Benchmark Library list/search at 10x and 50x current corpus size and evaluate Valkey only for measured cache/pub-sub/coordination needs that PostgreSQL indexes, pagination, and query shaping do not solve cleanly.
+- Benchmark Library list/search at 10x and 50x current corpus size using the detailed plan in `docs/PERFORMANCE_ROADMAP.md`, and evaluate Valkey only for measured cache/pub-sub/coordination needs that PostgreSQL indexes, pagination, and query shaping do not solve cleanly.
 - Add scheduled full-database backup drills and retention controls.
 - Add Playwright smoke tests for login, import, library search, citation copy, project bibliography, and day/night modes.
 
@@ -470,6 +470,7 @@ Consequences:
 - Search uses PostgreSQL FTS plus existing title fallback where available, with SQLite retaining a simple test fallback.
 - Duplicate badges are cheap list fields refreshed by explicit duplicate scan/resolve/dismiss actions instead of recomputed during every list read.
 - Valkey remains a candidate for later job-progress fan-out, hot aggregate caches, ephemeral activity streams, distributed locks, or read-through caches after 10x/50x benchmarks show PostgreSQL is no longer the right layer for that specific workload.
+- Detailed future performance notes, benchmark phases, read-model candidates, frontend/runtime improvements, and Valkey/external-search decision criteria live in `docs/PERFORMANCE_ROADMAP.md`.
 
 ### 2026-06-25: Targeted title-search DOI discovery
 
