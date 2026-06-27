@@ -127,6 +127,7 @@ from app.schemas import (
     DocumentListRow,
     DocumentSummary,
     FigurePatch,
+    GcsBucketLifecycleOut,
     DomainCreate,
     DomainDeleteOut,
     DomainOut,
@@ -220,7 +221,7 @@ from app.security import (
     verify_totp_code,
     verify_two_factor_code,
 )
-from app.services.accessory_summaries import create_accessory_summary
+from app.services.accessory_summaries import AccessorySummaryProcessor, create_accessory_summary
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
     MODEL_KEYWORDS_TOPICS,
@@ -284,6 +285,7 @@ from app.services.duplicates import (
 )
 from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.haproxy_stats import haproxy_stats_status
+from app.services.gcs_lifecycle import gcs_bucket_lifecycle_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.import_sources import ImportSourceError, estimate_pdf_page_count, prepare_import_source
 from app.services.maintenance import (
@@ -2852,6 +2854,14 @@ def patch_preferences(
     return preferences
 
 
+@app.get("/api/preferences/gcs-lifecycle", response_model=GcsBucketLifecycleOut)
+def read_gcs_bucket_lifecycle(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    return gcs_bucket_lifecycle_status(db)
+
+
 @app.get("/api/document-cache/status", response_model=DocumentCacheStatusOut)
 def document_cache_status(_: Annotated[User, Depends(current_user)]) -> dict[str, int]:
     return current_document_cache_usage()
@@ -4547,6 +4557,26 @@ def queue_document_accessory_summary(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> DocumentAccessorySummary:
+    return _create_document_accessory_summary(document_id, payload, db, inline=False)
+
+
+@app.post("/api/documents/{document_id}/inquests", response_model=AccessorySummaryOut)
+def create_document_inquest(
+    document_id: str,
+    payload: AccessorySummaryCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentAccessorySummary:
+    return _create_document_accessory_summary(document_id, payload, db, inline=True)
+
+
+def _create_document_accessory_summary(
+    document_id: str,
+    payload: AccessorySummaryCreate,
+    db: Session,
+    *,
+    inline: bool,
+) -> DocumentAccessorySummary:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
@@ -4562,6 +4592,14 @@ def queue_document_accessory_summary(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(summary)
+    if inline:
+        AccessorySummaryProcessor().process_summary(
+            db,
+            summary,
+            timeout_seconds=settings.inquest_inline_timeout_seconds,
+            defer_timeouts=True,
+        )
+        db.refresh(summary)
     return summary
 
 

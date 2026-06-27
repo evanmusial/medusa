@@ -76,6 +76,7 @@ class Settings(BaseSettings):
         validation_alias="MEDUSA_OPENAI_TEXT_NORMALIZATION_PAGE_MAX_CHARS",
     )
     openai_request_timeout_seconds: float = Field(default=180.0, validation_alias="MEDUSA_OPENAI_REQUEST_TIMEOUT_SECONDS")
+    inquest_inline_timeout_seconds: float = Field(default=45.0, validation_alias="MEDUSA_INQUEST_INLINE_TIMEOUT_SECONDS")
     openai_combine_document_intelligence: bool = Field(
         default=False,
         validation_alias="MEDUSA_OPENAI_COMBINE_DOCUMENT_INTELLIGENCE",

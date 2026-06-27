@@ -72,6 +72,7 @@ import {
   List,
   ListOrdered,
   LogOut,
+  MessageSquare,
   Merge,
   Moon,
   Orbit,
@@ -138,6 +139,7 @@ import type {
   Domain,
   DomainUpdatePayload,
   DuplicateImportStrategy,
+  GcsBucketLifecycle,
   HAProxyServiceStat,
   HAProxyStatsStatus,
   Figure as FigureRecord,
@@ -349,6 +351,9 @@ const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
 const DISMISSED_AI_FAILURE_NOTICE_KEY = "medusa-dismissed-ai-failure-notices";
 const DISMISSED_AI_FAILURE_NOTICE_MAX = 240;
 const COMPLETED_INGESTION_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
+const RECENT_DOCUMENTS_KEY = "medusa-recent-documents";
+const MAX_RECENT_DOCUMENTS = 8;
+const COMMAND_PALETTE_MAX_RESULTS = 14;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -643,6 +648,13 @@ type AppRoute = { view: View; documentId?: string; documentMode?: DocumentRouteM
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
 
 type WorkspaceNavItem = { id: View; label: string; icon: typeof Library; shortcut: string };
+type RecentDocumentShortcut = {
+  authors?: string;
+  id: string;
+  title: string;
+  updatedAt: number;
+  year?: string;
+};
 
 const navItems: WorkspaceNavItem[] = [
   { id: "library", label: "Library", icon: Library, shortcut: "L" },
@@ -785,6 +797,30 @@ function writeDismissedAiFailureNoticeIds(ids: Set<string>) {
   window.localStorage.setItem(DISMISSED_AI_FAILURE_NOTICE_KEY, JSON.stringify(bounded));
 }
 
+function readRecentDocuments() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_DOCUMENTS_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is RecentDocumentShortcut => {
+        return (
+          item &&
+          typeof item === "object" &&
+          typeof item.id === "string" &&
+          typeof item.title === "string" &&
+          typeof item.updatedAt === "number"
+        );
+      })
+      .slice(0, MAX_RECENT_DOCUMENTS);
+  } catch {
+    return [];
+  }
+}
+
+function writeRecentDocuments(documents: RecentDocumentShortcut[]) {
+  window.localStorage.setItem(RECENT_DOCUMENTS_KEY, JSON.stringify(documents.slice(0, MAX_RECENT_DOCUMENTS)));
+}
+
 function ingestionHistoryCompletionTime(row: IngestionHistory) {
   const parsed = new Date(row.completed_at || row.updated_at || row.created_at).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -837,6 +873,16 @@ function authorLine(document: LibraryDocumentRow) {
     .slice(0, 3)
     .map((author) => [author.given, author.family].filter(Boolean).join(" "))
     .join(", ");
+}
+
+function recentDocumentFromDetail(document: DocumentDetail): RecentDocumentShortcut {
+  return {
+    authors: authorLine(document),
+    id: document.id,
+    title: document.title || "Untitled document",
+    updatedAt: Date.now(),
+    year: document.publication_year ? String(document.publication_year) : undefined,
+  };
 }
 
 function pageCountMarker(document: LibraryDocumentRow) {
@@ -2599,6 +2645,280 @@ function savedSearchSummary(savedSearch: SavedSearch, lookup: { domains: Map<str
     filters.duplicate_status ? `Duplicates: ${String(filters.duplicate_status).replaceAll("_", " ")}` : "",
   ].filter(Boolean);
   return pieces.length ? pieces.join(" / ") : "All library documents";
+}
+
+function nextSavedSearchCopyName(name: string, savedSearches: SavedSearch[]) {
+  const baseName = `${name} copy`;
+  const existingNames = new Set(savedSearches.map((item) => item.name.trim().toLowerCase()));
+  if (!existingNames.has(baseName.toLowerCase())) return baseName;
+  let index = 2;
+  while (existingNames.has(`${baseName} ${index}`.toLowerCase())) index += 1;
+  return `${baseName} ${index}`;
+}
+
+function commandPaletteShortcutLabel() {
+  const platform = window.navigator.platform.toLowerCase();
+  return platform.includes("mac") ? "Cmd K" : "Ctrl K";
+}
+
+type CommandPaletteItem = {
+  detail?: string;
+  disabled?: boolean;
+  icon: typeof Library;
+  id: string;
+  keywords: string[];
+  label: string;
+  run: () => boolean | void | Promise<boolean | void>;
+  section: string;
+};
+
+function commandPaletteMatches(item: CommandPaletteItem, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  const haystack = [item.label, item.detail || "", item.section, ...item.keywords].join(" ").toLowerCase();
+  return normalized.split(/\s+/).every((part) => haystack.includes(part));
+}
+
+function CommandPalette({
+  activeView,
+  cacheActionBusy,
+  domains,
+  globalQuery,
+  onApplySavedSearch,
+  onClearSearch,
+  onClose,
+  onHydrateCache,
+  onOpenDocument,
+  onOpenView,
+  onRefreshCache,
+  open,
+  recentDocuments,
+  savedSearches,
+  tags,
+}: {
+  activeView: View;
+  cacheActionBusy: boolean;
+  domains: Domain[];
+  globalQuery: string;
+  onApplySavedSearch: (savedSearch: SavedSearch) => boolean | void | Promise<boolean | void>;
+  onClearSearch: () => boolean | void | Promise<boolean | void>;
+  onClose: () => void;
+  onHydrateCache: () => void;
+  onOpenDocument: (documentId: string) => boolean | void | Promise<boolean | void>;
+  onOpenView: (view: View) => boolean | void | Promise<boolean | void>;
+  onRefreshCache: () => void;
+  open: boolean;
+  recentDocuments: RecentDocumentShortcut[];
+  savedSearches: SavedSearch[];
+  tags: Tag[];
+}) {
+  const [input, setInput] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEscapeLayer(open, onClose, ESCAPE_PRIORITY_MENU);
+
+  useEffect(() => {
+    if (!open) return;
+    setInput("");
+    setActiveIndex(0);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  const savedSearchLookup = useMemo(
+    () => ({
+      domains: new Map(domains.map((domain) => [domain.id, domain.name])),
+      tags: new Map(tags.map((tag) => [tag.id, tag.name])),
+    }),
+    [domains, tags],
+  );
+
+  const items = useMemo<CommandPaletteItem[]>(() => {
+    const workspaceItems: CommandPaletteItem[] = [
+      ...navItems.map((item) => ({
+        detail: item.id === activeView ? "Current workspace" : `Open ${item.label}`,
+        icon: item.icon,
+        id: `workspace-${item.id}`,
+        keywords: [item.id, item.label, item.shortcut, "workspace", "view"],
+        label: item.label,
+        run: () => onOpenView(item.id),
+        section: "Workspaces",
+      })),
+      {
+        detail: activeView === "status" ? "Current workspace" : "Open system status",
+        icon: Gauge,
+        id: "workspace-status",
+        keywords: ["status", "health", "runtime", "system"],
+        label: "Status",
+        run: () => onOpenView("status"),
+        section: "Workspaces",
+      },
+      {
+        detail: activeView === "settings" ? "Current workspace" : "Open preferences and operations",
+        icon: Settings,
+        id: "workspace-settings",
+        keywords: ["settings", "preferences", "configuration"],
+        label: "Settings",
+        run: () => onOpenView("settings"),
+        section: "Workspaces",
+      },
+    ];
+    const recentItems = recentDocuments.map<CommandPaletteItem>((document) => ({
+      detail: [document.authors, document.year].filter(Boolean).join(" / ") || "Recently viewed document",
+      icon: BookOpen,
+      id: `recent-${document.id}`,
+      keywords: [document.title, document.authors || "", document.year || "", "recent", "continue", "document"],
+      label: document.title,
+      run: () => onOpenDocument(document.id),
+      section: "Continue",
+    }));
+    const savedSearchItems = savedSearches.map<CommandPaletteItem>((savedSearch) => ({
+      detail: savedSearchSummary(savedSearch, savedSearchLookup),
+      icon: Bookmark,
+      id: `saved-search-${savedSearch.id}`,
+      keywords: [savedSearch.name, savedSearch.query || "", "saved", "search", "filter"],
+      label: savedSearch.name,
+      run: () => onApplySavedSearch(savedSearch),
+      section: "Saved Searches",
+    }));
+    const actionItems: CommandPaletteItem[] = [
+      ...(globalQuery.trim()
+        ? [
+            {
+              detail: `Clear "${globalQuery.trim()}" and return Library results to unsearched mode`,
+              icon: X,
+              id: "action-clear-search",
+              keywords: ["clear", "search", "query", globalQuery],
+              label: "Clear Search",
+              run: onClearSearch,
+              section: "Actions",
+            } satisfies CommandPaletteItem,
+          ]
+        : []),
+      {
+        detail: cacheActionBusy ? "Cache action already running" : "Invalidate derived response-cache payloads",
+        disabled: cacheActionBusy,
+        icon: RefreshCw,
+        id: "action-refresh-cache",
+        keywords: ["refresh", "cache", "valkey"],
+        label: "Refresh Cache",
+        run: onRefreshCache,
+        section: "Actions",
+      },
+      {
+        detail: cacheActionBusy ? "Cache action already running" : "Preload common Library and workspace cache entries",
+        disabled: cacheActionBusy,
+        icon: UploadCloud,
+        id: "action-hydrate-cache",
+        keywords: ["hydrate", "cache", "preload", "valkey"],
+        label: "Hydrate Cache",
+        run: onHydrateCache,
+        section: "Actions",
+      },
+    ];
+    return [...workspaceItems, ...recentItems, ...savedSearchItems, ...actionItems];
+  }, [
+    activeView,
+    cacheActionBusy,
+    globalQuery,
+    onApplySavedSearch,
+    onClearSearch,
+    onHydrateCache,
+    onOpenDocument,
+    onOpenView,
+    onRefreshCache,
+    recentDocuments,
+    savedSearchLookup,
+    savedSearches,
+  ]);
+
+  const filteredItems = useMemo(
+    () => items.filter((item) => commandPaletteMatches(item, input)).slice(0, COMMAND_PALETTE_MAX_RESULTS),
+    [input, items],
+  );
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [input]);
+
+  const executeItem = async (item: CommandPaletteItem) => {
+    if (item.disabled) return;
+    const result = await item.run();
+    if (result !== false) onClose();
+  };
+
+  if (!open) return null;
+
+  const activeItem = filteredItems[Math.min(activeIndex, Math.max(0, filteredItems.length - 1))];
+  const palette = (
+    <div
+      className="command-palette-backdrop"
+      data-escape-layer="menu"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="command-palette" aria-label="Command palette">
+        <div className="command-palette-search">
+          <Search size={18} />
+          <input
+            ref={inputRef}
+            aria-label="Search commands, workspaces, recent documents, and saved searches"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                if (!filteredItems.length) return;
+                setActiveIndex((current) => Math.min(filteredItems.length - 1, current + 1));
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                if (!filteredItems.length) return;
+                setActiveIndex((current) => Math.max(0, current - 1));
+              } else if (event.key === "Enter" && activeItem) {
+                event.preventDefault();
+                void executeItem(activeItem);
+              }
+            }}
+            placeholder="Jump to a workspace, document, saved search..."
+          />
+          <span>{commandPaletteShortcutLabel()}</span>
+        </div>
+        <div className="command-palette-results">
+          {filteredItems.length ? (
+            filteredItems.map((item, index) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  aria-selected={index === activeIndex}
+                  className={`command-palette-item${index === activeIndex ? " active" : ""}`}
+                  disabled={item.disabled}
+                  onClick={() => void executeItem(item)}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  role="option"
+                  type="button"
+                >
+                  <Icon size={17} />
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.detail || item.section}</small>
+                  </span>
+                  <em>{item.section}</em>
+                </button>
+              );
+            })
+          ) : (
+            <div className="command-palette-empty">
+              <Search size={18} />
+              <span>No matching command.</span>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+  return createPortal(palette, document.body);
 }
 
 function attributeDisplayValue(value: Record<string, unknown>) {
@@ -4586,13 +4906,16 @@ function Header({
   completedImport,
   dashboard,
   onDismissCompletedImport,
+  onOpenCommandPalette,
   onOpenQueue,
+  onOpenRecentDocument,
   onOpenSettings,
   onOpenStatus,
   onHydrateCache,
   onRefreshCache,
   onReleaseUpgrade,
   query,
+  recentDocuments,
   releaseStatus,
   releaseUpgradeBusy,
   setQuery,
@@ -4608,13 +4931,16 @@ function Header({
   completedImport?: IngestionHistory | null;
   dashboard?: Dashboard;
   onDismissCompletedImport?: (batchId: string) => void;
+  onOpenCommandPalette: () => void;
   onOpenQueue: () => void;
+  onOpenRecentDocument: (documentId: string) => void;
   onOpenSettings: () => void;
   onOpenStatus: () => void;
   onHydrateCache: () => void;
   onRefreshCache: () => void;
   onReleaseUpgrade: () => void;
   query: string;
+  recentDocuments: RecentDocumentShortcut[];
   releaseStatus?: ReleaseStatus;
   releaseUpgradeBusy: boolean;
   setQuery: (query: string) => void;
@@ -4645,6 +4971,16 @@ function Header({
   const openSettingsFromUserMenu = () => {
     setUserMenuOpen(false);
     onOpenSettings();
+  };
+
+  const openCommandPaletteFromUserMenu = () => {
+    setUserMenuOpen(false);
+    onOpenCommandPalette();
+  };
+
+  const openRecentDocumentFromUserMenu = (documentId: string) => {
+    setUserMenuOpen(false);
+    onOpenRecentDocument(documentId);
   };
 
   const toggleThemeFromUserMenu = () => {
@@ -4756,6 +5092,31 @@ function Header({
                 <UploadCloud className={cacheHydrating ? "spin" : ""} size={16} aria-hidden="true" />
                 <span>{cacheHydrating ? "Hydrating cache" : "Hydrate Cache"}</span>
               </button>
+              <button className="user-options-menu-item" onClick={openCommandPaletteFromUserMenu} role="menuitem" type="button">
+                <Search size={16} aria-hidden="true" />
+                <span>Quick switcher</span>
+                <small>{commandPaletteShortcutLabel()}</small>
+              </button>
+              {recentDocuments.length ? (
+                <div className="user-options-recent" aria-label="Recently viewed documents">
+                  <div className="user-options-section-label">
+                    <Timer size={14} aria-hidden="true" />
+                    <span>Continue</span>
+                  </div>
+                  {recentDocuments.slice(0, 3).map((document) => (
+                    <button
+                      key={document.id}
+                      className="user-options-recent-item"
+                      onClick={() => openRecentDocumentFromUserMenu(document.id)}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <strong>{document.title}</strong>
+                      <span>{[document.authors, document.year].filter(Boolean).join(" / ") || "Recently viewed"}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
                 {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
                 <span>{theme === "day" ? "Night mode" : "Day mode"}</span>
@@ -6269,6 +6630,8 @@ function LibraryView({
   const [rowsScrollTop, setRowsScrollTop] = useState(0);
   const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
   const [saveName, setSaveName] = useState("");
+  const [editingSavedSearchId, setEditingSavedSearchId] = useState<string | null>(null);
+  const [editingSavedSearchName, setEditingSavedSearchName] = useState("");
   const [bulkReadStatus, setBulkReadStatus] = useState("");
   const [bulkPriority, setBulkPriority] = useState("");
   const [bulkTagIds, setBulkTagIds] = useState<string[]>([]);
@@ -6319,6 +6682,23 @@ function LibraryView({
   });
   const deleteSearch = useMutation({
     mutationFn: (id: string) => api.deleteSavedSearch(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-searches"] }),
+  });
+  const updateSearch = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<SavedSearch> }) => api.updateSavedSearch(id, body),
+    onSuccess: () => {
+      setEditingSavedSearchId(null);
+      setEditingSavedSearchName("");
+      void queryClient.invalidateQueries({ queryKey: ["saved-searches"] });
+    },
+  });
+  const duplicateSearch = useMutation({
+    mutationFn: (savedSearch: SavedSearch) =>
+      api.createSavedSearch({
+        name: nextSavedSearchCopyName(savedSearch.name, savedSearches),
+        query: savedSearch.query,
+        filters: savedSearch.filters,
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-searches"] }),
   });
   const titleCleanup = useMutation({
@@ -6610,6 +6990,36 @@ function LibraryView({
     setFilters({ ...emptyFilters(), ...savedSearch.filters });
   };
 
+  const startEditingSavedSearch = (savedSearch: SavedSearch) => {
+    setEditingSavedSearchId(savedSearch.id);
+    setEditingSavedSearchName(savedSearch.name);
+  };
+
+  const saveEditedSavedSearch = (savedSearch: SavedSearch) => {
+    const name = editingSavedSearchName.trim();
+    if (!name || updateSearch.isPending) return;
+    updateSearch.mutate({ id: savedSearch.id, body: { name } });
+  };
+
+  const updateSavedSearchToCurrentScope = (savedSearch: SavedSearch) => {
+    updateSearch.mutate({
+      id: savedSearch.id,
+      body: { query, filters: cleanFilters(filters) },
+    });
+  };
+
+  const confirmDeleteSavedSearch = async (savedSearch: SavedSearch) => {
+    const ok = await dialogs.confirm({
+      cancelLabel: "Keep",
+      confirmLabel: "Delete",
+      eyebrow: "Saved Search",
+      message: `"${savedSearch.name}" will be removed from the Library saved-search list. Documents and filters are not changed.`,
+      title: "Delete saved search?",
+      tone: "danger",
+    });
+    if (ok) deleteSearch.mutate(savedSearch.id);
+  };
+
   const activateDocument = (id: string, options?: { updateUrl?: boolean }) => {
     setSelectedId(id, options);
   };
@@ -6744,25 +7154,101 @@ function LibraryView({
           </button>
         </form>
         <div className="saved-search-list">
-          {savedSearches.map((savedSearch) => (
-            <div key={savedSearch.id}>
-              <button
-                className="saved-search-apply"
-                data-tooltip={`Apply the ${savedSearch.name} saved search filters to the Library.`}
-                type="button"
-                onClick={() => applySavedSearch(savedSearch)}
-              >
-                <span>
-                  <strong>{savedSearch.name}</strong>
-                  <small>{savedSearchSummary(savedSearch, savedSearchLookup)}</small>
-                </span>
-                {savedSearch.filters.priority ? <PriorityPill value={savedSearch.filters.priority} /> : null}
-              </button>
-              <button type="button" data-tooltip={`Delete the ${savedSearch.name} saved search.`} onClick={() => deleteSearch.mutate(savedSearch.id)}>
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
+          {savedSearches.map((savedSearch) => {
+            const editing = editingSavedSearchId === savedSearch.id;
+            return (
+              <div className={`saved-search-row${editing ? " editing" : ""}`} key={savedSearch.id}>
+                {editing ? (
+                  <form
+                    className="saved-search-edit-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      saveEditedSavedSearch(savedSearch);
+                    }}
+                  >
+                    <input
+                      aria-label={`Rename ${savedSearch.name}`}
+                      autoFocus
+                      value={editingSavedSearchName}
+                      onChange={(event) => setEditingSavedSearchName(event.target.value)}
+                    />
+                    <button
+                      aria-label="Save saved-search name"
+                      data-disabled-reason={updateSearch.isPending ? "a saved-search update is already saving." : "a saved-search name is required."}
+                      data-tooltip="Save this saved-search name."
+                      disabled={!editingSavedSearchName.trim() || updateSearch.isPending}
+                      type="submit"
+                    >
+                      <CheckCircle2 size={14} />
+                    </button>
+                    <button
+                      aria-label="Cancel rename"
+                      data-tooltip="Cancel renaming this saved search."
+                      onClick={() => {
+                        setEditingSavedSearchId(null);
+                        setEditingSavedSearchName("");
+                      }}
+                      type="button"
+                    >
+                      <X size={14} />
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <button
+                      className="saved-search-apply"
+                      data-tooltip={`Apply the ${savedSearch.name} saved search filters to the Library.`}
+                      type="button"
+                      onClick={() => applySavedSearch(savedSearch)}
+                    >
+                      <span>
+                        <strong>{savedSearch.name}</strong>
+                        <small>{savedSearchSummary(savedSearch, savedSearchLookup)}</small>
+                      </span>
+                      {savedSearch.filters.priority ? <PriorityPill value={savedSearch.filters.priority} /> : null}
+                    </button>
+                    <div className="saved-search-actions">
+                      <button
+                        aria-label={`Rename ${savedSearch.name}`}
+                        data-tooltip={`Rename the ${savedSearch.name} saved search.`}
+                        onClick={() => startEditingSavedSearch(savedSearch)}
+                        type="button"
+                      >
+                        <Edit3 size={14} />
+                      </button>
+                      <button
+                        aria-label={`Update ${savedSearch.name} to current filters`}
+                        data-tooltip={`Overwrite ${savedSearch.name} with the current Library search and filters.`}
+                        disabled={updateSearch.isPending}
+                        onClick={() => updateSavedSearchToCurrentScope(savedSearch)}
+                        type="button"
+                      >
+                        <RefreshCw size={14} />
+                      </button>
+                      <button
+                        aria-label={`Duplicate ${savedSearch.name}`}
+                        data-tooltip={`Duplicate the ${savedSearch.name} saved search.`}
+                        disabled={duplicateSearch.isPending}
+                        onClick={() => duplicateSearch.mutate(savedSearch)}
+                        type="button"
+                      >
+                        <Copy size={14} />
+                      </button>
+                      <button
+                        aria-label={`Delete ${savedSearch.name}`}
+                        data-tooltip={`Delete the ${savedSearch.name} saved search.`}
+                        disabled={deleteSearch.isPending}
+                        onClick={() => void confirmDeleteSavedSearch(savedSearch)}
+                        type="button"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="pane-heading">
           <FolderTree size={17} />
@@ -6976,7 +7462,10 @@ function LibraryView({
           </div>
           {hasResultChips ? (
             <div className="active-result-bar" aria-label="Active Library result filters">
-              <span>Results scoped by</span>
+              <span className="active-result-bar-label">
+                <Info size={14} />
+                Showing only matches for
+              </span>
               {activeResultChips.map((chip) => (
                 <button
                   key={chip.key}
@@ -8076,6 +8565,7 @@ function DocumentPanelContent({
   const compareTextRef = useRef<HTMLElement | null>(null);
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
   const domainAssignRef = useRef<HTMLDivElement | null>(null);
+  const accessoryPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
   const pdfDrivenReaderPageRef = useRef(false);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
@@ -8093,6 +8583,7 @@ function DocumentPanelContent({
   const stickyFields = normalizeDetailStickyFields(preferences?.detail_sticky_fields);
   const stickyFieldSet = new Set(stickyFields);
   const [accessoryComposerOpen, setAccessoryComposerOpen] = useState(false);
+  const [accessoryTitle, setAccessoryTitle] = useState("");
   const [accessoryPrompt, setAccessoryPrompt] = useState("");
   const [accessoryModel, setAccessoryModel] = useState(accessorySummaryDefaultModel);
   const [trackedAccessorySummaryId, setTrackedAccessorySummaryId] = useState<string | null>(null);
@@ -8570,6 +9061,7 @@ function DocumentPanelContent({
       api.createAccessorySummary(document.id, {
         prompt: accessoryPrompt.trim(),
         model: accessoryModel || accessorySummaryDefaultModel,
+        title: accessoryTitle.trim() || undefined,
       }),
     onSuccess: (summary) => {
       setTrackedAccessorySummaryId(summary.id);
@@ -8579,7 +9071,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
     },
     onError: (error) => {
-      accessorySummaryFeedback.showError(actionFailureMessage("Could not queue accessory summary", error));
+      accessorySummaryFeedback.showError(actionFailureMessage("Could not ask Inquest", error));
     },
   });
   const updateAccessorySummary = useMutation({
@@ -8597,6 +9089,7 @@ function DocumentPanelContent({
     setRecommendationsOpen(false);
     setCompositionOpen(false);
     setAccessoryComposerOpen(false);
+    setAccessoryTitle("");
     setAccessoryPrompt("");
     setAccessoryTitleDrafts({});
     setTrackedAccessorySummaryId(null);
@@ -8902,9 +9395,9 @@ function DocumentPanelContent({
     );
   const accessorySummaryProgress = accessorySummaryButtonProgress(trackedAccessorySummary, accessorySummaryBusy);
   const accessorySummaryBusyReason = createAccessorySummary.isPending
-    ? "an Accessory Summary request is already starting."
+    ? "an Inquest request is already starting."
     : accessorySummaryBusy
-      ? "an Accessory Summary is already queued or running for this document."
+      ? "an Inquest is already queued or running for this document."
       : "";
   const sortedDocumentTags = useMemo(() => sortByName(document.tags), [document.tags]);
   const sortedDocumentDomains = useMemo(
@@ -9098,13 +9591,14 @@ function DocumentPanelContent({
     if (isActiveAccessorySummaryStatus(trackedAccessorySummary.status)) return;
     if (trackedAccessorySummary.status === "failed") {
       accessorySummaryFeedback.showError(
-        actionFailureMessage("Accessory summary failed", trackedAccessorySummary.last_error || "The accessory summary failed without a detailed error"),
+        actionFailureMessage("Inquest failed", trackedAccessorySummary.last_error || "The Inquest failed without a detailed error"),
       );
       setTrackedAccessorySummaryId(null);
       return;
     }
     accessorySummaryFeedback.showSuccess();
     setAccessoryComposerOpen(false);
+    setAccessoryTitle("");
     setAccessoryPrompt("");
     setTrackedAccessorySummaryId(null);
     void queryClient.invalidateQueries({ queryKey: ["documents"] });
@@ -9542,6 +10036,11 @@ function DocumentPanelContent({
   const submitAccessorySummary = () => {
     if (!accessoryPrompt.trim() || accessorySummaryBusy) return;
     createAccessorySummary.mutate();
+  };
+
+  const openInquestComposer = () => {
+    setAccessoryComposerOpen(true);
+    window.requestAnimationFrame(() => accessoryPromptRef.current?.focus());
   };
 
   useEscapeLayer(domainAssignOpen, () => setDomainAssignOpen(false), ESCAPE_PRIORITY_MENU);
@@ -10667,6 +11166,17 @@ function DocumentPanelContent({
       Related
     </button>
   );
+  const askButton = (
+    <button
+      className="secondary-button"
+      data-tooltip="Ask a focused question about this document and save the answer as an Inquest."
+      onClick={openInquestComposer}
+      type="button"
+    >
+      <MessageSquare size={15} />
+      Ask
+    </button>
+  );
   const compositionButton = (
     <button
       className="secondary-button"
@@ -10742,6 +11252,7 @@ function DocumentPanelContent({
   ) : null;
   const workflowActions = (
     <div className="detail-actions-row detail-workflow-actions">
+      {askButton}
       {relatedButton}
       {compositionButton}
       {concordButton}
@@ -10796,6 +11307,7 @@ function DocumentPanelContent({
                 {editButton}
                 {linkButton}
                 {downloadOriginalLink}
+                {askButton}
                 {relatedButton}
                 {compositionButton}
                 {concordButton}
@@ -11027,13 +11539,16 @@ function DocumentPanelContent({
       {renderBibliographySection()}
       <section className="detail-section accessory-summary-section">
         <div className="detail-section-title-row">
-          <h3>Accessory Summaries</h3>
+          <h3>Inquests</h3>
           <button
             className="secondary-button compact"
             data-disabled-reason={accessorySummaryBusyReason}
-            data-tooltip={accessoryComposerOpen ? "Close the Accessory Summary prompt composer." : "Open the Accessory Summary prompt composer for this document."}
+            data-tooltip={accessoryComposerOpen ? "Close the Inquest question composer." : "Open the Inquest question composer for this document."}
             disabled={accessorySummaryBusy}
-            onClick={() => setAccessoryComposerOpen((value) => !value)}
+            onClick={() => {
+              if (accessoryComposerOpen) setAccessoryComposerOpen(false);
+              else openInquestComposer();
+            }}
             type="button"
           >
             {accessoryComposerOpen ? <X size={14} /> : <Plus size={14} />}
@@ -11049,12 +11564,21 @@ function DocumentPanelContent({
               submitAccessorySummary();
             }}
           >
-            <textarea
+            <input
               data-disabled-reason={accessorySummaryBusyReason}
-              data-tooltip="Type the question or focused topic for a new Accessory Summary on this document."
+              data-tooltip="Optionally name this Inquest before asking."
+              disabled={accessorySummaryBusy}
+              onChange={(event) => setAccessoryTitle(event.target.value)}
+              placeholder="Optional title"
+              value={accessoryTitle}
+            />
+            <textarea
+              ref={accessoryPromptRef}
+              data-disabled-reason={accessorySummaryBusyReason}
+              data-tooltip="Type the question for a new Inquest on this document."
               disabled={accessorySummaryBusy}
               onChange={(event) => setAccessoryPrompt(event.target.value)}
-              placeholder="Ask a question or specify a focused topic"
+              placeholder="Ask a question about this document"
               rows={6}
               value={accessoryPrompt}
             />
@@ -11069,18 +11593,18 @@ function DocumentPanelContent({
               <AsyncActionSlot
                 busy={accessorySummaryBusy}
                 feedback={accessorySummaryFeedback.feedback}
-                label="Accessory summary in progress"
+                label="Inquest in progress"
                 progress={accessorySummaryProgress}
               >
                 <button
                   className={asyncFeedbackClass("primary-button", accessorySummaryFeedback.feedback, accessorySummaryBusy)}
-                  data-disabled-reason={accessorySummaryBusy ? accessorySummaryBusyReason : "an Accessory Summary prompt is required."}
-                  data-tooltip="Queue a durable Accessory Summary job for this document using the selected model."
+                  data-disabled-reason={accessorySummaryBusy ? accessorySummaryBusyReason : "an Inquest question is required."}
+                  data-tooltip="Ask the selected model now and save the durable Inquest with this document."
                   disabled={accessorySummaryBusy || !accessoryPrompt.trim()}
                   type="submit"
                 >
-                  <Sparkles className={accessorySummaryBusy ? "spin" : ""} size={15} />
-                  {accessorySummaryBusy ? "Summarizing" : "Summarize"}
+                  <MessageSquare className={accessorySummaryBusy ? "spin" : ""} size={15} />
+                  {accessorySummaryBusy ? "Asking" : "Ask"}
                 </button>
               </AsyncActionSlot>
             </div>
@@ -11094,9 +11618,9 @@ function DocumentPanelContent({
                 <article key={summary.id} className={`accessory-summary-card ${summary.status}`}>
                   <div className="accessory-summary-head">
                     <input
-                      aria-label="Accessory summary title"
-                      data-disabled-reason="an Accessory Summary title update is already saving."
-                      data-tooltip="Edit the optional display title for this Accessory Summary; it saves when the field loses focus."
+                      aria-label="Inquest title"
+                      data-disabled-reason="an Inquest title update is already saving."
+                      data-tooltip="Edit the optional display title for this Inquest; it saves when the field loses focus."
                       disabled={updateAccessorySummary.isPending}
                       onBlur={() => {
                         if (titleValue !== (summary.title ?? "")) saveAccessorySummaryTitle(summary);
@@ -11109,15 +11633,18 @@ function DocumentPanelContent({
                     />
                     <StatusPill value={summary.status} tone={accessorySummaryTone(summary)} />
                   </div>
-                  <p className="accessory-summary-prompt">{summary.prompt}</p>
+                  <p className="accessory-summary-prompt">
+                    <strong>Question</strong>
+                    {summary.prompt}
+                  </p>
                   {summary.status === "complete" ? (
-                    <MarkdownBlock content={summary.summary} empty="Summary pending." />
+                    <MarkdownBlock content={summary.summary} empty="Answer pending." />
                   ) : summary.status === "failed" ? (
-                    <p className="form-error">{summary.last_error || "Accessory summary failed."}</p>
+                    <p className="form-error">{summary.last_error || "Inquest failed."}</p>
                   ) : (
                     <div className="empty-inline">
                       <RefreshCw className="spin" size={17} />
-                      <span>{summary.status === "running" ? "Summarizing" : "Queued"}</span>
+                      <span>{summary.status === "running" ? "Asking" : "Queued"}</span>
                     </div>
                   )}
                 </article>
@@ -11126,7 +11653,7 @@ function DocumentPanelContent({
           </div>
         ) : !accessoryComposerOpen ? (
           <div className="empty-inline">
-            <Sparkles size={17} />
+            <MessageSquare size={17} />
             <span>None yet.</span>
           </div>
         ) : null}
@@ -12786,15 +13313,81 @@ function PortfolioAssessmentList({ runs, compact = false }: { runs: PortfolioAss
   );
 }
 
+function latestImportReceipt(rows: IngestionHistory[]) {
+  const ordered = [...rows]
+    .filter((row) => row.total_files > 0)
+    .sort((left, right) => ingestionHistoryCompletionTime(right) - ingestionHistoryCompletionTime(left));
+  return ordered.find((row) => !row.active) || ordered[0] || null;
+}
+
+function ingestionStatusLabel(row: IngestionHistory) {
+  if (row.active) return row.latest_stage?.replaceAll("_", " ") || "running";
+  return row.status.replaceAll("_", " ");
+}
+
+function ImportReceiptCard({ rows }: { rows: IngestionHistory[] }) {
+  const receipt = latestImportReceipt(rows);
+  if (!receipt) return null;
+  const processedFiles = receipt.completed_files + receipt.failed_files;
+  const failedLabel = receipt.failed_files ? ` / ${formatMetric(receipt.failed_files)} failed` : "";
+  const completedTime = backupDateLabel(receipt.completed_at || receipt.updated_at || receipt.created_at) || "No timestamp";
+  const duration = receipt.duration_seconds ? formatDuration(receipt.duration_seconds) : receipt.active ? "Running" : "Pending";
+  const variance =
+    receipt.cost_variance_usd !== undefined && receipt.cost_variance_usd !== null
+      ? `${formatUsd(Math.abs(receipt.cost_variance_usd))} ${receipt.cost_variance_usd >= 0 ? "over" : "under"} estimate`
+      : receipt.estimated_cost_usd > 0
+        ? "Actual pending"
+        : "No estimate comparison";
+  const preset = receipt.processing_preset_name || receipt.processing_preset_id || "Preset unknown";
+  const costPerDocument =
+    receipt.cost_per_document_usd !== undefined && receipt.cost_per_document_usd !== null
+      ? `${formatUsd(receipt.cost_per_document_usd)} / doc`
+      : "Cost per document pending";
+  return (
+    <section className={`import-receipt-card${receipt.active ? " active" : ""}`}>
+      <div className="import-receipt-head">
+        <div>
+          <h2>Latest import receipt</h2>
+          <span>{receipt.label || "Unlabeled batch"} / {completedTime}</span>
+        </div>
+        <StatusPill value={ingestionStatusLabel(receipt)} tone={receipt.active ? "blue" : receipt.failed_files ? "warn" : "good"} />
+      </div>
+      <div className="import-receipt-grid">
+        <div>
+          <span>Files</span>
+          <strong>{`${formatMetric(processedFiles)} of ${formatMetric(receipt.total_files)}${failedLabel}`}</strong>
+        </div>
+        <div>
+          <span>Actual spend</span>
+          <strong>{formatUsd(receipt.actual_cost_usd)}</strong>
+          <em>{costPerDocument}</em>
+        </div>
+        <div>
+          <span>Estimate</span>
+          <strong>{receipt.estimated_cost_usd > 0 ? formatUsd(receipt.estimated_cost_usd) : "$0.00"}</strong>
+          <em>{variance}</em>
+        </div>
+        <div>
+          <span>Preset</span>
+          <strong>{preset}</strong>
+          <em>{[duration, formatDatabaseSize(receipt.total_size_bytes)].filter(Boolean).join(" / ") || "Pending"}</em>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ImportView({
   jobs,
   domains,
+  ingestionHistory,
   tags,
   projects,
   preferences,
 }: {
   jobs: ImportJob[];
   domains: Domain[];
+  ingestionHistory: IngestionHistory[];
   tags: Tag[];
   projects: Project[];
   preferences?: AppPreferences;
@@ -13204,6 +13797,7 @@ function ImportView({
           />
         </div>
       </section>
+      <ImportReceiptCard rows={ingestionHistory} />
       <section className="job-list">
         <div className="job-list-head">
           <h2>Processing</h2>
@@ -14896,7 +15490,7 @@ function ProjectsView({
   );
 }
 
-function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJob[] }) {
+function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: IngestionHistory[]; items: CitationCandidate[]; jobs: ImportJob[] }) {
   const queryClient = useQueryClient();
   const [queueActionMessage, setQueueActionMessage] = useState("");
   const cancelFeedback = useAsyncActionFeedbackMap();
@@ -15011,6 +15605,7 @@ function QueueView({ items, jobs }: { items: CitationCandidate[]; jobs: ImportJo
 
   return (
     <section className="workbench queue-workbench">
+      <ImportReceiptCard rows={ingestionHistory} />
       <section className="queue-panel">
         <div className="panel-title-row">
           <div>
@@ -18841,6 +19436,66 @@ function SlipstreamSettingsPanel() {
   );
 }
 
+function GcsLifecyclePolicy({
+  bucketDirty,
+  error,
+  lifecycle,
+  loading,
+  savedBucket,
+}: {
+  bucketDirty: boolean;
+  error?: unknown;
+  lifecycle?: GcsBucketLifecycle;
+  loading: boolean;
+  savedBucket: string;
+}) {
+  const checkedLabel = lifecycle?.checked_at ? backupDateLabel(lifecycle.checked_at) : "";
+  const bucketMeta = [
+    lifecycle?.storage_class ? `Default: ${lifecycle.storage_class}` : "",
+    lifecycle?.location ? `Location: ${lifecycle.location}` : "",
+    checkedLabel ? `Checked: ${checkedLabel}` : "",
+  ].filter(Boolean);
+  return (
+    <div className="gcs-lifecycle-panel">
+      <div className="gcs-lifecycle-heading">
+        <div>
+          <h3>Lifecycle policy</h3>
+          <span>{savedBucket ? `gs://${savedBucket}` : "Local fallback"}</span>
+        </div>
+        {bucketMeta.length ? <small>{bucketMeta.join(" / ")}</small> : null}
+      </div>
+      {!savedBucket ? (
+        <p>No GCS bucket is configured.</p>
+      ) : bucketDirty ? (
+        <p className="preference-warning">Save All to refresh lifecycle policy for the edited bucket.</p>
+      ) : loading ? (
+        <p>Reading bucket lifecycle policy.</p>
+      ) : error ? (
+        <p className="preference-warning">{actionFailureMessage("Could not read lifecycle policy", error)}</p>
+      ) : lifecycle ? (
+        <>
+          <p className={lifecycle.available ? "" : "preference-warning"}>{lifecycle.error || lifecycle.summary}</p>
+          {lifecycle.rules.length ? (
+            <div className="gcs-lifecycle-rules">
+              {lifecycle.rules.map((rule) => (
+                <div className="gcs-lifecycle-rule" key={`${rule.index}-${rule.summary}`}>
+                  <span>{rule.index}</span>
+                  <div>
+                    <strong>{rule.action_label}</strong>
+                    <small>{rule.condition_labels.join(" / ")}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <p>No lifecycle policy status is available.</p>
+      )}
+    </div>
+  );
+}
+
 function SettingsView({
   capabilities,
   currentUser,
@@ -18923,6 +19578,14 @@ function SettingsView({
     queryFn: api.documentCacheStatus,
     enabled: Boolean(preferences),
     refetchInterval: 10000,
+  });
+  const savedGcsBucket = preferences?.gcs_bucket || "";
+  const gcsLifecycle = useQuery({
+    queryKey: ["gcs-bucket-lifecycle", savedGcsBucket],
+    queryFn: api.gcsBucketLifecycle,
+    enabled: Boolean(savedGcsBucket),
+    staleTime: 60_000,
+    retry: false,
   });
 
   useEffect(() => {
@@ -19113,6 +19776,7 @@ function SettingsView({
       savePreferencesFeedback.showSuccess();
       queryClient.setQueryData(["preferences"], updatedPreferences);
       void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["gcs-bucket-lifecycle"] });
       void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
     },
     onError: (error) => {
@@ -19133,6 +19797,7 @@ function SettingsView({
       serviceAccountUploadFeedback.showSuccess();
       queryClient.setQueryData(["preferences"], updatedPreferences);
       void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["gcs-bucket-lifecycle"] });
       if (serviceAccountInputRef.current) serviceAccountInputRef.current.value = "";
     },
     onError: (error) => {
@@ -19633,6 +20298,13 @@ function SettingsView({
             />
           </div>
         </div>
+        <GcsLifecyclePolicy
+          bucketDirty={Boolean(preferences && gcsBucket.trim() !== preferences.gcs_bucket)}
+          error={gcsLifecycle.error}
+          lifecycle={gcsLifecycle.data}
+          loading={gcsLifecycle.isLoading}
+          savedBucket={preferences?.gcs_bucket || ""}
+        />
       </div>
       <SlipstreamSettingsPanel />
       <div className="preferences-panel">
@@ -20585,6 +21257,7 @@ export default function App() {
   const initialRoute = routeFromCurrentLocation();
   const [activeView, setActiveView] = useState<View>(() => initialRoute.view);
   const [settingsDirty, setSettingsDirty] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [libraryOffset, setLibraryOffset] = useState(0);
@@ -20592,6 +21265,7 @@ export default function App() {
   const [libraryDocumentMode, setLibraryDocumentMode] = useState<DocumentRouteMode>(() => initialRoute.documentMode || "detail");
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
+  const [recentDocuments, setRecentDocuments] = useState<RecentDocumentShortcut[]>(() => readRecentDocuments());
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
   const [dismissedIngestionHistoryIds, setDismissedIngestionHistoryIds] = useState<Set<string>>(() => readDismissedIngestionHistoryIds());
@@ -20616,7 +21290,7 @@ export default function App() {
   const needsDomains = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "notes" || activeView === "settings";
   const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
   const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
-  const needsSavedSearches = activeView === "library" || activeView === "settings";
+  const needsSavedSearches = activeView === "library" || activeView === "settings" || commandPaletteOpen;
   const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "portfolio";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
@@ -20733,6 +21407,15 @@ export default function App() {
       doi: selectedDocument.data.doi,
     });
   }, [queryClient, selectedDocument.data?.doi, selectedDocument.data?.id]);
+  useEffect(() => {
+    if (!selectedDocument.data) return;
+    const nextEntry = recentDocumentFromDetail(selectedDocument.data);
+    setRecentDocuments((current) => {
+      const next = [nextEntry, ...current.filter((item) => item.id !== nextEntry.id)].slice(0, MAX_RECENT_DOCUMENTS);
+      writeRecentDocuments(next);
+      return next;
+    });
+  }, [selectedDocument.data]);
   const jobs = useQuery({
     queryKey: ["jobs"],
     queryFn: api.jobs,
@@ -21239,6 +21922,32 @@ export default function App() {
     },
     [activeView, requestActiveViewChange],
   );
+  const openViewFromCommandPalette = useCallback(
+    async (view: View) => requestActiveViewChange(view),
+    [requestActiveViewChange],
+  );
+  const openDocumentFromCommandPalette = useCallback(
+    async (documentId: string) => requestDocumentFocus(documentId, "push", "detail"),
+    [requestDocumentFocus],
+  );
+  const applySavedSearchFromCommandPalette = useCallback(
+    async (savedSearch: SavedSearch) => {
+      const changed = await requestActiveViewChange("library");
+      if (!changed) return false;
+      setQuery(savedSearch.query || "");
+      setFilters({ ...emptyFilters(), ...savedSearch.filters });
+      setLibraryOffset(0);
+      return true;
+    },
+    [requestActiveViewChange],
+  );
+  const clearSearchFromCommandPalette = useCallback(async () => {
+    const changed = await requestActiveViewChange("library");
+    if (!changed) return false;
+    setQuery("");
+    setLibraryOffset(0);
+    return true;
+  }, [requestActiveViewChange]);
   const registerSettingsSave = useCallback((handler: SettingsSaveHandler | null) => {
     settingsSaveHandlerRef.current = handler;
   }, []);
@@ -21295,6 +22004,16 @@ export default function App() {
       );
     }, 2000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleCommandPaletteShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setCommandPaletteOpen(true);
+    };
+    window.addEventListener("keydown", handleCommandPaletteShortcut);
+    return () => window.removeEventListener("keydown", handleCommandPaletteShortcut);
   }, []);
 
   useEffect(() => {
@@ -21409,13 +22128,16 @@ export default function App() {
         completedImport={completedIngestionNotice}
         dashboard={dashboard.data}
         onDismissCompletedImport={dismissCompletedIngestion}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenQueue={() => void requestActiveViewChange("queue")}
+        onOpenRecentDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
         onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
         onHydrateCache={() => hydrateCache.mutate()}
         onRefreshCache={() => refreshCache.mutate()}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
+        recentDocuments={recentDocuments}
         releaseStatus={releaseStatus.data}
         releaseUpgradeBusy={releaseUpgrade.isPending}
         setQuery={setQuery}
@@ -21499,6 +22221,7 @@ export default function App() {
         {activeView === "import" ? (
           <ImportView
             domains={domains.data || []}
+            ingestionHistory={ingestionHistory.data || []}
             jobs={jobs.data || []}
             preferences={preferences.data}
             projects={projects.data || []}
@@ -21519,7 +22242,7 @@ export default function App() {
             onTitleSubjectChange={(subject) => updateViewTitleSubject("tags", subject)}
           />
         ) : null}
-        {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
+        {activeView === "queue" ? <QueueView ingestionHistory={ingestionHistory.data || []} items={review.data || []} jobs={jobs.data || []} /> : null}
         {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
         {activeView === "portfolio" ? (
           <PortfolioView
@@ -21564,6 +22287,23 @@ export default function App() {
           />
         ) : null}
       </main>
+      <CommandPalette
+        activeView={activeView}
+        cacheActionBusy={refreshCache.isPending || hydrateCache.isPending}
+        domains={domains.data || []}
+        globalQuery={query}
+        onApplySavedSearch={applySavedSearchFromCommandPalette}
+        onClearSearch={clearSearchFromCommandPalette}
+        onClose={() => setCommandPaletteOpen(false)}
+        onHydrateCache={() => hydrateCache.mutate()}
+        onOpenDocument={openDocumentFromCommandPalette}
+        onOpenView={openViewFromCommandPalette}
+        onRefreshCache={() => refreshCache.mutate()}
+        open={commandPaletteOpen}
+        recentDocuments={recentDocuments}
+        savedSearches={savedSearches.data || []}
+        tags={tags.data || []}
+      />
       {appDialogController.node}
       {releaseUpgradeLock ? (
         <ReleaseUpgradeOverlay

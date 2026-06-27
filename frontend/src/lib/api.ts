@@ -47,6 +47,7 @@ import type {
   DomainUpdatePayload,
   DuplicateImportStrategy,
   FigurePatchPayload,
+  GcsBucketLifecycle,
   HAProxyStatsStatus,
   IngestionHistory,
   ImportDuplicateCheck,
@@ -160,6 +161,7 @@ export const api = {
   refreshCache: () => request<CacheRefreshResult>("/api/cache/refresh", { method: "POST" }),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
+  gcsBucketLifecycle: () => request<GcsBucketLifecycle>("/api/preferences/gcs-lifecycle"),
   documentCacheStatus: () => request<DocumentCacheStatus>("/api/document-cache/status"),
   backupRuns: () => request<BackupRun[]>("/api/backups/runs"),
   backupEstimate: () => request<BackupEstimate>("/api/backups/estimate"),
@@ -341,7 +343,7 @@ export const api = {
   refreshDocumentCitation: (id: string) =>
     request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
   createAccessorySummary: (documentId: string, body: AccessorySummaryPayload) =>
-    request<AccessorySummary>(`/api/documents/${documentId}/accessory-summaries`, { method: "POST", body: JSON.stringify(body) }),
+    request<AccessorySummary>(`/api/documents/${documentId}/inquests`, { method: "POST", body: JSON.stringify(body) }),
   updateAccessorySummary: (id: string, body: Partial<AccessorySummaryPayload>) =>
     request<AccessorySummary>(`/api/accessory-summaries/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   documentRecommendations: (

@@ -67,3 +67,180 @@ def test_accessory_summary_uses_preference_model_and_updates_search(monkeypatch,
         assert summary.evidence["model"] == "gpt-5.4-mini"
         assert "role-based baselines" in (document.search_text or "")
         assert "How does this paper handle" in (document.search_text or "")
+
+
+def test_inquest_inline_route_completes_and_updates_search(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.models import Document, DocumentPage, User
+    from app.schemas import AccessorySummaryCreate
+    from app.services import accessory_summaries as service
+
+    class FakeAi:
+        def generate_accessory_summary(self, filename, text, prompt, *, model=None, timeout_seconds=None, **kwargs):
+            assert filename == "reader-inquest.pdf"
+            assert "participant interviews" in text
+            assert prompt == "What methods does the paper use?"
+            assert model == "gpt-5.4"
+            assert timeout_seconds == main.settings.inquest_inline_timeout_seconds
+            return {
+                "title": "Methods",
+                "summary": "The paper uses participant interviews and qualitative coding.",
+                "confidence": 0.9,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "used_pdf_file": False},
+            }
+
+    monkeypatch.setattr(service, "get_ai_service", lambda: FakeAi())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Reader Inquest",
+            original_filename="reader-inquest.pdf",
+            checksum_sha256="e" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.flush()
+        db.add(DocumentPage(document_id=document.id, page_number=1, normalized_text="The paper reports participant interviews."))
+        db.commit()
+
+        summary = main.create_document_inquest(
+            document.id,
+            AccessorySummaryCreate(prompt="What methods does the paper use?", model="gpt-5.4"),
+            User(email="tester@example.com", password_hash="hash"),
+            db,
+        )
+        db.refresh(document)
+
+        assert summary.status == "complete"
+        assert summary.summary == "The paper uses participant interviews and qualitative coding."
+        assert summary.title == "Methods"
+        assert "What methods does the paper use?" in (document.search_text or "")
+        assert "qualitative coding" in (document.search_text or "")
+
+
+def test_inquest_inline_timeout_requeues_for_worker(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentPage
+    from app.services import accessory_summaries as service
+
+    calls = {"count": 0}
+
+    class FakeAi:
+        def generate_accessory_summary(self, filename, text, prompt, *, model=None, timeout_seconds=None, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise TimeoutError("inline Inquest timed out")
+            return {
+                "title": "Recovered answer",
+                "summary": "The worker later answers the saved Inquest.",
+                "confidence": 0.75,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "used_pdf_file": False},
+            }
+
+    monkeypatch.setattr(service, "get_ai_service", lambda: FakeAi())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Timeout Inquest",
+            original_filename="timeout.pdf",
+            checksum_sha256="f" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.flush()
+        db.add(DocumentPage(document_id=document.id, page_number=1, normalized_text="The text can answer later."))
+        summary = service.create_accessory_summary(db, document, prompt="What is deferred?")
+        db.commit()
+
+        service.AccessorySummaryProcessor().process_summary(db, summary, timeout_seconds=0.01, defer_timeouts=True)
+        db.refresh(summary)
+
+        assert summary.status == "queued"
+        assert summary.locked_at is None
+        assert summary.last_error is None
+        assert summary.evidence["inline_deferred"] is True
+
+        service.AccessorySummaryProcessor().process_summary(db, summary)
+        db.refresh(summary)
+
+        assert summary.status == "complete"
+        assert summary.summary == "The worker later answers the saved Inquest."
+        assert summary.evidence["inline_deferred"] is True
+        assert calls["count"] == 2
+
+
+def test_legacy_accessory_summary_route_still_queues(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.models import Document, User
+    from app.schemas import AccessorySummaryCreate
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Legacy",
+            original_filename="legacy.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.commit()
+
+        summary = main.queue_document_accessory_summary(
+            document.id,
+            AccessorySummaryCreate(prompt="Keep compatibility.", model="gpt-5.4-mini"),
+            User(email="tester@example.com", password_hash="hash"),
+            db,
+        )
+
+        assert summary.status == "queued"
+        assert summary.model == "gpt-5.4-mini"
+
+
+def test_inquest_route_rejects_hidden_document_and_empty_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    import pytest
+    from fastapi import HTTPException
+
+    from app import main
+    from app.models import Document, User
+    from app.schemas import AccessorySummaryCreate
+
+    Session = make_session()
+    with Session() as db:
+        hidden = Document(
+            title="Hidden",
+            original_filename="hidden.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="staged",
+        )
+        ready = Document(
+            title="Ready",
+            original_filename="ready.pdf",
+            checksum_sha256="c" * 64,
+            processing_status="ready",
+        )
+        db.add_all([hidden, ready])
+        db.commit()
+        user = User(email="tester@example.com", password_hash="hash")
+
+        with pytest.raises(HTTPException) as hidden_error:
+            main.create_document_inquest(hidden.id, AccessorySummaryCreate(prompt="Question?"), user, db)
+        assert hidden_error.value.status_code == 404
+
+        with pytest.raises(HTTPException) as prompt_error:
+            main.create_document_inquest(ready.id, AccessorySummaryCreate(prompt="   "), user, db)
+        assert prompt_error.value.status_code == 400

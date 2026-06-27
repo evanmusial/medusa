@@ -180,6 +180,11 @@ def release_status(client_version: str | None = None, db: Session | None = None)
         message = "A newer Medusa build is already running. Reload the browser to use it."
         phase = "reload_ready"
 
+    maintenance_backup_required = bool(maintenance.get("backup_required", False))
+    maintenance_backup_status = str(
+        maintenance.get("backup_status") or ("not_started" if maintenance_backup_required else "not_required")
+    )
+
     return ReleaseStatusOut(
         checked_at=checked_at,
         running=running,
@@ -199,8 +204,8 @@ def release_status(client_version: str | None = None, db: Session | None = None)
         maintenance_auto_apply_eligible=bool(maintenance.get("auto_apply_eligible")),
         maintenance_requires_approval=bool(maintenance.get("requires_approval")),
         maintenance_update_classification=str(maintenance.get("update_classification") or "unknown"),
-        maintenance_backup_required=bool(maintenance.get("backup_required", True)),
-        maintenance_backup_status=str(maintenance.get("backup_status") or "not_started"),
+        maintenance_backup_required=maintenance_backup_required,
+        maintenance_backup_status=maintenance_backup_status,
         maintenance_backup_run_id=maintenance.get("backup_run_id") if isinstance(maintenance.get("backup_run_id"), str) else None,
         maintenance_idle=bool(readiness.get("idle", True)),
         maintenance_active_session_count=int(readiness.get("active_session_count") or 0),

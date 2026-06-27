@@ -50,6 +50,8 @@ def test_release_status_detects_upgrade_and_writes_request(monkeypatch, tmp_path
     assert status.update_available is True
     assert status.apply_available is True
     assert status.browser_reload_recommended is False
+    assert status.maintenance_backup_required is False
+    assert status.maintenance_backup_status == "not_required"
 
     requested = request_release_upgrade(client_version="20260624 (aaaaaaaaaaaa)", requested_by="admin@medusa.local")
     assert requested.phase == "requested"

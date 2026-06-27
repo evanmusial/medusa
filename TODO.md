@@ -87,8 +87,8 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add AI figure caption and gist enrichment.
   - Acceptance: extracted figure assets get AI-enriched captions/gists, confidence/evidence, and searchable text without overwriting imported labels/captions or user edits.
 
-- [ ] Extend Accessory Summaries beyond current-document runs.
-  - Acceptance: the current Library detail Accessory Summary flow can also run one prompt against selected documents, saved searches, or Concordance scopes, with durable per-document summary rows and the same Settings-selected default model behavior.
+- [ ] Extend Inquests beyond current-document runs.
+  - Acceptance: the current Library detail Inquest flow can also run one prompt against selected documents, saved searches, or Concordance scopes, with durable per-document answer rows and the same Settings-selected default model behavior.
 
 - [ ] Add richer table geometry and layout rendering.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data, figure geometry can be rendered inline with parsed pages, and source regions can support future overlays/evidence views.
@@ -136,7 +136,7 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 ## Activity, Notes, And Research Workflows
 
 - [ ] Add a unified Activity and Work Ledger.
-  - Acceptance: Activity gives one durable, searchable place to inspect imports, Concordance Runs, citation refreshes, Accessory Summaries, recommendation fetches/downloads, backups/restores, OCR, embeddings, future Recon runs, and maintenance jobs; rows use common status language for staged, queued, running, paused, blocked, failed, retryable, complete, and cleared work; lanes or filters distinguish interactive work, imports, maintenance, cloud/model work, backups, and research runs; row actions support retry, pause/resume where safe, cancel, open result/source, and inspect details; each detail view shows processing events, model/provider calls, warnings, errors, retries, duration, rough/known cost, and next available action without weakening Queue's import/review workflows.
+  - Acceptance: Activity gives one durable, searchable place to inspect imports, Concordance Runs, citation refreshes, Inquests, recommendation fetches/downloads, backups/restores, OCR, embeddings, future Recon runs, and maintenance jobs; rows use common status language for staged, queued, running, paused, blocked, failed, retryable, complete, and cleared work; lanes or filters distinguish interactive work, imports, maintenance, cloud/model work, backups, and research runs; row actions support retry, pause/resume where safe, cancel, open result/source, and inspect details; each detail view shows processing events, model/provider calls, warnings, errors, retries, duration, rough/known cost, and next available action without weakening Queue's import/review workflows.
 
 - [ ] Fully build out Notes for documents, topics, and ideas.
   - Acceptance: Notes supports standalone notes for topics, concepts, questions, ideas, and thesis/research thinking as well as notes attached to one or more documents; a note can link to documents, pages, annotations, figures, tables, projects, domains, tags, citations, or saved searches without requiring a document link; notes have title, body, type, status, optional due/reminder fields, and project/domain/tag organization; document detail shows linked notes and can create/link notes in context; the Notes workspace supports search, filters, backlinks, link management, soft delete/restore, and export/restore coverage; document-linked notes continue to contribute to document search while standalone topic/idea notes are searchable from Notes and global search; when this is ready for the main cockpit again, restore the horizontal Notes button with the BookOpen icon and `N` shortcut.
@@ -207,6 +207,7 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Add saved-search management improvements.
   - Acceptance: saved searches can be renamed, reordered, edited, duplicated, and used as durable library views.
+  - Partial: Library saved searches can now be renamed inline, duplicated, overwritten with the current Library query/filters, deleted after confirmation, applied from the sidebar, and opened from the command palette. Remaining work is drag/drop or explicit sort-order management and a stronger "durable view" mode that can make a saved search feel like a first-class workspace.
 
 - [x] Add domain tree management.
   - Acceptance: domains can be nested, reordered, renamed, moved, described, associated with tags, colored, and soft-deleted from the UI.

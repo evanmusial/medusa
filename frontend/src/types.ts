@@ -346,6 +346,27 @@ export type AppPreferences = {
   second_pass_processing_enabled: boolean;
 };
 
+export type GcsBucketLifecycleRule = {
+  index: number;
+  action_type: string;
+  action_label: string;
+  storage_class?: string | null;
+  condition_labels: string[];
+  summary: string;
+};
+
+export type GcsBucketLifecycle = {
+  bucket: string;
+  available: boolean;
+  status: string;
+  summary: string;
+  rules: GcsBucketLifecycleRule[];
+  checked_at: string;
+  error?: string | null;
+  storage_class?: string | null;
+  location?: string | null;
+};
+
 export type ImportProcessingPreset = {
   id: string;
   name: string;

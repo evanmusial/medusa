@@ -1587,8 +1587,8 @@ class ReleaseStatusOut(BaseModel):
     maintenance_auto_apply_eligible: bool = False
     maintenance_requires_approval: bool = False
     maintenance_update_classification: str = "unknown"
-    maintenance_backup_required: bool = True
-    maintenance_backup_status: str = "not_started"
+    maintenance_backup_required: bool = False
+    maintenance_backup_status: str = "not_required"
     maintenance_backup_run_id: str | None = None
     maintenance_idle: bool = True
     maintenance_active_session_count: int = 0
@@ -1738,6 +1738,27 @@ class AppPreferencesPatch(BaseModel):
     import_processing_presets: list[dict[str, Any]] | None = None
     default_import_processing_preset_id: str | None = None
     second_pass_processing_enabled: bool | None = None
+
+
+class GcsBucketLifecycleRuleOut(BaseModel):
+    index: int
+    action_type: str
+    action_label: str
+    storage_class: str | None = None
+    condition_labels: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class GcsBucketLifecycleOut(BaseModel):
+    bucket: str
+    available: bool = False
+    status: str
+    summary: str
+    rules: list[GcsBucketLifecycleRuleOut] = Field(default_factory=list)
+    checked_at: datetime
+    error: str | None = None
+    storage_class: str | None = None
+    location: str | None = None
 
 
 class DocumentCacheStatusOut(BaseModel):

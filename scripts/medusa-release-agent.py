@@ -31,6 +31,18 @@ RUNTIME_FILES = {
     "docker-compose.yml",
     "docker-compose.server.yml",
 }
+BACKUP_REQUIRED_FILES = {
+    "backend/Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.server.yml",
+    "backend/app/database.py",
+    "backend/app/models.py",
+    "backend/app/services/backups.py",
+    "backend/app/services/restore.py",
+    "backend/app/tools/database_backup.py",
+    "backend/app/tools/restore_export.py",
+}
+BACKUP_REQUIRED_PREFIXES = ("backend/alembic/",)
 DOC_PREFIXES = ("docs/",)
 DOC_FILES = {"README.md", "TODO.md"}
 
@@ -265,49 +277,86 @@ def dependency_updates_are_patch_or_security(repo: Path, current_sha: str, avail
     return checked or "frontend/package-lock.json" in changed_files
 
 
+def _path_requires_backup(path: str) -> bool:
+    return path in BACKUP_REQUIRED_FILES or any(path.startswith(prefix) for prefix in BACKUP_REQUIRED_PREFIXES)
+
+
+def backup_policy_for_update(classification: dict[str, Any]) -> dict[str, Any]:
+    changed_files = [str(path) for path in classification.get("changed_files") or []]
+    update_class = str(classification.get("classification") or "unknown")
+    if update_class == "dirty_checkout":
+        return {
+            "backup_required": False,
+            "backup_reason": "Maintenance is blocked by local checkout changes before backup policy applies.",
+        }
+    if update_class == "runtime_refresh":
+        return {
+            "backup_required": False,
+            "backup_reason": "Same-tag runtime refreshes do not change the database or PostgreSQL version.",
+        }
+    if any(_path_requires_backup(path) for path in changed_files):
+        return {
+            "backup_required": True,
+            "backup_reason": "Database schema, persistence, backup/restore, or runtime container files changed.",
+        }
+    if update_class == "dependency_requires_review" and "backend/requirements.txt" in changed_files:
+        return {
+            "backup_required": True,
+            "backup_reason": "A non-patch backend dependency update can affect the running program or database tooling.",
+        }
+    return {
+        "backup_required": False,
+        "backup_reason": "No database schema, PostgreSQL/runtime image, or backup/restore surface changed.",
+    }
+
+
+def with_backup_policy(classification: dict[str, Any]) -> dict[str, Any]:
+    return {**classification, **backup_policy_for_update(classification)}
+
+
 def classify_update(repo: Path, current_sha: str, available_sha: str, dirty: bool) -> dict[str, Any]:
     if dirty:
-        return {
+        return with_backup_policy({
             "classification": "dirty_checkout",
             "auto_apply_eligible": False,
             "requires_approval": True,
             "changed_files": [],
             "reason": "The server checkout has local changes.",
-        }
+        })
     if current_sha == available_sha:
-        return {
+        return with_backup_policy({
             "classification": "runtime_refresh",
             "auto_apply_eligible": True,
             "requires_approval": False,
             "changed_files": [],
             "reason": "No newer git release is available; runtime images can be refreshed from explicit tags.",
-        }
+        })
     changed_files = _changed_files(repo, current_sha, available_sha)
     meaningful = [path for path in changed_files if path not in DOC_FILES and not path.startswith(DOC_PREFIXES)]
     if any(path in RUNTIME_FILES for path in meaningful):
-        return {
+        return with_backup_policy({
             "classification": "runtime_image_or_build_change",
             "auto_apply_eligible": False,
             "requires_approval": True,
             "changed_files": changed_files,
             "reason": "Runtime image or Docker build files changed and require explicit approval.",
-        }
+        })
     if meaningful and all(path in DEPENDENCY_FILES for path in meaningful):
         auto = dependency_updates_are_patch_or_security(repo, current_sha, available_sha, meaningful)
-        return {
+        return with_backup_policy({
             "classification": "dependency_patch_or_security" if auto else "dependency_requires_review",
             "auto_apply_eligible": auto,
             "requires_approval": not auto,
             "changed_files": changed_files,
             "reason": "Dependency-only patch/security update." if auto else "Dependency update is not clearly patch/security-only.",
-        }
-    return {
+        })
+    return with_backup_policy({
         "classification": "application_or_unknown_change",
         "auto_apply_eligible": False,
         "requires_approval": True,
         "changed_files": changed_files,
         "reason": "The update changes application code or an unknown surface.",
-    }
+    })
 
 
 def build_status(args: argparse.Namespace, *, fetch: bool, phase: str | None = None, message: str | None = None, last_error: str | None = None) -> dict[str, Any]:
@@ -340,6 +389,7 @@ def build_status(args: argparse.Namespace, *, fetch: bool, phase: str | None = N
             status_message = "A newer Medusa release is available."
         else:
             status_message = "Medusa is current."
+    backup_required = bool(classification["backup_required"])
     payload = {
         "schema_version": SCHEMA_VERSION,
         "checked_at": utc_now(),
@@ -362,8 +412,9 @@ def build_status(args: argparse.Namespace, *, fetch: bool, phase: str | None = N
             "update_classification": classification["classification"],
             "auto_apply_eligible": bool(classification["auto_apply_eligible"] and not dirty),
             "requires_approval": bool(classification["requires_approval"] or dirty),
-            "backup_required": True,
-            "backup_status": "not_started",
+            "backup_required": backup_required,
+            "backup_status": "not_started" if backup_required else "not_required",
+            "backup_reason": classification.get("backup_reason"),
             "backup_run_id": None,
             "changed_files": classification["changed_files"],
             "window": getattr(args, "maintenance_window", DEFAULT_MAINTENANCE_WINDOW),
@@ -384,12 +435,15 @@ def update_maintenance_status(args: argparse.Namespace, phase: str, message: str
     if not payload:
         payload = build_status(args, fetch=False)
     maintenance = payload.get("maintenance") if isinstance(payload.get("maintenance"), dict) else {}
+    backup_required = bool(fields.pop("backup_required", maintenance.get("backup_required", False)))
+    backup_status = fields.pop("backup_status", maintenance.get("backup_status") or ("not_started" if backup_required else "not_required"))
     maintenance.update(
         {
             "checked_at": utc_now(),
             "phase": phase,
             "message": message,
-            "backup_required": True,
+            "backup_required": backup_required,
+            "backup_status": backup_status,
             **fields,
         }
     )
@@ -444,7 +498,13 @@ def check_maintenance_readiness(args: argparse.Namespace, *, ignore_active_sessi
 
 
 def run_pre_maintenance_backup(args: argparse.Namespace, *, reason: str) -> dict[str, Any]:
-    update_maintenance_status(args, "backup", "Creating a verified full database backup before maintenance.", backup_status="running")
+    update_maintenance_status(
+        args,
+        "backup",
+        "Creating a verified full database backup before maintenance.",
+        backup_required=True,
+        backup_status="running",
+    )
     payload = run_backend_json(
         args,
         [
@@ -465,6 +525,7 @@ def run_pre_maintenance_backup(args: argparse.Namespace, *, reason: str) -> dict
         args,
         "backup_complete",
         "Verified full database backup completed.",
+        backup_required=True,
         backup_status="complete",
         backup_run_id=payload.get("id"),
     )
@@ -585,24 +646,30 @@ def auto_maintenance(args: argparse.Namespace) -> int:
     ignore_active_sessions = bool(args.ignore_active_sessions or requested or (request or {}).get("ignore_active_sessions"))
     try:
         if not force_window and not in_maintenance_window(args.maintenance_window, args.maintenance_timezone):
-            build_status(args, fetch=not args.no_fetch)
+            status = build_status(args, fetch=not args.no_fetch)
+            backup_required = bool((status.get("maintenance") or {}).get("backup_required"))
             update_maintenance_status(
                 args,
                 "skipped",
                 "Outside the configured Tuesday/Friday maintenance window.",
                 window=args.maintenance_window,
-                backup_status="not_started",
+                backup_required=backup_required,
+                backup_status="not_started" if backup_required else "not_required",
             )
             return 0
 
         status = build_status(args, fetch=not args.no_fetch)
         classification = status["maintenance"]
+        backup_required = bool(classification.get("backup_required"))
+        backup_status = "not_started" if backup_required else "not_required"
+        backup: dict[str, Any] | None = None
         update_maintenance_status(
             args,
             "readiness",
             "Checking idle and background-work gates before maintenance.",
             window=args.maintenance_window,
-            backup_status="not_started",
+            backup_required=backup_required,
+            backup_status=backup_status,
         )
         readiness = check_maintenance_readiness(args, ignore_active_sessions=ignore_active_sessions)
         if classification.get("requires_approval"):
@@ -611,18 +678,32 @@ def auto_maintenance(args: argparse.Namespace) -> int:
                 "blocked",
                 classification.get("message") or "Update requires explicit approval.",
                 readiness=readiness,
-                backup_status="not_started",
+                backup_required=backup_required,
+                backup_status=backup_status,
             )
             return 0
 
-        update_maintenance_status(
-            args,
-            "backup_required",
-            "Maintenance gates passed; creating required full database backup.",
-            readiness=readiness,
-            backup_status="not_started",
-        )
-        backup = run_pre_maintenance_backup(args, reason="pre_maintenance")
+        if backup_required:
+            update_maintenance_status(
+                args,
+                "backup_required",
+                "Maintenance gates passed; creating required full database backup.",
+                readiness=readiness,
+                backup_required=True,
+                backup_status="not_started",
+            )
+            backup = run_pre_maintenance_backup(args, reason="pre_maintenance")
+            backup_status = "complete"
+        else:
+            update_maintenance_status(
+                args,
+                "applying",
+                "Maintenance gates passed; database backup is not required for this refresh.",
+                readiness=readiness,
+                backup_required=False,
+                backup_status="not_required",
+                backup_run_id=None,
+            )
 
         branch = current_branch(repo)
         upstream = upstream_ref(repo, args.remote, branch, args.upstream)
@@ -633,8 +714,9 @@ def auto_maintenance(args: argparse.Namespace) -> int:
                 args,
                 "applying",
                 f"Fast-forwarding auto-eligible maintenance release to {available_sha[:12]}.",
-                backup_status="complete",
-                backup_run_id=backup.get("id"),
+                backup_required=backup_required,
+                backup_status=backup_status,
+                backup_run_id=backup.get("id") if backup else None,
             )
             git(repo, "merge", "--ff-only", upstream)
 
@@ -647,11 +729,19 @@ def auto_maintenance(args: argparse.Namespace) -> int:
             args,
             "building",
             "Refreshing Medusa runtime images and rebuilding Compose services.",
-            backup_status="complete",
-            backup_run_id=backup.get("id"),
+            backup_required=backup_required,
+            backup_status=backup_status,
+            backup_run_id=backup.get("id") if backup else None,
         )
         run_command(compose_up_command(args, pull_always=True), cwd=repo, env=env)
-        update_maintenance_status(args, "verifying", "Waiting for Medusa health after maintenance.", backup_status="complete", backup_run_id=backup.get("id"))
+        update_maintenance_status(
+            args,
+            "verifying",
+            "Waiting for Medusa health after maintenance.",
+            backup_required=backup_required,
+            backup_status=backup_status,
+            backup_run_id=backup.get("id") if backup else None,
+        )
         wait_for_health(repo, args.health_timeout_seconds)
         request_path.unlink(missing_ok=True)
         payload = build_status(args, fetch=False, phase="complete", message=f"Medusa maintenance completed for {target['version']}.")
@@ -663,9 +753,14 @@ def auto_maintenance(args: argparse.Namespace) -> int:
         maintenance.update(
             {
                 "phase": "complete",
-                "message": "Maintenance completed after verified full database backup.",
-                "backup_status": "complete",
-                "backup_run_id": backup.get("id"),
+                "message": (
+                    "Maintenance completed after verified full database backup."
+                    if backup_required
+                    else "Maintenance completed; database backup was not required for this refresh."
+                ),
+                "backup_required": backup_required,
+                "backup_status": backup_status,
+                "backup_run_id": backup.get("id") if backup else None,
                 "readiness": readiness,
             }
         )
@@ -673,7 +768,17 @@ def auto_maintenance(args: argparse.Namespace) -> int:
         atomic_write_json(status_file_path(args), payload)
         return 0
     except Exception as exc:
-        update_maintenance_status(args, "failed", "Medusa maintenance failed.", last_error=str(exc), backup_status="failed")
+        payload = read_json(status_file_path(args)) or {}
+        maintenance = payload.get("maintenance") if isinstance(payload.get("maintenance"), dict) else {}
+        backup_required = bool(maintenance.get("backup_required", False))
+        update_maintenance_status(
+            args,
+            "failed",
+            "Medusa maintenance failed.",
+            last_error=str(exc),
+            backup_required=backup_required,
+            backup_status="failed" if backup_required else str(maintenance.get("backup_status") or "not_required"),
+        )
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -700,16 +805,42 @@ def apply(args: argparse.Namespace) -> int:
             write_phase(args, "complete", "Medusa was already current.")
             request_path.unlink(missing_ok=True)
             return 0
-        update_maintenance_status(args, "readiness", "Checking maintenance readiness before upgrade.", backup_status="not_started")
-        readiness = check_maintenance_readiness(args, ignore_active_sessions=True)
+        classification = classify_update(repo, current_sha, available_sha, dirty=False)
+        backup_required = bool(classification.get("backup_required"))
+        backup_status = "not_started" if backup_required else "not_required"
+        backup: dict[str, Any] | None = None
         update_maintenance_status(
             args,
-            "backup_required",
-            "Medusa is ready for approved upgrade; creating required backup.",
-            readiness=readiness,
-            backup_status="not_started",
+            "readiness",
+            "Checking maintenance readiness before upgrade.",
+            backup_required=backup_required,
+            backup_status=backup_status,
+            backup_reason=classification.get("backup_reason"),
+            changed_files=classification.get("changed_files"),
+            update_classification=classification.get("classification"),
         )
-        backup = run_pre_maintenance_backup(args, reason="pre_upgrade")
+        readiness = check_maintenance_readiness(args, ignore_active_sessions=True)
+        if backup_required:
+            update_maintenance_status(
+                args,
+                "backup_required",
+                "Medusa is ready for approved upgrade; creating required backup.",
+                readiness=readiness,
+                backup_required=True,
+                backup_status="not_started",
+            )
+            backup = run_pre_maintenance_backup(args, reason="pre_upgrade")
+            backup_status = "complete"
+        else:
+            update_maintenance_status(
+                args,
+                "applying",
+                "Medusa is ready for approved upgrade; database backup is not required for this update.",
+                readiness=readiness,
+                backup_required=False,
+                backup_status="not_required",
+                backup_run_id=None,
+            )
         write_phase(args, "applying", f"Fast-forwarding to {available_sha[:12]}.")
         git(repo, "merge", "--ff-only", upstream)
         target_sha = git(repo, "rev-parse", "HEAD")
@@ -721,9 +852,14 @@ def apply(args: argparse.Namespace) -> int:
         update_maintenance_status(
             args,
             "building",
-            f"Building Medusa {target['version']} after verified backup.",
-            backup_status="complete",
-            backup_run_id=backup.get("id"),
+            (
+                f"Building Medusa {target['version']} after verified backup."
+                if backup_required
+                else f"Building Medusa {target['version']} without a database backup; none required by policy."
+            ),
+            backup_required=backup_required,
+            backup_status=backup_status,
+            backup_run_id=backup.get("id") if backup else None,
         )
         run_command(compose_up_command(args, pull_always=args.pull_always), cwd=repo, env=env)
         write_phase(args, "verifying", "Waiting for Medusa health after upgrade.")
@@ -738,16 +874,31 @@ def apply(args: argparse.Namespace) -> int:
         maintenance.update(
             {
                 "phase": "complete",
-                "message": f"Medusa upgraded to {target['version']} after verified backup.",
-                "backup_status": "complete",
-                "backup_run_id": backup.get("id"),
+                "message": (
+                    f"Medusa upgraded to {target['version']} after verified backup."
+                    if backup_required
+                    else f"Medusa upgraded to {target['version']}; database backup was not required."
+                ),
+                "backup_required": backup_required,
+                "backup_status": backup_status,
+                "backup_run_id": backup.get("id") if backup else None,
             }
         )
         payload["maintenance"] = maintenance
         atomic_write_json(status_file_path(args), payload)
         return 0
     except Exception as exc:
-        update_maintenance_status(args, "failed", "Medusa upgrade failed.", last_error=str(exc), backup_status="failed")
+        payload = read_json(status_file_path(args)) or {}
+        maintenance = payload.get("maintenance") if isinstance(payload.get("maintenance"), dict) else {}
+        backup_required = bool(maintenance.get("backup_required", False))
+        update_maintenance_status(
+            args,
+            "failed",
+            "Medusa upgrade failed.",
+            last_error=str(exc),
+            backup_required=backup_required,
+            backup_status="failed" if backup_required else str(maintenance.get("backup_status") or "not_required"),
+        )
         write_phase(args, "failed", "Medusa upgrade failed.", last_error=str(exc), fetch=False)
         print(str(exc), file=sys.stderr)
         return 1

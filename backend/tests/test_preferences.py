@@ -361,6 +361,101 @@ def test_google_service_account_upload_stores_json_outside_preferences(monkeypat
             assert stat.S_IMODE(stored_path.parent.stat().st_mode) == 0o700
 
 
+def test_gcs_bucket_lifecycle_status_formats_storage_class_rules(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    key_path = tmp_path / "service-account.json"
+    key_path.write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "medusa-test",
+                "client_email": "medusa@medusa-test.iam.gserviceaccount.com",
+                "private_key_id": "test",
+                "private_key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        )
+    )
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(key_path))
+
+    from app.config import get_settings
+    from app.services.gcs_lifecycle import gcs_bucket_lifecycle_status
+    from app.services.preferences import update_app_preferences
+
+    class FakeCredentials:
+        project_id = "medusa-test"
+
+    class FakeBucket:
+        storage_class = "STANDARD"
+        location = "US"
+
+        def reload(self):
+            return None
+
+        @property
+        def lifecycle_rules(self):
+            return iter(
+                [
+                    {
+                        "action": {"type": "SetStorageClass", "storageClass": "NEARLINE"},
+                        "condition": {"age": 30, "matchesPrefix": ["documents/"]},
+                    },
+                    {
+                        "action": {"type": "Delete"},
+                        "condition": {"age": 365, "matchesStorageClass": ["ARCHIVE"]},
+                    },
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self, *, project, credentials):
+            assert project == "medusa-test"
+            assert credentials.project_id == "medusa-test"
+
+        def bucket(self, name):
+            assert name == "medusa-assets"
+            return FakeBucket()
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.services.gcs_lifecycle.load_service_account_credentials", lambda _path: FakeCredentials())
+    monkeypatch.setattr("google.cloud.storage.Client", FakeClient)
+
+    Session = make_session()
+    with Session() as db:
+        update_app_preferences(db, gcs_bucket="medusa-assets")
+        status = gcs_bucket_lifecycle_status(db)
+
+    assert status["available"] is True
+    assert status["storage_class"] == "Standard"
+    assert status["location"] == "US"
+    assert status["summary"] == "2 lifecycle rules configured. 1 storage-class transition. 1 delete rule."
+    assert status["rules"][0]["action_label"] == "Move to Nearline"
+    assert status["rules"][0]["condition_labels"] == ["after 30 days", "prefix documents/"]
+    assert status["rules"][1]["action_label"] == "Delete"
+    assert status["rules"][1]["condition_labels"] == ["after 365 days", "currently Archive"]
+
+
+def test_gcs_bucket_lifecycle_status_reports_missing_credentials(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    from app.config import get_settings
+    from app.services.gcs_lifecycle import gcs_bucket_lifecycle_status
+    from app.services.preferences import update_app_preferences
+
+    get_settings.cache_clear()
+    Session = make_session()
+    with Session() as db:
+        update_app_preferences(db, gcs_bucket="medusa-assets")
+        status = gcs_bucket_lifecycle_status(db)
+
+    assert status["available"] is False
+    assert status["status"] == "credentials_missing"
+    assert "service-account" in (status["error"] or "")
+
+
 def test_service_account_name_field_requires_settings_upload(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

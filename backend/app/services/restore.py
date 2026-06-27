@@ -1143,7 +1143,7 @@ def _replace_document_children(
                 preserve_ids,
             document_id=document.id,
             title=summary_row.get("title"),
-            prompt=summary_row.get("prompt") or "Restored accessory summary",
+            prompt=summary_row.get("prompt") or "Restored Inquest",
             summary=summary_row.get("summary"),
             model=summary_row.get("model") or "gpt-5.4",
             status=_parked_status(summary_row.get("status"), park_active_jobs),

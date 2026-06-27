@@ -139,9 +139,9 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
     ),
     AnalysisModelTask(
         key=MODEL_ACCESSORY_SUMMARIES,
-        label="Accessory Summaries",
+        label="Inquests",
         model_kind="gpt",
-        description="Generates user-prompted focused paragraph summaries from a document detail pane request. These default to GPT-5.4, and can use Google Gemini text models when selected.",
+        description="Answers user-prompted document questions from the detail pane or Reader. These default to GPT-5.4, and can use Google Gemini text models when selected.",
     ),
     AnalysisModelTask(
         key=MODEL_PORTFOLIO_ASSESSMENT,

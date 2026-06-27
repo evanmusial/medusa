@@ -47,6 +47,7 @@ def test_release_agent_classifies_safe_dependency_and_risky_runtime_updates(tmp_
     assert patch["classification"] == "dependency_patch_or_security"
     assert patch["auto_apply_eligible"] is True
     assert patch["requires_approval"] is False
+    assert patch["backup_required"] is False
 
     (repo / "frontend" / "package.json").write_text(json.dumps({"dependencies": {"react": "2.0.0"}}))
     major_sha = commit_all(repo, "chore: bump react major")
@@ -54,21 +55,31 @@ def test_release_agent_classifies_safe_dependency_and_risky_runtime_updates(tmp_
     assert major["classification"] == "dependency_requires_review"
     assert major["auto_apply_eligible"] is False
     assert major["requires_approval"] is True
+    assert major["backup_required"] is False
 
     (repo / "docker-compose.yml").write_text("services:\n  valkey:\n    image: valkey/valkey:8.1\n")
     runtime_sha = commit_all(repo, "chore: bump runtime image")
     runtime = agent.classify_update(repo, major_sha, runtime_sha, dirty=False)
     assert runtime["classification"] == "runtime_image_or_build_change"
     assert runtime["requires_approval"] is True
+    assert runtime["backup_required"] is True
 
     (repo / "app.py").write_text("print('application change')\n")
     app_sha = commit_all(repo, "feat: application change")
     app_change = agent.classify_update(repo, runtime_sha, app_sha, dirty=False)
     assert app_change["classification"] == "application_or_unknown_change"
     assert app_change["requires_approval"] is True
+    assert app_change["backup_required"] is False
+
+    (repo / "backend" / "alembic" / "versions").mkdir(parents=True)
+    (repo / "backend" / "alembic" / "versions" / "0001_test.py").write_text("revision = '0001'\n")
+    migration_sha = commit_all(repo, "feat: add migration")
+    migration_change = agent.classify_update(repo, app_sha, migration_sha, dirty=False)
+    assert migration_change["classification"] == "application_or_unknown_change"
+    assert migration_change["backup_required"] is True
 
 
-def test_release_agent_does_not_run_compose_when_backup_gate_fails(monkeypatch, tmp_path):
+def test_release_agent_does_not_run_compose_when_required_backup_gate_fails(monkeypatch, tmp_path):
     agent = load_release_agent()
     args = SimpleNamespace(
         repo=tmp_path,
@@ -95,7 +106,8 @@ def test_release_agent_does_not_run_compose_when_backup_gate_fails(monkeypatch, 
         lambda *_args, **_kwargs: {
             "maintenance": {
                 "requires_approval": False,
-                "message": "Dependency-only patch/security update.",
+                "message": "Database-sensitive maintenance.",
+                "backup_required": True,
             }
         },
     )
@@ -117,7 +129,7 @@ def test_release_agent_does_not_run_compose_when_backup_gate_fails(monkeypatch, 
     assert compose_calls == []
 
 
-def test_release_agent_reaches_pull_refresh_after_successful_backup(monkeypatch, tmp_path):
+def test_release_agent_reaches_pull_refresh_without_backup_when_not_required(monkeypatch, tmp_path):
     agent = load_release_agent()
     args = SimpleNamespace(
         repo=tmp_path,
@@ -142,13 +154,18 @@ def test_release_agent_reaches_pull_refresh_after_successful_backup(monkeypatch,
             "requires_approval": False,
             "message": "Runtime refresh.",
             "auto_apply_eligible": True,
+            "backup_required": False,
         }
     }
 
     monkeypatch.setattr(agent, "build_status", lambda *_args, **_kwargs: dict(status_payload))
     monkeypatch.setattr(agent, "update_maintenance_status", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(agent, "check_maintenance_readiness", lambda *_args, **_kwargs: {"idle": True, "blockers": []})
-    monkeypatch.setattr(agent, "run_pre_maintenance_backup", lambda *_args, **_kwargs: {"id": "backup-1", "verified": True})
+
+    def fail_if_backup_runs(*_args, **_kwargs):
+        raise AssertionError("backup should not run")
+
+    monkeypatch.setattr(agent, "run_pre_maintenance_backup", fail_if_backup_runs)
     monkeypatch.setattr(agent, "current_branch", lambda _repo: "main")
     monkeypatch.setattr(agent, "upstream_ref", lambda _repo, _remote, _branch, _upstream: "origin/main")
     monkeypatch.setattr(

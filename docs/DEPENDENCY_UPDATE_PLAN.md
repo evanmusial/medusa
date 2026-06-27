@@ -38,13 +38,15 @@ Docker Engine and Docker Compose plugin updates are never auto-applied by Medusa
 
 ## Backup And Idle Gates
 
-Every maintenance apply that can recreate Docker services or touch PostgreSQL is hard-gated by a fresh successful full PostgreSQL backup. The agent invokes the backend CLI inside the current backend container:
+Routine restarts, safe app updates, dependency patch/security updates, and same-tag image/base refreshes do not need a database backup. The release agent marks those applies as `backup_status=not_required` after idle/background-work gates pass.
+
+A fresh successful full PostgreSQL backup is required only when the classified change touches database schema or persistence, backup/restore tooling, runtime container definitions, non-patch backend runtime dependencies, or major underlying program versions such as PostgreSQL/pgvector. For those applies, the agent invokes the backend CLI inside the current backend container:
 
 ```bash
 python -m app.tools.database_backup --reason pre_maintenance --wait --json
 ```
 
-Success requires a complete `BackupRun`, a GCS URI, SHA-256 value, nonzero size, uploaded manifest, and checksum verification evidence. If the backup cannot be created, uploaded, and checksum-verified, no Docker or PostgreSQL patching command runs.
+Success requires a complete `BackupRun`, a GCS URI, SHA-256 value, nonzero size, uploaded manifest, and checksum verification evidence. If a policy-required backup cannot be created, uploaded, and checksum-verified, no Docker or PostgreSQL patching command runs.
 
 Scheduled maintenance also requires Medusa to be idle. Signed-in visible tabs call `/api/activity/heartbeat` roughly once per minute, and the agent treats sessions seen within the five-minute grace period as active. Scheduled maintenance blocks on active sessions, active imports, Concordance jobs, accessory summaries, backup/restore runs, and database maintenance. Explicit user approval can override active browser sessions, but not active document-processing work, backup/restore, or database maintenance.
 

@@ -361,7 +361,7 @@ ACCESSORY_SUMMARY_SCHEMA: dict[str, Any] = {
 }
 
 ACCESSORY_SUMMARY_PROMPT = (
-    "Generate a focused accessory summary for a research-library document. Use only the supplied original PDF "
+    "Answer a focused Inquest for a research-library document. Use only the supplied original PDF "
     "context and extracted text. The user will provide a question or precise topic. Answer that request directly "
     "for display under the document's main summary. "
     f"{SUMMARY_STYLE_HINT} "
@@ -1332,19 +1332,20 @@ class AiService:
         *,
         model: str | None = None,
         pdf_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
         selected_model = model or default_analysis_models()[MODEL_ACCESSORY_SUMMARIES]
         if not self._can_call_text_model(selected_model):
-            raise RuntimeError("AI accessory summaries are not configured for the selected model.")
+            raise RuntimeError("AI Inquests are not configured for the selected model.")
         document_content, used_pdf_file, input_text_characters, input_file_bytes = self._document_input_content(
             filename,
             text,
             pdf_bytes,
             max_text_chars=80_000,
         )
-        request_text = f"Accessory summary request:\n{prompt.strip()}"
+        request_text = f"Inquest question:\n{prompt.strip()}"
         input_content = [{"type": "input_text", "text": request_text}, *document_content]
         result = self._responses_json(
             model=selected_model,
@@ -1352,7 +1353,7 @@ class AiService:
             schema=ACCESSORY_SUMMARY_SCHEMA,
             prompt=ACCESSORY_SUMMARY_PROMPT,
             input_content=input_content,
-            timeout=self.settings.openai_request_timeout_seconds,
+            timeout=timeout_seconds or self.settings.openai_request_timeout_seconds,
             usage_context=usage_context,
             task_key=MODEL_ACCESSORY_SUMMARIES,
             input_text_characters=input_text_characters + len(request_text),

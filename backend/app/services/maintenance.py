@@ -135,7 +135,7 @@ def maintenance_readiness(db: Session, *, idle_grace_seconds: int = DEFAULT_IDLE
     if concordance_jobs:
         blockers.append(f"{concordance_jobs} active Concordance job{'s' if concordance_jobs != 1 else ''}")
     if accessory_summary_jobs:
-        blockers.append(f"{accessory_summary_jobs} active Accessory Summary job{'s' if accessory_summary_jobs != 1 else ''}")
+        blockers.append(f"{accessory_summary_jobs} active Inquest job{'s' if accessory_summary_jobs != 1 else ''}")
     if backup_runs:
         blockers.append(f"{backup_runs} active backup/restore run{'s' if backup_runs != 1 else ''}")
     if database_maintenance_active:
