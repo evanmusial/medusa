@@ -411,6 +411,7 @@ PDF_PREVIEW_RENDER_SCALE = 2.5
 CACHE_HYDRATE_LIST_PAGE_SIZE = 100
 CACHE_HYDRATE_MAX_DOCUMENTS = 10000
 RECENT_AI_FAILURE_NOTICE_LIMIT = 8
+RECENT_AI_FAILURE_NOTICE_MAX_AGE = timedelta(minutes=30)
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
@@ -2364,9 +2365,10 @@ def library_fun_stats_out(db: Session) -> LibraryFunStatsOut:
 
 
 def recent_failed_ai_call_notices(db: Session) -> list[dict[str, Any]]:
+    fresh_after = utc_now() - RECENT_AI_FAILURE_NOTICE_MAX_AGE
     records = (
         db.query(OpenAIUsageRecord)
-        .filter(OpenAIUsageRecord.status == "failed")
+        .filter(OpenAIUsageRecord.status == "failed", OpenAIUsageRecord.created_at >= fresh_after)
         .order_by(OpenAIUsageRecord.created_at.desc(), OpenAIUsageRecord.id.desc())
         .limit(RECENT_AI_FAILURE_NOTICE_LIMIT)
         .all()

@@ -390,6 +390,7 @@ const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 45000;
+const BACKGROUND_JOB_SERVER_IDLE_GRACE_MS = 60000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
 const IMPORT_ACCEPT =
@@ -20993,6 +20994,7 @@ export default function App() {
     const runs = concordanceRuns.data || [];
     const jobs = concordanceJobs.data || [];
     const now = Date.now();
+    const serverConcordanceIdle = Boolean(dashboard.data) && (dashboard.data?.active_concordance_jobs ?? 0) === 0;
     setBackgroundJobs((current) =>
       current
         .map((job) => {
@@ -21013,9 +21015,20 @@ export default function App() {
             job,
           );
         })
+        .map((job) => {
+          const isTrackedConcordanceJob = Boolean(job.runId || job.capabilityKey);
+          if (!serverConcordanceIdle || !isTrackedConcordanceJob || isTerminalBackgroundStatus(job.status)) return job;
+          if (now - job.createdAt < BACKGROUND_JOB_SERVER_IDLE_GRACE_MS) return job;
+          return {
+            ...job,
+            status: "complete" as const,
+            detail: "No active server job",
+            completedAt: now,
+          };
+        })
         .filter((job) => !job.completedAt || now - job.completedAt < BACKGROUND_JOB_RETENTION_MS),
     );
-  }, [concordanceJobs.data, concordanceRuns.data]);
+  }, [concordanceJobs.data, concordanceRuns.data, dashboard.data?.active_concordance_jobs]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {

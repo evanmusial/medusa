@@ -193,6 +193,18 @@ def test_dashboard_surfaces_recent_failed_ai_calls(monkeypatch, tmp_path):
                     created_at=utc_now() - timedelta(minutes=5),
                     usage_metadata={},
                 ),
+                OpenAIUsageRecord(
+                    document_id=document.id,
+                    task_key="metadata",
+                    operation="document_metadata",
+                    endpoint="responses",
+                    model="gpt-5.4",
+                    status="failed",
+                    source="concordance",
+                    error_message="old quota error",
+                    created_at=utc_now() - timedelta(hours=2),
+                    usage_metadata={},
+                ),
             ]
         )
         db.commit()
