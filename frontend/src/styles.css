@@ -723,7 +723,7 @@ textarea {
   gap: 14px;
   padding: 0 14px;
   background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 25%, transparent);
 }
 
 .topbar-brand-area {
@@ -1286,6 +1286,7 @@ textarea {
   text-decoration: none;
   cursor: pointer;
   font-weight: 400;
+  filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--ink) 8%, transparent));
 }
 
 .workspace-nav-item.active,
