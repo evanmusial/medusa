@@ -54,6 +54,7 @@ MODEL_CACHE_FAMILIES: dict[str, set[str]] = {
     "ImportBatch": {"dashboard", "jobs", "status"},
     "ImportJob": {"dashboard", "jobs", "status", "library", "document_detail"},
     "Note": {"library", "document_detail", "dashboard", "status"},
+    "OpenAIUsageRecord": {"dashboard", "jobs"},
     "ProcessingEvent": {"dashboard", "jobs", "document_detail"},
     "Project": {"organization", "library", "document_detail", "dashboard", "status"},
     "ProjectItem": {"organization", "library", "document_detail", "dashboard", "status"},

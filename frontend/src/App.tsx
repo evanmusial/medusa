@@ -103,6 +103,7 @@ import {
 import { api, ApiError } from "./lib/api";
 import type {
   AccessorySummary,
+  AIFailureNotice,
   AppPreferences,
   BackupArtifact,
   BackupEstimate,
@@ -345,6 +346,8 @@ const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
 const DOCUMENT_LIST_STALE_MS = 30000;
 const SEARCH_DEBOUNCE_MS = 350;
 const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
+const DISMISSED_AI_FAILURE_NOTICE_KEY = "medusa-dismissed-ai-failure-notices";
+const DISMISSED_AI_FAILURE_NOTICE_MAX = 240;
 const COMPLETED_INGESTION_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
@@ -728,6 +731,20 @@ function readDismissedIngestionHistoryIds() {
 
 function writeDismissedIngestionHistoryIds(ids: Set<string>) {
   window.localStorage.setItem(DISMISSED_INGESTION_HISTORY_KEY, JSON.stringify([...ids]));
+}
+
+function readDismissedAiFailureNoticeIds() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DISMISSED_AI_FAILURE_NOTICE_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writeDismissedAiFailureNoticeIds(ids: Set<string>) {
+  const bounded = [...ids].slice(-DISMISSED_AI_FAILURE_NOTICE_MAX);
+  window.localStorage.setItem(DISMISSED_AI_FAILURE_NOTICE_KEY, JSON.stringify(bounded));
 }
 
 function ingestionHistoryCompletionTime(row: IngestionHistory) {
@@ -1711,6 +1728,77 @@ function backgroundStatusLabel(job: BackgroundJob) {
   if (job.status === "running") return "Processing";
   if (job.status === "failed") return "Needs attention";
   return "Complete";
+}
+
+function aiFailureTaskLabel(notice: AIFailureNotice) {
+  return (notice.task_key || notice.operation || "model call").replaceAll("_", " ");
+}
+
+function aiFailureDetail(notice: AIFailureNotice) {
+  const usage = notice.estimated_cost_usd && notice.estimated_cost_usd > 0
+    ? formatUsd(notice.estimated_cost_usd)
+    : `${formatMetric(notice.total_tokens)} tokens`;
+  const bits = [
+    notice.document_title || notice.source || notice.endpoint,
+    notice.model,
+    relativeTimeLabel(notice.created_at),
+    usage,
+  ].filter(Boolean);
+  return bits.join(" - ");
+}
+
+function AIFailureNoticePanel({
+  notices,
+  onDismiss,
+  onOpenFinances,
+}: {
+  notices: AIFailureNotice[];
+  onDismiss: (ids: string[]) => void;
+  onOpenFinances: () => void;
+}) {
+  if (!notices.length) return null;
+  const visible = notices.slice(0, 4);
+  const remaining = notices.length - visible.length;
+  const ids = notices.map((notice) => notice.id);
+  return (
+    <aside aria-live="polite" className="ai-failure-notice" role="status">
+      <div className="ai-failure-notice-head">
+        <span>
+          <AlertTriangle size={16} />
+        </span>
+        <div>
+          <strong>{notices.length === 1 ? "Model call failed" : `${formatMetric(notices.length)} model calls failed`}</strong>
+          <small>Medusa recorded failed provider calls in the usage ledger.</small>
+        </div>
+      </div>
+      <div className="ai-failure-notice-list">
+        {visible.map((notice) => (
+          <div className="ai-failure-notice-row" key={notice.id}>
+            <strong>{aiFailureTaskLabel(notice)}</strong>
+            <span>{aiFailureDetail(notice)}</span>
+            {notice.error_message ? <em>{notice.error_message}</em> : null}
+          </div>
+        ))}
+        {remaining > 0 ? <small>{formatMetric(remaining)} more failed calls in the recent ledger.</small> : null}
+      </div>
+      <div className="ai-failure-notice-actions">
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => {
+            onDismiss(ids);
+            onOpenFinances();
+          }}
+        >
+          <CircleDollarSign size={14} />
+          Open Finances
+        </button>
+        <button className="icon-button" data-tooltip="Dismiss these model-call failure notices." type="button" onClick={() => onDismiss(ids)}>
+          <X size={14} />
+        </button>
+      </div>
+    </aside>
+  );
 }
 
 function HeaderWorkProgress({
@@ -4520,6 +4608,8 @@ function Header({
   const cacheActionBusy = cacheRefreshing || cacheHydrating;
   const cacheHitPercent = cacheStatus ? Math.round((cacheStatus.hit_rate || 0) * 100) : null;
   const cacheUsagePercent = cacheMemoryPercent(cacheStatus);
+  const cacheGlanceTone = valkeyResourceTone(cacheUsagePercent);
+  const cacheGlanceMeterStyle = { "--user-cache-used": `${progressPercent(cacheUsagePercent ?? 0)}%` } as CSSProperties;
   const cacheGlance = cacheStatus
     ? cacheStatus.reachable
       ? cacheUsagePercent !== null
@@ -4566,9 +4656,23 @@ function Header({
           </button>
           {userMenuOpen ? (
             <div className="user-options-menu" data-escape-layer="menu" role="menu">
-              <div className="user-options-cache-glance" role="presentation">
+              <div className={`user-options-cache-glance ${cacheGlanceTone}`} role="presentation">
                 <Database size={16} aria-hidden="true" />
-                <span>{cacheGlance}</span>
+                <div className="user-options-cache-glance-body">
+                  <span>{cacheGlance}</span>
+                  <div
+                    aria-label="Valkey memory utilization"
+                    aria-valuemax={100}
+                    aria-valuemin={0}
+                    aria-valuenow={cacheUsagePercent !== null ? progressPercent(cacheUsagePercent) : undefined}
+                    aria-valuetext={cacheUsagePercent !== null ? `${formatPercent(cacheUsagePercent)} memory used` : cacheGlance}
+                    className="user-options-cache-meter"
+                    role="meter"
+                    style={cacheGlanceMeterStyle}
+                  >
+                    <span />
+                  </div>
+                </div>
               </div>
               <button className="user-options-menu-item" disabled={cacheActionBusy} onClick={refreshCacheFromUserMenu} role="menuitem" type="button">
                 <RefreshCw className={cacheRefreshing ? "spin" : ""} size={16} aria-hidden="true" />
@@ -20239,6 +20343,7 @@ export default function App() {
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
   const [dismissedIngestionHistoryIds, setDismissedIngestionHistoryIds] = useState<Set<string>>(() => readDismissedIngestionHistoryIds());
+  const [dismissedAiFailureNoticeIds, setDismissedAiFailureNoticeIds] = useState<Set<string>>(() => readDismissedAiFailureNoticeIds());
   const [viewTitleSubjects, setViewTitleSubjects] = useState<Partial<Record<View, string>>>({});
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
   const releaseReloadScheduledRef = useRef(false);
@@ -20959,6 +21064,16 @@ export default function App() {
     });
   }, []);
 
+  const dismissAiFailureNotices = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    setDismissedAiFailureNoticeIds((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.add(id));
+      writeDismissedAiFailureNoticeIds(next);
+      return next;
+    });
+  }, []);
+
   const startupHealthPending =
     Boolean(me.error && isTransientAppStartupError(me.error)) && me.failureCount < STARTUP_HEALTH_RETRY_LIMIT;
   if (me.isLoading || startupHealthPending) return <StartupLoadingScreen startupHealthPending={startupHealthPending} />;
@@ -21010,6 +21125,9 @@ export default function App() {
       right.createdAt - left.createdAt,
   );
   const completedIngestionNotice = latestCompletedIngestionNotice(ingestionHistory.data || [], dismissedIngestionHistoryIds);
+  const visibleAiFailureNotices = (dashboard.data?.recent_failed_ai_calls || []).filter(
+    (notice) => !dismissedAiFailureNoticeIds.has(notice.id),
+  );
   return (
     <AppTooltipProvider>
       <div className="app-shell" style={shellStyle}>
@@ -21035,6 +21153,11 @@ export default function App() {
         theme={theme}
         setTheme={setTheme}
         onLogout={() => logout.mutate()}
+      />
+      <AIFailureNoticePanel
+        notices={visibleAiFailureNotices}
+        onDismiss={dismissAiFailureNotices}
+        onOpenFinances={() => void requestActiveViewChange("budget")}
       />
       <main className="content">
         <section className="content-top">

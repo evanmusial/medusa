@@ -105,6 +105,37 @@ def test_cache_revision_dirty_state_clears_on_rollback(monkeypatch, tmp_path):
         assert db.query(CacheRevision).count() == 0
 
 
+def test_cache_revision_hooks_bump_dashboard_for_usage_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import CacheRevision, OpenAIUsageRecord
+    from app.services.cache import install_cache_revision_hooks
+
+    install_cache_revision_hooks()
+    Session = make_session()
+
+    with Session() as db:
+        db.add(
+            OpenAIUsageRecord(
+                task_key="bibliography_cleanup",
+                operation="cleanup_bibliography",
+                endpoint="responses",
+                model="gpt-5.4-nano",
+                status="failed",
+                source="concordance",
+                error_message="timeout",
+                usage_metadata={},
+            )
+        )
+        db.commit()
+
+        revisions = {row.family: row.version for row in db.query(CacheRevision).all()}
+
+    assert revisions["dashboard"] == 1
+    assert revisions["jobs"] == 1
+
+
 def test_null_cache_is_a_bypass():
     from app.services.cache import NullCache
 

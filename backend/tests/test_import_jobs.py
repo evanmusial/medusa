@@ -154,6 +154,59 @@ def test_staged_documents_stay_out_of_library_surfaces(monkeypatch, tmp_path):
         assert exc_info.value.status_code == 404
 
 
+def test_dashboard_surfaces_recent_failed_ai_calls(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import dashboard
+    from app.models import Document, OpenAIUsageRecord, utc_now
+
+    with Session() as db:
+        document = Document(
+            title="Bibliography Trouble",
+            original_filename="bibliography.pdf",
+            checksum_sha256="f" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.flush()
+        db.add_all(
+            [
+                OpenAIUsageRecord(
+                    document_id=document.id,
+                    task_key="bibliography_cleanup",
+                    operation="cleanup_bibliography",
+                    endpoint="responses",
+                    model="gpt-5.4-nano",
+                    status="failed",
+                    source="concordance",
+                    error_message="context_length_exceeded",
+                    created_at=utc_now(),
+                    usage_metadata={},
+                ),
+                OpenAIUsageRecord(
+                    document_id=document.id,
+                    task_key="summary",
+                    operation="document_summary",
+                    endpoint="responses",
+                    model="gpt-5.4",
+                    status="success",
+                    source="concordance",
+                    created_at=utc_now() - timedelta(minutes=5),
+                    usage_metadata={},
+                ),
+            ]
+        )
+        db.commit()
+
+        counts = dashboard(object(), db)
+
+        assert len(counts.recent_failed_ai_calls) == 1
+        notice = counts.recent_failed_ai_calls[0]
+        assert notice.task_key == "bibliography_cleanup"
+        assert notice.model == "gpt-5.4-nano"
+        assert notice.document_title == "Bibliography Trouble"
+        assert notice.error_message == "context_length_exceeded"
+
+
 def test_process_staged_import_jobs_promotes_rows(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import process_staged_import_jobs

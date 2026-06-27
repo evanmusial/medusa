@@ -863,7 +863,7 @@ def openai_usage_summary(db: Session, *, period: str = "all_time", recent_limit:
     pricing_index = _pricing_index(db)
     document_ids = sorted({record.document_id for record in records if record.document_id})
     document_titles = {
-        document.id: document.title or document.filename
+        document.id: document.title or document.original_filename
         for document in db.query(Document).filter(Document.id.in_(document_ids)).all()
     } if document_ids else {}
     recent = (

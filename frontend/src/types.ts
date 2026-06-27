@@ -87,6 +87,24 @@ export type ReleaseStatus = {
   docker_host_updates: string;
 };
 
+export type AIFailureNotice = {
+  id: string;
+  created_at: string;
+  document_id?: string | null;
+  document_title?: string | null;
+  source?: string | null;
+  task_key: string;
+  operation: string;
+  provider: string;
+  model: string;
+  endpoint: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  error_message?: string | null;
+  estimated_cost_usd?: number | null;
+};
+
 export type Dashboard = {
   documents: number;
   unread: number;
@@ -113,6 +131,7 @@ export type Dashboard = {
   failed_import_jobs: number;
   failed_concordance_jobs: number;
   failed_accessory_summary_jobs: number;
+  recent_failed_ai_calls: AIFailureNotice[];
   projects: number;
 };
 

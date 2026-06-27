@@ -1220,6 +1220,24 @@ class CitationCandidatePatch(BaseModel):
     apply_to_document: bool = False
 
 
+class AIFailureNoticeOut(BaseModel):
+    id: str
+    created_at: datetime
+    document_id: str | None = None
+    document_title: str | None = None
+    source: str | None = None
+    task_key: str
+    operation: str
+    provider: str = "openai"
+    model: str
+    endpoint: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    error_message: str | None = None
+    estimated_cost_usd: float | None = None
+
+
 class DashboardOut(BaseModel):
     documents: int
     unread: int
@@ -1246,6 +1264,7 @@ class DashboardOut(BaseModel):
     failed_import_jobs: int
     failed_concordance_jobs: int
     failed_accessory_summary_jobs: int = 0
+    recent_failed_ai_calls: list[AIFailureNoticeOut] = Field(default_factory=list)
     projects: int
 
 

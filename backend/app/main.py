@@ -410,6 +410,7 @@ DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.04
 PDF_PREVIEW_RENDER_SCALE = 2.5
 CACHE_HYDRATE_LIST_PAGE_SIZE = 100
 CACHE_HYDRATE_MAX_DOCUMENTS = 10000
+RECENT_AI_FAILURE_NOTICE_LIMIT = 8
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
@@ -2362,6 +2363,46 @@ def library_fun_stats_out(db: Session) -> LibraryFunStatsOut:
     )
 
 
+def recent_failed_ai_call_notices(db: Session) -> list[dict[str, Any]]:
+    records = (
+        db.query(OpenAIUsageRecord)
+        .filter(OpenAIUsageRecord.status == "failed")
+        .order_by(OpenAIUsageRecord.created_at.desc(), OpenAIUsageRecord.id.desc())
+        .limit(RECENT_AI_FAILURE_NOTICE_LIMIT)
+        .all()
+    )
+    if not records:
+        return []
+    document_ids = sorted({record.document_id for record in records if record.document_id})
+    document_titles = {
+        document.id: document.title or document.original_filename
+        for document in db.query(Document).filter(Document.id.in_(document_ids)).all()
+    } if document_ids else {}
+    notices: list[dict[str, Any]] = []
+    for record in records:
+        cost = estimated_cost_usd_for_record(record, db)
+        notices.append(
+            {
+                "id": record.id,
+                "created_at": record.created_at,
+                "document_id": record.document_id,
+                "document_title": document_titles.get(record.document_id or ""),
+                "source": record.source,
+                "task_key": record.task_key,
+                "operation": record.operation,
+                "provider": record.provider,
+                "model": record.model,
+                "endpoint": record.endpoint,
+                "input_tokens": record.input_tokens,
+                "output_tokens": record.output_tokens,
+                "total_tokens": record.total_tokens,
+                "error_message": record.error_message,
+                "estimated_cost_usd": None if cost is None else round(cost, 6),
+            }
+        )
+    return notices
+
+
 def dashboard_out(db: Session) -> DashboardOut:
     import_queued_jobs = db.query(ImportJob).filter(ImportJob.status == "queued").count()
     import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
@@ -2430,6 +2471,7 @@ def dashboard_out(db: Session) -> DashboardOut:
         failed_import_jobs=failed_import_jobs,
         failed_concordance_jobs=failed_concordance_jobs,
         failed_accessory_summary_jobs=failed_accessory_summary_jobs,
+        recent_failed_ai_calls=recent_failed_ai_call_notices(db),
         projects=db.query(Project).filter(Project.deleted_at.is_(None)).count(),
     )
 
