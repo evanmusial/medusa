@@ -1932,7 +1932,30 @@ textarea {
   margin-left: auto;
 }
 
-.library-page-controls span {
+.library-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 34px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.library-page-size span {
+  min-width: 0;
+}
+
+.library-page-size select {
+  width: 82px;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.library-page-controls > span {
   min-width: 28px;
   color: var(--muted);
   font-size: 12px;
@@ -10115,6 +10138,11 @@ button.history-row,
 
   .library-page-controls {
     margin-left: 0;
+    width: 100%;
+  }
+
+  .library-page-size {
+    justify-content: space-between;
     width: 100%;
   }
 

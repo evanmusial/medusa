@@ -227,14 +227,18 @@ export const api = {
     const suffix = params.toString();
     return request<DocumentSummary[]>(`/api/documents${suffix ? `?${suffix}` : ""}`);
   },
-  documentList: (query: string, filters: DocumentFilters = {}, options: { offset?: number; limit?: number } = {}) => {
+  documentList: (query: string, filters: DocumentFilters = {}, options: { all?: boolean; offset?: number; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
     Object.entries(filters).forEach(([key, value]) => {
       if (value) params.set(key, value);
     });
-    params.set("offset", String(Math.max(0, options.offset ?? 0)));
-    params.set("limit", String(Math.max(1, options.limit ?? 500)));
+    if (options.all) {
+      params.set("all", "true");
+    } else {
+      params.set("offset", String(Math.max(0, options.offset ?? 0)));
+      params.set("limit", String(Math.max(1, options.limit ?? 100)));
+    }
     return request<DocumentListResponse>(`/api/documents/list?${params.toString()}`);
   },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),

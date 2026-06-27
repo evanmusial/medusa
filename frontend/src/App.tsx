@@ -316,7 +316,17 @@ const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
-const LIBRARY_PAGE_SIZE = 500;
+const LIBRARY_NUMERIC_PAGE_SIZES = [50, 100, 250, 500, 1000] as const;
+type LibraryPageSize = (typeof LIBRARY_NUMERIC_PAGE_SIZES)[number] | "all";
+const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 100;
+const LIBRARY_PAGE_SIZE_OPTIONS: Array<{ value: LibraryPageSize; label: string }> = [
+  { value: 50, label: "50" },
+  { value: 100, label: "100" },
+  { value: 250, label: "250" },
+  { value: 500, label: "500" },
+  { value: 1000, label: "1,000" },
+  { value: "all", label: "All" },
+];
 const LIBRARY_ROW_HEIGHT = 118;
 const LIBRARY_ROW_OVERSCAN = 6;
 const EMPTY_LIBRARY_ROWS: DocumentListRow[] = [];
@@ -349,6 +359,17 @@ const APP_TOOLTIP_SELECTOR = [
   "textarea",
   "[role='button']",
 ].join(",");
+
+function isLibraryNumericPageSize(value: number): value is (typeof LIBRARY_NUMERIC_PAGE_SIZES)[number] {
+  return LIBRARY_NUMERIC_PAGE_SIZES.some((option) => option === value);
+}
+
+function parseLibraryPageSize(value: string | null): LibraryPageSize {
+  if (value === "all") return "all";
+  const numericValue = Number(value);
+  return Number.isInteger(numericValue) && isLibraryNumericPageSize(numericValue) ? numericValue : DEFAULT_LIBRARY_PAGE_SIZE;
+}
+
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
   { value: "last_day", label: "Last day" },
   { value: "last_month", label: "Last month" },
@@ -5378,9 +5399,11 @@ function LibraryView({
   totalPageCount,
   pageOffset,
   pageLimit,
+  pageSize,
   hasMoreDocuments,
   onPreviousPage,
   onNextPage,
+  onPageSizeChange,
   preferences,
 }: {
   documents: LibraryDocumentRow[];
@@ -5404,9 +5427,11 @@ function LibraryView({
   totalPageCount: number;
   pageOffset: number;
   pageLimit: number;
+  pageSize: LibraryPageSize;
   hasMoreDocuments: boolean;
   onPreviousPage: () => void;
   onNextPage: () => void;
+  onPageSizeChange: (pageSize: LibraryPageSize) => void;
   preferences?: AppPreferences;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
@@ -5601,6 +5626,7 @@ function LibraryView({
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
   const visibleStart = totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
   const visibleEnd = Math.min(pageOffset + sortedDocuments.length, totalDocumentCount);
+  const pageSizeLabel = pageSize === "all" ? "All" : formatWholeNumber(pageSize);
   const libraryCountLabel =
     totalDocumentCount === sortedDocuments.length && pageOffset === 0
       ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
@@ -6017,23 +6043,37 @@ function LibraryView({
             </div>
           ) : null}
           <div className="library-page-controls">
+            <label className="library-page-size">
+              <span>Rows</span>
+              <select
+                data-tooltip="Choose how many Library result rows to fetch for each page. All loads every matching row at once."
+                value={String(pageSize)}
+                onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
+              >
+                {LIBRARY_PAGE_SIZE_OPTIONS.map((option) => (
+                  <option key={String(option.value)} value={String(option.value)}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               className="secondary-button compact"
-              data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
+              data-disabled-reason={pageSize === "all" ? "all matching documents are already loaded." : pageOffset <= 0 ? "already at the first result window." : ""}
               data-tooltip="Load the previous Library result window."
-              disabled={pageOffset <= 0 || loading}
+              disabled={pageSize === "all" || pageOffset <= 0 || loading}
               onClick={onPreviousPage}
               type="button"
             >
               <ChevronLeft size={15} />
               Previous
             </button>
-            <span>{pageLimit ? `${formatWholeNumber(Math.floor(pageOffset / pageLimit) + 1)}` : "1"}</span>
+            <span>{pageSize === "all" ? pageSizeLabel : pageLimit ? `${formatWholeNumber(Math.floor(pageOffset / pageLimit) + 1)}` : "1"}</span>
             <button
               className="secondary-button compact"
-              data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
+              data-disabled-reason={pageSize === "all" ? "all matching documents are already loaded." : !hasMoreDocuments ? "already at the last result window." : ""}
               data-tooltip="Load the next Library result window."
-              disabled={!hasMoreDocuments || loading}
+              disabled={pageSize === "all" || !hasMoreDocuments || loading}
               onClick={onNextPage}
               type="button"
             >
@@ -17887,6 +17927,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [libraryOffset, setLibraryOffset] = useState(0);
+  const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(DEFAULT_LIBRARY_PAGE_SIZE);
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
@@ -17924,6 +17965,8 @@ export default function App() {
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
   const needsConcordanceData = activeView === "settings" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
+  const libraryListAll = libraryPageSize === "all";
+  const libraryListOffset = libraryListAll ? 0 : libraryOffset;
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
   const ingestionHistory = useQuery({
     queryKey: ["ingestion-history"],
@@ -17955,10 +17998,15 @@ export default function App() {
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data && needsSavedSearches) });
   useEffect(() => {
     setLibraryOffset(0);
-  }, [documentQuery, filters]);
+  }, [documentQuery, filters, libraryPageSize]);
   const libraryDocumentList = useQuery({
-    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, LIBRARY_PAGE_SIZE],
-    queryFn: () => api.documentList(documentQuery, filters, { offset: libraryOffset, limit: LIBRARY_PAGE_SIZE }),
+    queryKey: ["documents", "library-list", documentQuery, filters, libraryListOffset, libraryPageSize],
+    queryFn: () =>
+      api.documentList(documentQuery, filters, {
+        all: libraryListAll,
+        offset: libraryListOffset,
+        limit: libraryListAll ? undefined : libraryPageSize,
+      }),
     enabled: Boolean(me.data && needsLibraryDocumentList),
     staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
     refetchInterval: needsLibraryDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
@@ -18575,12 +18623,21 @@ export default function App() {
             alternatingRows={preferences.data?.library_alternating_rows ?? true}
             totalDocumentCount={libraryTotalDocumentCount}
             totalPageCount={libraryTotalPageCount}
-            pageOffset={libraryDocumentList.data?.offset ?? libraryOffset}
-            pageLimit={libraryDocumentList.data?.limit ?? LIBRARY_PAGE_SIZE}
+            pageOffset={libraryDocumentList.data?.offset ?? libraryListOffset}
+            pageLimit={libraryDocumentList.data?.limit ?? (libraryPageSize === "all" ? libraryTotalDocumentCount : libraryPageSize)}
+            pageSize={libraryPageSize}
             hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
-            onPreviousPage={() => setLibraryOffset((current) => Math.max(0, current - LIBRARY_PAGE_SIZE))}
+            onPreviousPage={() => {
+              if (libraryPageSize !== "all") setLibraryOffset((current) => Math.max(0, current - libraryPageSize));
+            }}
             onNextPage={() => {
-              if (libraryDocumentList.data?.has_more) setLibraryOffset((current) => current + LIBRARY_PAGE_SIZE);
+              if (libraryPageSize !== "all" && libraryDocumentList.data?.has_more) {
+                setLibraryOffset((current) => current + libraryPageSize);
+              }
+            }}
+            onPageSizeChange={(pageSize) => {
+              setLibraryPageSize(pageSize);
+              setLibraryOffset(0);
             }}
             preferences={preferences.data}
           />

@@ -1,6 +1,6 @@
 # Medusa Performance Roadmap
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 This document maps future performance work for Medusa as the library grows from
 hundreds of documents toward 10x and 50x current corpus size. It is intentionally
@@ -14,7 +14,8 @@ The current performance pass added:
 
 - `/api/documents/list`, a bounded slim Library list endpoint with total counts,
   pagination state, and a revision token.
-- Frontend Library virtualization over 500-row result windows.
+- Frontend Library virtualization over a 100-row default result window, with
+  user-selectable 50, 100, 250, 500, 1,000, and explicit All windows.
 - Debounced search and a short idle stale window for document list data.
 - Lean secondary-workspace document list fetches that skip duplicate badges and
   project membership when they are not needed.

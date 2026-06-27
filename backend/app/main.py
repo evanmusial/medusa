@@ -3071,8 +3071,9 @@ def list_document_rows(
     priority: str | None = None,
     citation_status: str | None = None,
     duplicate_status: str | None = None,
+    all_results: Annotated[bool, Query(alias="all")] = False,
     offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> DocumentListOut:
     query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
     query, search_rank = apply_document_filters(
@@ -3095,7 +3096,12 @@ def list_document_rows(
     latest_updated = query.order_by(None).with_entities(func.max(Document.updated_at)).scalar()
     order_columns = [search_rank.desc()] if search_rank is not None else []
     order_columns.extend(document_title_order_columns(db))
-    documents = query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
+    if all_results:
+        offset = 0
+        documents = query.order_by(None).order_by(*order_columns).all()
+        limit = len(documents)
+    else:
+        documents = query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
     project_map = project_summaries_for_documents(db, [document.id for document in documents])
     revision_parts = [str(total_count), str(total_page_count), latest_updated.isoformat() if latest_updated else "none"]
     return DocumentListOut(
@@ -3104,7 +3110,7 @@ def list_document_rows(
         total_page_count=total_page_count,
         offset=offset,
         limit=limit,
-        has_more=offset + len(documents) < total_count,
+        has_more=False if all_results else offset + len(documents) < total_count,
         revision=":".join(revision_parts),
     )
 
