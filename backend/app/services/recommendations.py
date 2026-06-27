@@ -31,6 +31,18 @@ REFERENCE_MARKDOWN_TITLE_RE = re.compile(r"(?<!\*)\*([^*\n]{8,300})\*(?!\*)")
 REFERENCE_APA_TITLE_RE = re.compile(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)\.\s+(.+?)(?:\.\s+|$)")
 REFERENCE_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 REFERENCE_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})[a-z]?\b")
+REFERENCE_AUTHOR_INITIAL_RE = re.compile(r"^\s*(?:[A-Z]\.\s*-?\s*){1,6}")
+REFERENCE_YEAR_TAIL_RE = re.compile(r"^\s*(?:19|20)\d{2}[a-z]?(?:[\s,.;]|$)", re.IGNORECASE)
+REFERENCE_VENUE_HINT_RE = re.compile(
+    r"(?:\bACM\b|\bAccess\b|Appl\.|Black Hat|Commun\.|\bConference\b|Comput\.|\bCongress\b|\bIEEE\b|"
+    r"Inform\.|Intell\.|J\.|\bJournal\b|\bProceedings\b|Proc\.|\bResearch\b|Sci\.|Secur\.|\bSecurity\b|"
+    r"\bSensors\b|\bSpringer\b|\bSymposium\b|Syst\.|\bSystems\b|Trans\.|\bTransactions\b|Transport\.|"
+    r"\bVehicular\b|\bVision\b|\bWorkshop\b)",
+    re.IGNORECASE,
+)
+REFERENCE_NUMERIC_TAIL_RE = re.compile(
+    r"(?:\d+\s*(?:\(\s*\d+\s*\)\s*)?\(\s*(?:19|20)\d{2}\s*\)|\d+e\d+|\d+-\d+)"
+)
 OPENALEX_WORK_RE = re.compile(r"W\d+")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ARXIV_ABS_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([^?#]+)", re.IGNORECASE)
@@ -891,7 +903,76 @@ def _reference_title(entry: str) -> str | None:
             title = _clean_reference_title(match.group(1))
             if title:
                 return title
+    return _comma_style_reference_title(clean)
+
+
+def _comma_style_reference_title(entry: str) -> str | None:
+    parts = [part.strip() for part in entry.split(",") if part.strip()]
+    if len(parts) < 2:
+        return None
+    start = _reference_title_start_index(parts)
+    if start is None or start >= len(parts):
+        return None
+
+    title_parts: list[str] = []
+    for part in parts[start:]:
+        if _looks_like_reference_tail(part, has_title=bool(title_parts)):
+            break
+        title_parts.append(part)
+
+    return _clean_reference_title(", ".join(title_parts))
+
+
+def _reference_title_start_index(parts: list[str]) -> int | None:
+    author_count = 0
+    for part in parts:
+        if _looks_like_person_author_part(part):
+            author_count += 1
+            continue
+        break
+    if author_count:
+        return author_count
+    if len(parts) >= 2 and _looks_like_organization_author_part(parts[0]):
+        return 1
     return None
+
+
+def _looks_like_person_author_part(part: str) -> bool:
+    value = part.strip()
+    if not value:
+        return False
+    if value.lower().rstrip(".") == "et al":
+        return True
+    return bool(REFERENCE_AUTHOR_INITIAL_RE.match(value))
+
+
+def _looks_like_organization_author_part(part: str) -> bool:
+    value = part.strip()
+    if not value or len(value) > 48:
+        return False
+    if DOI_RE.search(value) or REFERENCE_URL_RE.search(value) or REFERENCE_YEAR_RE.search(value):
+        return False
+    if any(separator in value for separator in (":", ".", ";")):
+        return False
+    words = value.split()
+    return 1 <= len(words) <= 4 and any(char.isupper() for char in value)
+
+
+def _looks_like_reference_tail(part: str, *, has_title: bool) -> bool:
+    value = part.strip()
+    if not value:
+        return False
+    if value.lower().startswith(("in:", "available:", "accessed ")):
+        return True
+    if DOI_RE.search(value) or REFERENCE_URL_RE.search(value):
+        return True
+    if has_title and REFERENCE_YEAR_TAIL_RE.match(value):
+        return True
+    if has_title and REFERENCE_YEAR_RE.search(value) and REFERENCE_NUMERIC_TAIL_RE.search(value):
+        return True
+    if has_title and REFERENCE_YEAR_RE.search(value) and REFERENCE_VENUE_HINT_RE.search(value):
+        return True
+    return False
 
 
 def _clean_reference_title(value: str | None) -> str | None:

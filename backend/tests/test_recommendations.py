@@ -337,6 +337,50 @@ def test_bibliography_reference_entries_split_one_source_per_line(monkeypatch, t
     ]
 
 
+def test_bibliography_reference_candidates_parse_comma_style_titles(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document
+    from app.services.recommendations import bibliography_reference_candidates
+
+    source = Document(
+        title="Seed Paper",
+        original_filename="seed.pdf",
+        checksum_sha256="a" * 64,
+        processing_status="ready",
+        bibliography=(
+            "K. Kim, J.S. Kim, S. Jeong, J.-H. Park, H.K. Kim, Cybersecurity for autonomous vehicles: "
+            "review of attacks and defense, Comput. Secur. 103 (2021) 102150.\n"
+            "M. Pham, K. Xiong, A survey on security attacks and defense techniques for connected and "
+            "autonomous vehicles, Comput. Secur. 109 (2021) 102269.\n"
+            "S. Tuohy, M. Glavin, C. Hughes, E. Jones, M. Trivedi, L. Kilmartin, Intra-vehicle networks: "
+            "a review, IEEE Trans. Intell. Transport. Syst. 16 (2) (2014) 534e545.\n"
+            "J. Howden, L. Maglaras, M.A. Ferrag, The security aspects of automotive over-the-air updates, "
+            "Int. J. Cyber Warf. Terror. (IJCWT) 10 (2) (2020) 64e81.\n"
+            "P. Sharma, J. Gillanders, Cybersecurity and forensics in connected autonomous vehicles: "
+            "a review of the state-of-the-art, IEEE Access 10 (2022).\n"
+            "X. Sun, F.R. Yu, P. Zhang, A survey on cyber-security of connected and autonomous vehicles "
+            "(cavs), IEEE Trans. Intell. Transport. Syst. 23 (7) (2021) 6240e6259.\n"
+            "Z. Xiao, D. Yang, F. Wen, K. Jiang, A unified multiple-target positioning framework for "
+            "intelligent connected vehicles, Sensors 19 (9) (2019) 1967."
+        ),
+    )
+
+    candidates = bibliography_reference_candidates(source, limit=20)
+    titles = {candidate.title for candidate in candidates}
+
+    assert "Cybersecurity for autonomous vehicles: review of attacks and defense" in titles
+    assert "A survey on security attacks and defense techniques for connected and autonomous vehicles" in titles
+    assert "Intra-vehicle networks: a review" in titles
+    assert "The security aspects of automotive over-the-air updates" in titles
+    assert "Cybersecurity and forensics in connected autonomous vehicles: a review of the state-of-the-art" in titles
+    assert "A survey on cyber-security of connected and autonomous vehicles (cavs)" in titles
+    assert "A unified multiple-target positioning framework for intelligent connected vehicles" in titles
+    assert "(2021) 102150" not in titles
+    assert "(2021) 102269" not in titles
+
+
 def test_recommendations_v2_filters_known_items_and_relation_families(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
