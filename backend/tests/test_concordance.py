@@ -271,7 +271,7 @@ def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresse
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
-    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCapability
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCapability, DocumentCompositionRecord
     from app.services import concordance as concordance_service
     from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
 
@@ -335,6 +335,9 @@ def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresse
         assert evidence["existing_bibliography_preserved"] is True
         capability = db.query(DocumentCapability).filter_by(document_id=document.id, capability_key="bibliography_extraction").one()
         assert capability.evidence["status"] == "rejected_regression_existing_bibliography"
+        assert DocumentCompositionRecord.__table__.c.status.type.length >= len("rejected_regression_existing_bibliography")
+        composition = db.query(DocumentCompositionRecord).filter_by(document_id=document.id, record_kind="concordance").one()
+        assert composition.status == "rejected_regression_existing_bibliography"
         assert not document.versions
 
 

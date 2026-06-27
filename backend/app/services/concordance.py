@@ -956,6 +956,8 @@ def mark_document_capability(
 
 class ConcordanceProcessor:
     def process_job(self, db: Session, job: ConcordanceJob) -> None:
+        job_id = job.id
+        document_id = job.document_id
         document = job.document
         if not document or document.deleted_at:
             job.status = "failed"
@@ -1051,13 +1053,19 @@ class ConcordanceProcessor:
             )
             db.commit()
         except Exception as exc:
+            db.rollback()
+            job = db.get(ConcordanceJob, job_id)
+            document = db.get(Document, document_id) if document_id else None
+            if not job:
+                return
+            capability = CAPABILITY_BY_KEY.get(job.capability_key)
             if document:
                 record_concordance_stage(
                     db,
                     document=document,
                     concordance_job=job,
                     stage_key=job.capability_key,
-                    label=CAPABILITY_BY_KEY.get(job.capability_key, CapabilityDefinition(job.capability_key, job.capability_key, 0, "")).label,
+                    label=capability.label if capability else job.capability_key.replace("_", " ").title(),
                     method=job.capability_key,
                     model=concordance_stage_model(db, job.capability_key),
                     status="failed",

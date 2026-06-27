@@ -225,6 +225,7 @@ def process_import_job(job_id: str) -> None:
                 DocumentProcessor().process_job(db, job)
             complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_IMPORT, job_id=job_id)
         except Exception as exc:
+            db.rollback()
             complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_IMPORT, job_id=job_id, failed_error=str(exc))
             db.commit()
             raise
@@ -238,6 +239,7 @@ def process_concordance_job(job_id: str) -> None:
                 ConcordanceProcessor().process_job(db, job)
             complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_CONCORDANCE, job_id=job_id)
         except Exception as exc:
+            db.rollback()
             complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_CONCORDANCE, job_id=job_id, failed_error=str(exc))
             db.commit()
             raise
