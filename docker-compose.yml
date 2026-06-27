@@ -1,4 +1,25 @@
 services:
+  valkey:
+    image: valkey/valkey:9.1.0-alpine
+    restart: unless-stopped
+    networks:
+      - cache
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - ${MEDUSA_VALKEY_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
   db:
     image: pgvector/pgvector:pg16
     environment:
@@ -17,6 +38,9 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
+    networks:
+      - default
+      - cache
     env_file:
       - path: .env
         required: false
@@ -36,6 +60,11 @@ services:
       MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
       MEDUSA_RELEASE_STATUS_PATH: ${MEDUSA_RELEASE_STATUS_PATH:-/app/data/deploy/release-status.json}
       MEDUSA_RELEASE_REQUEST_PATH: ${MEDUSA_RELEASE_REQUEST_PATH:-/app/data/deploy/release-request.json}
+      MEDUSA_CACHE_BACKEND: ${MEDUSA_CACHE_BACKEND:-valkey}
+      MEDUSA_CACHE_URL: ${MEDUSA_CACHE_URL:-valkey://valkey:6379/0}
+      MEDUSA_CACHE_TTL_SECONDS: ${MEDUSA_CACHE_TTL_SECONDS:-3600}
+      MEDUSA_CACHE_MAX_PAYLOAD_BYTES: ${MEDUSA_CACHE_MAX_PAYLOAD_BYTES:-2097152}
+      MEDUSA_VALKEY_MAXMEMORY: ${MEDUSA_VALKEY_MAXMEMORY:-512mb}
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
@@ -47,6 +76,9 @@ services:
   worker:
     build:
       context: ./backend
+    networks:
+      - default
+      - cache
     env_file:
       - path: .env
         required: false
@@ -65,6 +97,11 @@ services:
       MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
       MEDUSA_RELEASE_STATUS_PATH: ${MEDUSA_RELEASE_STATUS_PATH:-/app/data/deploy/release-status.json}
       MEDUSA_RELEASE_REQUEST_PATH: ${MEDUSA_RELEASE_REQUEST_PATH:-/app/data/deploy/release-request.json}
+      MEDUSA_CACHE_BACKEND: ${MEDUSA_CACHE_BACKEND:-valkey}
+      MEDUSA_CACHE_URL: ${MEDUSA_CACHE_URL:-valkey://valkey:6379/0}
+      MEDUSA_CACHE_TTL_SECONDS: ${MEDUSA_CACHE_TTL_SECONDS:-3600}
+      MEDUSA_CACHE_MAX_PAYLOAD_BYTES: ${MEDUSA_CACHE_MAX_PAYLOAD_BYTES:-2097152}
+      MEDUSA_VALKEY_MAXMEMORY: ${MEDUSA_VALKEY_MAXMEMORY:-512mb}
     volumes:
       - ./data:/app/data
       - ./data/secrets:/app/data/secrets:ro
@@ -125,3 +162,7 @@ services:
 
 volumes:
   medusa-postgres:
+
+networks:
+  cache:
+    internal: true

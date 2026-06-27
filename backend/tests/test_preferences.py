@@ -111,6 +111,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
 
     from app.models import AppPreference
     from app.services.analysis_models import (
+        ANALYSIS_MODEL_TASKS,
         MODEL_ACCESSORY_SUMMARIES,
         MODEL_BIBLIOGRAPHY_CLEANUP,
         MODEL_FORMULA_CAPTURE,
@@ -156,7 +157,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert preferences["analysis_models"][MODEL_PAGE_TEXT_NORMALIZATION] == "gpt-5.4-nano"
 
         payload = get_app_preferences(db)
-        assert len(payload["analysis_model_tasks"]) == 10
+        assert len(payload["analysis_model_tasks"]) == len(ANALYSIS_MODEL_TASKS)
         assert payload["model_pricing"]["updated_at"] == "2026-06-23"
         assert payload["model_pricing"]["stale"] is True
         raw_text_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_RAW_TEXT_EXTRACTION)

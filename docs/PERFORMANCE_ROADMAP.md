@@ -396,16 +396,31 @@ PDF preview and visual assets have different bottlenecks from metadata search:
 
 ## Valkey Decision Notes
 
-Valkey is a good candidate when the bottleneck is ephemeral, shared across
-processes, frequently invalidated, or naturally pub/sub. It is not a replacement
-for Medusa's durable database.
+Valkey is now the default optional response-cache service for selected hot,
+derived API payloads. It is not a replacement for Medusa's durable database.
+PostgreSQL remains authoritative, and durable `cache_revisions` rows are part
+of every cached key so old payloads become unreachable after relevant writes or
+manual Refresh Cache.
+
+Current v1 cache families:
+
+- `/api/documents/list` as `documents:list`.
+- `/api/documents/{id}` as `documents:detail`, after a PostgreSQL visibility and
+  document-version precheck.
+- `/api/dashboard` as `dashboard`.
+- `/api/status/library-fun` as `status:library_fun`.
+- `/api/domains`, `/api/tags`, and `/api/projects` as `organization`.
+
+The profile menu and `/status` expose cache memory, mode, key count, hit/miss
+rate, per-family backend counters, manual refresh, hot-route p95 timings,
+active queue depth/oldest age, database relation footprints, and storage
+footprints. Valkey outages are cache misses/degraded status, not app failures.
 
 Good Valkey candidates:
 
 - Active-work pub/sub so browser sessions can receive import, Concordance,
   backup, and future Activity updates without polling.
-- Short-lived hot aggregate caches for dashboard/domain/tag/project counts after
-  benchmarks show PostgreSQL count queries dominate.
+- Short-lived hot aggregate caches for dashboard/domain/tag/project counts.
 - Provider rate-limit and cooldown counters.
 - Distributed locks and request coalescing for expensive refreshes, such as
   "only one Related refresh for this document at a time."
@@ -413,18 +428,19 @@ Good Valkey candidates:
   catalogs, provider metadata lookups, or status summaries.
 - Debounce/invalidation channels when multiple backend or worker processes run.
 
-Poor Valkey candidates:
+Still poor Valkey candidates:
 
 - System-of-record metadata, jobs, correction history, evidence, or auth state.
 - Primary full-text search index.
 - Large document/page text blobs.
 - Long-lived recommendation evidence that must survive restarts and backups.
-- Whole Library result pages whose invalidation would be complex and fragile.
+- Whole-corpus or unbounded Library result sets whose invalidation would be
+  complex and fragile.
 - Anything that must be restored from a PostgreSQL backup.
 
-Adoption criteria:
+Keep/expand criteria:
 
-- A benchmark names the endpoint or operation that is too slow.
+- Benchmarks show the endpoint or operation benefits from Valkey.
 - PostgreSQL query shape, indexes, read models, and payload trimming have been
   tried or rejected with evidence.
 - Cache invalidation rules are clear and testable.
@@ -432,15 +448,16 @@ Adoption criteria:
 - Backups do not need Valkey data for correctness.
 - Metrics show hit rate, miss cost, memory use, eviction, and stale-read risk.
 
-Implementation shape if adopted:
+Current implementation shape:
 
-- Add a `valkey` Compose service and optional `VALKEY_URL`.
+- Add a `valkey` Compose service and optional `MEDUSA_CACHE_URL`.
 - Keep a no-Valkey fallback path.
 - Prefix keys by environment and schema/cache version.
-- Use short TTLs unless invalidation is proven.
+- Use bounded TTLs plus durable revision stamps.
 - Centralize cache key construction and invalidation.
-- Expose cache status in Utilities.
-- Clear or version caches on migrations that affect cached payloads.
+- Expose cache status in the profile menu and Status page.
+- Version caches on schema/key changes and use manual Refresh Cache for
+  user-triggered global invalidation.
 
 ## External Search Engine Decision Notes
 

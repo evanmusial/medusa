@@ -14,6 +14,7 @@ from app.models import (
     ImportBatch,
     ImportJob,
     ProcessingEvent,
+    PortfolioVersion,
     TextChunk,
     utc_now,
 )
@@ -125,6 +126,15 @@ def log_event(
             message=message,
             payload=payload or {},
         )
+    )
+
+
+def sync_portfolio_version_processing_status(db: Session, document: Document, status: str) -> None:
+    if document.document_kind != "portfolio_version":
+        return
+    db.query(PortfolioVersion).filter(PortfolioVersion.document_id == document.id).update(
+        {PortfolioVersion.processing_status: status},
+        synchronize_session=False,
     )
 
 
@@ -495,6 +505,7 @@ class DocumentProcessor:
             job.attempts += 1
             job.locked_at = utc_now()
             document.processing_status = "running"
+            sync_portfolio_version_processing_status(db, document, "running")
             log_event(db, job=job, document=document, event_type="started", message="Processing started.")
             db.commit()
 
@@ -509,6 +520,7 @@ class DocumentProcessor:
             job.status = "complete"
             job.locked_at = None
             document.processing_status = "ready"
+            sync_portfolio_version_processing_status(db, document, "ready")
             batch = db.get(ImportBatch, job.batch_id)
             if batch:
                 refresh_import_batch_progress(db, batch)
@@ -525,6 +537,7 @@ class DocumentProcessor:
             job.last_error = str(exc)
             if document:
                 document.processing_status = "failed"
+                sync_portfolio_version_processing_status(db, document, "failed")
             batch = db.get(ImportBatch, job.batch_id)
             if batch:
                 refresh_import_batch_progress(db, batch)

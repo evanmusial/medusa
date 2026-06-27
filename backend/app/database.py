@@ -55,7 +55,7 @@ def _create_postgres_supporting_objects(conn: Connection) -> None:
             """
             CREATE INDEX IF NOT EXISTS ix_documents_library_ready_filters
             ON documents (read_status, priority, citation_status, duplicate_count)
-            WHERE deleted_at IS NULL AND processing_status IN ('ready', 'complete', 'completed', 'restored')
+            WHERE deleted_at IS NULL AND document_kind = 'library' AND processing_status IN ('ready', 'complete', 'completed', 'restored')
             """
         )
     )

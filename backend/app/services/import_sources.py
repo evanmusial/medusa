@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
 import textwrap
+import zipfile
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from app.services.extraction import sanitize_extracted_text
 
@@ -15,9 +18,13 @@ from app.services.extraction import sanitize_extracted_text
 PDF_CONTENT_TYPE = "application/pdf"
 HTML_EXTENSIONS = {".html", ".htm"}
 TEXT_EXTENSIONS = {".txt", ".text", ".md", ".markdown"}
+DOCX_EXTENSIONS = {".docx"}
+RTF_EXTENSIONS = {".rtf"}
 HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
 TEXT_CONTENT_TYPES = {"text/plain", "text/markdown", "text/x-markdown"}
-SUPPORTED_SOURCE_KINDS = {"pdf", "html", "text"}
+DOCX_CONTENT_TYPES = {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+RTF_CONTENT_TYPES = {"application/rtf", "application/x-rtf", "text/rtf"}
+SUPPORTED_SOURCE_KINDS = {"pdf", "html", "text", "docx", "rtf"}
 GENERIC_IMPORT_TITLES = {
     "document",
     "document1",
@@ -108,7 +115,11 @@ def classify_import_source(filename: str | None, content_type: str | None = None
         return "html"
     if clean_type in TEXT_CONTENT_TYPES or suffix in TEXT_EXTENSIONS:
         return "text"
-    raise ImportSourceError("Unsupported import file type. Use PDF, HTML, or plain text.")
+    if clean_type in DOCX_CONTENT_TYPES or suffix in DOCX_EXTENSIONS:
+        return "docx"
+    if clean_type in RTF_CONTENT_TYPES or suffix in RTF_EXTENSIONS:
+        return "rtf"
+    raise ImportSourceError("Unsupported import file type. Use PDF, DOCX, RTF, HTML, Markdown, or plain text.")
 
 
 def probe_import_source(data: bytes, filename: str | None, content_type: str | None = None) -> SourceProbe:
@@ -313,6 +324,54 @@ def _parse_plain_text(text: str, fallback_title: str) -> tuple[str, list[Semanti
     return title, blocks, outline
 
 
+def _parse_docx(data: bytes, fallback_title: str) -> tuple[str, list[SemanticBlock], list[dict[str, Any]]]:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+        document_xml = archive.read("word/document.xml")
+    except Exception as exc:
+        raise ImportSourceError("DOCX import could not read word/document.xml.") from exc
+    try:
+        root = ElementTree.fromstring(document_xml)
+    except ElementTree.ParseError as exc:
+        raise ImportSourceError("DOCX import found unreadable document XML.") from exc
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs: list[str] = []
+    for paragraph in root.findall(".//w:p", namespace):
+        parts = [node.text or "" for node in paragraph.findall(".//w:t", namespace)]
+        text = _clean_text("".join(parts))
+        if text:
+            paragraphs.append(text)
+    if not paragraphs:
+        raise ImportSourceError("DOCX import found no readable text.")
+    title = useful_import_title(paragraphs[0] if len(paragraphs[0]) <= 180 else None, fallback_title)
+    blocks: list[SemanticBlock] = []
+    title_used = False
+    for paragraph in paragraphs:
+        if not title_used and paragraph == paragraphs[0] and len(paragraph) <= 180:
+            blocks.append(SemanticBlock(kind="heading", text=paragraph, level=1))
+            title_used = True
+        else:
+            blocks.append(SemanticBlock(kind="paragraph", text=paragraph))
+    outline = [{"level": 1, "text": title[:240]}] if title else []
+    return title, blocks, outline
+
+
+def _rtf_to_text(data: bytes) -> str:
+    text = _decode_text(data)
+    text = re.sub(
+        r"\\'([0-9a-fA-F]{2})",
+        lambda match: bytes.fromhex(match.group(1)).decode("cp1252", errors="replace"),
+        text,
+    )
+    text = re.sub(r"\\par[d]?", "\n\n", text)
+    text = re.sub(r"\\line", "\n", text)
+    text = re.sub(r"\\tab", "\t", text)
+    text = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", text)
+    text = re.sub(r"\\[{}\\]", "", text)
+    text = text.replace("{", "").replace("}", "")
+    return text
+
+
 def _wrap_for_pdf(text: str, *, font_size: float, width: float) -> list[str]:
     lines: list[str] = []
     max_chars = max(24, int(width / max(font_size * 0.52, 1)))
@@ -426,19 +485,29 @@ def prepare_import_source(data: bytes, filename: str | None, content_type: str |
             },
         )
 
-    text = _decode_text(data)
     fallback_title = fallback_import_title(probe.filename, probe.checksum_sha256)
     if probe.source_kind == "html":
+        text = _decode_text(data)
         title, blocks, outline = _parse_html(text, fallback_title)
-    else:
+        original_content_type = source_content_type or "text/html"
+    elif probe.source_kind == "docx":
+        title, blocks, outline = _parse_docx(data, fallback_title)
+        original_content_type = source_content_type or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif probe.source_kind == "rtf":
+        text = _rtf_to_text(data)
         title, blocks, outline = _parse_plain_text(text, fallback_title)
+        original_content_type = source_content_type or "application/rtf"
+    else:
+        text = _decode_text(data)
+        title, blocks, outline = _parse_plain_text(text, fallback_title)
+        original_content_type = source_content_type or "text/plain"
     pdf_bytes, pages = _render_blocks_to_pdf(title, blocks)
     stored_checksum = hashlib.sha256(pdf_bytes).hexdigest()
     stored_md5 = hashlib.md5(pdf_bytes, usedforsecurity=False).hexdigest()
     metadata = {
         "kind": probe.source_kind,
         "original_filename": probe.filename,
-        "original_content_type": source_content_type or ("text/html" if probe.source_kind == "html" else "text/plain"),
+        "original_content_type": original_content_type,
         "source_checksum_sha256": probe.checksum_sha256,
         "source_checksum_md5": probe.checksum_md5,
         "source_size_bytes": probe.file_size_bytes,

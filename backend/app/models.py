@@ -123,6 +123,15 @@ class SessionToken(Base, TimestampMixin):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class CacheRevision(Base):
+    __tablename__ = "cache_revisions"
+
+    family: Mapped[str] = mapped_column(String(80), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+
 class AppPreference(Base, TimestampMixin):
     __tablename__ = "app_preferences"
 
@@ -341,6 +350,7 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_kind: Mapped[str] = mapped_column(String(40), default="library", nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(600), nullable=False)
     subtitle: Mapped[str | None] = mapped_column(String(600))
     authors: Mapped[list[dict[str, Any]]] = mapped_column(JsonDict, default=list, nullable=False)
@@ -699,6 +709,176 @@ class DoiStash(Base, TimestampMixin, SoftDeleteMixin):
     recommendation: Mapped[DocumentRecommendation | None] = relationship()
     imported_document: Mapped[Document | None] = relationship(foreign_keys=[imported_document_id])
     import_job: Mapped["ImportJob | None"] = relationship()
+
+
+class PortfolioItem(Base, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "portfolio_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(600), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), default="active", nullable=False, index=True)
+    current_version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="SET NULL"), index=True)
+    project_ids: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    domain_ids: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    tag_ids: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    portfolio_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    versions: Mapped[list["PortfolioVersion"]] = relationship(
+        back_populates="portfolio_item",
+        cascade="all, delete-orphan",
+        foreign_keys="PortfolioVersion.portfolio_item_id",
+        order_by="PortfolioVersion.version_number.desc()",
+    )
+    materials: Mapped[list["PortfolioMaterial"]] = relationship(
+        back_populates="portfolio_item",
+        cascade="all, delete-orphan",
+        order_by="PortfolioMaterial.created_at.desc()",
+    )
+    suggestions: Mapped[list["PortfolioSuggestion"]] = relationship(
+        back_populates="portfolio_item",
+        cascade="all, delete-orphan",
+        order_by="PortfolioSuggestion.score.desc().nullslast(), PortfolioSuggestion.created_at.desc()",
+    )
+    assessment_runs: Mapped[list["PortfolioAssessmentRun"]] = relationship(
+        back_populates="portfolio_item",
+        cascade="all, delete-orphan",
+        order_by="PortfolioAssessmentRun.created_at.desc()",
+    )
+    current_version: Mapped["PortfolioVersion | None"] = relationship(
+        foreign_keys=[current_version_id],
+        post_update=True,
+    )
+
+
+class PortfolioVersion(Base, TimestampMixin):
+    __tablename__ = "portfolio_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    portfolio_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(240))
+    upload_note: Mapped[str | None] = mapped_column(Text)
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_content_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_checksum_md5: Mapped[str | None] = mapped_column(String(32), index=True)
+    source_storage_uri: Mapped[str | None] = mapped_column(Text)
+    source_size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processing_status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False, index=True)
+    version_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    portfolio_item: Mapped[PortfolioItem] = relationship(
+        back_populates="versions",
+        foreign_keys=[portfolio_item_id],
+    )
+    document: Mapped[Document] = relationship()
+    parent_edges: Mapped[list["PortfolioVersionEdge"]] = relationship(
+        back_populates="child_version",
+        cascade="all, delete-orphan",
+        foreign_keys="PortfolioVersionEdge.child_version_id",
+    )
+    child_edges: Mapped[list["PortfolioVersionEdge"]] = relationship(
+        back_populates="parent_version",
+        cascade="all, delete-orphan",
+        foreign_keys="PortfolioVersionEdge.parent_version_id",
+    )
+
+    __table_args__ = (UniqueConstraint("portfolio_item_id", "version_number", name="uq_portfolio_version_number"),)
+
+
+class PortfolioVersionEdge(Base, TimestampMixin):
+    __tablename__ = "portfolio_version_edges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    parent_version_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    child_version_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    relation_type: Mapped[str] = mapped_column(String(80), default="supersedes", nullable=False, index=True)
+    edge_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    parent_version: Mapped[PortfolioVersion] = relationship(back_populates="child_edges", foreign_keys=[parent_version_id])
+    child_version: Mapped[PortfolioVersion] = relationship(back_populates="parent_edges", foreign_keys=[child_version_id])
+
+    __table_args__ = (UniqueConstraint("parent_version_id", "child_version_id", "relation_type", name="uq_portfolio_version_edge"),)
+
+
+class PortfolioMaterial(Base, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "portfolio_materials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    portfolio_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="SET NULL"), index=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    role: Mapped[str] = mapped_column(String(80), default="reference", nullable=False, index=True)
+    label: Mapped[str | None] = mapped_column(String(240))
+    required_for_assessment: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    material_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    portfolio_item: Mapped[PortfolioItem] = relationship(back_populates="materials")
+    version: Mapped[PortfolioVersion | None] = relationship()
+    document: Mapped[Document] = relationship()
+
+
+class PortfolioSuggestion(Base, TimestampMixin):
+    __tablename__ = "portfolio_suggestions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    portfolio_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="SET NULL"), index=True)
+    library_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    source_type: Mapped[str] = mapped_column(String(80), default="library", nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(800), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    relation_family: Mapped[str] = mapped_column(String(80), default="closest", nullable=False, index=True)
+    score: Mapped[float | None] = mapped_column(Numeric(8, 3))
+    status: Mapped[str] = mapped_column(String(40), default="candidate", nullable=False, index=True)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+
+    portfolio_item: Mapped[PortfolioItem] = relationship(back_populates="suggestions")
+    version: Mapped[PortfolioVersion | None] = relationship()
+    library_document: Mapped[Document | None] = relationship()
+
+    __table_args__ = (UniqueConstraint("portfolio_item_id", "version_id", "library_document_id", "source_type", name="uq_portfolio_suggestion_source"),)
+
+
+class PortfolioAssessmentRun(Base, TimestampMixin):
+    __tablename__ = "portfolio_assessment_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    portfolio_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="SET NULL"), index=True)
+    mode: Mapped[str] = mapped_column(String(80), default="quality_review", nullable=False, index=True)
+    model_ids: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False, index=True)
+    summary: Mapped[str | None] = mapped_column(Text)
+    assessment_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    portfolio_item: Mapped[PortfolioItem] = relationship(back_populates="assessment_runs")
+    version: Mapped[PortfolioVersion | None] = relationship()
+    findings: Mapped[list["PortfolioAssessmentFinding"]] = relationship(
+        back_populates="assessment_run",
+        cascade="all, delete-orphan",
+        order_by="PortfolioAssessmentFinding.created_at",
+    )
+
+
+class PortfolioAssessmentFinding(Base, TimestampMixin):
+    __tablename__ = "portfolio_assessment_findings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    assessment_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_assessment_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(40), default="info", nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="open", nullable=False, index=True)
+
+    assessment_run: Mapped[PortfolioAssessmentRun] = relationship(back_populates="findings")
 
 
 class Project(Base, TimestampMixin, SoftDeleteMixin):

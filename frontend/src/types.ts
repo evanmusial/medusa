@@ -125,6 +125,88 @@ export type LibraryFunStats = {
   tag_count: number;
 };
 
+export type CacheFamilyStats = {
+  family: string;
+  hits: number;
+  misses: number;
+  bypasses: number;
+  errors: number;
+  writes: number;
+  hit_rate: number;
+};
+
+export type CacheRequestMetric = {
+  route: string;
+  count: number;
+  p95_ms: number;
+  average_ms: number;
+  slow_count: number;
+  last_status?: number | null;
+};
+
+export type CacheQueueStat = {
+  queue: string;
+  active_count: number;
+  oldest_age_seconds?: number | null;
+};
+
+export type CacheDatabaseFootprint = {
+  name: string;
+  kind: string;
+  total_bytes: number;
+  relation_bytes: number;
+};
+
+export type CacheStorageFootprint = {
+  label: string;
+  path: string;
+  exists: boolean;
+  size_bytes: number;
+  file_count: number;
+};
+
+export type CacheStatus = {
+  checked_at: string;
+  backend: string;
+  enabled: boolean;
+  reachable: boolean;
+  mode: string;
+  message: string;
+  version?: string | null;
+  uptime_seconds?: number | null;
+  used_memory_bytes?: number | null;
+  peak_memory_bytes?: number | null;
+  rss_memory_bytes?: number | null;
+  maxmemory_bytes?: number | null;
+  maxmemory_policy?: string | null;
+  key_count: number;
+  hit_count: number;
+  miss_count: number;
+  hit_rate: number;
+  evicted_keys: number;
+  expired_keys: number;
+  connected_clients: number;
+  ops_per_second: number;
+  latency_ms?: number | null;
+  last_refresh_at?: string | null;
+  last_invalidation_at?: string | null;
+  families: CacheFamilyStats[];
+  request_metrics: CacheRequestMetric[];
+  queue_stats: CacheQueueStat[];
+  database_footprints: CacheDatabaseFootprint[];
+  storage_footprints: CacheStorageFootprint[];
+};
+
+export type CacheRefreshResult = {
+  status: string;
+  message: string;
+  refreshed_at: string;
+  refreshed_families: string[];
+  warmed_keys: number;
+  before: CacheStatus;
+  after: CacheStatus;
+};
+
 export type AppPreferences = {
   import_worker_concurrency: number;
   recommended_import_worker_concurrency: number;
@@ -955,6 +1037,146 @@ export type DocumentDetail = DocumentSummary & {
   accessory_summaries: AccessorySummary[];
   annotations: Annotation[];
   duplicate_document_ids: string[];
+};
+
+export type PortfolioVersionEdge = {
+  id: string;
+  parent_version_id: string;
+  child_version_id: string;
+  relation_type: string;
+  edge_metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type PortfolioVersion = {
+  id: string;
+  portfolio_item_id: string;
+  document_id: string;
+  version_number: number;
+  label?: string | null;
+  upload_note?: string | null;
+  source_filename: string;
+  source_content_type: string;
+  source_checksum_sha256: string;
+  source_checksum_md5?: string | null;
+  source_storage_uri?: string | null;
+  source_size_bytes: number;
+  processing_status: string;
+  version_metadata: Record<string, unknown>;
+  document?: DocumentSummary | null;
+  parent_edges: PortfolioVersionEdge[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioMaterial = {
+  id: string;
+  portfolio_item_id: string;
+  version_id?: string | null;
+  document_id: string;
+  role: string;
+  label?: string | null;
+  required_for_assessment: boolean;
+  notes?: string | null;
+  material_metadata: Record<string, unknown>;
+  document?: DocumentSummary | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioSuggestion = {
+  id: string;
+  portfolio_item_id: string;
+  version_id?: string | null;
+  library_document_id?: string | null;
+  source_type: string;
+  title: string;
+  source_url?: string | null;
+  relation_family: string;
+  score?: number | null;
+  status: string;
+  evidence: Record<string, unknown>;
+  library_document?: DocumentSummary | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioAssessmentFinding = {
+  id: string;
+  assessment_run_id: string;
+  category: string;
+  severity: string;
+  title: string;
+  body?: string | null;
+  evidence: Record<string, unknown>;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioAssessmentRun = {
+  id: string;
+  portfolio_item_id: string;
+  version_id?: string | null;
+  mode: string;
+  model_ids: string[];
+  status: string;
+  summary?: string | null;
+  assessment_metadata: Record<string, unknown>;
+  last_error?: string | null;
+  completed_at?: string | null;
+  findings: PortfolioAssessmentFinding[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioItem = {
+  id: string;
+  title: string;
+  description?: string | null;
+  status: string;
+  current_version_id?: string | null;
+  project_ids: string[];
+  domain_ids: string[];
+  tag_ids: string[];
+  portfolio_metadata: Record<string, unknown>;
+  current_version?: PortfolioVersion | null;
+  versions: PortfolioVersion[];
+  materials: PortfolioMaterial[];
+  suggestions: PortfolioSuggestion[];
+  assessment_runs: PortfolioAssessmentRun[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioItemPayload = {
+  title: string;
+  description?: string | null;
+  project_ids?: string[];
+  domain_ids?: string[];
+  tag_ids?: string[];
+};
+
+export type PortfolioItemPatchPayload = Partial<{
+  title: string;
+  description: string | null;
+  status: string;
+  current_version_id: string;
+  project_ids: string[];
+  domain_ids: string[];
+  tag_ids: string[];
+}>;
+
+export type PortfolioSuggestionRefresh = {
+  portfolio_item_id: string;
+  suggestion_count: number;
+  suggestions: PortfolioSuggestion[];
+};
+
+export type PortfolioAssessmentPayload = {
+  mode?: string;
+  version_id?: string | null;
+  model_ids?: string[] | null;
 };
 
 export type RecommendationView = "discover" | "known" | "all";

@@ -107,6 +107,26 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add image/figure gist search surfaces.
   - Acceptance: figure gists, captions, and image-derived descriptions participate in full-text and semantic search.
 
+## Portfolio
+
+- [ ] Improve Portfolio DOCX/RTF fidelity.
+  - Acceptance: DOCX and RTF Portfolio uploads preserve useful headings, lists, tables, emphasis, page breaks, and source provenance in the generated PDF/text mezzanine beyond the current text-first parser; unavailable conversion tools produce clear processing events and retry-safe failure state.
+
+- [ ] Add external search-backed Portfolio resource suggestions.
+  - Acceptance: Find Resources combines local Library semantic/search matches with bounded external scholarly/web evidence, stores source/provider/evidence metadata in `PortfolioSuggestion`, and clearly separates Library-held, queued/imported, and external-only suggestions.
+
+- [ ] Add richer Portfolio Assessment prompts and multi-model comparison.
+  - Acceptance: Portfolio Assessment can run one selected model or multiple enabled models against the current version plus material snapshot; findings cite rubric/reference/prompt evidence, score quality/focus/completeness consistently, record usage/cost provenance, and show model agreement/disagreement without overwriting prior runs.
+
+- [ ] Add Portfolio export/restore and backup coverage.
+  - Acceptance: metadata exports include Portfolio items, versions, edges, materials, suggestions, assessment runs/findings, source URIs, and hidden document references; restore preserves lineage and parks restored Portfolio processing jobs safely like import/Concordance jobs.
+
+- [ ] Add explicit include-Portfolio Concordance scopes.
+  - Acceptance: Concordance can target Portfolio versions/materials only when the user explicitly chooses Portfolio, selected Portfolio items, or selected versions; default Library scopes remain Library-only.
+
+- [ ] Decide whether Portfolio needs editor-like interaction.
+  - Acceptance: after real use, either keep Portfolio source-upload centric or design a limited editor/review layer with clear non-goals, history behavior, and assessment integration.
+
 ## Activity, Notes, And Research Workflows
 
 - [ ] Add a unified Activity and Work Ledger.
@@ -174,8 +194,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add richer multi-condition filter builder.
   - Acceptance: saved searches can combine text, tags, domains, citation status, read status, priority, attributes, dates, and processing state.
 
-- [ ] Benchmark Library list/search at 10x and 50x scale before adding Valkey.
-  - Acceptance: seed or synthesize representative document/tag/domain/project data at 10x and 50x current corpus size; capture `/api/documents/list`, `/api/documents`, `/api/dashboard`, `/api/domains`, `/api/tags`, search, duplicate-scan, and active-work polling timings with SQL counts; compare Postgres index/query/materialized-table options against Valkey read-through caches, pub/sub, ephemeral activity streams, and lock/coordination use cases; choose Valkey only for measured workloads it serves better than PostgreSQL.
+- [ ] Validate Valkey cache behavior at 10x and 50x scale.
+  - Acceptance: seed or synthesize representative document/tag/domain/project data at 10x and 50x current corpus size; capture `/api/documents/list`, `/api/documents`, `/api/dashboard`, `/api/domains`, `/api/tags`, search, duplicate-scan, and active-work polling timings with SQL counts and `X-Medusa-Cache` headers; compare the current Valkey read-through layer against PostgreSQL index/query/read-model/materialized-table options; keep Valkey only for workloads it serves better than PostgreSQL.
+  - Completed: Medusa now has an optional internal Valkey service, durable `cache_revisions`, cached hot response families, manual Refresh Cache, and Status/profile cache telemetry.
   - Notes: detailed phases, endpoint budgets, PostgreSQL/read-model candidates, frontend/runtime improvements, asset/provider considerations, and Valkey/external-search decision criteria live in `docs/PERFORMANCE_ROADMAP.md`.
 
 - [ ] Add saved-search management improvements.

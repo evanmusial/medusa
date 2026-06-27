@@ -9,6 +9,8 @@ import type {
   BackupEstimate,
   BackupRun,
   Bibliography,
+  CacheRefreshResult,
+  CacheStatus,
   CitationCandidate,
   ConcordanceCapability,
   ConcordanceJob,
@@ -55,6 +57,12 @@ import type {
   ModelPricingStatus,
   OpenAIUsage,
   OpenAIUsagePeriod,
+  PortfolioAssessmentPayload,
+  PortfolioAssessmentRun,
+  PortfolioItem,
+  PortfolioItemPatchPayload,
+  PortfolioItemPayload,
+  PortfolioSuggestionRefresh,
   Project,
   ProjectDetail,
   ProjectItem,
@@ -124,6 +132,8 @@ export const api = {
   requestReleaseUpgrade: (clientVersion: string) =>
     request<ReleaseStatus>(`/api/release/upgrade?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
   health: () => request<{ status: string; app: string }>(`/api/health?release_check=${Date.now()}`),
+  cacheStatus: () => request<CacheStatus>("/api/cache/status"),
+  refreshCache: () => request<CacheRefreshResult>("/api/cache/refresh", { method: "POST" }),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
   documentCacheStatus: () => request<DocumentCacheStatus>("/api/document-cache/status"),
@@ -328,6 +338,41 @@ export const api = {
     form.append("file", file);
     return request<DoiStash>(`/api/doi-stashes/${id}/upload`, { method: "POST", body: form });
   },
+  portfolioItems: () => request<PortfolioItem[]>("/api/portfolio"),
+  createPortfolioItem: (body: PortfolioItemPayload) =>
+    request<PortfolioItem>("/api/portfolio", { method: "POST", body: JSON.stringify(body) }),
+  updatePortfolioItem: (id: string, body: PortfolioItemPatchPayload) =>
+    request<PortfolioItem>(`/api/portfolio/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  uploadPortfolioVersion: (
+    id: string,
+    file: File,
+    options: { label?: string; uploadNote?: string; parentVersionId?: string | null } = {},
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (options.label) form.append("label", options.label);
+    if (options.uploadNote) form.append("upload_note", options.uploadNote);
+    if (options.parentVersionId) form.append("parent_version_id", options.parentVersionId);
+    return request<PortfolioItem>(`/api/portfolio/${id}/versions`, { method: "POST", body: form });
+  },
+  uploadPortfolioMaterial: (
+    id: string,
+    file: File,
+    options: { role?: string; label?: string; notes?: string; versionId?: string | null; requiredForAssessment?: boolean } = {},
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("role", options.role || "reference");
+    if (options.label) form.append("label", options.label);
+    if (options.notes) form.append("notes", options.notes);
+    if (options.versionId) form.append("version_id", options.versionId);
+    form.append("required_for_assessment", String(Boolean(options.requiredForAssessment)));
+    return request<PortfolioItem>(`/api/portfolio/${id}/materials`, { method: "POST", body: form });
+  },
+  refreshPortfolioSuggestions: (id: string) =>
+    request<PortfolioSuggestionRefresh>(`/api/portfolio/${id}/suggestions/refresh`, { method: "POST" }),
+  createPortfolioAssessment: (id: string, body: PortfolioAssessmentPayload = {}) =>
+    request<PortfolioAssessmentRun>(`/api/portfolio/${id}/assessments`, { method: "POST", body: JSON.stringify(body) }),
   annotations: (documentId: string) => request<Annotation[]>(`/api/documents/${documentId}/annotations`),
   createAnnotation: (documentId: string, body: AnnotationPayload) =>
     request<Annotation>(`/api/documents/${documentId}/annotations`, { method: "POST", body: JSON.stringify(body) }),

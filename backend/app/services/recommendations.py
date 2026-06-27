@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.config import get_settings
 from app.models import Document, DocumentRecommendation, DoiStash, ImportBatch, ImportJob, ProcessingEvent, ProjectItem, utc_now
 from app.services.document_cache import document_cache_path, document_cache_root, register_document_cache
-from app.services.document_visibility import LIBRARY_VISIBLE_DOCUMENT_STATUSES, filter_library_visible_documents, library_visible_document_filter
+from app.services.document_visibility import LIBRARY_DOCUMENT_KIND, LIBRARY_VISIBLE_DOCUMENT_STATUSES, filter_library_visible_documents, library_visible_document_filter
 from app.services.processing import refresh_import_batch_progress
 from app.services.storage import get_storage_service
 from app.services.verifier import normalized_title_similarity
@@ -1939,6 +1939,7 @@ def mark_recommendation_discovery_state(
         db.query(Document)
         .filter(
             Document.deleted_at.is_(None),
+            Document.document_kind == LIBRARY_DOCUMENT_KIND,
             Document.id != source_document.id,
             Document.processing_status.in_(RECOMMENDATION_IMPORT_KNOWN_STATUSES),
         )

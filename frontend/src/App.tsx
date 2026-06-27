@@ -34,6 +34,7 @@ import {
   Bold,
   Bookmark,
   BookOpen,
+  Briefcase,
   BrainCircuit,
   Calendar,
   ChevronLeft,
@@ -107,6 +108,8 @@ import type {
   BackupEstimate,
   BackupRun,
   Bibliography,
+  CacheRefreshResult,
+  CacheStatus,
   CitationCandidate,
   ConcordanceCapability,
   ConcordanceJob,
@@ -148,6 +151,11 @@ import type {
   OpenAIUsage,
   OpenAIUsageGroup,
   OpenAIUsagePeriod,
+  PortfolioAssessmentRun,
+  PortfolioItem,
+  PortfolioMaterial,
+  PortfolioSuggestion,
+  PortfolioVersion,
   Project,
   ProjectItem,
   RecommendationFamily,
@@ -172,6 +180,7 @@ type View =
   | "domains"
   | "projects"
   | "tags"
+  | "portfolio"
   | "queue"
   | "notes"
   | "import"
@@ -367,9 +376,20 @@ const BACKGROUND_JOB_RETENTION_MS = 18000;
 const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 45000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
-const IMPORT_ACCEPT = "application/pdf,text/html,text/plain,text/markdown,.pdf,.html,.htm,.txt,.text,.md,.markdown";
-const IMPORT_FILE_EXTENSIONS = [".pdf", ".html", ".htm", ".txt", ".text", ".md", ".markdown"];
-const IMPORT_FILE_TYPES = new Set(["application/pdf", "text/html", "text/plain", "text/markdown", "text/x-markdown"]);
+const IMPORT_ACCEPT =
+  "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf,text/html,text/plain,text/markdown,.pdf,.docx,.rtf,.html,.htm,.txt,.text,.md,.markdown";
+const IMPORT_FILE_EXTENSIONS = [".pdf", ".docx", ".rtf", ".html", ".htm", ".txt", ".text", ".md", ".markdown"];
+const IMPORT_FILE_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/rtf",
+  "application/x-rtf",
+  "text/rtf",
+  "text/html",
+  "text/plain",
+  "text/markdown",
+  "text/x-markdown",
+]);
 const DROPDOWN_VISIBLE_OPTION_LIMIT = 80;
 const APP_TOOLTIP_DELAY_MS = 2000;
 const HEADER_STATUS_TOOLTIP_DELAY_MS = 250;
@@ -582,6 +602,7 @@ const navItems: WorkspaceNavItem[] = [
   { id: "projects", label: "Projects", icon: ListChecks, shortcut: "P" },
   { id: "tags", label: "Tags", icon: Tags, shortcut: "T" },
   { id: "stashes", label: "Stashes", icon: Bookmark, shortcut: "A" },
+  { id: "portfolio", label: "Portfolio", icon: Briefcase, shortcut: "W" },
   { id: "queue", label: "Queue", icon: Inbox, shortcut: "Q" },
   { id: "import", label: "Import", icon: Upload, shortcut: "I" },
   { id: "budget", label: "Finances", icon: CircleDollarSign, shortcut: "B" },
@@ -594,6 +615,7 @@ const VIEW_PATHS: Record<View, string> = {
   domains: "/domains",
   projects: "/projects",
   tags: "/tags",
+  portfolio: "/portfolio",
   queue: "/queue",
   notes: "/notes",
   import: "/import",
@@ -608,6 +630,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   domains: "Domains",
   projects: "Projects",
   tags: "Tags",
+  portfolio: "Portfolio",
   queue: "Import Queue",
   notes: "Notes",
   import: "Import",
@@ -4313,12 +4336,15 @@ function Login() {
 
 function Header({
   backgroundJobs,
+  cacheRefreshing,
+  cacheStatus,
   completedImport,
   dashboard,
   onDismissCompletedImport,
   onOpenQueue,
   onOpenSettings,
   onOpenStatus,
+  onRefreshCache,
   onReleaseUpgrade,
   query,
   releaseStatus,
@@ -4330,12 +4356,15 @@ function Header({
   onLogout,
 }: {
   backgroundJobs: BackgroundJob[];
+  cacheRefreshing: boolean;
+  cacheStatus?: CacheStatus;
   completedImport?: IngestionHistory | null;
   dashboard?: Dashboard;
   onDismissCompletedImport?: (batchId: string) => void;
   onOpenQueue: () => void;
   onOpenSettings: () => void;
   onOpenStatus: () => void;
+  onRefreshCache: () => void;
   onReleaseUpgrade: () => void;
   query: string;
   releaseStatus?: ReleaseStatus;
@@ -4378,6 +4407,15 @@ function Header({
     setUserMenuOpen(false);
     onLogout();
   };
+  const refreshCacheFromUserMenu = () => {
+    onRefreshCache();
+  };
+  const cacheHitPercent = cacheStatus ? Math.round((cacheStatus.hit_rate || 0) * 100) : null;
+  const cacheGlance = cacheStatus
+    ? cacheStatus.reachable
+      ? `Cache ${formatDatabaseSize(cacheStatus.used_memory_bytes)} / ${cacheHitPercent}% hit`
+      : `Cache ${cacheStatus.mode}`
+    : "Cache loading";
 
   return (
     <header className="topbar">
@@ -4417,6 +4455,14 @@ function Header({
           </button>
           {userMenuOpen ? (
             <div className="user-options-menu" data-escape-layer="menu" role="menu">
+              <div className="user-options-cache-glance" role="presentation">
+                <Database size={16} aria-hidden="true" />
+                <span>{cacheGlance}</span>
+              </div>
+              <button className="user-options-menu-item" disabled={cacheRefreshing} onClick={refreshCacheFromUserMenu} role="menuitem" type="button">
+                <RefreshCw className={cacheRefreshing ? "spin" : ""} size={16} aria-hidden="true" />
+                <span>{cacheRefreshing ? "Refreshing cache" : "Refresh Cache"}</span>
+              </button>
               <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
                 {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
                 <span>{theme === "day" ? "Night mode" : "Day mode"}</span>
@@ -11581,6 +11627,769 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
   );
 }
 
+type PortfolioTab = "read" | "versions" | "materials" | "resources" | "assessments";
+
+const PORTFOLIO_TABS: Array<{ id: PortfolioTab; label: string }> = [
+  { id: "read", label: "Read" },
+  { id: "versions", label: "Versions" },
+  { id: "materials", label: "Materials" },
+  { id: "resources", label: "Resources" },
+  { id: "assessments", label: "Assessments" },
+];
+const PORTFOLIO_UPLOAD_ACCEPT =
+  ".pdf,.docx,.rtf,.txt,.text,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf,text/plain,text/markdown";
+
+function portfolioStatusTone(status?: string | null): "neutral" | "good" | "warn" | "blue" {
+  if (status === "ready" || status === "complete" || status === "active") return "good";
+  if (status === "failed") return "warn";
+  if (status === "queued" || status === "running" || status === "staged") return "blue";
+  return "neutral";
+}
+
+function portfolioVersionLabel(version?: PortfolioVersion | null) {
+  if (!version) return "No version";
+  return version.label ? `v${version.version_number} / ${version.label}` : `v${version.version_number}`;
+}
+
+function portfolioSourceLabel(version?: PortfolioVersion | null) {
+  if (!version) return "No source";
+  const size = formatFileSize(version.source_size_bytes);
+  return [version.source_filename, size].filter(Boolean).join(" / ");
+}
+
+function portfolioSuggestionScoreLabel(suggestion: PortfolioSuggestion) {
+  return suggestion.score === null || suggestion.score === undefined ? "match" : `${Math.round(suggestion.score * 100)}%`;
+}
+
+function portfolioRunTitle(run: PortfolioAssessmentRun) {
+  const model = run.model_ids.length === 1 ? run.model_ids[0] : `${run.model_ids.length} models`;
+  return [run.mode.replace(/_/g, " "), model, backupDateLabel(run.completed_at || run.created_at)].filter(Boolean).join(" / ");
+}
+
+function portfolioFindingTone(severity: string): "neutral" | "good" | "warn" | "blue" {
+  if (severity === "warning" || severity === "error") return "warn";
+  if (severity === "success") return "good";
+  if (severity === "info") return "blue";
+  return "neutral";
+}
+
+function PortfolioView({
+  items,
+  onTitleSubjectChange,
+}: {
+  items: PortfolioItem[];
+  onTitleSubjectChange: (subject: string | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [selectedId, setSelectedId] = useState<string | null>(items[0]?.id || null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [activeTab, setActiveTab] = useState<PortfolioTab>("read");
+  const [newTitle, setNewTitle] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [versionFile, setVersionFile] = useState<File | null>(null);
+  const [versionLabel, setVersionLabel] = useState("");
+  const [versionNote, setVersionNote] = useState("");
+  const [materialFile, setMaterialFile] = useState<File | null>(null);
+  const [materialRole, setMaterialRole] = useState("reference");
+  const [materialLabel, setMaterialLabel] = useState("");
+  const [materialNotes, setMaterialNotes] = useState("");
+  const [materialRequired, setMaterialRequired] = useState(false);
+  const [materialVersionScope, setMaterialVersionScope] = useState("item");
+  const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const createFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const versionFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const materialFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const resourcesFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const assessmentFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const currentItems = items;
+
+  useEffect(() => {
+    if (!currentItems.length) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !currentItems.some((item) => item.id === selectedId)) setSelectedId(currentItems[0].id);
+  }, [currentItems, selectedId]);
+
+  const selected = currentItems.find((item) => item.id === selectedId) || null;
+  const currentVersion = selected?.current_version || selected?.versions[0] || null;
+  const compareVersion = selected?.versions.find((version) => version.id === compareVersionId) || null;
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return currentItems
+      .filter((item) => (statusFilter === "all" ? true : item.status === statusFilter))
+      .filter((item) => {
+        if (!normalizedQuery) return true;
+        return [item.title, item.description, item.current_version?.source_filename].filter(Boolean).join(" ").toLowerCase().includes(normalizedQuery);
+      });
+  }, [currentItems, query, statusFilter]);
+
+  useEffect(() => {
+    onTitleSubjectChange(selected?.title || null);
+  }, [onTitleSubjectChange, selected?.title]);
+
+  const refreshPortfolio = () => {
+    void queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  };
+
+  const createItem = useMutation({
+    mutationFn: () => api.createPortfolioItem({ title: newTitle.trim(), description: newDescription.trim() || null }),
+    onSuccess: (item) => {
+      createFeedback.showSuccess();
+      setSelectedId(item.id);
+      setNewTitle("");
+      setNewDescription("");
+      setNotice(`Created ${item.title}`);
+      refreshPortfolio();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not create Portfolio item", error);
+      createFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const uploadVersion = useMutation({
+    mutationFn: () => {
+      if (!selected || !versionFile) throw new Error("Choose a file first");
+      return api.uploadPortfolioVersion(selected.id, versionFile, {
+        label: versionLabel.trim(),
+        uploadNote: versionNote.trim(),
+        parentVersionId: currentVersion?.id || null,
+      });
+    },
+    onSuccess: (item) => {
+      versionFeedback.showSuccess();
+      setSelectedId(item.id);
+      setVersionFile(null);
+      setVersionLabel("");
+      setVersionNote("");
+      setActiveTab("versions");
+      setNotice("Version queued");
+      refreshPortfolio();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not upload version", error);
+      versionFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const uploadMaterial = useMutation({
+    mutationFn: () => {
+      if (!selected || !materialFile) throw new Error("Choose a file first");
+      return api.uploadPortfolioMaterial(selected.id, materialFile, {
+        role: materialRole,
+        label: materialLabel.trim(),
+        notes: materialNotes.trim(),
+        versionId: materialVersionScope === "current" ? currentVersion?.id || null : null,
+        requiredForAssessment: materialRequired,
+      });
+    },
+    onSuccess: (item) => {
+      materialFeedback.showSuccess();
+      setSelectedId(item.id);
+      setMaterialFile(null);
+      setMaterialLabel("");
+      setMaterialNotes("");
+      setMaterialRequired(false);
+      setActiveTab("materials");
+      setNotice("Material queued");
+      refreshPortfolio();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not add material", error);
+      materialFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const updateCurrentVersion = useMutation({
+    mutationFn: (versionId: string) => {
+      if (!selected) throw new Error("Select a Portfolio item first");
+      return api.updatePortfolioItem(selected.id, { current_version_id: versionId });
+    },
+    onSuccess: (item) => {
+      setSelectedId(item.id);
+      setCompareVersionId(null);
+      refreshPortfolio();
+    },
+    onError: (error) => setNotice(actionFailureMessage("Could not switch current version", error)),
+  });
+
+  const refreshResources = useMutation({
+    mutationFn: () => {
+      if (!selected) throw new Error("Select a Portfolio item first");
+      return api.refreshPortfolioSuggestions(selected.id);
+    },
+    onSuccess: (result) => {
+      resourcesFeedback.showSuccess();
+      setActiveTab("resources");
+      setNotice(`Found ${result.suggestion_count}`);
+      refreshPortfolio();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not refresh resources", error);
+      resourcesFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const runAssessment = useMutation({
+    mutationFn: () => {
+      if (!selected) throw new Error("Select a Portfolio item first");
+      return api.createPortfolioAssessment(selected.id, { version_id: currentVersion?.id || null });
+    },
+    onSuccess: () => {
+      assessmentFeedback.showSuccess();
+      setActiveTab("assessments");
+      setNotice("Assessment complete");
+      refreshPortfolio();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not run assessment", error);
+      assessmentFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const handleCreateItem = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!newTitle.trim()) {
+      createFeedback.showError("Title is required");
+      return;
+    }
+    createItem.mutate();
+  };
+  const handleUploadVersion = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    uploadVersion.mutate();
+  };
+  const handleUploadMaterial = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    uploadMaterial.mutate();
+  };
+
+  const previewHref = currentVersion ? `/api/portfolio/versions/${currentVersion.id}/preview` : "";
+  const sourceHref = currentVersion ? `/api/portfolio/versions/${currentVersion.id}/source?download=true` : "";
+  const currentMaterialRows = selected?.materials || [];
+  const currentSuggestions = selected?.suggestions || [];
+  const currentRuns = selected?.assessment_runs || [];
+
+  return (
+    <section className="workbench portfolio-workbench">
+      <aside className="portfolio-pane portfolio-list-pane">
+        <div className="portfolio-list-head">
+          <div>
+            <h2>Portfolio</h2>
+            <span>{currentItems.length} item{currentItems.length === 1 ? "" : "s"}</span>
+          </div>
+          <Briefcase size={20} />
+        </div>
+        <form className="portfolio-create-form" onSubmit={handleCreateItem}>
+          <input
+            data-tooltip="Name the Portfolio item before uploading versions or supporting materials."
+            placeholder="New item title"
+            value={newTitle}
+            onChange={(event) => setNewTitle(event.target.value)}
+          />
+          <textarea
+            data-tooltip="Optional short context for this Portfolio item."
+            placeholder="Context"
+            value={newDescription}
+            onChange={(event) => setNewDescription(event.target.value)}
+            rows={2}
+          />
+          <AsyncActionSlot busy={createItem.isPending} feedback={createFeedback.feedback} label="Portfolio item create in progress">
+            <button
+              className={asyncFeedbackClass("primary-button compact", createFeedback.feedback, createItem.isPending)}
+              data-disabled-reason="a title is required."
+              disabled={!newTitle.trim() || createItem.isPending}
+              type="submit"
+            >
+              <Plus size={14} />
+              Create
+            </button>
+          </AsyncActionSlot>
+        </form>
+        <div className="portfolio-filter-row">
+          <Search size={14} />
+          <input
+            data-tooltip="Filter Portfolio items by title, description, or current source filename."
+            placeholder="Find items"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <select
+            data-tooltip="Filter Portfolio items by status."
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="complete">Complete</option>
+          </select>
+        </div>
+        <div className="portfolio-item-list">
+          {filteredItems.length ? (
+            filteredItems.map((item) => (
+              <button
+                key={item.id}
+                className={`portfolio-item-row ${item.id === selected?.id ? "active" : ""}`}
+                data-tooltip={`Open ${item.title} in Portfolio.`}
+                onClick={() => {
+                  setSelectedId(item.id);
+                  setCompareVersionId(null);
+                }}
+                type="button"
+              >
+                <strong>{item.title}</strong>
+                <span>{item.description || portfolioSourceLabel(item.current_version)}</span>
+                <div>
+                  <StatusPill value={item.status} tone={portfolioStatusTone(item.status)} />
+                  <small>{item.versions.length ? portfolioVersionLabel(item.current_version || item.versions[0]) : "No versions"}</small>
+                </div>
+              </button>
+            ))
+          ) : (
+            <div className="empty-inline">
+              <Briefcase size={17} />
+              <span>No Portfolio items match.</span>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section className="portfolio-pane portfolio-main-pane">
+        {selected ? (
+          <>
+            <div className="portfolio-main-head">
+              <div>
+                <h2>{selected.title}</h2>
+                <span>{[portfolioVersionLabel(currentVersion), currentVersion?.document?.processing_status || currentVersion?.processing_status].filter(Boolean).join(" / ")}</span>
+              </div>
+              <div className="portfolio-actions">
+                <a
+                  className={`secondary-button compact ${!currentVersion ? "disabled" : ""}`}
+                  data-disabled-reason="upload a Portfolio version first."
+                  data-tooltip="Open the generated preview for the current Portfolio version."
+                  href={previewHref || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink size={14} />
+                  Open Preview
+                </a>
+                <a
+                  className={`secondary-button compact ${!currentVersion ? "disabled" : ""}`}
+                  data-disabled-reason="upload a Portfolio version first."
+                  data-tooltip="Download the original source file for the current Portfolio version."
+                  href={sourceHref || undefined}
+                >
+                  <Download size={14} />
+                  Download Source
+                </a>
+                <button
+                  className="secondary-button compact"
+                  data-disabled-reason="at least two Portfolio versions are required."
+                  data-tooltip="Compare the current version with the nearest previous version metadata."
+                  disabled={!currentVersion || selected.versions.length < 2}
+                  onClick={() => {
+                    const other = selected.versions.find((version) => version.id !== currentVersion?.id);
+                    setCompareVersionId(other?.id || null);
+                    setActiveTab("versions");
+                  }}
+                  type="button"
+                >
+                  <ArrowUpDown size={14} />
+                  Compare
+                </button>
+              </div>
+            </div>
+            {notice ? <p className="portfolio-notice">{notice}</p> : null}
+            <form className="portfolio-version-upload" onSubmit={handleUploadVersion}>
+              <label>
+                Version file
+                <input
+                  accept={PORTFOLIO_UPLOAD_ACCEPT}
+                  data-tooltip="Choose a PDF, DOCX, RTF, TXT, or Markdown file for the next immutable Portfolio version."
+                  type="file"
+                  onChange={(event) => setVersionFile(event.currentTarget.files?.[0] || null)}
+                />
+              </label>
+              <label>
+                Label
+                <input
+                  data-tooltip="Optional short label for this version."
+                  placeholder="Draft 2"
+                  value={versionLabel}
+                  onChange={(event) => setVersionLabel(event.target.value)}
+                />
+              </label>
+              <label>
+                Note
+                <input
+                  data-tooltip="Optional upload note stored with this version."
+                  placeholder="Revised methods"
+                  value={versionNote}
+                  onChange={(event) => setVersionNote(event.target.value)}
+                />
+              </label>
+              <AsyncActionSlot busy={uploadVersion.isPending} feedback={versionFeedback.feedback} label="Portfolio version upload in progress">
+                <button
+                  className={asyncFeedbackClass("primary-button compact", versionFeedback.feedback, uploadVersion.isPending)}
+                  data-disabled-reason="choose a file first."
+                  disabled={!versionFile || uploadVersion.isPending}
+                  type="submit"
+                >
+                  <Upload size={14} />
+                  Upload Version
+                </button>
+              </AsyncActionSlot>
+            </form>
+            <div className="portfolio-tabs" role="tablist" aria-label="Portfolio views">
+              {PORTFOLIO_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={activeTab === tab.id ? "active" : ""}
+                  onClick={() => setActiveTab(tab.id)}
+                  role="tab"
+                  type="button"
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {activeTab === "read" ? (
+              <div className="portfolio-preview-surface">
+                {currentVersion ? (
+                  <iframe title={`${selected.title} preview`} src={previewHref} />
+                ) : (
+                  <div className="empty-inline">
+                    <FileText size={17} />
+                    <span>Upload a version to preview it here.</span>
+                  </div>
+                )}
+              </div>
+            ) : null}
+            {activeTab === "versions" ? (
+              <div className="portfolio-version-list">
+                {compareVersion && currentVersion ? (
+                  <div className="portfolio-compare-panel">
+                    <strong>{portfolioVersionLabel(currentVersion)} compared with {portfolioVersionLabel(compareVersion)}</strong>
+                    <div>
+                      <span>Current source</span>
+                      <span>{portfolioSourceLabel(currentVersion)}</span>
+                    </div>
+                    <div>
+                      <span>Compared source</span>
+                      <span>{portfolioSourceLabel(compareVersion)}</span>
+                    </div>
+                    <div>
+                      <span>Pages</span>
+                      <span>{currentVersion.document?.page_count ?? 0} / {compareVersion.document?.page_count ?? 0}</span>
+                    </div>
+                    <div>
+                      <span>Status</span>
+                      <span>{currentVersion.processing_status} / {compareVersion.processing_status}</span>
+                    </div>
+                  </div>
+                ) : null}
+                {selected.versions.length ? (
+                  selected.versions.map((version) => (
+                    <article key={version.id} className="portfolio-version-row">
+                      <div>
+                        <strong>{portfolioVersionLabel(version)}</strong>
+                        <span>{portfolioSourceLabel(version)}</span>
+                        <small>{[backupDateLabel(version.created_at), version.upload_note].filter(Boolean).join(" / ")}</small>
+                      </div>
+                      <StatusPill value={version.document?.processing_status || version.processing_status} tone={portfolioStatusTone(version.document?.processing_status || version.processing_status)} />
+                      <div className="portfolio-row-actions">
+                        <button
+                          className="secondary-button compact"
+                          disabled={version.id === currentVersion?.id}
+                          onClick={() => updateCurrentVersion.mutate(version.id)}
+                          type="button"
+                        >
+                          <CheckCircle2 size={14} />
+                          Current
+                        </button>
+                        <button
+                          className="secondary-button compact"
+                          disabled={version.id === currentVersion?.id}
+                          onClick={() => setCompareVersionId(version.id)}
+                          type="button"
+                        >
+                          <ArrowUpDown size={14} />
+                          Compare
+                        </button>
+                        <a className="secondary-button compact" href={`/api/portfolio/versions/${version.id}/source?download=true`}>
+                          <Download size={14} />
+                          Source
+                        </a>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="empty-inline">
+                    <FileText size={17} />
+                    <span>No versions yet.</span>
+                  </div>
+                )}
+              </div>
+            ) : null}
+            {activeTab === "materials" ? <PortfolioMaterialList materials={currentMaterialRows} /> : null}
+            {activeTab === "resources" ? <PortfolioSuggestionList suggestions={currentSuggestions} /> : null}
+            {activeTab === "assessments" ? <PortfolioAssessmentList runs={currentRuns} /> : null}
+          </>
+        ) : (
+          <div className="empty-inline portfolio-empty">
+            <Briefcase size={18} />
+            <span>Create a Portfolio item to begin.</span>
+          </div>
+        )}
+      </section>
+
+      <aside className="portfolio-pane portfolio-side-pane">
+        {selected ? (
+          <>
+            <section className="portfolio-side-section">
+              <div className="portfolio-side-head">
+                <h3>Materials</h3>
+                <span>{selected.materials.length}</span>
+              </div>
+              <form className="portfolio-material-form" onSubmit={handleUploadMaterial}>
+                <label>
+                  File
+                  <input
+                    accept={PORTFOLIO_UPLOAD_ACCEPT}
+                    data-tooltip="Choose a rubric, assignment prompt, reference, or feedback file."
+                    type="file"
+                    onChange={(event) => setMaterialFile(event.currentTarget.files?.[0] || null)}
+                  />
+                </label>
+                <div className="portfolio-material-grid">
+                  <label>
+                    Role
+                    <select value={materialRole} onChange={(event) => setMaterialRole(event.target.value)}>
+                      <option value="reference">Reference</option>
+                      <option value="rubric">Rubric</option>
+                      <option value="assignment">Assignment</option>
+                      <option value="feedback">Feedback</option>
+                      <option value="source">Source</option>
+                    </select>
+                  </label>
+                  <label>
+                    Scope
+                    <select value={materialVersionScope} onChange={(event) => setMaterialVersionScope(event.target.value)}>
+                      <option value="item">Item</option>
+                      <option value="current">Current version</option>
+                    </select>
+                  </label>
+                </div>
+                <input
+                  data-tooltip="Optional material label."
+                  placeholder="Label"
+                  value={materialLabel}
+                  onChange={(event) => setMaterialLabel(event.target.value)}
+                />
+                <textarea
+                  data-tooltip="Optional notes for this supporting material."
+                  placeholder="Notes"
+                  rows={2}
+                  value={materialNotes}
+                  onChange={(event) => setMaterialNotes(event.target.value)}
+                />
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={materialRequired}
+                    onChange={(event) => setMaterialRequired(event.target.checked)}
+                  />
+                  <span>Required</span>
+                </label>
+                <AsyncActionSlot busy={uploadMaterial.isPending} feedback={materialFeedback.feedback} label="Portfolio material upload in progress">
+                  <button
+                    className={asyncFeedbackClass("secondary-button compact", materialFeedback.feedback, uploadMaterial.isPending)}
+                    data-disabled-reason="choose a material file first."
+                    disabled={!materialFile || uploadMaterial.isPending}
+                    type="submit"
+                  >
+                    <FolderPlus size={14} />
+                    Add Material
+                  </button>
+                </AsyncActionSlot>
+              </form>
+              <PortfolioMaterialList compact materials={selected.materials.slice(0, 4)} />
+            </section>
+            <section className="portfolio-side-section">
+              <div className="portfolio-side-head">
+                <h3>Resources</h3>
+                <span>{selected.suggestions.length}</span>
+              </div>
+              <AsyncActionSlot busy={refreshResources.isPending} feedback={resourcesFeedback.feedback} label="Portfolio resource refresh in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button compact", resourcesFeedback.feedback, refreshResources.isPending)}
+                  data-disabled-reason="upload a Portfolio version first."
+                  disabled={!currentVersion || refreshResources.isPending}
+                  onClick={() => refreshResources.mutate()}
+                  type="button"
+                >
+                  <Search size={14} />
+                  Find Resources
+                </button>
+              </AsyncActionSlot>
+              <PortfolioSuggestionList compact suggestions={selected.suggestions.slice(0, 4)} />
+            </section>
+            <section className="portfolio-side-section">
+              <div className="portfolio-side-head">
+                <h3>Assessments</h3>
+                <span>{selected.assessment_runs.length}</span>
+              </div>
+              <AsyncActionSlot busy={runAssessment.isPending} feedback={assessmentFeedback.feedback} label="Portfolio assessment in progress">
+                <button
+                  className={asyncFeedbackClass("primary-button compact", assessmentFeedback.feedback, runAssessment.isPending)}
+                  data-disabled-reason="upload a Portfolio version first."
+                  disabled={!currentVersion || runAssessment.isPending}
+                  onClick={() => runAssessment.mutate()}
+                  type="button"
+                >
+                  <BrainCircuit size={14} />
+                  Assess
+                </button>
+              </AsyncActionSlot>
+              <PortfolioAssessmentList compact runs={selected.assessment_runs.slice(0, 2)} />
+            </section>
+          </>
+        ) : (
+          <div className="empty-inline">
+            <Info size={17} />
+            <span>No item selected.</span>
+          </div>
+        )}
+      </aside>
+    </section>
+  );
+}
+
+function PortfolioMaterialList({ materials, compact = false }: { materials: PortfolioMaterial[]; compact?: boolean }) {
+  return (
+    <div className={`portfolio-material-list ${compact ? "compact" : ""}`}>
+      {materials.length ? (
+        materials.map((material) => (
+          <article key={material.id} className="portfolio-material-row">
+            <div>
+              <strong>{material.label || material.document?.title || material.role}</strong>
+              <span>{[material.role, material.version_id ? "version" : "item", material.required_for_assessment ? "required" : ""].filter(Boolean).join(" / ")}</span>
+              {!compact && material.notes ? <small>{material.notes}</small> : null}
+            </div>
+            <StatusPill value={material.document?.processing_status || "queued"} tone={portfolioStatusTone(material.document?.processing_status)} />
+            {!compact ? (
+              <div className="portfolio-row-actions">
+                <a className="secondary-button compact" href={`/api/portfolio/materials/${material.id}/preview`} target="_blank" rel="noreferrer">
+                  <ExternalLink size={14} />
+                  Preview
+                </a>
+                <a className="secondary-button compact" href={`/api/portfolio/materials/${material.id}/source?download=true`}>
+                  <Download size={14} />
+                  Source
+                </a>
+              </div>
+            ) : null}
+          </article>
+        ))
+      ) : (
+        <div className="empty-inline">
+          <FolderPlus size={17} />
+          <span>No materials yet.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioSuggestionList({ suggestions, compact = false }: { suggestions: PortfolioSuggestion[]; compact?: boolean }) {
+  return (
+    <div className={`portfolio-suggestion-list ${compact ? "compact" : ""}`}>
+      {suggestions.length ? (
+        suggestions.map((suggestion) => (
+          <article key={suggestion.id} className="portfolio-suggestion-row">
+            <div>
+              <strong>{suggestion.title}</strong>
+              <span>{[suggestion.relation_family, portfolioSuggestionScoreLabel(suggestion)].filter(Boolean).join(" / ")}</span>
+              {!compact && suggestion.library_document?.rich_summary ? (
+                <small>{markdownExcerpt(suggestion.library_document.rich_summary, 220)}</small>
+              ) : null}
+            </div>
+            <div className="portfolio-row-actions">
+              {suggestion.library_document_id ? (
+                <a className="secondary-button compact" href={pathForDocument(suggestion.library_document_id)}>
+                  <Library size={14} />
+                  Library
+                </a>
+              ) : null}
+              {suggestion.source_url ? (
+                <a className="secondary-button compact" href={suggestion.source_url} target="_blank" rel="noreferrer">
+                  <ExternalLink size={14} />
+                  Source
+                </a>
+              ) : null}
+            </div>
+          </article>
+        ))
+      ) : (
+        <div className="empty-inline">
+          <Search size={17} />
+          <span>No resource suggestions yet.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioAssessmentList({ runs, compact = false }: { runs: PortfolioAssessmentRun[]; compact?: boolean }) {
+  return (
+    <div className={`portfolio-assessment-list ${compact ? "compact" : ""}`}>
+      {runs.length ? (
+        runs.map((run) => (
+          <article key={run.id} className="portfolio-assessment-row">
+            <div className="portfolio-assessment-head">
+              <div>
+                <strong>{portfolioRunTitle(run)}</strong>
+                <span>{run.summary || run.status}</span>
+              </div>
+              <StatusPill value={run.status} tone={portfolioStatusTone(run.status)} />
+            </div>
+            {!compact ? (
+              <div className="portfolio-finding-list">
+                {run.findings.map((finding) => (
+                  <div key={finding.id} className="portfolio-finding-row">
+                    <StatusPill value={finding.severity} tone={portfolioFindingTone(finding.severity)} />
+                    <div>
+                      <strong>{finding.title}</strong>
+                      {finding.body ? <span>{finding.body}</span> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </article>
+        ))
+      ) : (
+        <div className="empty-inline">
+          <BrainCircuit size={17} />
+          <span>No assessments yet.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ImportView({
   jobs,
   domains,
@@ -11792,7 +12601,7 @@ function ImportView({
       return;
     }
     if (!supportedFiles.length) {
-      setDropMessage(allFiles.length ? "PDF, HTML, or text only" : "No files selected");
+      setDropMessage(allFiles.length ? "PDF, DOCX, RTF, HTML, or text only" : "No files selected");
       return;
     }
     const rejectedCount = allFiles.length - supportedFiles.length;
@@ -11836,13 +12645,13 @@ function ImportView({
             <UploadCloud size={42} />
           </span>
           <strong>{isDraggingFiles ? "Release to check" : importBusy ? "Working" : "Drop documents"}</strong>
-          <span className="dropzone-hint">{isDraggingFiles ? "Files will be checked for duplicates" : "PDF, HTML, TXT, or MD"}</span>
+          <span className="dropzone-hint">{isDraggingFiles ? "Files will be checked for duplicates" : "PDF, DOCX, RTF, TXT, or MD"}</span>
           <span className="dropzone-status">{dropMessage}</span>
         </div>
         <input
-          aria-label="Import PDF, HTML, or text files"
+          aria-label="Import PDF, DOCX, RTF, HTML, or text files"
           data-disabled-reason="an import or duplicate preflight check is already running."
-          data-tooltip="Choose one or more PDF, HTML, or plain-text files; Medusa will hash them, check for duplicates, convert non-PDF files to PDF, and stage them with the current batch defaults."
+          data-tooltip="Choose one or more PDF, DOCX, RTF, HTML, Markdown, or plain-text files; Medusa will hash them, check for duplicates, convert non-PDF files to PDF, and stage them with the current batch defaults."
           type="file"
           multiple
           accept={IMPORT_ACCEPT}
@@ -15492,7 +16301,7 @@ function UtilitiesBulkIntakePanel() {
       return;
     }
     if (!supportedFiles.length) {
-      setNotice(allFiles.length ? "PDF, HTML, TXT, or MD only." : "No files selected.");
+      setNotice(allFiles.length ? "PDF, DOCX, RTF, HTML, TXT, or MD only." : "No files selected.");
       return;
     }
     const rejectedCount = allFiles.length - supportedFiles.length;
@@ -15560,7 +16369,7 @@ function UtilitiesBulkIntakePanel() {
           <button
             className="secondary-button compact"
             data-disabled-reason="bulk intake is already checking or staging files."
-            data-tooltip="Choose many PDF, HTML, Markdown, or plain text files to compare against existing Library and Queue records."
+            data-tooltip="Choose many PDF, DOCX, RTF, HTML, Markdown, or plain text files to compare against existing Library and Queue records."
             disabled={intakeBusy}
             onClick={() => fileInputRef.current?.click()}
             type="button"
@@ -16559,17 +17368,24 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
     queryFn: api.libraryFunStats,
     refetchInterval: 120000,
   });
+  const cacheStatus = useQuery({
+    queryKey: ["cache-status"],
+    queryFn: api.cacheStatus,
+    refetchInterval: 30000,
+  });
 
   const container = containerStatus.data;
   const database = databaseStatus.data;
   const haproxy = haproxyStatus.data;
   const release = releaseStatus.data;
+  const cache = cacheStatus.data;
   const funStats: LibraryFunStats | undefined = libraryFunStats.data;
   const statusLoading =
     (containerStatus.isFetching && !container) ||
     (databaseStatus.isFetching && !database) ||
     (haproxyStatus.isFetching && !haproxy) ||
-    (releaseStatus.isFetching && !release);
+    (releaseStatus.isFetching && !release) ||
+    (cacheStatus.isFetching && !cache);
   const funStatsLoading = libraryFunStats.isFetching && !funStats;
   const funMetric = (value?: number | null) => (funStatsLoading ? "..." : formatMetric(value));
   const funDecimal = (value?: number | null) => (funStatsLoading ? "..." : formatDecimal(value));
@@ -16596,6 +17412,20 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
   ]
     .filter(Boolean)
     .join(" / ");
+  const cacheHitRatePercent = cache ? (cache.hit_rate || 0) * 100 : 0;
+  const cacheValue = cache?.enabled ? formatDatabaseSize(cache.used_memory_bytes) : "Disabled";
+  const cacheDetail = cache?.reachable
+    ? `${formatPercent(cacheHitRatePercent)} hit / ${formatMetric(cache.key_count)} keys / ${cache.maxmemory_policy || "policy unknown"}`
+    : cache?.message || "Valkey status unavailable";
+  const cacheUpdated = cache?.checked_at
+    ? `Updated ${releaseDateLabel(cache.checked_at)}`
+    : cacheStatus.isError
+      ? "Cache status unavailable"
+      : "Loading cache status";
+  const topCacheFamilies = (cache?.families || []).slice(0, 6);
+  const topRequestMetrics = (cache?.request_metrics || []).slice(0, 5);
+  const topDatabaseFootprints = (cache?.database_footprints || []).slice(0, 5);
+  const topStorageFootprints = (cache?.storage_footprints || []).slice(0, 4);
   const backendImage = backendImageSummary(container);
   const proxyRows = haproxy?.services || [];
   const proxyServer = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.kind === "server");
@@ -16675,6 +17505,7 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
           <StatusMetricCard icon={<Activity size={17} />} label="Memory footprint" value={formatDatabaseSize(container?.memory_current_bytes)} detail={memoryDetail} />
           <StatusMetricCard icon={<HardDrive size={17} />} label="Disk footprint" value={formatDatabaseSize(container?.data_dir_size_bytes)} detail={dataFilesystemDetail} />
           <StatusMetricCard icon={<Database size={17} />} label="Database size" value={formatDatabaseSize(database?.database_size_bytes)} detail={databaseDetail || "PostgreSQL"} />
+          <StatusMetricCard icon={<Gauge size={17} />} label="Cache" value={cacheValue} detail={cacheDetail} />
           <StatusMetricCard
             icon={<Cpu size={17} />}
             label="CPU / processes"
@@ -16735,6 +17566,106 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
               ) : (
                 <div className="container-path-empty">Loading storage footprint</div>
               )}
+            </div>
+          </section>
+          <section className="status-detail-panel">
+            <div className="panel-title-row">
+              <div>
+                <h3>Cache Details</h3>
+                <span>{cacheUpdated}</span>
+              </div>
+              <Database size={18} />
+            </div>
+            <div className="status-fact-list">
+              <StatusFactRow
+                label="Mode"
+                value={cache?.mode || "unknown"}
+                detail={cache?.version ? `${cache.backend} ${cache.version}` : cache?.backend || "cache backend"}
+              />
+              <StatusFactRow
+                label="Memory"
+                value={formatDatabaseSize(cache?.used_memory_bytes)}
+                detail={`${formatDatabaseSize(cache?.peak_memory_bytes)} peak / ${formatDatabaseSize(cache?.maxmemory_bytes)} limit / RSS ${formatDatabaseSize(cache?.rss_memory_bytes)}`}
+              />
+              <StatusFactRow
+                label="Hit rate"
+                value={formatPercent(cacheHitRatePercent) || "0%"}
+                detail={`${formatMetric(cache?.hit_count)} hits / ${formatMetric(cache?.miss_count)} misses`}
+              />
+              <StatusFactRow
+                label="Keys and clients"
+                value={`${formatMetric(cache?.key_count)} keys`}
+                detail={`${formatMetric(cache?.connected_clients)} clients / ${formatMetric(cache?.ops_per_second)} ops/sec`}
+              />
+              <StatusFactRow
+                label="Evictions and expiry"
+                value={`${formatMetric(cache?.evicted_keys)} evicted`}
+                detail={`${formatMetric(cache?.expired_keys)} expired keys`}
+              />
+              <StatusFactRow
+                label="Last refresh"
+                value={cache?.last_refresh_at ? releaseDateLabel(cache.last_refresh_at) : "Not yet"}
+                detail={cache?.last_invalidation_at ? `Last invalidation ${releaseDateLabel(cache.last_invalidation_at)}` : "No revision bumps recorded"}
+              />
+              {topCacheFamilies.length ? (
+                topCacheFamilies.map((family) => (
+                  <StatusFactRow
+                    key={family.family}
+                    label={family.family}
+                    value={`${formatPercent((family.hit_rate || 0) * 100) || "0%"} hit`}
+                    detail={`${formatMetric(family.hits)} hits / ${formatMetric(family.misses)} misses / ${formatMetric(family.writes)} writes`}
+                  />
+                ))
+              ) : (
+                <div className="container-path-empty">No cache family traffic yet</div>
+              )}
+            </div>
+          </section>
+          <section className="status-detail-panel">
+            <div className="panel-title-row">
+              <div>
+                <h3>Performance Footprint</h3>
+                <span>Hot routes, active queues, and heavy storage</span>
+              </div>
+              <Activity size={18} />
+            </div>
+            <div className="status-fact-list">
+              {(cache?.queue_stats || []).map((row) => (
+                <StatusFactRow
+                  key={row.queue}
+                  label={`${row.queue} queue`}
+                  value={`${formatMetric(row.active_count)} active`}
+                  detail={row.oldest_age_seconds ? `Oldest ${formatDuration(row.oldest_age_seconds)}` : "No active work"}
+                />
+              ))}
+              {topRequestMetrics.length ? (
+                topRequestMetrics.map((row) => (
+                  <StatusFactRow
+                    key={row.route}
+                    label={row.route}
+                    value={`${formatDecimal(row.p95_ms)} ms p95`}
+                    detail={`${formatMetric(row.count)} samples / ${formatMetric(row.slow_count)} slow`}
+                  />
+                ))
+              ) : (
+                <div className="container-path-empty">Route timings will appear after API traffic</div>
+              )}
+              {topDatabaseFootprints.map((row) => (
+                <StatusFactRow
+                  key={`${row.kind}-${row.name}`}
+                  label={`${row.kind}: ${row.name}`}
+                  value={formatDatabaseSize(row.total_bytes)}
+                  detail={`${formatDatabaseSize(row.relation_bytes)} relation bytes`}
+                />
+              ))}
+              {topStorageFootprints.map((row) => (
+                <StatusFactRow
+                  key={row.label}
+                  label={row.label}
+                  value={formatDatabaseSize(row.size_bytes)}
+                  detail={row.exists ? `${formatMetric(row.file_count)} files / ${row.path}` : `${row.path} not present`}
+                />
+              ))}
             </div>
           </section>
         </div>
@@ -18591,7 +19522,7 @@ export default function App() {
   const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
   const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
   const needsSavedSearches = activeView === "library" || activeView === "settings";
-  const needsImportJobs = activeView === "import" || activeView === "queue";
+  const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "portfolio";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
   const documentQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
@@ -18608,6 +19539,12 @@ export default function App() {
     enabled: Boolean(me.data),
     refetchInterval: (query) =>
       dashboardHasActiveWork(query.state.data as Dashboard | undefined) ? ACTIVE_WORK_REFETCH_INTERVAL_MS : IDLE_SHELL_REFETCH_INTERVAL_MS,
+  });
+  const cacheStatus = useQuery({
+    queryKey: ["cache-status"],
+    queryFn: api.cacheStatus,
+    enabled: Boolean(me.data),
+    refetchInterval: 30000,
   });
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
@@ -18733,6 +19670,12 @@ export default function App() {
     enabled: Boolean(me.data && activeView === "stashes"),
     refetchInterval: activeView === "stashes" ? (activeDashboardWork ? ACTIVE_WORK_REFETCH_INTERVAL_MS : WORKSPACE_REFETCH_INTERVAL_MS) : false,
   });
+  const portfolioItems = useQuery({
+    queryKey: ["portfolio"],
+    queryFn: api.portfolioItems,
+    enabled: Boolean(me.data && activeView === "portfolio"),
+    refetchInterval: activeView === "portfolio" ? (activeDashboardWork ? ACTIVE_WORK_REFETCH_INTERVAL_MS : WORKSPACE_REFETCH_INTERVAL_MS) : false,
+  });
   const releaseUpgradeLocked = Boolean(releaseUpgradeLock && releaseUpgradeLock.stage !== "failed");
   const releaseUpgradePollActive = Boolean(
     releaseUpgradeLock && releaseUpgradeLock.stage !== "failed" && releaseUpgradeLock.stage !== "reloading",
@@ -18746,6 +19689,18 @@ export default function App() {
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => queryClient.clear(),
+  });
+  const refreshCache = useMutation<CacheRefreshResult, Error>({
+    mutationFn: api.refreshCache,
+    onSuccess: (result) => {
+      queryClient.setQueryData(["cache-status"], result.after);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["library-fun-stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "documents" || query.queryKey[0] === "document" });
+    },
   });
   const confirmReleaseReload = useCallback(() => {
     return appDialogs.confirm({
@@ -19249,6 +20204,7 @@ export default function App() {
     notes: dashboard.data?.notes ?? notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
     stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
+    portfolio: portfolioItems.data?.length ?? 0,
   };
   const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
   const activeServerBackgroundJobs = (concordanceRuns.data || [])
@@ -19276,12 +20232,15 @@ export default function App() {
       <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
+        cacheRefreshing={refreshCache.isPending}
+        cacheStatus={cacheStatus.data}
         completedImport={completedIngestionNotice}
         dashboard={dashboard.data}
         onDismissCompletedImport={dismissCompletedIngestion}
         onOpenQueue={() => void requestActiveViewChange("queue")}
         onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
+        onRefreshCache={() => refreshCache.mutate()}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
         releaseStatus={releaseStatus.data}
@@ -19376,6 +20335,12 @@ export default function App() {
         ) : null}
         {activeView === "queue" ? <QueueView items={review.data || []} jobs={jobs.data || []} /> : null}
         {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
+        {activeView === "portfolio" ? (
+          <PortfolioView
+            items={portfolioItems.data || []}
+            onTitleSubjectChange={(subject) => updateViewTitleSubject("portfolio", subject)}
+          />
+        ) : null}
         {activeView === "notes" ? (
           <NotesView
             documents={documents.data || []}

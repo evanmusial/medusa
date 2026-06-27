@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import Document, DocumentVersion
-from app.services.document_visibility import filter_library_visible_documents
+from app.services.document_visibility import LIBRARY_DOCUMENT_KIND, filter_library_visible_documents
 
 
 REASON_LABELS = {
@@ -294,7 +294,7 @@ def active_duplicate_matches_for_profile(
 ) -> list[DuplicateMatch]:
     candidates = (
         db.query(Document)
-        .filter(Document.deleted_at.is_(None), Document.processing_status.in_(statuses))
+        .filter(Document.deleted_at.is_(None), Document.document_kind == LIBRARY_DOCUMENT_KIND, Document.processing_status.in_(statuses))
         .order_by(Document.created_at.desc(), Document.id)
         .all()
     )

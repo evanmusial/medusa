@@ -1,0 +1,160 @@
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+
+def make_session():
+    from app.database import Base
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    return Session
+
+
+def test_cache_key_changes_when_revision_changes(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.cache import bump_cache_revisions, cache_key, current_cache_revisions
+
+    Session = make_session()
+    with Session() as db:
+        first_revisions = current_cache_revisions(db, {"library"})
+        first_key = cache_key("documents:list", {"q": "volcano"}, first_revisions)
+
+        bump_cache_revisions(db, {"library"}, reason="test")
+        db.commit()
+
+        second_revisions = current_cache_revisions(db, {"library"})
+        second_key = cache_key("documents:list", {"q": "volcano"}, second_revisions)
+
+    assert first_revisions["global"] == 0
+    assert first_revisions["library"] == 0
+    assert second_revisions["library"] == 1
+    assert first_key != second_key
+
+
+def test_cache_revision_hooks_bump_on_commit_not_rollback(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import CacheRevision, Document
+    from app.services.cache import install_cache_revision_hooks
+
+    install_cache_revision_hooks()
+    Session = make_session()
+
+    with Session() as db:
+        db.add(
+            Document(
+                title="Rolled Back",
+                original_filename="rollback.pdf",
+                checksum_sha256="a" * 64,
+                processing_status="ready",
+            )
+        )
+        db.rollback()
+
+    with Session() as db:
+        assert db.query(CacheRevision).count() == 0
+
+        db.add(
+            Document(
+                title="Committed",
+                original_filename="committed.pdf",
+                checksum_sha256="b" * 64,
+                processing_status="ready",
+            )
+        )
+        db.commit()
+
+        revisions = {row.family: row.version for row in db.query(CacheRevision).all()}
+
+    assert revisions["library"] == 1
+    assert revisions["document_detail"] == 1
+    assert revisions["dashboard"] == 1
+    assert revisions["status"] == 1
+    assert "global" not in revisions
+
+
+def test_cache_revision_dirty_state_clears_on_rollback(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import AppPreference, CacheRevision, Document
+    from app.services.cache import install_cache_revision_hooks
+
+    install_cache_revision_hooks()
+    Session = make_session()
+
+    with Session() as db:
+        db.add(
+            Document(
+                title="Flushed Then Rolled Back",
+                original_filename="rollback.pdf",
+                checksum_sha256="c" * 64,
+                processing_status="ready",
+            )
+        )
+        db.flush()
+        db.rollback()
+
+        db.add(AppPreference(key="unrelated", value={"ok": True}))
+        db.commit()
+
+        assert db.query(CacheRevision).count() == 0
+
+
+def test_null_cache_is_a_bypass():
+    from app.services.cache import NullCache
+
+    cache = NullCache()
+
+    status, payload = cache.get_json("key", "documents:list")
+    write_status = cache.set_json("key", "documents:list", {"ok": True}, 60, 1024)
+
+    assert status == "bypass"
+    assert payload is None
+    assert write_status == "bypass"
+    assert cache.status()["mode"] == "disabled"
+
+
+def test_valkey_cache_errors_are_misses():
+    from app.services.cache import ValkeyCache
+
+    cache = ValkeyCache("valkey://example.invalid:6379/0")
+
+    def fail():
+        raise RuntimeError("offline")
+
+    cache._redis = fail
+
+    status, payload = cache.get_json("key", "dashboard")
+    write_status = cache.set_json("key", "dashboard", {"ok": True}, 60, 1024)
+    backend_status = cache.status()
+
+    assert status == "error"
+    assert payload is None
+    assert write_status == "error"
+    assert backend_status["mode"] == "degraded"
+    assert backend_status["reachable"] is False
+
+
+def test_valkey_cache_bypasses_oversized_payloads():
+    from app.services.cache import ValkeyCache
+
+    class RecordingClient:
+        def __init__(self):
+            self.setex_calls = []
+
+        def setex(self, *args):
+            self.setex_calls.append(args)
+
+    client = RecordingClient()
+    cache = ValkeyCache("valkey://unused:6379/0")
+    cache._client = client
+
+    status = cache.set_json("key", "documents:detail", {"text": "x" * 200}, 60, 64)
+
+    assert status == "bypass"
+    assert client.setex_calls == []

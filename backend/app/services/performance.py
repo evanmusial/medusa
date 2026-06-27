@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections import defaultdict, deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import perf_counter
@@ -17,6 +19,11 @@ class RequestPerformanceStats:
 
 _request_stats: ContextVar[RequestPerformanceStats | None] = ContextVar("medusa_request_performance_stats", default=None)
 _installed_engine_ids: set[int] = set()
+_route_samples: dict[str, deque[tuple[float, int]]] = defaultdict(lambda: deque(maxlen=200))
+_route_slow_counts: dict[str, int] = defaultdict(int)
+_route_last_status: dict[str, int] = {}
+_UUID_RE = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=/|$)")
+_NUMBER_RE = re.compile(r"/\d+(?=/|$)")
 
 
 def begin_request_performance_stats() -> Any:
@@ -29,6 +36,42 @@ def current_request_performance_stats() -> RequestPerformanceStats | None:
 
 def reset_request_performance_stats(token: Any) -> None:
     _request_stats.reset(token)
+
+
+def normalize_route_path(path: str) -> str:
+    normalized = _UUID_RE.sub("/{id}", path)
+    normalized = _NUMBER_RE.sub("/{n}", normalized)
+    return normalized
+
+
+def record_route_performance(path: str, elapsed_ms: float, status_code: int, slow_threshold_ms: float) -> None:
+    route = normalize_route_path(path)
+    _route_samples[route].append((elapsed_ms, status_code))
+    _route_last_status[route] = status_code
+    if elapsed_ms >= slow_threshold_ms:
+        _route_slow_counts[route] += 1
+
+
+def route_performance_summary(limit: int = 8) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for route, samples in _route_samples.items():
+        if not samples:
+            continue
+        durations = sorted(value for value, _ in samples)
+        p95_index = min(len(durations) - 1, max(0, int(round(len(durations) * 0.95)) - 1))
+        average_ms = sum(durations) / len(durations)
+        rows.append(
+            {
+                "route": route,
+                "count": len(samples),
+                "p95_ms": durations[p95_index],
+                "average_ms": average_ms,
+                "slow_count": _route_slow_counts.get(route, 0),
+                "last_status": _route_last_status.get(route),
+            }
+        )
+    rows.sort(key=lambda row: (row["p95_ms"], row["count"]), reverse=True)
+    return rows[:limit]
 
 
 def install_sqlalchemy_performance_timing(engine: Engine) -> None:

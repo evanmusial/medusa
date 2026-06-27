@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.database import engine, init_db, is_postgres, session_scope
 from app.models import ConcordanceJob, DocumentAccessorySummary, ImportJob, ProcessingEvent, utc_now
 from app.security import ensure_admin_user
+from app.services.cache import install_cache_revision_hooks
 from app.services.accessory_summaries import AccessorySummaryProcessor
 from app.services.concordance import ConcordanceProcessor, refresh_concordance_run_progress
 from app.services.processing import DocumentProcessor, refresh_import_batch_progress
@@ -21,6 +22,7 @@ from app.services.preferences import get_import_worker_concurrency
 
 running = True
 logger = logging.getLogger(__name__)
+install_cache_revision_hooks()
 
 
 def stop(_: int, __: object) -> None:

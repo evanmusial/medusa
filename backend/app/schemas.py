@@ -644,6 +644,176 @@ class DocumentRecommendationDownloadOut(BaseModel):
     failed_count: int
 
 
+class PortfolioItemCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=600)
+    description: str | None = None
+    project_ids: list[str] = Field(default_factory=list)
+    domain_ids: list[str] = Field(default_factory=list)
+    tag_ids: list[str] = Field(default_factory=list)
+
+
+class PortfolioItemPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=600)
+    description: str | None = None
+    status: str | None = Field(default=None, max_length=40)
+    current_version_id: str | None = None
+    project_ids: list[str] | None = None
+    domain_ids: list[str] | None = None
+    tag_ids: list[str] | None = None
+
+
+class PortfolioVersionEdgeOut(ApiModel):
+    id: str
+    parent_version_id: str
+    child_version_id: str
+    relation_type: str
+    edge_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class PortfolioVersionOut(ApiModel):
+    id: str
+    portfolio_item_id: str
+    document_id: str
+    version_number: int
+    label: str | None = None
+    upload_note: str | None = None
+    source_filename: str
+    source_content_type: str
+    source_checksum_sha256: str
+    source_checksum_md5: str | None = None
+    source_storage_uri: str | None = None
+    source_size_bytes: int
+    processing_status: str
+    version_metadata: dict[str, Any] = Field(default_factory=dict)
+    document: DocumentSummary | None = None
+    parent_edges: list[PortfolioVersionEdgeOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("label", "upload_note", "source_filename", mode="before")
+    @classmethod
+    def decode_version_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class PortfolioMaterialOut(ApiModel):
+    id: str
+    portfolio_item_id: str
+    version_id: str | None = None
+    document_id: str
+    role: str
+    label: str | None = None
+    required_for_assessment: bool
+    notes: str | None = None
+    material_metadata: dict[str, Any] = Field(default_factory=dict)
+    document: DocumentSummary | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("label", "notes", mode="before")
+    @classmethod
+    def decode_material_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class PortfolioSuggestionOut(ApiModel):
+    id: str
+    portfolio_item_id: str
+    version_id: str | None = None
+    library_document_id: str | None = None
+    source_type: str
+    title: str
+    source_url: str | None = None
+    relation_family: str
+    score: float | None = None
+    status: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    library_document: DocumentSummary | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("title", "source_url", mode="before")
+    @classmethod
+    def decode_suggestion_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class PortfolioSuggestionRefreshOut(BaseModel):
+    portfolio_item_id: str
+    suggestion_count: int
+    suggestions: list[PortfolioSuggestionOut]
+
+
+class PortfolioAssessmentCreate(BaseModel):
+    mode: str = Field(default="quality_review", max_length=80)
+    version_id: str | None = None
+    model_ids: list[str] | None = None
+
+
+class PortfolioAssessmentFindingOut(ApiModel):
+    id: str
+    assessment_run_id: str
+    category: str
+    severity: str
+    title: str
+    body: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("title", "body", mode="before")
+    @classmethod
+    def decode_finding_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class PortfolioAssessmentRunOut(ApiModel):
+    id: str
+    portfolio_item_id: str
+    version_id: str | None = None
+    mode: str
+    model_ids: list[str] = Field(default_factory=list)
+    status: str
+    summary: str | None = None
+    assessment_metadata: dict[str, Any] = Field(default_factory=dict)
+    last_error: str | None = None
+    completed_at: datetime | None = None
+    findings: list[PortfolioAssessmentFindingOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("summary", "last_error", mode="before")
+    @classmethod
+    def decode_assessment_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class PortfolioItemOut(ApiModel):
+    id: str
+    title: str
+    description: str | None = None
+    status: str
+    current_version_id: str | None = None
+    project_ids: list[str] = Field(default_factory=list)
+    domain_ids: list[str] = Field(default_factory=list)
+    tag_ids: list[str] = Field(default_factory=list)
+    portfolio_metadata: dict[str, Any] = Field(default_factory=dict)
+    current_version: PortfolioVersionOut | None = None
+    versions: list[PortfolioVersionOut] = Field(default_factory=list)
+    materials: list[PortfolioMaterialOut] = Field(default_factory=list)
+    suggestions: list[PortfolioSuggestionOut] = Field(default_factory=list)
+    assessment_runs: list[PortfolioAssessmentRunOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("title", "description", mode="before")
+    @classmethod
+    def decode_portfolio_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
 class DoiStashCreate(BaseModel):
     doi: str = Field(min_length=1, max_length=256)
     title: str | None = Field(default=None, max_length=800)
@@ -1097,6 +1267,88 @@ class LibraryFunStatsOut(BaseModel):
     used_project_resource_count: int = 0
     domain_count: int = 0
     tag_count: int = 0
+
+
+class CacheFamilyStatsOut(BaseModel):
+    family: str
+    hits: int = 0
+    misses: int = 0
+    bypasses: int = 0
+    errors: int = 0
+    writes: int = 0
+    hit_rate: float = 0.0
+
+
+class CacheRequestMetricOut(BaseModel):
+    route: str
+    count: int = 0
+    p95_ms: float = 0.0
+    average_ms: float = 0.0
+    slow_count: int = 0
+    last_status: int | None = None
+
+
+class CacheDatabaseFootprintOut(BaseModel):
+    name: str
+    kind: str
+    total_bytes: int = 0
+    relation_bytes: int = 0
+
+
+class CacheStorageFootprintOut(BaseModel):
+    label: str
+    path: str
+    exists: bool = False
+    size_bytes: int = 0
+    file_count: int = 0
+
+
+class CacheQueueStatOut(BaseModel):
+    queue: str
+    active_count: int = 0
+    oldest_age_seconds: int | None = None
+
+
+class CacheStatusOut(BaseModel):
+    checked_at: datetime
+    backend: str
+    enabled: bool
+    reachable: bool
+    mode: str
+    message: str
+    version: str | None = None
+    uptime_seconds: int | None = None
+    used_memory_bytes: int | None = None
+    peak_memory_bytes: int | None = None
+    rss_memory_bytes: int | None = None
+    maxmemory_bytes: int | None = None
+    maxmemory_policy: str | None = None
+    key_count: int = 0
+    hit_count: int = 0
+    miss_count: int = 0
+    hit_rate: float = 0.0
+    evicted_keys: int = 0
+    expired_keys: int = 0
+    connected_clients: int = 0
+    ops_per_second: float = 0.0
+    latency_ms: float | None = None
+    last_refresh_at: datetime | None = None
+    last_invalidation_at: datetime | None = None
+    families: list[CacheFamilyStatsOut] = Field(default_factory=list)
+    request_metrics: list[CacheRequestMetricOut] = Field(default_factory=list)
+    queue_stats: list[CacheQueueStatOut] = Field(default_factory=list)
+    database_footprints: list[CacheDatabaseFootprintOut] = Field(default_factory=list)
+    storage_footprints: list[CacheStorageFootprintOut] = Field(default_factory=list)
+
+
+class CacheRefreshOut(BaseModel):
+    status: str
+    message: str
+    refreshed_at: datetime
+    refreshed_families: list[str] = Field(default_factory=list)
+    warmed_keys: int = 0
+    before: CacheStatusOut
+    after: CacheStatusOut
 
 
 class BackupRunOut(ApiModel):

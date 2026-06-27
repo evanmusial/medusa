@@ -1,6 +1,6 @@
 # Medusa
 
-Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analysis**. It is a local-first research library, document aggregator, and intelligent taxonomizer, built as a polished web app for organizing academic PDFs, HTML documents, and plain-text sources, extracting searchable text and metadata, generating citations and summaries, and managing project run sheets.
+Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analysis**. It is a local-first research library, document aggregator, and intelligent taxonomizer, built as a polished web app for organizing academic PDFs, DOCX/RTF/HTML/plain-text sources, extracting searchable text and metadata, generating citations and summaries, managing project run sheets, and keeping versioned user documents in Portfolio.
 
 ## What Is Implemented
 
@@ -11,7 +11,9 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 - Icon-only header Status button linking to `/status`, with build/version identity, short commit hash, uptime, memory and disk footprints, runtime versions, proxy status, and storage path details
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs
-- Batch PDF, HTML, and plain-text/Markdown upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, robust duplicate detection using SHA-256, MD5, DOI, normalized title, and supporting metadata, explicit skip/overwrite/import-anyway choices, local PDF mezzanine conversion for non-PDF sources, staged upload rows with rough per-file and grand-total cost previews, Process Uploads and staged-upload cleanup actions, staged-document invisibility from Library/search until import completion, and active-first progress-shaded import processing rows with model/cost detail
+- Internal Valkey response cache for rebuildable dashboard, Library list/detail, organization, and Status payloads, guarded by PostgreSQL-backed cache revisions plus manual Refresh Cache controls in the user menu and Status page
+- Batch PDF, DOCX, RTF, HTML, and plain-text/Markdown upload with optional label, priority, read status, domain/tag/project defaults, inline organization creation, robust duplicate detection using SHA-256, MD5, DOI, normalized title, and supporting metadata, explicit skip/overwrite/import-anyway choices, local PDF mezzanine conversion for non-PDF sources, staged upload rows with rough per-file and grand-total cost previews, Process Uploads and staged-upload cleanup actions, staged-document invisibility from Library/search until import completion, and active-first progress-shaded import processing rows with model/cost detail
+- Portfolio workspace for user-authored research and education documents, with PDF/DOCX/RTF/TXT/Markdown version uploads, hidden source-preserving document processing, immutable lineage edges, rubric/reference/feedback materials, Library-resource suggestions, baseline assessment runs, generated preview, source download, and version metadata comparison
 - GCS storage adapter with local fallback when credentials are not configured
 - Raw text extraction preference with Local choices for Docling, Marker, and PyMuPDF; Marker is the default preference and PyMuPDF remains the bundled local fallback
 - Authenticated original PDF preview/open/download route in the document detail pane and expanded Reader mode
@@ -72,7 +74,7 @@ Then run:
 docker compose up --build
 ```
 
-Backend startup runs Alembic migrations for PostgreSQL automatically before serving traffic.
+Backend startup runs Alembic migrations for PostgreSQL automatically before serving traffic. The default Compose stack also starts internal Valkey with no host-exposed port on a private cache network shared only by the backend and worker; if Valkey is unavailable, Medusa falls back to PostgreSQL reads and reports degraded cache status.
 
 Open:
 
@@ -86,7 +88,7 @@ The login email defaults to `admin@medusa.local` and the first admin password co
 
 ## TLS And HAProxy
 
-Docker Compose runs HAProxy as the only host-exposed service on port `3737`. HAProxy terminates TLS, redirects plain HTTP on the same port to HTTPS, and proxies Medusa to the internal frontend service. Backend, worker, database, and frontend ports stay on the Compose network.
+Docker Compose runs HAProxy as the only host-exposed service on port `3737`. HAProxy terminates TLS, redirects plain HTTP on the same port to HTTPS, and proxies Medusa to the internal frontend service. Backend, worker, database, and frontend ports stay on Compose networks; Valkey is additionally isolated on an internal cache-only network with no published port.
 
 Certificate files belong in ignored `data/haproxy/fullchain.pem` and `data/haproxy/privatekey.pem`. Compose combines them into HAProxy's runtime PEM inside the container; the HAProxy image reads these files as UID/GID `99`, so server installs should make `data/haproxy` group-executable and the PEM files group-readable by group `99` without making the private key world-readable. Do not commit certificate private keys.
 
@@ -97,6 +99,18 @@ MEDUSA_ALLOWED_HOSTS=medusa.home.musial.io
 ```
 
 `MEDUSA_ALLOWED_HOSTS` accepts a comma-separated Vite allowed-host list, or `*` / `all` / `true` to allow any Host header during a controlled migration window.
+
+Valkey response cache:
+
+```bash
+MEDUSA_CACHE_BACKEND=valkey
+MEDUSA_CACHE_URL=valkey://valkey:6379/0
+MEDUSA_CACHE_TTL_SECONDS=3600
+MEDUSA_CACHE_MAX_PAYLOAD_BYTES=2097152
+MEDUSA_VALKEY_MAXMEMORY=512mb
+```
+
+Valkey stores only derived, rebuildable API payloads and counters. PostgreSQL remains authoritative for documents, search, jobs, history, evidence, auth, and backups. Cache keys include PostgreSQL `cache_revisions`, so manual Refresh Cache and relevant committed writes make older payloads unreachable even if old Valkey keys remain until TTL/LRU eviction.
 
 HAProxy's stats listener is internal-only. Utilities reads the authenticated backend endpoint `/api/utilities/haproxy/status`, which summarizes the internal CSV stats feed.
 

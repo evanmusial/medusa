@@ -45,6 +45,13 @@ from app.models import (
     Note,
     OpenAIUsageRecord,
     ProcessingEvent,
+    PortfolioAssessmentFinding,
+    PortfolioAssessmentRun,
+    PortfolioItem,
+    PortfolioMaterial,
+    PortfolioSuggestion,
+    PortfolioVersion,
+    PortfolioVersionEdge,
     Project,
     ProjectBibliography,
     ProjectItem,
@@ -73,6 +80,8 @@ from app.schemas import (
     BackupEstimateOut,
     BackupRunOut,
     BibliographyOut,
+    CacheRefreshOut,
+    CacheStatusOut,
     CitationCandidatePatch,
     CitationCandidateOut,
     ConcordanceCapabilityOut,
@@ -136,6 +145,13 @@ from app.schemas import (
     ModelPricingStatusOut,
     OpenAIUsageOut,
     ProcessingEventOut,
+    PortfolioAssessmentCreate,
+    PortfolioAssessmentRunOut,
+    PortfolioItemCreate,
+    PortfolioItemOut,
+    PortfolioItemPatch,
+    PortfolioSuggestionOut,
+    PortfolioSuggestionRefreshOut,
     ProjectCreate,
     ProjectDetail,
     ProjectItemCreate,
@@ -193,6 +209,7 @@ from app.services.analysis_models import (
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_PORTFOLIO_ASSESSMENT,
     MODEL_RAW_TEXT_EXTRACTION,
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
@@ -207,6 +224,15 @@ from app.services.backups import (
     list_backup_runs,
     list_gcs_backup_artifacts,
     save_restore_upload,
+)
+from app.services.cache import (
+    CACHE_ALL_REVISION_FAMILIES,
+    bump_cache_revisions,
+    cache_status_payload,
+    get_cached_payload,
+    get_cache_backend,
+    install_cache_revision_hooks,
+    set_cached_payload,
 )
 from app.services.concordance import create_concordance_run, current_capabilities, estimate_concordance_run
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
@@ -273,7 +299,9 @@ from app.services.performance import (
     begin_request_performance_stats,
     current_request_performance_stats,
     install_sqlalchemy_performance_timing,
+    record_route_performance,
     reset_request_performance_stats,
+    route_performance_summary,
 )
 from app.services.recommendations import (
     document_has_recommendation_inputs,
@@ -313,6 +341,7 @@ SERVER_IPV4: str | None = None
 PERFORMANCE_LOG_MIN_MS = 250.0
 performance_logger = logging.getLogger("medusa.performance")
 install_sqlalchemy_performance_timing(engine)
+install_cache_revision_hooks()
 
 DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 STAGED_IMPORT_STATUS = "staged"
@@ -394,6 +423,7 @@ async def record_request_performance(request: Request, call_next):
             response.headers["X-Medusa-Request-Duration-Ms"] = f"{elapsed_ms:.1f}"
             response.headers["X-Medusa-Sql-Count"] = str(stats.sql_count if stats else 0)
             response.headers["X-Medusa-Sql-Duration-Ms"] = f"{stats.sql_ms:.1f}" if stats else "0.0"
+            record_route_performance(request.url.path, elapsed_ms, response.status_code, PERFORMANCE_LOG_MIN_MS)
         if request.url.path.startswith("/api/") and elapsed_ms >= PERFORMANCE_LOG_MIN_MS:
             performance_logger.info(
                 "slow_api_request method=%s path=%s status=%s duration_ms=%.1f sql_count=%s sql_ms=%.1f",
@@ -437,6 +467,55 @@ def current_user(
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
+
+
+def set_cache_response_headers(response: Response | None, family: str, status: str) -> None:
+    if response is None:
+        return
+    response.headers["X-Medusa-Cache"] = status
+    response.headers["X-Medusa-Cache-Family"] = family
+
+
+def cache_or_load(
+    db: Session,
+    response: Response | None,
+    *,
+    family: str,
+    revision_families: list[str] | tuple[str, ...] | set[str],
+    key_parts: dict[str, Any],
+    loader,
+):
+    status, payload, key, _ = get_cached_payload(
+        db,
+        family=family,
+        revision_families=revision_families,
+        key_parts=key_parts,
+    )
+    if payload is not None:
+        set_cache_response_headers(response, family, status)
+        return payload
+    result = loader()
+    write_status = set_cached_payload(key, family, result)
+    set_cache_response_headers(response, family, status if status != "miss" or write_status != "error" else "miss")
+    return result
+
+
+def warm_cache_payload(
+    db: Session,
+    *,
+    family: str,
+    revision_families: list[str] | tuple[str, ...] | set[str],
+    key_parts: dict[str, Any],
+    loader,
+) -> bool:
+    _, _, key, _ = get_cached_payload(
+        db,
+        family=family,
+        revision_families=revision_families,
+        key_parts=key_parts,
+    )
+    result = loader()
+    return set_cached_payload(key, family, result) == "write"
 
 
 def domain_out(
@@ -1870,8 +1949,7 @@ def library_fun_stats_out(db: Session) -> LibraryFunStatsOut:
     )
 
 
-@app.get("/api/dashboard", response_model=DashboardOut)
-def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> DashboardOut:
+def dashboard_out(db: Session) -> DashboardOut:
     import_queued_jobs = db.query(ImportJob).filter(ImportJob.status == "queued").count()
     import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
     queue_import_jobs = db.query(ImportJob).filter(ImportJob.status.in_(IMPORT_JOB_QUEUE_STATUSES)).count()
@@ -1943,9 +2021,124 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
     )
 
 
+@app.get("/api/dashboard", response_model=DashboardOut)
+def dashboard(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> DashboardOut:
+    return cache_or_load(
+        db,
+        response,
+        family="dashboard",
+        revision_families={"dashboard", "jobs", "library", "organization"},
+        key_parts={"endpoint": "dashboard"},
+        loader=lambda: dashboard_out(db),
+    )
+
+
 @app.get("/api/status/library-fun", response_model=LibraryFunStatsOut)
-def library_fun_stats(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> LibraryFunStatsOut:
-    return library_fun_stats_out(db)
+def library_fun_stats(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> LibraryFunStatsOut:
+    return cache_or_load(
+        db,
+        response,
+        family="status:library_fun",
+        revision_families={"status", "library", "organization"},
+        key_parts={"endpoint": "library_fun_stats"},
+        loader=lambda: library_fun_stats_out(db),
+    )
+
+
+@app.get("/api/cache/status", response_model=CacheStatusOut)
+def cache_status(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    return cache_status_payload(db, request_metrics=route_performance_summary())
+
+
+@app.post("/api/cache/refresh", response_model=CacheRefreshOut)
+def refresh_cache(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    before = cache_status_payload(db, request_metrics=route_performance_summary())
+    refreshed_at = utc_now()
+    bump_cache_revisions(db, CACHE_ALL_REVISION_FAMILIES, reason="manual_refresh")
+    db.commit()
+    get_cache_backend().remember_refresh(refreshed_at)
+
+    warmed_keys = 0
+    warmers = [
+        {
+            "family": "dashboard",
+            "revision_families": {"dashboard", "jobs", "library", "organization"},
+            "key_parts": {"endpoint": "dashboard"},
+            "loader": lambda: dashboard_out(db),
+        },
+        {
+            "family": "status:library_fun",
+            "revision_families": {"status", "library", "organization"},
+            "key_parts": {"endpoint": "library_fun_stats"},
+            "loader": lambda: library_fun_stats_out(db),
+        },
+        {
+            "family": "organization",
+            "revision_families": {"organization", "library"},
+            "key_parts": {"endpoint": "domains"},
+            "loader": lambda: domain_list_out(db),
+        },
+        {
+            "family": "organization",
+            "revision_families": {"organization", "library"},
+            "key_parts": {"endpoint": "tags"},
+            "loader": lambda: tag_list_out(db),
+        },
+        {
+            "family": "organization",
+            "revision_families": {"organization", "library"},
+            "key_parts": {"endpoint": "projects"},
+            "loader": lambda: project_list_out(db),
+        },
+        {
+            "family": "documents:list",
+            "revision_families": {"library", "organization"},
+            "key_parts": {
+                "q": "",
+                "domain_id": "",
+                "tag_id": "",
+                "read_status": "",
+                "priority": "",
+                "citation_status": "",
+                "duplicate_status": "",
+                "all": False,
+                "offset": 0,
+                "limit": 100,
+            },
+            "loader": lambda: document_list_rows_out(db, offset=0, limit=100),
+        },
+    ]
+    for warmer in warmers:
+        try:
+            if warm_cache_payload(db, **warmer):
+                warmed_keys += 1
+        except Exception:
+            logging.getLogger("medusa.cache").debug("Cache warm failed for %s", warmer["family"], exc_info=True)
+
+    after = cache_status_payload(db, request_metrics=route_performance_summary())
+    return {
+        "status": "complete",
+        "message": f"Cache revisions refreshed. Warmed {warmed_keys} derived payloads.",
+        "refreshed_at": refreshed_at,
+        "refreshed_families": list(CACHE_ALL_REVISION_FAMILIES),
+        "warmed_keys": warmed_keys,
+        "before": before,
+        "after": after,
+    }
 
 
 @app.get("/api/preferences", response_model=AppPreferencesOut)
@@ -2098,8 +2291,7 @@ def read_openai_usage(
     return openai_usage_summary(db, period=period)
 
 
-@app.get("/api/domains", response_model=list[DomainOut])
-def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[DomainOut]:
+def domain_list_out(db: Session) -> list[DomainOut]:
     domains = (
         db.query(Domain)
         .filter(Domain.deleted_at.is_(None))
@@ -2121,6 +2313,22 @@ def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Sessio
         )
         for domain in domains
     ]
+
+
+@app.get("/api/domains", response_model=list[DomainOut])
+def list_domains(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[DomainOut]:
+    return cache_or_load(
+        db,
+        response,
+        family="organization",
+        revision_families={"organization", "library"},
+        key_parts={"endpoint": "domains"},
+        loader=lambda: domain_list_out(db),
+    )
 
 
 @app.post("/api/domains", response_model=DomainOut)
@@ -2316,11 +2524,26 @@ def delete_domain(
     return DomainDeleteOut(deleted_id=domain.id, updated_documents=updated_documents)
 
 
-@app.get("/api/tags", response_model=list[TagOut])
-def list_tags(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[TagOut]:
+def tag_list_out(db: Session) -> list[TagOut]:
     tags = db.query(Tag).order_by(Tag.name).all()
     counts = tag_document_counts(db, [tag.id for tag in tags])
     return [tag_out(tag, db, document_count=counts.get(tag.id, 0)) for tag in tags]
+
+
+@app.get("/api/tags", response_model=list[TagOut])
+def list_tags(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[TagOut]:
+    return cache_or_load(
+        db,
+        response,
+        family="organization",
+        revision_families={"organization", "library"},
+        key_parts={"endpoint": "tags"},
+        loader=lambda: tag_list_out(db),
+    )
 
 
 @app.post("/api/tags", response_model=TagOut)
@@ -3127,10 +3350,25 @@ def create_attribute(
     return definition
 
 
-@app.get("/api/projects", response_model=list[ProjectOut])
-def list_projects(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[ProjectOut]:
+def project_list_out(db: Session) -> list[ProjectOut]:
     projects = db.query(Project).filter(Project.deleted_at.is_(None)).order_by(Project.created_at.desc()).all()
     return [project_out(project) for project in projects]
+
+
+@app.get("/api/projects", response_model=list[ProjectOut])
+def list_projects(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[ProjectOut]:
+    return cache_or_load(
+        db,
+        response,
+        family="organization",
+        revision_families={"organization", "library"},
+        key_parts={"endpoint": "projects"},
+        loader=lambda: project_list_out(db),
+    )
 
 
 @app.post("/api/projects", response_model=ProjectOut)
@@ -3275,10 +3513,8 @@ def list_documents(
     ]
 
 
-@app.get("/api/documents/list", response_model=DocumentListOut)
-def list_document_rows(
-    _: Annotated[User, Depends(current_user)],
-    db: Annotated[Session, Depends(get_db)],
+def document_list_rows_out(
+    db: Session,
     q: str | None = None,
     domain_id: str | None = None,
     tag_id: str | None = None,
@@ -3330,16 +3566,80 @@ def list_document_rows(
     )
 
 
+@app.get("/api/documents/list", response_model=DocumentListOut)
+def list_document_rows(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+    q: str | None = None,
+    domain_id: str | None = None,
+    tag_id: str | None = None,
+    read_status: str | None = None,
+    priority: str | None = None,
+    citation_status: str | None = None,
+    duplicate_status: str | None = None,
+    all_results: Annotated[bool, Query(alias="all")] = False,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+) -> DocumentListOut:
+    key_parts = {
+        "q": q or "",
+        "domain_id": domain_id or "",
+        "tag_id": tag_id or "",
+        "read_status": read_status or "",
+        "priority": priority or "",
+        "citation_status": citation_status or "",
+        "duplicate_status": duplicate_status or "",
+        "all": bool(all_results),
+        "offset": int(offset),
+        "limit": int(limit),
+    }
+    return cache_or_load(
+        db,
+        response,
+        family="documents:list",
+        revision_families={"library", "organization"},
+        key_parts=key_parts,
+        loader=lambda: document_list_rows_out(
+            db,
+            q=q,
+            domain_id=domain_id,
+            tag_id=tag_id,
+            read_status=read_status,
+            priority=priority,
+            citation_status=citation_status,
+            duplicate_status=duplicate_status,
+            all_results=all_results,
+            offset=offset,
+            limit=limit,
+        ),
+    )
+
+
 @app.get("/api/documents/{document_id}", response_model=DocumentDetail)
 def get_document(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> DocumentDetail:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
-    return document_detail_out(document, db)
+    key_parts = {
+        "document_id": document.id,
+        "updated_at": document.updated_at.isoformat() if document.updated_at else "",
+        "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
+        "processing_status": document.processing_status,
+    }
+    return cache_or_load(
+        db,
+        response,
+        family="documents:detail",
+        revision_families={"document_detail", "organization"},
+        key_parts=key_parts,
+        loader=lambda: document_detail_out(document, db),
+    )
 
 
 @app.get("/api/documents/duplicates/scan", response_model=DuplicateScanOut)
@@ -3677,6 +3977,792 @@ def download_recommendations(
     result = queue_recommendation_imports(db, document, recommendations, skip_existing=payload.skip_existing)
     db.commit()
     return DocumentRecommendationDownloadOut(**result)
+
+
+PORTFOLIO_VERSION_DOCUMENT_KIND = "portfolio_version"
+PORTFOLIO_MATERIAL_DOCUMENT_KIND = "portfolio_material"
+PORTFOLIO_SUGGESTION_STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "analysis",
+    "because",
+    "before",
+    "between",
+    "could",
+    "draft",
+    "from",
+    "have",
+    "into",
+    "more",
+    "other",
+    "paper",
+    "portfolio",
+    "research",
+    "should",
+    "study",
+    "their",
+    "there",
+    "these",
+    "this",
+    "through",
+    "version",
+    "were",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+}
+
+
+def portfolio_source_storage_key(checksum: str, document_id: str, filename: str) -> str:
+    return f"portfolio/sources/{checksum[:2]}/{checksum}/{document_id}/{filename}"
+
+
+def sync_portfolio_processing_status(item: PortfolioItem) -> None:
+    for version in item.versions:
+        if version.document and version.processing_status != version.document.processing_status:
+            version.processing_status = version.document.processing_status
+    if item.current_version and item.current_version.document:
+        item.current_version.processing_status = item.current_version.document.processing_status
+
+
+def portfolio_item_query(db: Session):
+    return (
+        db.query(PortfolioItem)
+        .options(
+            selectinload(PortfolioItem.current_version).joinedload(PortfolioVersion.document),
+            selectinload(PortfolioItem.current_version).selectinload(PortfolioVersion.parent_edges),
+            selectinload(PortfolioItem.versions).joinedload(PortfolioVersion.document),
+            selectinload(PortfolioItem.versions).selectinload(PortfolioVersion.parent_edges),
+            selectinload(PortfolioItem.materials).joinedload(PortfolioMaterial.document),
+            selectinload(PortfolioItem.suggestions).joinedload(PortfolioSuggestion.library_document),
+            selectinload(PortfolioItem.assessment_runs).selectinload(PortfolioAssessmentRun.findings),
+        )
+        .filter(PortfolioItem.deleted_at.is_(None))
+    )
+
+
+def portfolio_item_or_404(db: Session, portfolio_item_id: str) -> PortfolioItem:
+    item = portfolio_item_query(db).filter(PortfolioItem.id == portfolio_item_id).one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Portfolio item not found")
+    sync_portfolio_processing_status(item)
+    return item
+
+
+def portfolio_version_or_404(db: Session, version_id: str) -> PortfolioVersion:
+    version = (
+        db.query(PortfolioVersion)
+        .join(PortfolioItem, PortfolioItem.id == PortfolioVersion.portfolio_item_id)
+        .options(joinedload(PortfolioVersion.document), selectinload(PortfolioVersion.parent_edges))
+        .filter(PortfolioVersion.id == version_id, PortfolioItem.deleted_at.is_(None))
+        .one_or_none()
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="Portfolio version not found")
+    if version.document:
+        version.processing_status = version.document.processing_status
+    return version
+
+
+def portfolio_material_or_404(db: Session, material_id: str) -> PortfolioMaterial:
+    material = (
+        db.query(PortfolioMaterial)
+        .join(PortfolioItem, PortfolioItem.id == PortfolioMaterial.portfolio_item_id)
+        .options(joinedload(PortfolioMaterial.document))
+        .filter(PortfolioMaterial.id == material_id, PortfolioMaterial.deleted_at.is_(None), PortfolioItem.deleted_at.is_(None))
+        .one_or_none()
+    )
+    if not material:
+        raise HTTPException(status_code=404, detail="Portfolio material not found")
+    return material
+
+
+def next_portfolio_version_number(db: Session, portfolio_item_id: str) -> int:
+    current = (
+        db.query(func.max(PortfolioVersion.version_number))
+        .filter(PortfolioVersion.portfolio_item_id == portfolio_item_id)
+        .scalar()
+    )
+    return int(current or 0) + 1
+
+
+def portfolio_upload_batch_label(item: PortfolioItem, role: str) -> str:
+    return f"Portfolio: {item.title} ({role})"[:240]
+
+
+def create_portfolio_processing_document(
+    db: Session,
+    *,
+    item: PortfolioItem,
+    data: bytes,
+    filename: str | None,
+    content_type: str | None,
+    document_kind: str,
+    role: str,
+) -> tuple[Any, Document, ImportJob, str]:
+    try:
+        prepared = prepare_import_source(data, filename, content_type)
+    except ImportSourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    preset_snapshot = import_processing_snapshot(db, None)
+    batch = ImportBatch(
+        label=portfolio_upload_batch_label(item, role),
+        total_files=1,
+        shared_defaults={
+            "origin": "portfolio",
+            "portfolio_item_id": item.id,
+            "portfolio_role": role,
+            "document_kind": document_kind,
+            "priority": "normal",
+            "read_status": "unread",
+            "processing_preset_id": preset_snapshot["id"],
+            "processing_preset_name": preset_snapshot["name"],
+            "processing_preset_mode": preset_snapshot["mode"],
+            "processing_preset_snapshot": preset_snapshot,
+        },
+    )
+    db.add(batch)
+    db.flush()
+
+    document = Document(
+        title=prepared.title,
+        document_kind=document_kind,
+        original_filename=prepared.stored_filename,
+        content_type=prepared.stored_content_type,
+        checksum_sha256=prepared.source_checksum_sha256,
+        checksum_md5=prepared.stored_checksum_md5,
+        page_count=prepared.stored_page_count or 0,
+        processing_status="queued",
+        priority="normal",
+        read_status="unread",
+    )
+    db.add(document)
+    db.flush()
+
+    storage = get_storage_service()
+    stored_key = import_storage_key(prepared.source_checksum_sha256, document.id, prepared.stored_filename)
+    stored = storage.put_bytes(stored_key, prepared.stored_data, prepared.stored_content_type)
+    source_storage_uri = stored.uri
+    source_storage_status = stored.backend
+    if prepared.source_kind != "pdf":
+        source_key = portfolio_source_storage_key(prepared.source_checksum_sha256, document.id, prepared.source_filename)
+        source_stored = storage.put_bytes(source_key, data, prepared.source_content_type)
+        source_storage_uri = source_stored.uri
+        source_storage_status = source_stored.backend
+
+    cache_dir = document_cache_root()
+    cache_path = import_cache_path(cache_dir, document.id)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(prepared.stored_data)
+
+    document.gcs_uri = stored.uri
+    document.storage_status = stored.backend
+    document.metadata_evidence = {
+        "file_size_bytes": len(prepared.stored_data),
+        "local_cache_path": str(cache_path),
+        "document_cache_path": str(cache_path),
+        "source_import": prepared.metadata,
+        "source_file": {
+            "filename": prepared.source_filename,
+            "content_type": prepared.source_content_type,
+            "checksum_sha256": prepared.source_checksum_sha256,
+            "checksum_md5": prepared.source_checksum_md5,
+            "size_bytes": prepared.source_size_bytes,
+            "storage_uri": source_storage_uri,
+            "storage_status": source_storage_status,
+        },
+        "hashes": {
+            "source_sha256": prepared.source_checksum_sha256,
+            "source_md5": prepared.source_checksum_md5,
+            "stored_sha256": prepared.stored_checksum_sha256,
+            "stored_md5": prepared.stored_checksum_md5,
+        },
+        "portfolio": {
+            "item_id": item.id,
+            "role": role,
+            "document_kind": document_kind,
+        },
+        "import_defaults": batch.shared_defaults,
+        "import_processing_preset": preset_snapshot,
+    }
+    register_document_cache(document, cache_path, source="portfolio")
+
+    job = ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored")
+    db.add(job)
+    db.flush()
+    model_preferences = get_analysis_models(db)
+    estimate_rates = import_cost_exemplar_rates(db)
+    cost_estimate = estimate_import_job_cost(job, model_preferences=model_preferences, rates=estimate_rates, db=db)
+    estimated_cost_usd = float(cost_estimate.get("estimated_cost_usd") or 0.0)
+    estimate_page_count = cost_estimate.get("estimated_page_count")
+    if not isinstance(estimate_page_count, int):
+        estimate_page_count = document_estimated_page_count(document)
+    upload_estimate = {
+        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_page_count": estimate_page_count,
+        "basis": cost_estimate.get("basis") or "none",
+        "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+        "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
+        "step_estimates": cost_estimate.get("steps", []),
+        "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+        "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+        "model_preferences": model_preferences,
+        "processing_preset": {
+            "id": preset_snapshot["id"],
+            "name": preset_snapshot["name"],
+            "mode": preset_snapshot["mode"],
+        },
+        "estimated_at": utc_now().isoformat(),
+    }
+    document.metadata_evidence = {**(document.metadata_evidence or {}), "upload_cost_estimate": upload_estimate}
+    record_import_cost_estimate(
+        db,
+        document=document,
+        job=job,
+        estimated_cost_usd=estimated_cost_usd,
+        estimate_basis=str(upload_estimate["basis"]),
+        estimated_page_count=estimate_page_count,
+        model_preferences=model_preferences,
+        metadata={
+            "origin": "portfolio",
+            "portfolio_item_id": item.id,
+            "portfolio_role": role,
+            "processing_preset": upload_estimate["processing_preset"],
+            "step_estimates": upload_estimate["step_estimates"],
+            "calibration_factor": upload_estimate["calibration_factor"],
+            "calibration_sample_count": upload_estimate["calibration_sample_count"],
+        },
+    )
+    log_event(
+        db,
+        job=job,
+        document=document,
+        event_type="portfolio_upload_queued",
+        message="Portfolio upload was queued for processing.",
+        payload={"portfolio_item_id": item.id, "role": role, "source_kind": prepared.source_kind},
+    )
+    refresh_import_batch_progress(db, batch)
+    return prepared, document, job, source_storage_uri
+
+
+def portfolio_document_response(
+    document: Document,
+    *,
+    filename: str,
+    content_type: str,
+    download: bool,
+    uri: str | None = None,
+) -> FastAPIResponse:
+    storage_uri = uri or document.gcs_uri
+    if not storage_uri:
+        raise HTTPException(status_code=404, detail="Portfolio file is unavailable")
+    try:
+        data = get_storage_service().get_bytes(storage_uri)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Portfolio file is unavailable") from exc
+    return FastAPIResponse(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": content_disposition_header("attachment" if download else "inline", filename.replace('"', ""))},
+    )
+
+
+def portfolio_suggestion_terms(document: Document) -> list[str]:
+    text = " ".join(part for part in [document.title, document.abstract, document.rich_summary, document.search_text] if part)
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{3,}", text.lower())
+    terms: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        clean = word.strip("-")
+        if clean in seen or clean in PORTFOLIO_SUGGESTION_STOPWORDS:
+            continue
+        seen.add(clean)
+        terms.append(clean)
+        if len(terms) >= 16:
+            break
+    return terms
+
+
+def portfolio_overlap_score(terms: list[str], document: Document) -> float:
+    if not terms:
+        return 0.0
+    haystack = f"{document.title} {document.abstract or ''} {document.rich_summary or ''} {document.search_text or ''}".lower()
+    matched = sum(1 for term in terms if term in haystack)
+    return round(matched / max(1, len(terms)), 3)
+
+
+@app.get("/api/portfolio", response_model=list[PortfolioItemOut])
+def list_portfolio_items(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[PortfolioItem]:
+    items = portfolio_item_query(db).order_by(PortfolioItem.updated_at.desc(), PortfolioItem.title).all()
+    for item in items:
+        sync_portfolio_processing_status(item)
+    return items
+
+
+@app.post("/api/portfolio", response_model=PortfolioItemOut)
+def create_portfolio_item(
+    payload: PortfolioItemCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PortfolioItem:
+    title = " ".join(payload.title.strip().split())
+    if not title:
+        raise HTTPException(status_code=400, detail="Portfolio title is required")
+    item = PortfolioItem(
+        title=title,
+        description=payload.description,
+        project_ids=payload.project_ids,
+        domain_ids=payload.domain_ids,
+        tag_ids=payload.tag_ids,
+    )
+    db.add(item)
+    db.commit()
+    return portfolio_item_or_404(db, item.id)
+
+
+@app.get("/api/portfolio/{portfolio_item_id}", response_model=PortfolioItemOut)
+def get_portfolio_item(
+    portfolio_item_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PortfolioItem:
+    return portfolio_item_or_404(db, portfolio_item_id)
+
+
+@app.patch("/api/portfolio/{portfolio_item_id}", response_model=PortfolioItemOut)
+def update_portfolio_item(
+    portfolio_item_id: str,
+    payload: PortfolioItemPatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PortfolioItem:
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    if payload.title is not None:
+        title = " ".join(payload.title.strip().split())
+        if not title:
+            raise HTTPException(status_code=400, detail="Portfolio title is required")
+        item.title = title
+    if payload.description is not None:
+        item.description = payload.description
+    if payload.status is not None:
+        item.status = " ".join(payload.status.strip().split())[:40] or "active"
+    if payload.current_version_id is not None:
+        version = (
+            db.query(PortfolioVersion)
+            .filter(PortfolioVersion.id == payload.current_version_id, PortfolioVersion.portfolio_item_id == item.id)
+            .one_or_none()
+        )
+        if not version:
+            raise HTTPException(status_code=400, detail="Current version must belong to this Portfolio item")
+        item.current_version_id = version.id
+    if payload.project_ids is not None:
+        item.project_ids = payload.project_ids
+    if payload.domain_ids is not None:
+        item.domain_ids = payload.domain_ids
+    if payload.tag_ids is not None:
+        item.tag_ids = payload.tag_ids
+    db.commit()
+    return portfolio_item_or_404(db, portfolio_item_id)
+
+
+@app.post("/api/portfolio/{portfolio_item_id}/versions", response_model=PortfolioItemOut)
+async def upload_portfolio_version(
+    portfolio_item_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    file: Annotated[UploadFile, File()],
+    label: Annotated[str | None, Form()] = None,
+    upload_note: Annotated[str | None, Form()] = None,
+    parent_version_id: Annotated[str | None, Form()] = None,
+) -> PortfolioItem:
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    parent = None
+    parent_version_id = parent_version_id or item.current_version_id
+    if parent_version_id:
+        parent = (
+            db.query(PortfolioVersion)
+            .filter(PortfolioVersion.id == parent_version_id, PortfolioVersion.portfolio_item_id == item.id)
+            .one_or_none()
+        )
+        if not parent:
+            raise HTTPException(status_code=400, detail="Parent version must belong to this Portfolio item")
+    data = await file.read()
+    prepared, document, job, source_storage_uri = create_portfolio_processing_document(
+        db,
+        item=item,
+        data=data,
+        filename=file.filename,
+        content_type=file.content_type,
+        document_kind=PORTFOLIO_VERSION_DOCUMENT_KIND,
+        role="version",
+    )
+    version = PortfolioVersion(
+        portfolio_item_id=item.id,
+        document_id=document.id,
+        version_number=next_portfolio_version_number(db, item.id),
+        label=" ".join(label.strip().split()) if label else None,
+        upload_note=upload_note,
+        source_filename=prepared.source_filename,
+        source_content_type=prepared.source_content_type,
+        source_checksum_sha256=prepared.source_checksum_sha256,
+        source_checksum_md5=prepared.source_checksum_md5,
+        source_storage_uri=source_storage_uri,
+        source_size_bytes=prepared.source_size_bytes,
+        processing_status=document.processing_status,
+        version_metadata={
+            "source_import": prepared.metadata,
+            "import_job_id": job.id,
+            "import_batch_id": job.batch_id,
+        },
+    )
+    db.add(version)
+    db.flush()
+    if parent:
+        db.add(
+            PortfolioVersionEdge(
+                parent_version_id=parent.id,
+                child_version_id=version.id,
+                relation_type="supersedes",
+                edge_metadata={"created_by": "portfolio_upload"},
+            )
+        )
+    item.current_version_id = version.id
+    db.commit()
+    return portfolio_item_or_404(db, portfolio_item_id)
+
+
+@app.post("/api/portfolio/{portfolio_item_id}/materials", response_model=PortfolioItemOut)
+async def upload_portfolio_material(
+    portfolio_item_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    file: Annotated[UploadFile, File()],
+    role: Annotated[str, Form()] = "reference",
+    label: Annotated[str | None, Form()] = None,
+    notes: Annotated[str | None, Form()] = None,
+    version_id: Annotated[str | None, Form()] = None,
+    required_for_assessment: Annotated[bool, Form()] = False,
+) -> PortfolioItem:
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    version = None
+    if version_id:
+        version = (
+            db.query(PortfolioVersion)
+            .filter(PortfolioVersion.id == version_id, PortfolioVersion.portfolio_item_id == item.id)
+            .one_or_none()
+        )
+        if not version:
+            raise HTTPException(status_code=400, detail="Material version scope must belong to this Portfolio item")
+    clean_role = re.sub(r"[^a-z0-9_-]+", "_", role.strip().lower()).strip("_")[:80] or "reference"
+    data = await file.read()
+    prepared, document, job, source_storage_uri = create_portfolio_processing_document(
+        db,
+        item=item,
+        data=data,
+        filename=file.filename,
+        content_type=file.content_type,
+        document_kind=PORTFOLIO_MATERIAL_DOCUMENT_KIND,
+        role=f"material:{clean_role}",
+    )
+    material = PortfolioMaterial(
+        portfolio_item_id=item.id,
+        version_id=version.id if version else None,
+        document_id=document.id,
+        role=clean_role,
+        label=(" ".join(label.strip().split()) if label else None) or Path(prepared.source_filename).stem[:240],
+        required_for_assessment=required_for_assessment,
+        notes=notes,
+        material_metadata={
+            "source_import": prepared.metadata,
+            "source_filename": prepared.source_filename,
+            "source_content_type": prepared.source_content_type,
+            "source_checksum_sha256": prepared.source_checksum_sha256,
+            "source_storage_uri": source_storage_uri,
+            "source_size_bytes": prepared.source_size_bytes,
+            "import_job_id": job.id,
+            "import_batch_id": job.batch_id,
+        },
+    )
+    db.add(material)
+    db.commit()
+    return portfolio_item_or_404(db, portfolio_item_id)
+
+
+@app.get("/api/portfolio/versions/{version_id}/preview")
+def portfolio_version_preview(
+    version_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    download: Annotated[bool, Query()] = False,
+) -> FastAPIResponse:
+    version = portfolio_version_or_404(db, version_id)
+    return portfolio_document_response(
+        version.document,
+        filename=version.document.original_filename,
+        content_type=version.document.content_type or "application/pdf",
+        download=download,
+    )
+
+
+@app.get("/api/portfolio/versions/{version_id}/source")
+def portfolio_version_source(
+    version_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    download: Annotated[bool, Query()] = True,
+) -> FastAPIResponse:
+    version = portfolio_version_or_404(db, version_id)
+    return portfolio_document_response(
+        version.document,
+        filename=version.source_filename,
+        content_type=version.source_content_type or "application/octet-stream",
+        download=download,
+        uri=version.source_storage_uri,
+    )
+
+
+@app.get("/api/portfolio/materials/{material_id}/preview")
+def portfolio_material_preview(
+    material_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    download: Annotated[bool, Query()] = False,
+) -> FastAPIResponse:
+    material = portfolio_material_or_404(db, material_id)
+    return portfolio_document_response(
+        material.document,
+        filename=material.document.original_filename,
+        content_type=material.document.content_type or "application/pdf",
+        download=download,
+    )
+
+
+@app.get("/api/portfolio/materials/{material_id}/source")
+def portfolio_material_source(
+    material_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    download: Annotated[bool, Query()] = True,
+) -> FastAPIResponse:
+    material = portfolio_material_or_404(db, material_id)
+    metadata = material.material_metadata or {}
+    source_uri = metadata.get("source_storage_uri") if isinstance(metadata.get("source_storage_uri"), str) else None
+    filename = str(metadata.get("source_filename") or material.document.original_filename)
+    content_type = str(metadata.get("source_content_type") or material.document.content_type or "application/octet-stream")
+    return portfolio_document_response(material.document, filename=filename, content_type=content_type, download=download, uri=source_uri)
+
+
+@app.post("/api/portfolio/{portfolio_item_id}/suggestions/refresh", response_model=PortfolioSuggestionRefreshOut)
+def refresh_portfolio_suggestions(
+    portfolio_item_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PortfolioSuggestionRefreshOut:
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    version = item.current_version
+    if not version or not version.document:
+        raise HTTPException(status_code=409, detail="Upload a Portfolio version before refreshing resources")
+    document = version.document
+    terms = portfolio_suggestion_terms(document)
+    seed = " ".join(terms[:10]) or document.title
+    condition, rank = document_search_condition_and_rank(db, seed)
+    query = filter_library_visible_documents(db.query(Document)).filter(Document.id != document.id)
+    candidates: list[tuple[Document, float | None]] = []
+    if condition is not None:
+        if rank is not None:
+            rows = query.filter(condition).add_columns(rank.label("rank")).order_by(rank.desc(), Document.updated_at.desc()).limit(8).all()
+            candidates = [(row[0], float(row[1] or 0.0)) for row in rows]
+        else:
+            documents = query.filter(condition).order_by(Document.updated_at.desc()).limit(8).all()
+            candidates = [(row, portfolio_overlap_score(terms, row)) for row in documents]
+    if not candidates and terms:
+        fallback_terms = terms[:6]
+        fallback_condition = or_(
+            *[
+                or_(Document.title.ilike(f"%{term}%"), Document.search_text.ilike(f"%{term}%"))
+                for term in fallback_terms
+            ]
+        )
+        documents = query.filter(fallback_condition).order_by(Document.updated_at.desc()).limit(20).all()
+        scored = [(row, portfolio_overlap_score(terms, row)) for row in documents]
+        candidates = sorted(scored, key=lambda item: (item[1] or 0.0, item[0].updated_at), reverse=True)[:8]
+
+    db.query(PortfolioSuggestion).filter(
+        PortfolioSuggestion.portfolio_item_id == item.id,
+        PortfolioSuggestion.version_id == version.id,
+        PortfolioSuggestion.source_type == "library",
+    ).delete(synchronize_session=False)
+    suggestions: list[PortfolioSuggestion] = []
+    for document_candidate, score in candidates:
+        suggestion = PortfolioSuggestion(
+            portfolio_item_id=item.id,
+            version_id=version.id,
+            library_document_id=document_candidate.id,
+            source_type="library",
+            title=document_candidate.title,
+            relation_family="closest",
+            score=score,
+            status="candidate",
+            evidence={
+                "basis": "library_semantic_search",
+                "seed_terms": terms[:12],
+                "source_document_processing_status": document.processing_status,
+            },
+        )
+        db.add(suggestion)
+        suggestions.append(suggestion)
+    db.commit()
+    rows = (
+        db.query(PortfolioSuggestion)
+        .options(joinedload(PortfolioSuggestion.library_document))
+        .filter(
+            PortfolioSuggestion.portfolio_item_id == item.id,
+            PortfolioSuggestion.version_id == version.id,
+            PortfolioSuggestion.source_type == "library",
+        )
+        .order_by(PortfolioSuggestion.score.desc().nullslast(), PortfolioSuggestion.created_at.desc())
+        .all()
+    )
+    return PortfolioSuggestionRefreshOut(
+        portfolio_item_id=item.id,
+        suggestion_count=len(rows),
+        suggestions=[PortfolioSuggestionOut.model_validate(row) for row in rows],
+    )
+
+
+@app.post("/api/portfolio/{portfolio_item_id}/assessments", response_model=PortfolioAssessmentRunOut)
+def create_portfolio_assessment(
+    portfolio_item_id: str,
+    payload: PortfolioAssessmentCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PortfolioAssessmentRun:
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    version = None
+    if payload.version_id:
+        version = (
+            db.query(PortfolioVersion)
+            .options(joinedload(PortfolioVersion.document))
+            .filter(PortfolioVersion.id == payload.version_id, PortfolioVersion.portfolio_item_id == item.id)
+            .one_or_none()
+        )
+        if not version:
+            raise HTTPException(status_code=400, detail="Assessment version must belong to this Portfolio item")
+    else:
+        version = item.current_version
+    if not version or not version.document:
+        raise HTTPException(status_code=409, detail="Upload a Portfolio version before running assessment")
+
+    model_ids = [model for model in (payload.model_ids or []) if model.strip()]
+    if not model_ids:
+        model_ids = [get_analysis_model(db, MODEL_PORTFOLIO_ASSESSMENT)]
+    run = PortfolioAssessmentRun(
+        portfolio_item_id=item.id,
+        version_id=version.id,
+        mode=payload.mode or "quality_review",
+        model_ids=model_ids,
+        status="complete",
+        completed_at=utc_now(),
+    )
+    db.add(run)
+    db.flush()
+
+    materials = [material for material in item.materials if not material.deleted_at and (material.version_id in (None, version.id))]
+    material_roles = {material.role.lower() for material in materials}
+    findings: list[PortfolioAssessmentFinding] = []
+
+    def add_finding(category: str, severity: str, title: str, body: str, evidence: dict[str, Any] | None = None) -> None:
+        finding = PortfolioAssessmentFinding(
+            assessment_run_id=run.id,
+            category=category,
+            severity=severity,
+            title=title,
+            body=body,
+            evidence=evidence or {},
+        )
+        db.add(finding)
+        findings.append(finding)
+
+    document = version.document
+    if document.processing_status != "ready":
+        add_finding(
+            "processing",
+            "warning",
+            "Version is still processing",
+            "Assessment can run a baseline pass now, but quality and completeness checks improve after extraction, summary, and search indexing finish.",
+            {"processing_status": document.processing_status},
+        )
+    if not materials:
+        add_finding(
+            "materials",
+            "warning",
+            "No supporting materials attached",
+            "Attach a rubric, assignment prompt, reference, or feedback document before relying on model-based quality assessment.",
+        )
+    if not ({"rubric", "assignment", "prompt"} & material_roles):
+        add_finding(
+            "rubric",
+            "info",
+            "No rubric or assignment prompt found",
+            "Assessments can compare against references, but a rubric or prompt gives the models a sharper target for focus, quality, and completeness.",
+            {"material_roles": sorted(material_roles)},
+        )
+    if not item.suggestions:
+        add_finding(
+            "resources",
+            "info",
+            "Resource suggestions have not been refreshed",
+            "Run Find Resources to compare this version with Library material and collect additional context before a deep assessment.",
+        )
+    text_for_count = document.search_text or document.abstract or document.rich_summary or document.title
+    word_count = len(re.findall(r"\b[\w'-]+\b", text_for_count or ""))
+    if document.processing_status == "ready" and word_count < 250:
+        add_finding(
+            "completeness",
+            "warning",
+            "Extracted text is short",
+            "The current extracted text is short enough that completeness and focus checks may be underpowered.",
+            {"word_count": word_count},
+        )
+    if not findings:
+        add_finding(
+            "baseline",
+            "info",
+            "Ready for model comparison",
+            "The version has extracted text and at least one supporting material. Run a multi-model assessment when deeper scoring prompts are enabled.",
+            {"word_count": word_count},
+        )
+    run.summary = f"Baseline Portfolio assessment completed with {len(findings)} finding{'s' if len(findings) != 1 else ''}."
+    run.assessment_metadata = {
+        "local_baseline": True,
+        "model_ids": model_ids,
+        "material_snapshot": [
+            {
+                "id": material.id,
+                "role": material.role,
+                "label": material.label,
+                "version_id": material.version_id,
+                "required_for_assessment": material.required_for_assessment,
+            }
+            for material in materials
+        ],
+        "suggestion_count": len(item.suggestions),
+        "word_count": word_count,
+    }
+    db.commit()
+    return (
+        db.query(PortfolioAssessmentRun)
+        .options(selectinload(PortfolioAssessmentRun.findings))
+        .filter(PortfolioAssessmentRun.id == run.id)
+        .one()
+    )
 
 
 def sync_doi_stash_import_status(stash: DoiStash) -> bool:
