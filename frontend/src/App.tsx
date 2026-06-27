@@ -372,6 +372,7 @@ const IMPORT_FILE_EXTENSIONS = [".pdf", ".html", ".htm", ".txt", ".text", ".md",
 const IMPORT_FILE_TYPES = new Set(["application/pdf", "text/html", "text/plain", "text/markdown", "text/x-markdown"]);
 const DROPDOWN_VISIBLE_OPTION_LIMIT = 80;
 const APP_TOOLTIP_DELAY_MS = 2000;
+const HEADER_STATUS_TOOLTIP_DELAY_MS = 250;
 const APP_TOOLTIP_SELECTOR = [
   "[data-tooltip]",
   "button",
@@ -1142,6 +1143,7 @@ function tooltipTextForElement(element: HTMLElement) {
 function tooltipCandidateFromElement(element: Element | null): HTMLElement | null {
   const candidate = element?.closest(APP_TOOLTIP_SELECTOR);
   if (!(candidate instanceof HTMLElement)) return null;
+  if (candidate.dataset.tooltipSkip === "true") return null;
   if (candidate.classList.contains("hidden-file-input")) return null;
   if (candidate.closest("[hidden], [aria-hidden='true']")) return null;
   const style = window.getComputedStyle(candidate);
@@ -4046,6 +4048,153 @@ function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; 
   );
 }
 
+function HeaderStatusButton({
+  dashboard,
+  onOpenStatus,
+  statusActive,
+}: {
+  dashboard?: Dashboard;
+  onOpenStatus: () => void;
+  statusActive: boolean;
+}) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewRequested, setPreviewRequested] = useState(false);
+  const previewTimerRef = useRef<number | null>(null);
+
+  const clearPreviewTimer = useCallback(() => {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+  }, []);
+
+  const showPreview = useCallback(
+    (immediate = false) => {
+      setPreviewRequested(true);
+      clearPreviewTimer();
+      if (immediate) {
+        setPreviewOpen(true);
+        return;
+      }
+      previewTimerRef.current = window.setTimeout(() => {
+        setPreviewOpen(true);
+      }, HEADER_STATUS_TOOLTIP_DELAY_MS);
+    },
+    [clearPreviewTimer],
+  );
+
+  const hidePreview = useCallback(() => {
+    clearPreviewTimer();
+    setPreviewOpen(false);
+  }, [clearPreviewTimer]);
+
+  useEffect(() => () => clearPreviewTimer(), [clearPreviewTimer]);
+
+  const containerStatus = useQuery({
+    queryKey: ["container-footprint-status"],
+    queryFn: api.containerFootprintStatus,
+    enabled: previewRequested,
+    staleTime: 30000,
+    refetchInterval: previewOpen ? 30000 : false,
+  });
+  const databaseStatus = useQuery({
+    queryKey: ["database-maintenance-status"],
+    queryFn: api.databaseMaintenanceStatus,
+    enabled: previewRequested,
+    staleTime: 30000,
+    refetchInterval: previewOpen ? 30000 : false,
+  });
+
+  const container = containerStatus.data;
+  const database = databaseStatus.data;
+  const loadingStatus =
+    previewRequested &&
+    ((containerStatus.isFetching && !container) || (databaseStatus.isFetching && !database));
+  const uptimeValue = container
+    ? formatDuration(container.process_uptime_seconds) || "0s"
+    : loadingStatus
+      ? "Loading"
+      : "Unavailable";
+  const memoryValue =
+    container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null
+      ? formatDatabaseSize(container.memory_current_bytes)
+      : loadingStatus
+        ? "Loading"
+        : "Unavailable";
+  const memoryPercent =
+    container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null && container?.memory_limit_bytes
+      ? formatPercent((container.memory_current_bytes / container.memory_limit_bytes) * 100)
+      : "";
+  const memoryDetail = container?.memory_limit_bytes
+    ? `${memoryPercent ? `${memoryPercent} of ` : ""}${formatDatabaseSize(container.memory_limit_bytes)}`
+    : container?.process_rss_bytes
+      ? `RSS ${formatDatabaseSize(container.process_rss_bytes)}`
+      : "Backend memory";
+  const databaseValue =
+    database?.database_size_bytes !== undefined && database?.database_size_bytes !== null
+      ? formatDatabaseSize(database.database_size_bytes)
+      : loadingStatus
+        ? "Loading"
+        : "Unavailable";
+  const activeWorkCount =
+    (dashboard?.active_import_jobs || 0) + (dashboard?.active_concordance_jobs || 0) + (dashboard?.active_accessory_summary_jobs || 0);
+  const queuedWorkCount = dashboard?.queued_jobs || 0;
+  const workValue = activeWorkCount ? `${formatMetric(activeWorkCount)} active` : queuedWorkCount ? `${formatMetric(queuedWorkCount)} queued` : "Idle";
+  const workDetail = `${formatMetric(dashboard?.queue_import_jobs)} imports / ${formatMetric(dashboard?.review_items)} review`;
+
+  return (
+    <div className="topbar-status-shell" onMouseLeave={hidePreview}>
+      <button
+        aria-describedby={previewOpen ? "topbar-status-preview" : undefined}
+        aria-label="Open Medusa status"
+        className={`icon-button topbar-status-button${statusActive ? " active" : ""}`}
+        data-tooltip-skip="true"
+        onBlur={hidePreview}
+        onClick={onOpenStatus}
+        onFocus={() => showPreview(true)}
+        onMouseEnter={() => showPreview(false)}
+        type="button"
+      >
+        <Info size={18} />
+      </button>
+      {previewOpen ? (
+        <div className="topbar-status-preview" id="topbar-status-preview" role="tooltip">
+          <div className="topbar-status-preview-heading">
+            <Info size={16} aria-hidden="true" />
+            <div>
+              <strong>Medusa status</strong>
+              <span>{container?.hostname || (loadingStatus ? "Loading runtime details" : "Runtime summary")}</span>
+            </div>
+          </div>
+          <div className="topbar-status-preview-grid">
+            <div>
+              <span>Uptime</span>
+              <strong>{uptimeValue}</strong>
+              <em>Backend process</em>
+            </div>
+            <div>
+              <span>Memory</span>
+              <strong>{memoryValue}</strong>
+              <em>{memoryDetail}</em>
+            </div>
+            <div>
+              <span>Database</span>
+              <strong>{databaseValue}</strong>
+              <em>{database?.active_operation_label || "PostgreSQL"}</em>
+            </div>
+            <div>
+              <span>Work</span>
+              <strong>{workValue}</strong>
+              <em>{workDetail}</em>
+            </div>
+          </div>
+          <p>Click for full build, storage, proxy, and library stats.</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function startupLoadingCopy(startupHealthPending: boolean) {
   const params = new URLSearchParams(window.location.search);
   if (params.has(RELEASE_RELOAD_TARGET_PARAM)) {
@@ -4220,6 +4369,11 @@ function Header({
     onOpenSettings();
   };
 
+  const toggleThemeFromUserMenu = () => {
+    setTheme(theme === "day" ? "night" : "day");
+    setUserMenuOpen(false);
+  };
+
   const logoutFromUserMenu = () => {
     setUserMenuOpen(false);
     onLogout();
@@ -4248,23 +4402,7 @@ function Header({
           onOpenQueue={onOpenQueue}
         />
         <ReleaseUpgradeButton busy={releaseUpgradeBusy} status={releaseStatus} onUpgrade={onReleaseUpgrade} />
-        <button
-          aria-label="Open Medusa status"
-          className={`icon-button topbar-status-button${statusActive ? " active" : ""}`}
-          data-tooltip="Open Medusa status, version, storage, memory, uptime, and runtime details."
-          onClick={onOpenStatus}
-          type="button"
-        >
-          <Info size={18} />
-        </button>
-        <button
-          className="icon-button"
-          data-tooltip={theme === "day" ? "Switch Medusa to night mode." : "Switch Medusa to day mode."}
-          onClick={() => setTheme(theme === "day" ? "night" : "day")}
-          type="button"
-        >
-          {theme === "day" ? <Moon size={18} /> : <Sun size={18} />}
-        </button>
+        <HeaderStatusButton dashboard={dashboard} onOpenStatus={onOpenStatus} statusActive={statusActive} />
         <div className="user-menu-shell" ref={userMenuRef}>
           <button
             aria-expanded={userMenuOpen}
@@ -4279,6 +4417,10 @@ function Header({
           </button>
           {userMenuOpen ? (
             <div className="user-options-menu" data-escape-layer="menu" role="menu">
+              <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
+                {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
+                <span>{theme === "day" ? "Night mode" : "Day mode"}</span>
+              </button>
               <button className="user-options-menu-item" onClick={openSettingsFromUserMenu} role="menuitem" type="button">
                 <Settings size={16} aria-hidden="true" />
                 <span>Settings</span>

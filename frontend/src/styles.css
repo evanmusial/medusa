@@ -718,9 +718,9 @@ textarea {
   grid-column: 1 / -1;
   height: 98px;
   display: grid;
-  grid-template-columns: minmax(210px, 300px) minmax(300px, 1fr) minmax(0, auto);
+  grid-template-columns: minmax(210px, 300px) minmax(260px, 520px) minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   padding: 0 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
@@ -772,16 +772,113 @@ textarea {
 }
 
 .topbar-actions {
-  justify-self: end;
+  justify-self: stretch;
+  justify-content: flex-end;
   min-width: 0;
   max-width: 100%;
-  gap: 6px;
+  gap: 8px;
 }
 
 .topbar-status-button.active {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
   background: var(--blue-soft);
   color: var(--blue);
+}
+
+.topbar-status-shell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.topbar-status-preview {
+  position: absolute;
+  z-index: 90;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(342px, calc(100vw - 24px));
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  padding: 10px;
+  pointer-events: none;
+}
+
+.topbar-status-preview-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-status-preview-heading > svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.topbar-status-preview-heading div {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.topbar-status-preview-heading strong,
+.topbar-status-preview-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-status-preview-heading span,
+.topbar-status-preview-grid span,
+.topbar-status-preview-grid em,
+.topbar-status-preview p {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.25;
+}
+
+.topbar-status-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.topbar-status-preview-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 8px;
+}
+
+.topbar-status-preview-grid span {
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.topbar-status-preview-grid em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-status-preview p {
+  margin: 0;
 }
 
 .user-menu-shell {
@@ -9926,7 +10023,7 @@ button.history-row,
 
 @media (max-width: 1180px) {
   .topbar {
-    grid-template-columns: minmax(190px, 240px) minmax(220px, 1fr) minmax(0, auto);
+    grid-template-columns: minmax(190px, 240px) minmax(220px, 420px) minmax(0, 1fr);
     gap: 8px;
     padding-inline: 10px;
   }
@@ -9936,8 +10033,8 @@ button.history-row,
   }
 
   .header-work-slot {
-    width: clamp(240px, 22vw, 320px);
-    flex-basis: clamp(240px, 22vw, 320px);
+    width: clamp(240px, 26vw, 360px);
+    flex-basis: clamp(240px, 26vw, 360px);
   }
 
   .library-grid {
