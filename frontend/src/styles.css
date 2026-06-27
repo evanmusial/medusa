@@ -4773,6 +4773,205 @@ textarea {
   min-width: 8px;
 }
 
+.document-annotations {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding: 12px 0 0;
+}
+
+.annotation-section-head,
+.annotation-search,
+.annotation-composer-controls,
+.annotation-selection,
+.annotation-selection > div,
+.annotation-row-head,
+.annotation-row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.annotation-section-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.annotation-section-head h3 {
+  margin: 0 0 2px;
+  color: var(--ink);
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.annotation-section-head span,
+.annotation-row-head span,
+.annotation-selection span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.annotation-search {
+  min-width: min(320px, 100%);
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  padding: 0 5px 0 9px;
+  color: var(--muted);
+}
+
+.annotation-search input {
+  min-width: 110px;
+  height: 30px;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+}
+
+.annotation-search input:focus {
+  outline: none;
+}
+
+.annotation-search .icon-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.annotation-composer {
+  display: grid;
+  gap: 8px;
+}
+
+.annotation-composer-controls,
+.annotation-edit-grid {
+  gap: 8px;
+}
+
+.annotation-composer-controls {
+  flex-wrap: wrap;
+}
+
+.annotation-composer label,
+.annotation-edit-grid label {
+  min-width: 92px;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.annotation-composer select,
+.annotation-composer input,
+.annotation-edit-grid select,
+.annotation-edit-grid input {
+  min-height: 32px;
+}
+
+.annotation-composer textarea,
+.annotation-edit-grid textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.annotation-selection {
+  justify-content: space-between;
+  gap: 10px;
+  border-left: 3px solid color-mix(in srgb, var(--blue) 44%, transparent);
+  background: var(--panel-2);
+  padding: 8px 10px;
+}
+
+.annotation-selection p {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-selection > div {
+  gap: 6px;
+}
+
+.annotation-list {
+  display: grid;
+  align-content: start;
+}
+
+.annotation-row {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.annotation-row:first-child {
+  border-top: 0;
+}
+
+.annotation-row-head {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.annotation-row-head > div:not(.annotation-row-actions) {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.annotation-row-head strong {
+  color: var(--ink);
+  text-transform: capitalize;
+}
+
+.annotation-color {
+  width: 10px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.annotation-row-actions {
+  gap: 5px;
+}
+
+.annotation-row p,
+.annotation-row blockquote {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.annotation-row blockquote {
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+  padding-left: 9px;
+}
+
+.annotation-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
+}
+
+.annotation-edit-grid textarea,
+.annotation-edit-grid .primary-button {
+  grid-column: 1 / -1;
+}
+
 .detail-section {
   border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
   padding-top: 14px;

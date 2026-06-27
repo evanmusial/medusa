@@ -148,8 +148,9 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 ## Reader And Annotation Experience
 
-- [ ] Restore the withdrawn annotation UI as a complete Reader workflow.
+- [x] Restore the withdrawn annotation UI as a complete Reader workflow.
   - Acceptance: Library and Reader do not show annotation lists, empty states, or controls until users can create, edit, delete, and search page-aware annotations from selected parsed text or an explicit note composer with kind, color, page, and body controls.
+  - Completed: Reader Notes now expose a page-aware annotation composer below the Reader, capture optional selected parsed-text quote evidence, support kind/color/page/body fields, filter/search annotations, jump back to an annotation page, edit annotations inline, delete annotations, and refresh document search through the existing annotation API.
 
 - [ ] Add geometric PDF highlight overlays.
   - Acceptance: highlights can be created from selected PDF text/regions, persisted in `Annotation.geometry`, rendered on the page, and searched by body text.
@@ -158,11 +159,13 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
   - Acceptance: page navigation, zoom, search-within-document, page thumbnails, and stable annotation overlays work inside the document pane.
   - Partial: parsed-text Reader search now counts case-insensitive matches across pages, jumps previous/next by matching page, and highlights matches on the current read-mode page. Remaining work is PDF-native search/zoom, page thumbnails, and stable annotation overlays.
 
-- [ ] Redesign Library detail annotation creation.
+- [x] Redesign Library detail annotation creation.
   - Acceptance: the inline annotation composer stays out of the Library summary/detail flow until annotation capture has a quieter pane-aware UI for page, kind, color, note body, and eventual geometry selection.
+  - Completed: annotation creation now lives in the Reader Notes section below the active Reader surface instead of the Library summary/detail metadata flow.
 
-- [ ] Add annotation editing.
+- [x] Add annotation editing.
   - Acceptance: existing annotations can be edited in place, not just created or deleted.
+  - Completed: Reader Notes rows can edit body, kind, color, and page in place.
 
 - [ ] Add reminder workflow for annotation/reminder kinds.
   - Acceptance: reminder annotations surface in Notes/Review or a reminder view with due dates.

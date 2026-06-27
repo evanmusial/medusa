@@ -105,6 +105,7 @@ import { api, apiPath, ApiError } from "./lib/api";
 import type {
   AccessorySummary,
   AIFailureNotice,
+  Annotation,
   AppPreferences,
   BackupArtifact,
   BackupEstimate,
@@ -7732,9 +7733,29 @@ type FigureEditDraft = {
   gist: string;
 };
 
+type AnnotationEditDraft = {
+  body: string;
+  color: string;
+  kind: string;
+  page_number: string;
+};
+
 type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
 type CitationRefreshTarget = CitationKind | "doi";
+const ANNOTATION_KIND_OPTIONS = [
+  { id: "note", label: "Note" },
+  { id: "highlight", label: "Highlight" },
+  { id: "question", label: "Question" },
+  { id: "reminder", label: "Reminder" },
+];
+const ANNOTATION_COLOR_OPTIONS = [
+  { id: "yellow", label: "Yellow", value: "#facc15" },
+  { id: "blue", label: "Blue", value: "#60a5fa" },
+  { id: "green", label: "Green", value: "#34d399" },
+  { id: "rose", label: "Rose", value: "#fb7185" },
+  { id: "violet", label: "Violet", value: "#a78bfa" },
+];
 const RECOMMENDATION_VIEW_OPTIONS: Array<{ id: RecommendationView; label: string }> = [
   { id: "discover", label: "Discover" },
   { id: "known", label: "Already Known" },
@@ -7782,6 +7803,30 @@ function figureDraftFromFigure(figure: FigureRecord): FigureEditDraft {
     caption: figure.caption || "",
     gist: figure.gist || "",
   };
+}
+
+function annotationDraftFromAnnotation(annotation: Annotation): AnnotationEditDraft {
+  return {
+    body: annotation.body || "",
+    color: annotation.color || "yellow",
+    kind: annotation.kind || "note",
+    page_number: annotation.page_number ? String(annotation.page_number) : "",
+  };
+}
+
+function annotationQuote(annotation: Annotation) {
+  const geometry = isRecord(annotation.geometry) ? annotation.geometry : {};
+  const quote = geometry.quote;
+  return typeof quote === "string" ? quote.trim() : "";
+}
+
+function annotationColorValue(color?: string | null) {
+  const option = ANNOTATION_COLOR_OPTIONS.find((item) => item.id === color || item.value === color);
+  return option?.value || color || "#facc15";
+}
+
+function annotationPageLabel(annotation: Annotation) {
+  return annotation.page_number ? `Page ${annotation.page_number}` : "Document";
 }
 
 function DocumentPanel({
@@ -8683,6 +8728,15 @@ function DocumentPanelContent({
   const [pageTextError, setPageTextError] = useState<string | null>(null);
   const [pageTextSelection, setPageTextSelection] = useState("");
   const [readerSearchQuery, setReaderSearchQuery] = useState("");
+  const [readerSelectedText, setReaderSelectedText] = useState("");
+  const [annotationSearch, setAnnotationSearch] = useState("");
+  const [annotationBody, setAnnotationBody] = useState("");
+  const [annotationKind, setAnnotationKind] = useState("note");
+  const [annotationColor, setAnnotationColor] = useState("yellow");
+  const [annotationPageDraft, setAnnotationPageDraft] = useState("1");
+  const [annotationDrafts, setAnnotationDrafts] = useState<Record<string, AnnotationEditDraft>>({});
+  const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null);
+  const [annotationError, setAnnotationError] = useState<string | null>(null);
   const [visualScanPageDraft, setVisualScanPageDraft] = useState("1");
   const [pdfPreviewPageTarget, setPdfPreviewPageTarget] = useState(1);
   const [visualScanReview, setVisualScanReview] = useState<VisualScanReview | null>(null);
@@ -8747,6 +8801,10 @@ function DocumentPanelContent({
     queryKey: ["document-composition", document.id],
     queryFn: () => api.documentComposition(document.id),
     enabled: compositionOpen,
+  });
+  const annotations = useQuery({
+    queryKey: ["annotations", document.id],
+    queryFn: () => api.annotations(document.id),
   });
   const updateDocument = useMutation({
     mutationFn: (body: DocumentUpdatePayload) => api.updateDocument(document.id, body),
@@ -9167,6 +9225,63 @@ function DocumentPanelContent({
     },
     onError: (error) => setFigureEditError(actionFailureMessage("Could not delete figure", error)),
   });
+  const createAnnotation = useMutation({
+    mutationFn: () => {
+      const parsedPage = Number.parseInt(annotationPageDraft, 10);
+      const pageNumber = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : null;
+      const quote = readerSelectedText.trim();
+      const body = annotationBody.trim() || quote;
+      return api.createAnnotation(document.id, {
+        body,
+        color: annotationColor,
+        geometry: quote ? { quote, source: "parsed_text_selection" } : { source: "reader_note" },
+        kind: annotationKind,
+        page_number: pageNumber,
+      });
+    },
+    onSuccess: () => {
+      setAnnotationBody("");
+      setAnnotationError(null);
+      setReaderSelectedText("");
+      void queryClient.invalidateQueries({ queryKey: ["annotations", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setAnnotationError(actionFailureMessage("Could not create annotation", error)),
+  });
+  const updateAnnotation = useMutation({
+    mutationFn: ({ annotationId, draft }: { annotationId: string; draft: AnnotationEditDraft }) => {
+      const parsedPage = Number.parseInt(draft.page_number, 10);
+      const pageNumber = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : null;
+      return api.updateAnnotation(annotationId, {
+        body: draft.body.trim(),
+        color: draft.color,
+        kind: draft.kind,
+        page_number: pageNumber,
+      });
+    },
+    onSuccess: () => {
+      setEditingAnnotationId(null);
+      setAnnotationError(null);
+      void queryClient.invalidateQueries({ queryKey: ["annotations", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setAnnotationError(actionFailureMessage("Could not update annotation", error)),
+  });
+  const deleteAnnotation = useMutation({
+    mutationFn: (annotationId: string) => api.deleteAnnotation(annotationId),
+    onSuccess: () => {
+      setAnnotationError(null);
+      void queryClient.invalidateQueries({ queryKey: ["annotations", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setAnnotationError(actionFailureMessage("Could not delete annotation", error)),
+  });
   const createAccessorySummary = useMutation({
     mutationFn: () =>
       api.createAccessorySummary(document.id, {
@@ -9224,6 +9339,15 @@ function DocumentPanelContent({
     setPageTextError(null);
     setPageTextSelection("");
     setReaderSearchQuery("");
+    setReaderSelectedText("");
+    setAnnotationSearch("");
+    setAnnotationBody("");
+    setAnnotationKind("note");
+    setAnnotationColor("yellow");
+    setAnnotationPageDraft("1");
+    setAnnotationDrafts({});
+    setEditingAnnotationId(null);
+    setAnnotationError(null);
     setVisualScanPageDraft("1");
     setPdfPreviewPageTarget(1);
     pdfDrivenReaderPageRef.current = false;
@@ -9319,6 +9443,21 @@ function DocumentPanelContent({
   const currentReaderSearchMatchIndex = readerSearchMatches.findIndex((match) => match.pageIndex === currentPageIndex);
   const currentReaderSearchPageLabel =
     currentReaderSearchMatchIndex >= 0 ? `${currentReaderSearchMatchIndex + 1} / ${readerSearchMatches.length}` : "";
+  const annotationRows = annotations.data || [];
+  const annotationSearchNeedle = annotationSearch.trim().toLocaleLowerCase();
+  const filteredAnnotations = useMemo(
+    () =>
+      annotationSearchNeedle
+        ? annotationRows.filter((annotation) => {
+            const quote = annotationQuote(annotation);
+            return [annotation.kind, annotation.body || "", annotationPageLabel(annotation), quote]
+              .join(" ")
+              .toLocaleLowerCase()
+              .includes(annotationSearchNeedle);
+          })
+        : annotationRows,
+    [annotationRows, annotationSearchNeedle],
+  );
   const maxVisualScanPage = Math.max(document.page_count || 0, pages.length ? pages[pages.length - 1].page_number : 0, 1);
   const parsedVisualScanPage = Number.parseInt(visualScanPageDraft, 10);
   const visualScanPageNumber = Math.min(
@@ -9561,6 +9700,10 @@ function DocumentPanelContent({
 
   useEffect(() => {
     if (currentPage) setVisualScanPageDraft(String(currentPage.page_number));
+  }, [currentPage?.page_number]);
+
+  useEffect(() => {
+    if (currentPage) setAnnotationPageDraft(String(currentPage.page_number));
   }, [currentPage?.page_number]);
 
   useEffect(() => {
@@ -11014,6 +11157,35 @@ function DocumentPanelContent({
     setPdfPreviewPageTarget(target.pageNumber);
     setVisualScanPageDraft(String(target.pageNumber));
   };
+  const captureReaderSelection = () => {
+    const selected = window.getSelection()?.toString().replace(/\s+/g, " ").trim() || "";
+    if (selected) setReaderSelectedText(selected.slice(0, 1200));
+  };
+  const useReaderSelectionAsAnnotationBody = () => {
+    if (!readerSelectedText) return;
+    setAnnotationBody(readerSelectedText);
+  };
+  const startAnnotationEdit = (annotation: Annotation) => {
+    setEditingAnnotationId(annotation.id);
+    setAnnotationDrafts((current) => ({ ...current, [annotation.id]: annotationDraftFromAnnotation(annotation) }));
+  };
+  const updateAnnotationDraft = (annotationId: string, field: keyof AnnotationEditDraft, value: string) => {
+    setAnnotationDrafts((current) => ({
+      ...current,
+      [annotationId]: {
+        ...(current[annotationId] || { body: "", color: "yellow", kind: "note", page_number: "" }),
+        [field]: value,
+      },
+    }));
+  };
+  const saveAnnotationEdit = (annotation: Annotation) => {
+    const draftValue = annotationDrafts[annotation.id] || annotationDraftFromAnnotation(annotation);
+    if (!draftValue.body.trim()) {
+      setAnnotationError("Annotation body is required.");
+      return;
+    }
+    updateAnnotation.mutate({ annotationId: annotation.id, draft: draftValue });
+  };
   const renderPdfPreview = (compare = false) => {
     const renderPageStack = readerExpanded;
     const focusedPreviewPage = Math.min(
@@ -11253,6 +11425,7 @@ function DocumentPanelContent({
         <article
           className={`reader-page ${currentPage.low_text ? "low-text" : ""}`}
           ref={compare ? compareTextRef : undefined}
+          onMouseUp={pageTextEditing ? undefined : captureReaderSelection}
           onScroll={compare ? handleCompareTextScroll : undefined}
         >
           <header>
@@ -11313,6 +11486,231 @@ function DocumentPanelContent({
       {renderReaderActions("bottom")}
     </section>
   );
+  const renderAnnotationSection = () => {
+    const annotationCanCreate = Boolean((annotationBody.trim() || readerSelectedText.trim()) && !createAnnotation.isPending);
+    const createDisabledReason = createAnnotation.isPending
+      ? "an annotation is already being saved."
+      : "add annotation text or select parsed text from the Reader first.";
+    const jumpToAnnotationPage = (annotation: Annotation) => {
+      if (!annotation.page_number) return;
+      const pageIndex = pages.findIndex((page) => page.page_number === annotation.page_number);
+      if (pageIndex >= 0) setReaderPageIndex(pageIndex);
+      setPdfPreviewPageTarget(annotation.page_number);
+      setVisualScanPageDraft(String(annotation.page_number));
+      setAnnotationPageDraft(String(annotation.page_number));
+      setReaderMode("text");
+    };
+    return (
+      <section className="document-annotations">
+        <div className="annotation-section-head">
+          <div>
+            <h3>Reader Notes</h3>
+            <span>
+              {annotationRows.length} annotation{annotationRows.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="annotation-search">
+            <Search size={14} />
+            <input
+              aria-label="Search reader notes"
+              data-tooltip="Filter this document's reader notes and annotations."
+              onChange={(event) => setAnnotationSearch(event.target.value)}
+              placeholder="Search notes"
+              value={annotationSearch}
+            />
+            {annotationSearch ? (
+              <button aria-label="Clear note search" className="icon-button compact" onClick={() => setAnnotationSearch("")} type="button">
+                <X size={14} />
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <form
+          className="annotation-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (annotationCanCreate) createAnnotation.mutate();
+          }}
+        >
+          <div className="annotation-composer-controls">
+            <label>
+              Kind
+              <select value={annotationKind} onChange={(event) => setAnnotationKind(event.target.value)}>
+                {ANNOTATION_KIND_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Color
+              <select value={annotationColor} onChange={(event) => setAnnotationColor(event.target.value)}>
+                {ANNOTATION_COLOR_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Page
+              <input
+                inputMode="numeric"
+                min={1}
+                max={maxVisualScanPage}
+                onChange={(event) => setAnnotationPageDraft(event.target.value)}
+                type="number"
+                value={annotationPageDraft}
+              />
+            </label>
+          </div>
+          {readerSelectedText ? (
+            <div className="annotation-selection">
+              <span>Selected Text</span>
+              <p>{readerSelectedText}</p>
+              <div>
+                <button className="secondary-button compact" onClick={useReaderSelectionAsAnnotationBody} type="button">
+                  <Clipboard size={14} />
+                  Use
+                </button>
+                <button className="icon-button compact" aria-label="Clear selected reader text" onClick={() => setReaderSelectedText("")} type="button">
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <textarea
+            data-tooltip="Create a page-aware reader note. Selected parsed text is saved as quote evidence when present."
+            onChange={(event) => setAnnotationBody(event.target.value)}
+            placeholder="Reader note"
+            value={annotationBody}
+          />
+          <button
+            className="primary-button compact"
+            data-disabled-reason={createDisabledReason}
+            data-tooltip="Save this page-aware reader note and add it to document search."
+            disabled={!annotationCanCreate}
+            type="submit"
+          >
+            <Plus className={createAnnotation.isPending ? "spin" : ""} size={14} />
+            Add Note
+          </button>
+          {annotationError ? <p className="form-error">{annotationError}</p> : null}
+        </form>
+        <div className="annotation-list">
+          {annotations.isFetching && !annotations.data ? (
+            <div className="empty-inline">
+              <RefreshCw className="spin" size={17} />
+              <span>Loading reader notes.</span>
+            </div>
+          ) : filteredAnnotations.length ? (
+            filteredAnnotations.map((annotation) => {
+              const editingThis = editingAnnotationId === annotation.id;
+              const draftValue = annotationDrafts[annotation.id] || annotationDraftFromAnnotation(annotation);
+              const quote = annotationQuote(annotation);
+              return (
+                <article key={annotation.id} className="annotation-row">
+                  <div className="annotation-row-head">
+                    <span className="annotation-color" style={{ background: annotationColorValue(editingThis ? draftValue.color : annotation.color) }} />
+                    <div>
+                      <strong>{editingThis ? draftValue.kind : annotation.kind}</strong>
+                      <span>{editingThis ? (draftValue.page_number ? `Page ${draftValue.page_number}` : "Document") : annotationPageLabel(annotation)}</span>
+                    </div>
+                    <div className="annotation-row-actions">
+                      {annotation.page_number ? (
+                        <button className="icon-button compact" data-tooltip="Jump the Reader to this annotation's page." onClick={() => jumpToAnnotationPage(annotation)} type="button">
+                          <CornerDownRight size={14} />
+                        </button>
+                      ) : null}
+                      <button
+                        className="icon-button compact"
+                        data-tooltip={editingThis ? "Cancel annotation editing." : "Edit this annotation."}
+                        onClick={() => {
+                          if (editingThis) setEditingAnnotationId(null);
+                          else startAnnotationEdit(annotation);
+                        }}
+                        type="button"
+                      >
+                        {editingThis ? <X size={14} /> : <Edit3 size={14} />}
+                      </button>
+                      <button
+                        className="icon-button compact"
+                        data-disabled-reason="an annotation delete is already running."
+                        data-tooltip="Delete this reader note from the active document."
+                        disabled={deleteAnnotation.isPending}
+                        onClick={() => deleteAnnotation.mutate(annotation.id)}
+                        type="button"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  {editingThis ? (
+                    <div className="annotation-edit-grid">
+                      <label>
+                        Kind
+                        <select value={draftValue.kind} onChange={(event) => updateAnnotationDraft(annotation.id, "kind", event.target.value)}>
+                          {ANNOTATION_KIND_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Color
+                        <select value={draftValue.color} onChange={(event) => updateAnnotationDraft(annotation.id, "color", event.target.value)}>
+                          {ANNOTATION_COLOR_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Page
+                        <input
+                          inputMode="numeric"
+                          min={1}
+                          max={maxVisualScanPage}
+                          onChange={(event) => updateAnnotationDraft(annotation.id, "page_number", event.target.value)}
+                          type="number"
+                          value={draftValue.page_number}
+                        />
+                      </label>
+                      <textarea value={draftValue.body} onChange={(event) => updateAnnotationDraft(annotation.id, "body", event.target.value)} />
+                      <button
+                        className="primary-button compact"
+                        data-disabled-reason={updateAnnotation.isPending ? "an annotation update is already running." : "annotation body is required."}
+                        data-tooltip="Save annotation edits and refresh document search."
+                        disabled={updateAnnotation.isPending || !draftValue.body.trim()}
+                        onClick={() => saveAnnotationEdit(annotation)}
+                        type="button"
+                      >
+                        <Save size={14} />
+                        Save
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <p>{annotation.body}</p>
+                      {quote ? <blockquote>{quote}</blockquote> : null}
+                    </>
+                  )}
+                </article>
+              );
+            })
+          ) : (
+            <div className="empty-inline">
+              <MessageSquare size={17} />
+              <span>{annotationSearch ? "No reader notes match that search." : "No reader notes yet."}</span>
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  };
   const stickyFactItems = [
     stickyFieldSet.has("year") ? { key: "year", label: "Year", value: document.publication_year || "n.d." } : null,
     stickyFieldSet.has("doi") ? { key: "doi", label: "DOI", value: document.doi || "No DOI" } : null,
@@ -11592,6 +11990,7 @@ function DocumentPanelContent({
             renderTextReader()
           )}
           {renderVisualScanReview()}
+          {renderAnnotationSection()}
         </div>
       </div>
       {editing ? (
