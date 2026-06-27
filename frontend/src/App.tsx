@@ -1861,8 +1861,12 @@ function releaseReloadUrl(status: ReleaseStatus) {
   return url.toString();
 }
 
+function scheduleReleaseReloadUrl(url: string) {
+  window.setTimeout(() => window.location.replace(url), RELEASE_RELOAD_DELAY_MS);
+}
+
 function scheduleReleaseReload(status: ReleaseStatus) {
-  window.setTimeout(() => window.location.replace(releaseReloadUrl(status)), RELEASE_RELOAD_DELAY_MS);
+  scheduleReleaseReloadUrl(releaseReloadUrl(status));
 }
 
 function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgradeLock, "detail" | "message" | "stage" | "targetVersion"> {
@@ -2482,21 +2486,26 @@ function isTransientAppStartupError(error: unknown) {
   return isLikelyRestartInterruption(error);
 }
 
-async function probeApplicationReadiness() {
+async function probeApplicationReadiness(targetUrl?: string) {
   await api.health();
-  const response = await fetch(`/?release_shell_check=${Date.now()}`, {
+  const url = new URL(targetUrl || window.location.href);
+  url.searchParams.set("release_shell_check", Date.now().toString(36));
+  const response = await fetch(url.toString(), {
     cache: "no-store",
     credentials: "include",
   });
   if (!response.ok) throw new Error(`App shell returned HTTP ${response.status}`);
+  if (response.headers.get("x-medusa-restarting") === "true") {
+    throw new Error("App shell is still on the restart waiting page.");
+  }
 }
 
-async function waitForApplicationReadiness(timeoutMs = RELEASE_READY_TIMEOUT_MS) {
+async function waitForApplicationReadiness(targetUrl?: string, timeoutMs = RELEASE_READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastError = "";
   while (Date.now() < deadline) {
     try {
-      await probeApplicationReadiness();
+      await probeApplicationReadiness(targetUrl);
       return;
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error || "");
@@ -4034,6 +4043,55 @@ function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; 
         <strong className="brand-name">{MEDUSA_APP_NAME}</strong>
       </span>
     </ViewportTooltip>
+  );
+}
+
+function startupLoadingCopy(startupHealthPending: boolean) {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has(RELEASE_RELOAD_TARGET_PARAM)) {
+    return {
+      eyebrow: "Medusa upgrade",
+      title: "Finishing upgrade",
+      detail: "Loading the updated research cockpit after the restart health checks pass.",
+    };
+  }
+  if (params.has(RELEASE_RELOAD_PARAM)) {
+    return {
+      eyebrow: "Medusa reload",
+      title: "Reloading Medusa",
+      detail: "Waiting for the app shell to finish coming online.",
+    };
+  }
+  if (startupHealthPending) {
+    return {
+      eyebrow: "Medusa restart",
+      title: "Waiting for Medusa",
+      detail: "The app is still restarting. Health checks are retrying automatically.",
+    };
+  }
+  return {
+    eyebrow: "Medusa",
+    title: "Loading Medusa",
+    detail: "Checking your session and preparing the research cockpit.",
+  };
+}
+
+function StartupLoadingScreen({ startupHealthPending }: { startupHealthPending: boolean }) {
+  const copy = startupLoadingCopy(startupHealthPending);
+  return (
+    <div className="loading-screen">
+      <section aria-live="polite" className="loading-panel">
+        <img className="loading-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
+        <div className="loading-copy">
+          <span>{copy.eyebrow}</span>
+          <h1>{copy.title}</h1>
+          <p>{copy.detail}</p>
+        </div>
+        <div className="loading-activity" aria-hidden="true">
+          <span />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -18656,7 +18714,8 @@ export default function App() {
         targetVersion: status.running.version,
       });
       try {
-        await waitForApplicationReadiness();
+        const reloadUrl = releaseReloadUrl(status);
+        await waitForApplicationReadiness(reloadUrl);
         releaseReloadScheduledRef.current = true;
         setReleaseUpgradeLock({
           ...releaseUpgradeLockFromStatus(status),
@@ -18666,7 +18725,7 @@ export default function App() {
           startedAt: Date.now(),
           targetVersion: status.running.version,
         });
-        scheduleReleaseReload(status);
+        scheduleReleaseReloadUrl(reloadUrl);
       } catch (error) {
         releaseReloadScheduledRef.current = false;
         setReleaseUpgradeLock({
@@ -18762,8 +18821,9 @@ export default function App() {
               }
             : current,
         );
+        const readinessUrl = status.browser_reload_recommended ? releaseReloadUrl(status) : window.location.href;
         try {
-          await probeApplicationReadiness();
+          await probeApplicationReadiness(readinessUrl);
         } catch {
           if (!cancelled) {
             setReleaseUpgradeLock((current) =>
@@ -18795,7 +18855,7 @@ export default function App() {
                 }
               : current,
           );
-          scheduleReleaseReload(status);
+          scheduleReleaseReloadUrl(readinessUrl);
           return;
         }
         releaseReloadScheduledRef.current = false;
@@ -19021,7 +19081,7 @@ export default function App() {
 
   const startupHealthPending =
     Boolean(me.error && isTransientAppStartupError(me.error)) && me.failureCount < STARTUP_HEALTH_RETRY_LIMIT;
-  if (me.isLoading || startupHealthPending) return <div className="loading-screen">Medusa</div>;
+  if (me.isLoading || startupHealthPending) return <StartupLoadingScreen startupHealthPending={startupHealthPending} />;
   if (me.error || !me.data) {
     return (
       <AppTooltipProvider>

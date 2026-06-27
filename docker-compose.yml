@@ -101,6 +101,7 @@ services:
       - "${MEDUSA_BIND_IP:-0.0.0.0}:3737:3737"
     volumes:
       - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./deploy/haproxy/restarting.html:/usr/local/etc/haproxy/restarting.html:ro
       - ./data/haproxy:/usr/local/etc/haproxy/certs:ro
     depends_on:
       - frontend
