@@ -363,16 +363,17 @@ const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
-const LIBRARY_NUMERIC_PAGE_SIZES = [50, 100, 250, 500, 1000] as const;
-type LibraryPageSize = (typeof LIBRARY_NUMERIC_PAGE_SIZES)[number] | "all";
-const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 100;
-const LIBRARY_PAGE_SIZE_OPTIONS: Array<{ value: LibraryPageSize; label: string }> = [
+const MIN_LIBRARY_PAGE_SIZE = 10;
+type LibraryPageSize = number;
+const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 50;
+const LIBRARY_PAGE_SIZE_SUGGESTIONS: Array<{ value: LibraryPageSize; label: string }> = [
+  { value: 25, label: "25" },
   { value: 50, label: "50" },
   { value: 100, label: "100" },
+  { value: 150, label: "150" },
+  { value: 200, label: "200" },
   { value: 250, label: "250" },
   { value: 500, label: "500" },
-  { value: 1000, label: "1,000" },
-  { value: "all", label: "All" },
 ];
 const LIBRARY_ROW_HEIGHT = 118;
 const LIBRARY_ROW_OVERSCAN = 6;
@@ -556,14 +557,9 @@ function useAppDialogController() {
   return { alert, confirm, node };
 }
 
-function isLibraryNumericPageSize(value: number): value is (typeof LIBRARY_NUMERIC_PAGE_SIZES)[number] {
-  return LIBRARY_NUMERIC_PAGE_SIZES.some((option) => option === value);
-}
-
 function parseLibraryPageSize(value: string | null): LibraryPageSize {
-  if (value === "all") return "all";
   const numericValue = Number(value);
-  return Number.isInteger(numericValue) && isLibraryNumericPageSize(numericValue) ? numericValue : DEFAULT_LIBRARY_PAGE_SIZE;
+  return Number.isInteger(numericValue) && numericValue >= MIN_LIBRARY_PAGE_SIZE ? numericValue : DEFAULT_LIBRARY_PAGE_SIZE;
 }
 
 const USAGE_PERIOD_OPTIONS: Array<{ value: OpenAIUsagePeriod; label: string }> = [
@@ -607,7 +603,8 @@ type TagSortKey = "name" | "status" | "documents";
 type SortDirection = "asc" | "desc";
 type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
 type BrowserHistoryMode = "none" | "push" | "replace";
-type AppRoute = { view: View; documentId?: string };
+type DocumentRouteMode = "detail" | "reader";
+type AppRoute = { view: View; documentId?: string; documentMode?: DocumentRouteMode };
 
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
 
@@ -684,15 +681,20 @@ function decodePathSegment(segment: string) {
   }
 }
 
-function documentIdFromPathname(pathname: string) {
+function documentRouteFromPathname(pathname: string): { documentId: string; documentMode: DocumentRouteMode } | undefined {
   const path = normalizedAppPath(pathname);
-  const match = path.match(/^\/documents?\/([^/]+)$/i);
-  return match ? decodePathSegment(match[1]) : undefined;
+  const documentMatch = path.match(/^\/documents?\/([^/]+)(?:\/(reader|detail))?$/i);
+  if (documentMatch) {
+    const mode = documentMatch[2]?.toLowerCase() === "reader" ? "reader" : "detail";
+    return { documentId: decodePathSegment(documentMatch[1]), documentMode: mode };
+  }
+  const readerMatch = path.match(/^\/reader\/([^/]+)$/i);
+  return readerMatch ? { documentId: decodePathSegment(readerMatch[1]), documentMode: "reader" } : undefined;
 }
 
 function routeFromPathname(pathname: string): AppRoute {
-  const documentId = documentIdFromPathname(pathname);
-  if (documentId) return { view: "library", documentId };
+  const documentRoute = documentRouteFromPathname(pathname);
+  if (documentRoute) return { view: "library", ...documentRoute };
   return { view: viewFromPathname(pathname) || DEFAULT_VIEW };
 }
 
@@ -704,12 +706,13 @@ function pathForView(view: View) {
   return VIEW_PATHS[view];
 }
 
-function pathForDocument(documentId: string) {
-  return `/documents/${encodeURIComponent(documentId)}`;
+function pathForDocument(documentId: string, mode: DocumentRouteMode = "detail") {
+  const basePath = `/documents/${encodeURIComponent(documentId)}`;
+  return mode === "reader" ? `${basePath}/reader` : basePath;
 }
 
-function documentLinkUrl(documentId: string) {
-  return `${window.location.origin}${pathForDocument(documentId)}`;
+function documentLinkUrl(documentId: string, mode: DocumentRouteMode = "detail") {
+  return `${window.location.origin}${pathForDocument(documentId, mode)}`;
 }
 
 function cleanBrowserTitleSegment(value?: string | null) {
@@ -781,8 +784,16 @@ function syncBrowserUrlForView(view: View, mode: Exclude<BrowserHistoryMode, "no
   syncBrowserUrl(pathForView(view), { medusaView: view }, mode);
 }
 
-function syncBrowserUrlForDocument(documentId: string, mode: Exclude<BrowserHistoryMode, "none">) {
-  syncBrowserUrl(pathForDocument(documentId), { medusaView: "library", medusaDocumentId: documentId }, mode);
+function syncBrowserUrlForDocument(
+  documentId: string,
+  historyMode: Exclude<BrowserHistoryMode, "none">,
+  documentMode: DocumentRouteMode = "detail",
+) {
+  syncBrowserUrl(
+    pathForDocument(documentId, documentMode),
+    { medusaView: "library", medusaDocumentId: documentId, medusaDocumentMode: documentMode },
+    historyMode,
+  );
 }
 
 function authorLine(document: LibraryDocumentRow) {
@@ -4570,6 +4581,7 @@ function Header({
 }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEscapeLayer(userMenuOpen, () => setUserMenuOpen(false), ESCAPE_PRIORITY_MENU);
 
@@ -4606,6 +4618,10 @@ function Header({
   const hydrateCacheFromUserMenu = () => {
     onHydrateCache();
   };
+  const clearGlobalSearch = () => {
+    setQuery("");
+    searchInputRef.current?.blur();
+  };
   const cacheActionBusy = cacheRefreshing || cacheHydrating;
   const cacheHitPercent = cacheStatus ? Math.round((cacheStatus.hit_rate || 0) * 100) : null;
   const cacheUsagePercent = cacheMemoryPercent(cacheStatus);
@@ -4624,15 +4640,28 @@ function Header({
       <div className="topbar-brand-area">
         <BrandLockup compact />
       </div>
-      <label className="global-search">
+      <div className="global-search">
         <Search size={17} />
         <input
+          ref={searchInputRef}
+          aria-label="Search documents, notes, figures, and citations"
           data-tooltip="Type a global search query to filter documents by titles, notes, figures, citations, tags, domains, and searchable text."
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search documents, notes, figures, citations..."
         />
-      </label>
+        {query ? (
+          <button
+            aria-label="Clear search"
+            className="global-search-clear"
+            data-tooltip="Clear the global search and return to the unfiltered Library result mode."
+            onClick={clearGlobalSearch}
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        ) : null}
+      </div>
       <div className="topbar-actions">
         <HeaderWorkProgress
           completedImport={completedImport}
@@ -6153,6 +6182,9 @@ function LibraryView({
   onNextPage,
   onPageSizeChange,
   preferences,
+  readerOpen,
+  onOpenReader,
+  onCloseReader,
 }: {
   dialogs: AppDialogController;
   documents: LibraryDocumentRow[];
@@ -6182,6 +6214,9 @@ function LibraryView({
   onNextPage: () => void;
   onPageSizeChange: (pageSize: LibraryPageSize) => void;
   preferences?: AppPreferences;
+  readerOpen: boolean;
+  onOpenReader: () => void;
+  onCloseReader: (options?: { updateUrl?: boolean }) => void;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
   const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
@@ -6189,7 +6224,6 @@ function LibraryView({
   const rowsViewportRef = useRef<HTMLDivElement | null>(null);
   const [rowsScrollTop, setRowsScrollTop] = useState(0);
   const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
-  const [readerOpen, setReaderOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [bulkReadStatus, setBulkReadStatus] = useState("");
   const [bulkPriority, setBulkPriority] = useState("");
@@ -6271,7 +6305,7 @@ function LibraryView({
           total_count: Math.max(0, current.total_count - removedCount),
         };
       });
-      setReaderOpen(false);
+      if (readerOpen) onCloseReader({ updateUrl: false });
       setSelectedIds((current) => current.filter((id) => !trashedIds.has(id)));
       if (selectedId && trashedIds.has(selectedId)) {
         const nextDocument = documents.find((item) => !trashedIds.has(item.id) && item.id !== selectedId);
@@ -6359,7 +6393,7 @@ function LibraryView({
       setDraggedDocumentId(null);
     },
   });
-  useEscapeLayer(readerOpen, () => setReaderOpen(false), ESCAPE_PRIORITY_READER);
+  useEscapeLayer(readerOpen, () => onCloseReader(), ESCAPE_PRIORITY_READER);
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
@@ -6375,7 +6409,6 @@ function LibraryView({
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
   const visibleStart = totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
   const visibleEnd = Math.min(pageOffset + sortedDocuments.length, totalDocumentCount);
-  const pageSizeLabel = pageSize === "all" ? "All" : formatWholeNumber(pageSize);
   const libraryCountLabel =
     totalDocumentCount === sortedDocuments.length && pageOffset === 0
       ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
@@ -6504,7 +6537,7 @@ function LibraryView({
           dialogs={dialogs}
           document={document}
           domains={domains}
-          onCloseReader={() => setReaderOpen(false)}
+          onCloseReader={() => onCloseReader()}
           onTrashDocument={trashFocusedDocument}
           preferences={preferences}
           projects={projects}
@@ -6800,35 +6833,39 @@ function LibraryView({
           <div className="library-page-controls">
             <label className="library-page-size">
               <span>Rows</span>
-              <select
-                data-tooltip="Choose how many Library result rows to fetch for each page. All loads every matching row at once."
-                value={String(pageSize)}
+              <input
+                data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
+                list="library-page-size-suggestions"
+                min={MIN_LIBRARY_PAGE_SIZE}
                 onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
-              >
-                {LIBRARY_PAGE_SIZE_OPTIONS.map((option) => (
-                  <option key={String(option.value)} value={String(option.value)}>
+                type="number"
+                value={pageSize}
+              />
+              <datalist id="library-page-size-suggestions">
+                {LIBRARY_PAGE_SIZE_SUGGESTIONS.map((option) => (
+                  <option key={String(option.value)} value={option.value}>
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </datalist>
             </label>
             <button
               className="secondary-button compact"
-              data-disabled-reason={pageSize === "all" ? "all matching documents are already loaded." : pageOffset <= 0 ? "already at the first result window." : ""}
+              data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
               data-tooltip="Load the previous Library result window."
-              disabled={pageSize === "all" || pageOffset <= 0 || loading}
+              disabled={pageOffset <= 0 || loading}
               onClick={onPreviousPage}
               type="button"
             >
               <ChevronLeft size={15} />
               Previous
             </button>
-            <span>{pageSize === "all" ? pageSizeLabel : pageLimit ? `${formatWholeNumber(Math.floor(pageOffset / pageLimit) + 1)}` : "1"}</span>
+            <span>{pageLimit ? `${formatWholeNumber(Math.floor(pageOffset / pageLimit) + 1)}` : "1"}</span>
             <button
               className="secondary-button compact"
-              data-disabled-reason={pageSize === "all" ? "all matching documents are already loaded." : !hasMoreDocuments ? "already at the last result window." : ""}
+              data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
               data-tooltip="Load the next Library result window."
-              disabled={pageSize === "all" || !hasMoreDocuments || loading}
+              disabled={!hasMoreDocuments || loading}
               onClick={onNextPage}
               type="button"
             >
@@ -6928,7 +6965,7 @@ function LibraryView({
         document={document}
         domains={domains}
         onTrashDocument={trashFocusedDocument}
-        onOpenReader={() => setReaderOpen(true)}
+        onOpenReader={onOpenReader}
         preferences={preferences}
         projects={projects}
         query={query}
@@ -10461,8 +10498,12 @@ function DocumentPanelContent({
   const linkButton = (
     <button
       className="secondary-button"
-      data-tooltip="Copy a bookmarkable link that opens Library with this document focused."
-      onClick={() => copyToClipboard("document-link", documentLinkUrl(document.id))}
+      data-tooltip={
+        readerExpanded
+          ? "Copy a bookmarkable link that opens this document in expanded Reader mode."
+          : "Copy a bookmarkable link that opens Library with this document focused."
+      }
+      onClick={() => copyToClipboard("document-link", documentLinkUrl(document.id, readerExpanded ? "reader" : "detail"))}
       type="button"
     >
       {copiedKey === "document-link" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
@@ -18707,6 +18748,7 @@ function SettingsView({
   const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1024);
   const [valkeyMaxmemory, setValkeyMaxmemory] = useState(preferences?.valkey_maxmemory || "8gb");
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
+  const [settingsLibraryPageSize, setSettingsLibraryPageSize] = useState(preferences?.library_page_size || DEFAULT_LIBRARY_PAGE_SIZE);
   const [downloadNamingTemplate, setDownloadNamingTemplate] = useState(preferences?.download_naming_template || "$title ($year)");
   const [citationConvention, setCitationConvention] = useState(preferences?.citation_convention || CITATION_CONVENTION_APA_7);
   const [gcsBucket, setGcsBucket] = useState(preferences?.gcs_bucket || "");
@@ -18754,6 +18796,7 @@ function SettingsView({
       setDocumentCacheSizeMb(preferences.document_cache_size_mb);
       setValkeyMaxmemory(preferences.valkey_maxmemory || "8gb");
       setLibraryAlternatingRows(preferences.library_alternating_rows);
+      setSettingsLibraryPageSize(preferences.library_page_size || DEFAULT_LIBRARY_PAGE_SIZE);
       setDownloadNamingTemplate(preferences.download_naming_template);
       setCitationConvention(preferences.citation_convention || CITATION_CONVENTION_APA_7);
       setGcsBucket(preferences.gcs_bucket);
@@ -18916,6 +18959,7 @@ function SettingsView({
         document_cache_size_mb: documentCacheSizeMb,
         valkey_maxmemory: valkeyMaxmemory,
         library_alternating_rows: libraryAlternatingRows,
+        library_page_size: settingsLibraryPageSize,
         download_naming_template: downloadNamingTemplate,
         citation_convention: citationConvention,
         gcs_bucket: gcsBucket,
@@ -19050,6 +19094,7 @@ function SettingsView({
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
         preferences.valkey_maxmemory !== valkeyMaxmemory ||
         preferences.library_alternating_rows !== libraryAlternatingRows ||
+        preferences.library_page_size !== settingsLibraryPageSize ||
         preferences.download_naming_template !== downloadNamingTemplate ||
         preferences.citation_convention !== citationConvention ||
         preferences.gcs_bucket !== gcsBucket ||
@@ -19165,7 +19210,7 @@ function SettingsView({
         aria-label={`Save all preferences from the ${placement} of Settings`}
         className={asyncFeedbackClass("primary-button settings-save-all", savePreferencesFeedback.feedback)}
         data-disabled-reason={savePreferencesDisabledReason}
-        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, cache, runtime, accent, citation convention, download naming, model selections, and Import Processing presets.`}
+        data-tooltip={`Save all Settings preferences from the ${placement} Save All control, including storage, display, Library rows, cache, runtime, accent, citation convention, download naming, model selections, and Import Processing presets.`}
         disabled={savePreferencesDisabled}
         onClick={() => void saveAllPreferences()}
         type="button"
@@ -19538,6 +19583,29 @@ function SettingsView({
           />
           <span>Alternate Library rows</span>
         </label>
+        <div className="preference-control">
+          <label htmlFor="library-page-size">
+            <span>Library Rows</span>
+            <strong>{formatWholeNumber(settingsLibraryPageSize)}</strong>
+          </label>
+          <input
+            data-tooltip="Set the default number of Library result rows fetched per page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
+            id="library-page-size"
+            list="settings-library-page-size-suggestions"
+            min={MIN_LIBRARY_PAGE_SIZE}
+            onChange={(event) => setSettingsLibraryPageSize(parseLibraryPageSize(event.target.value))}
+            type="number"
+            value={settingsLibraryPageSize}
+          />
+          <datalist id="settings-library-page-size-suggestions">
+            {LIBRARY_PAGE_SIZE_SUGGESTIONS.map((option) => (
+              <option key={String(option.value)} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </datalist>
+          <p>(Default: 50) Controls the Library page size after Save All.</p>
+        </div>
         <div className="accent-settings">
           <label>
             <span>Day accent</span>
@@ -20339,6 +20407,7 @@ export default function App() {
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [libraryOffset, setLibraryOffset] = useState(0);
   const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(DEFAULT_LIBRARY_PAGE_SIZE);
+  const [libraryDocumentMode, setLibraryDocumentMode] = useState<DocumentRouteMode>(() => initialRoute.documentMode || "detail");
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
@@ -20410,9 +20479,11 @@ export default function App() {
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
   const needsConcordanceData = activeView === "settings" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
-  const libraryListAll = libraryPageSize === "all";
-  const libraryListOffset = libraryListAll ? 0 : libraryOffset;
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
+  useEffect(() => {
+    if (!preferences.data) return;
+    setLibraryPageSize(parseLibraryPageSize(String(preferences.data.library_page_size)));
+  }, [preferences.data?.library_page_size]);
   const ingestionHistory = useQuery({
     queryKey: ["ingestion-history"],
     queryFn: api.ingestionHistory,
@@ -20445,12 +20516,11 @@ export default function App() {
     setLibraryOffset(0);
   }, [documentQuery, filters, libraryPageSize]);
   const libraryDocumentList = useQuery({
-    queryKey: ["documents", "library-list", documentQuery, filters, libraryListOffset, libraryPageSize],
+    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize],
     queryFn: () =>
       api.documentList(documentQuery, filters, {
-        all: libraryListAll,
-        offset: libraryListOffset,
-        limit: libraryListAll ? undefined : libraryPageSize,
+        offset: libraryOffset,
+        limit: libraryPageSize,
       }),
     enabled: Boolean(me.data && needsLibraryDocumentList),
     staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
@@ -20871,9 +20941,11 @@ export default function App() {
   useEffect(() => {
     const route = routeFromCurrentLocation();
     if (route.documentId) {
-      syncBrowserUrlForDocument(route.documentId, "replace");
+      setLibraryDocumentMode(route.documentMode || "detail");
+      syncBrowserUrlForDocument(route.documentId, "replace", route.documentMode || "detail");
       return;
     }
+    setLibraryDocumentMode("detail");
     syncBrowserUrlForView(activeView, "replace");
   }, []);
 
@@ -20946,6 +21018,7 @@ export default function App() {
 
   const requestActiveViewChange = useCallback(
     async (view: View, historyMode: BrowserHistoryMode = "push") => {
+      if (view === "library") setLibraryDocumentMode("detail");
       if (view === activeView) {
         if (historyMode !== "none") syncBrowserUrlForView(view, historyMode);
         return true;
@@ -20971,13 +21044,14 @@ export default function App() {
     [activeView, appDialogs, settingsDirty],
   );
   const requestDocumentFocus = useCallback(
-    async (documentId: string, historyMode: BrowserHistoryMode = "push") => {
+    async (documentId: string, historyMode: BrowserHistoryMode = "push", documentMode: DocumentRouteMode = "detail") => {
       if (activeView !== "library") {
         const changed = await requestActiveViewChange("library", "none");
         if (!changed) return false;
       }
       setSelectedId(documentId);
-      if (historyMode !== "none") syncBrowserUrlForDocument(documentId, historyMode);
+      setLibraryDocumentMode(documentMode);
+      if (historyMode !== "none") syncBrowserUrlForDocument(documentId, historyMode, documentMode);
       return true;
     },
     [activeView, requestActiveViewChange],
@@ -21058,7 +21132,7 @@ export default function App() {
     const handlePopState = () => {
       const route = routeFromCurrentLocation();
       const routeChange = route.documentId
-        ? requestDocumentFocus(route.documentId, "none")
+        ? requestDocumentFocus(route.documentId, "none", route.documentMode || "detail")
         : requestActiveViewChange(route.view, "none");
       void routeChange.then((changed) => {
         if (!changed) syncBrowserUrlForView(activeView, "replace");
@@ -21187,7 +21261,7 @@ export default function App() {
                 setSelectedId(id);
                 return;
               }
-              void requestDocumentFocus(id);
+              void requestDocumentFocus(id, "push", "detail");
             }}
             domains={domains.data || []}
             tags={tags.data || []}
@@ -21204,15 +21278,15 @@ export default function App() {
             alternatingRows={preferences.data?.library_alternating_rows ?? true}
             totalDocumentCount={libraryTotalDocumentCount}
             totalPageCount={libraryTotalPageCount}
-            pageOffset={libraryDocumentList.data?.offset ?? libraryListOffset}
-            pageLimit={libraryDocumentList.data?.limit ?? (libraryPageSize === "all" ? libraryTotalDocumentCount : libraryPageSize)}
+            pageOffset={libraryDocumentList.data?.offset ?? libraryOffset}
+            pageLimit={libraryDocumentList.data?.limit ?? libraryPageSize}
             pageSize={libraryPageSize}
             hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
             onPreviousPage={() => {
-              if (libraryPageSize !== "all") setLibraryOffset((current) => Math.max(0, current - libraryPageSize));
+              setLibraryOffset((current) => Math.max(0, current - libraryPageSize));
             }}
             onNextPage={() => {
-              if (libraryPageSize !== "all" && libraryDocumentList.data?.has_more) {
+              if (libraryDocumentList.data?.has_more) {
                 setLibraryOffset((current) => current + libraryPageSize);
               }
             }}
@@ -21221,6 +21295,14 @@ export default function App() {
               setLibraryOffset(0);
             }}
             preferences={preferences.data}
+            readerOpen={libraryDocumentMode === "reader"}
+            onOpenReader={() => {
+              if (selectedId) void requestDocumentFocus(selectedId, "push", "reader");
+            }}
+            onCloseReader={(options) => {
+              setLibraryDocumentMode("detail");
+              if (options?.updateUrl !== false && selectedId) syncBrowserUrlForDocument(selectedId, "push", "detail");
+            }}
           />
         ) : null}
         {activeView === "domains" ? (

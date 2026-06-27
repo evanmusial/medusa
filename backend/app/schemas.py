@@ -1699,6 +1699,7 @@ class AppPreferencesOut(BaseModel):
     document_cache_size_mb: int
     valkey_maxmemory: str
     library_alternating_rows: bool
+    library_page_size: int
     download_naming_template: str
     citation_convention: str
     gcs_bucket: str
@@ -1725,6 +1726,7 @@ class AppPreferencesPatch(BaseModel):
     document_cache_size_mb: int | None = Field(default=None, ge=0)
     valkey_maxmemory: str | None = Field(default=None, max_length=32)
     library_alternating_rows: bool | None = None
+    library_page_size: int | None = Field(default=None, ge=10)
     download_naming_template: str | None = Field(default=None, max_length=240)
     citation_convention: str | None = Field(default=None, pattern=r"^apa_7$")
     gcs_bucket: str | None = None

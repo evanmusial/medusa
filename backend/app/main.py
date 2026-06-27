@@ -408,7 +408,7 @@ IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
 )
 DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.04
 PDF_PREVIEW_RENDER_SCALE = 2.5
-CACHE_HYDRATE_LIST_PAGE_SIZE = 100
+CACHE_HYDRATE_LIST_PAGE_SIZE = 50
 CACHE_HYDRATE_MAX_DOCUMENTS = 10000
 RECENT_AI_FAILURE_NOTICE_LIMIT = 8
 RECENT_AI_FAILURE_NOTICE_MAX_AGE = timedelta(minutes=30)
@@ -2574,9 +2574,9 @@ def refresh_cache(
                 "duplicate_status": "",
                 "all": False,
                 "offset": 0,
-                "limit": 100,
+                "limit": 50,
             },
-            "loader": lambda: document_list_rows_out(db, offset=0, limit=100),
+            "loader": lambda: document_list_rows_out(db, offset=0, limit=50),
         },
     ]
     for warmer in warmers:
@@ -2605,7 +2605,7 @@ def hydrate_cache(
     include_document_details: bool = True,
     include_saved_searches: bool = True,
     max_documents: Annotated[int, Query(ge=1, le=CACHE_HYDRATE_MAX_DOCUMENTS)] = CACHE_HYDRATE_MAX_DOCUMENTS,
-    page_size: Annotated[int, Query(ge=25, le=1000)] = CACHE_HYDRATE_LIST_PAGE_SIZE,
+    page_size: Annotated[int, Query(ge=10)] = CACHE_HYDRATE_LIST_PAGE_SIZE,
 ) -> dict[str, Any]:
     logger = logging.getLogger("medusa.cache")
     before = cache_status_payload(db, request_metrics=route_performance_summary())
@@ -2834,6 +2834,7 @@ def patch_preferences(
             document_cache_size_mb=payload.document_cache_size_mb,
             valkey_maxmemory=payload.valkey_maxmemory,
             library_alternating_rows=payload.library_alternating_rows,
+            library_page_size=payload.library_page_size,
             download_naming_template=payload.download_naming_template,
             citation_convention=payload.citation_convention,
             gcs_bucket=payload.gcs_bucket,
@@ -4202,7 +4203,7 @@ def document_list_rows_out(
     duplicate_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
     offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    limit: Annotated[int, Query(ge=1)] = 50,
 ) -> DocumentListOut:
     query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
     query, search_rank = apply_document_filters(
@@ -4258,7 +4259,7 @@ def list_document_rows(
     duplicate_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
     offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    limit: Annotated[int, Query(ge=1)] = 50,
 ) -> DocumentListOut:
     key_parts = {
         "q": q or "",

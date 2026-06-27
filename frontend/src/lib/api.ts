@@ -192,6 +192,7 @@ export const api = {
         | "document_cache_size_mb"
         | "valkey_maxmemory"
         | "library_alternating_rows"
+        | "library_page_size"
         | "download_naming_template"
         | "citation_convention"
         | "gcs_bucket"
@@ -281,7 +282,7 @@ export const api = {
       params.set("all", "true");
     } else {
       params.set("offset", String(Math.max(0, options.offset ?? 0)));
-      params.set("limit", String(Math.max(1, options.limit ?? 100)));
+      params.set("limit", String(Math.max(1, options.limit ?? 50)));
     }
     return request<DocumentListResponse>(`/api/documents/list?${params.toString()}`);
   },

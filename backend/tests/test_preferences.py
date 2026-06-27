@@ -26,10 +26,13 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         ACCENT_COLOR_DAY_KEY,
         CITATION_CONVENTION_APA_7,
         CITATION_CONVENTION_KEY,
+        DEFAULT_LIBRARY_PAGE_SIZE,
         DOWNLOAD_NAMING_TEMPLATE_KEY,
         IMPORT_WORKER_CONCURRENCY_KEY,
         LIBRARY_ALTERNATING_ROWS_KEY,
+        LIBRARY_PAGE_SIZE_KEY,
         clamp_import_worker_concurrency,
+        clamp_library_page_size,
         get_app_preferences,
         get_import_worker_concurrency,
         normalize_hex_color,
@@ -39,6 +42,9 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     assert clamp_import_worker_concurrency(0) == 1
     assert clamp_import_worker_concurrency(99) == 99
     assert clamp_import_worker_concurrency("not-a-number", default=3) == 3
+    assert clamp_library_page_size(9) == 10
+    assert clamp_library_page_size(37) == 37
+    assert clamp_library_page_size("not-a-number", default=25) == 25
     assert normalize_hex_color("#AbC123", "#000000") == "#abc123"
     assert normalize_hex_color("blue", "#000000") == "#000000"
 
@@ -46,6 +52,7 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     Session = make_session()
     with Session() as db:
         assert get_app_preferences(db)["library_alternating_rows"] is True
+        assert get_app_preferences(db)["library_page_size"] == DEFAULT_LIBRARY_PAGE_SIZE
         assert get_app_preferences(db)["download_naming_template"] == "$title ($year)"
         assert get_app_preferences(db)["citation_convention"] == CITATION_CONVENTION_APA_7
 
@@ -54,6 +61,7 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
             import_worker_concurrency=3,
             accent_color_day="#14b8a6",
             library_alternating_rows=False,
+            library_page_size=37,
             download_naming_template="$author - $title [$pages]",
             citation_convention=CITATION_CONVENTION_APA_7,
         )
@@ -61,27 +69,33 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         stored = db.get(AppPreference, IMPORT_WORKER_CONCURRENCY_KEY)
         accent = db.get(AppPreference, ACCENT_COLOR_DAY_KEY)
         alternating_rows = db.get(AppPreference, LIBRARY_ALTERNATING_ROWS_KEY)
+        library_page_size = db.get(AppPreference, LIBRARY_PAGE_SIZE_KEY)
         download_naming = db.get(AppPreference, DOWNLOAD_NAMING_TEMPLATE_KEY)
         citation_convention = db.get(AppPreference, CITATION_CONVENTION_KEY)
         assert stored is not None
         assert accent is not None
         assert alternating_rows is not None
+        assert library_page_size is not None
         assert download_naming is not None
         assert citation_convention is not None
         assert stored.value == {"value": 3}
         assert accent.value == {"value": "#14b8a6"}
         assert alternating_rows.value == {"value": False}
+        assert library_page_size.value == {"value": 37}
         assert download_naming.value == {"value": "$author - $title [$pages]"}
         assert citation_convention.value == {"value": CITATION_CONVENTION_APA_7}
         assert preferences["import_worker_concurrency"] == 3
         assert preferences["accent_color_day"] == "#14b8a6"
         assert preferences["library_alternating_rows"] is False
+        assert preferences["library_page_size"] == 37
         assert preferences["download_naming_template"] == "$author - $title [$pages]"
         assert preferences["citation_convention"] == CITATION_CONVENTION_APA_7
         assert get_import_worker_concurrency(db) == 3
 
         update_app_preferences(db, import_worker_concurrency=99)
         assert get_app_preferences(db)["import_worker_concurrency"] == 99
+        update_app_preferences(db, library_page_size=3)
+        assert get_app_preferences(db)["library_page_size"] == 10
 
 
 def test_download_filename_template_sanitizes_document_fields(monkeypatch, tmp_path):
