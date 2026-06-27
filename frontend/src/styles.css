@@ -1286,7 +1286,7 @@ textarea {
   text-decoration: none;
   cursor: pointer;
   font-weight: 400;
-  filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--ink) 8%, transparent));
+  filter: drop-shadow(2px 3px 4px color-mix(in srgb, var(--ink) 16%, transparent));
 }
 
 .workspace-nav-item.active,
@@ -1295,7 +1295,9 @@ textarea {
   background: transparent;
 }
 
-.workspace-nav-item.active::after {
+.workspace-nav-item.active::after,
+.workspace-nav-item:hover::after,
+.workspace-nav-item:focus-visible::after {
   content: "";
   position: absolute;
   right: 10px;
@@ -1336,6 +1338,8 @@ textarea {
 
 .content-top {
   min-width: 0;
+  min-height: 0;
+  grid-row: 1 / -1;
   padding: 0 2px;
 }
 
@@ -1399,6 +1403,7 @@ textarea {
 
 .library-grid {
   min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-columns: minmax(260px, var(--filter-pane-width, 280px)) 12px minmax(320px, 1fr) 12px minmax(300px, var(--detail-pane-width, 384px));
   gap: 0;
@@ -3184,6 +3189,8 @@ textarea {
 }
 
 .rows {
+  min-height: 0;
+  height: 100%;
   overflow: auto;
   padding-top: 2px;
 }
@@ -3399,9 +3406,11 @@ textarea {
 }
 
 .doc-row-summary {
+  --doc-row-summary-lines: 2;
   grid-column: 2 / -1;
   min-width: 0;
   margin-top: -3px;
+  overflow: hidden;
 }
 
 .doc-row-summary .markdown-content.compact {
@@ -3410,12 +3419,30 @@ textarea {
 }
 
 .library-density-compact .doc-row-summary .markdown-content.compact {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   font-size: 13px;
   line-height: 1.32;
-  -webkit-line-clamp: 1;
+}
+
+.library-density-compact .doc-row-summary {
+  --doc-row-summary-lines: 1;
+}
+
+.library-density-reading .doc-row-summary {
+  --doc-row-summary-lines: 3;
+}
+
+.doc-row-summary .markdown-content.compact > p,
+.doc-row-summary > .markdown-empty {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--doc-row-summary-lines);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: inherit;
+}
+
+.doc-row-summary .markdown-content.compact > :not(:first-child) {
+  display: none;
 }
 
 .library-density-reading .doc-row-summary .markdown-content.compact {
