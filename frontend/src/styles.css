@@ -1502,7 +1502,7 @@ textarea {
   text-decoration: none;
   cursor: pointer;
   font-weight: 400;
-  filter: drop-shadow(2px 3px 4px color-mix(in srgb, var(--ink) 16%, transparent));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--ink) 9.6%, transparent));
 }
 
 .workspace-nav-item.active,
@@ -1555,8 +1555,15 @@ textarea {
 .content-top {
   min-width: 0;
   min-height: 0;
-  grid-row: 1 / -1;
+  grid-row: 1;
+  overflow: hidden;
   padding: 0 2px;
+}
+
+.content > :not(.content-top) {
+  grid-row: 2;
+  min-height: 0;
+  min-width: 0;
 }
 
 .resize-handle {
