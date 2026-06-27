@@ -8,7 +8,7 @@ This is the living record of Medusa's product, design, and architecture decision
 
 Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analysis**. It is a local-first research document clearinghouse that should help organize, search, read, annotate, summarize, cite, and reuse research documents across domains of knowledge and project-specific run sheets.
 
-The product is optimized for one primary user on a trusted local network. It still requires password login because HAProxy exposes the app on LAN-accessible HTTPS port `3737`; the live password is stored as a database hash after first boot, and the account can require authenticator-app two-factor authentication.
+The product is optimized for one primary user on a trusted local network. It still requires password login by default because HAProxy exposes the app on LAN-accessible HTTPS port `3737`; the live password is stored as a database hash after first boot, and the account can require authenticator-app two-factor authentication. An explicit local convenience flag, `MEDUSA_LOCAL_AUTO_LOGIN=true`, may be used only on single-user local instances to mint a normal admin session automatically when the browser has no valid cookie; it bypasses password and two-factor prompts and must stay disabled on LAN/public deployments.
 
 Core workflows:
 

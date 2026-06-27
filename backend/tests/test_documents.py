@@ -547,7 +547,7 @@ def test_list_documents_sorts_by_title(monkeypatch, tmp_path):
     assert [document.title for document in documents] == ["A framework", "Advanced methods", "alpha", "Beta", "Zeta"]
 
 
-def test_list_documents_default_does_not_truncate_at_80(monkeypatch, tmp_path):
+def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
@@ -577,10 +577,10 @@ def test_list_documents_default_does_not_truncate_at_80(monkeypatch, tmp_path):
         all_page = list_document_rows(object(), db, offset=40, limit=40, all_results=True)
 
     assert len(documents) == 125
-    assert len(default_page.items) == 100
+    assert len(default_page.items) == 50
     assert default_page.total_count == 125
     assert default_page.offset == 0
-    assert default_page.limit == 100
+    assert default_page.limit == 50
     assert default_page.has_more is True
     assert len(limited_documents) == 80
     assert len(first_page.items) == 40

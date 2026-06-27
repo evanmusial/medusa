@@ -514,13 +514,32 @@ def parse_json_form(value: str | None, default: Any) -> Any:
 
 
 def current_user(
+    request: Request,
+    response: Response,
     db: Annotated[Session, Depends(get_db)],
     token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
 ) -> User:
     user = user_for_token(db, token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user
+    if user:
+        return user
+    if settings.local_auto_login:
+        user = ensure_admin_user(db)
+        if user.is_active:
+            session_token = create_session(db, user, user_agent=request.headers.get("user-agent"))
+            set_session_cookie(response, session_token)
+            return user
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        settings.session_cookie_name,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=settings.session_ttl_hours * 3600,
+    )
 
 
 def _request_uses_tls(request: Request) -> bool:
@@ -2033,14 +2052,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Annot
     if user.two_factor_enabled and not verify_two_factor_code(user, payload.otp_code):
         raise HTTPException(status_code=401, detail="Invalid email, password, or two-factor code")
     token = create_session(db, user, user_agent=request.headers.get("user-agent"))
-    response.set_cookie(
-        settings.session_cookie_name,
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=settings.session_ttl_hours * 3600,
-    )
+    set_session_cookie(response, token)
     return user
 
 

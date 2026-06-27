@@ -244,6 +244,35 @@ def test_activity_heartbeat_updates_last_seen_without_reviving_invalid_sessions(
         assert expired_session.last_seen_at == now - timedelta(minutes=20)
 
 
+def test_local_auto_login_mints_admin_session_only_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app import main
+    from app.models import SessionToken
+
+    Session = make_session()
+    request = SimpleNamespace(headers={"user-agent": "pytest"})
+    with Session() as db:
+        monkeypatch.setattr(main.settings, "local_auto_login", False)
+        with pytest.raises(HTTPException) as missing_session:
+            main.current_user(request=request, response=Response(), db=db, token=None)
+        assert missing_session.value.status_code == 401
+
+        monkeypatch.setattr(main.settings, "local_auto_login", True)
+        response = Response()
+        user = main.current_user(request=request, response=response, db=db, token=None)
+
+        assert user.email == "admin@medusa.local"
+        assert "medusa_session=" in response.headers["set-cookie"]
+        assert db.query(SessionToken).count() == 1
+
+
 def test_ensure_admin_user_handles_concurrent_insert(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

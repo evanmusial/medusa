@@ -4,7 +4,7 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 
 ## What Is Implemented
 
-- Password-protected LAN web app behind HAProxy TLS on port `3737`, with database-backed password hashes and optional authenticator-app 2FA
+- Password-protected LAN web app behind HAProxy TLS on port `3737`, with database-backed password hashes, optional authenticator-app 2FA, and an explicit local-only auto-login flag for single-user development instances
 - React research cockpit UI with day/night modes, open-canvas workbenches, an app-wide Quick Switcher, browser-local recently viewed document shortcuts, Library density preferences, darker light-theme contrast grays, and restrained icon-left action buttons
 - Lowercase contextual browser titles such as `medusa | DOCUMENT_TITLE`, `medusa | PROJECT_TITLE`, or the current workspace name
 - Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected and `/documents/{document_id}/reader` for expanded Reader mode
@@ -59,6 +59,14 @@ Edit `.env` and set at least:
 MEDUSA_PASSWORD=your-local-password
 MEDUSA_ALLOW_DEFAULT_PASSWORD=false
 ```
+
+For a single-user local instance where the browser should sign in automatically, set:
+
+```bash
+MEDUSA_LOCAL_AUTO_LOGIN=true
+```
+
+Leave this disabled on LAN/public deployments. It creates a normal admin session automatically when the browser has no valid cookie, bypassing password and two-factor prompts.
 
 Install the HAProxy TLS certificate material under ignored local data storage:
 
