@@ -4331,16 +4331,75 @@ textarea {
   background: var(--panel-2);
 }
 
-.text-reader-head > div:first-child {
+.text-reader-title {
   min-width: 0;
   display: grid;
   gap: 2px;
 }
 
-.text-reader-head > div:first-child span {
+.text-reader-title span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.text-reader-toolbar,
+.reader-search-controls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.text-reader-toolbar {
+  flex: 1;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.reader-search-controls {
+  flex: 1 1 330px;
+  max-width: 520px;
+  min-height: 34px;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  padding: 0 5px 0 9px;
+  color: var(--muted);
+}
+
+.reader-search-controls input {
+  min-width: 120px;
+  flex: 1;
+  height: 30px;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+}
+
+.reader-search-controls input:focus {
+  outline: none;
+}
+
+.reader-search-controls span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.reader-search-controls span.empty {
+  color: var(--danger);
+}
+
+.reader-search-controls .icon-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
 }
 
 .reader-actions {
@@ -4458,6 +4517,13 @@ textarea {
 
 .reader-page-text-block:last-child {
   margin-bottom: 0;
+}
+
+.reader-search-hit {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--amber) 44%, transparent);
+  color: var(--ink);
+  padding: 0 1px;
 }
 
 .math-formula {

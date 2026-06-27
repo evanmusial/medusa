@@ -156,6 +156,7 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Add a more capable PDF reader.
   - Acceptance: page navigation, zoom, search-within-document, page thumbnails, and stable annotation overlays work inside the document pane.
+  - Partial: parsed-text Reader search now counts case-insensitive matches across pages, jumps previous/next by matching page, and highlights matches on the current read-mode page. Remaining work is PDF-native search/zoom, page thumbnails, and stable annotation overlays.
 
 - [ ] Redesign Library detail annotation creation.
   - Acceptance: the inline annotation composer stays out of the Library summary/detail flow until annotation capture has a quieter pane-aware UI for page, kind, color, note body, and eventual geometry selection.

@@ -1373,6 +1373,45 @@ function countOccurrences(text: string, needle: string) {
   return count;
 }
 
+function countCaseInsensitiveOccurrences(text: string, needle: string) {
+  const normalizedNeedle = needle.trim().toLocaleLowerCase();
+  if (!normalizedNeedle) return 0;
+  return countOccurrences(text.toLocaleLowerCase(), normalizedNeedle);
+}
+
+function renderReaderHighlightedText(text: string, searchTerm: string, keyPrefix: string): ReactNode[] {
+  const needle = searchTerm.trim();
+  if (!needle) return renderInlineMarkdownWithBreaks(text, keyPrefix);
+  const lowerText = text.toLocaleLowerCase();
+  const lowerNeedle = needle.toLocaleLowerCase();
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  let matchIndex = 0;
+
+  const pushTextWithBreaks = (value: string, key: string) => {
+    if (!value) return;
+    value.split("\n").forEach((part, lineIndex, parts) => {
+      if (part) nodes.push(<span key={`${key}-text-${lineIndex}`}>{part}</span>);
+      if (lineIndex < parts.length - 1) nodes.push(<br key={`${key}-br-${lineIndex}`} />);
+    });
+  };
+
+  while (index < text.length) {
+    const next = lowerText.indexOf(lowerNeedle, index);
+    if (next < 0) break;
+    pushTextWithBreaks(text.slice(index, next), `${keyPrefix}-pre-${matchIndex}`);
+    nodes.push(
+      <mark className="reader-search-hit" key={`${keyPrefix}-hit-${matchIndex}`}>
+        {text.slice(next, next + needle.length)}
+      </mark>,
+    );
+    index = next + needle.length;
+    matchIndex += 1;
+  }
+  pushTextWithBreaks(text.slice(index), `${keyPrefix}-post`);
+  return nodes;
+}
+
 const restorableDocumentKeys = new Set([
   "title",
   "subtitle",
@@ -4370,7 +4409,7 @@ function renderMarkdownTable(table: MarkdownTable, keyPrefix: string) {
   );
 }
 
-function ReaderPageMarkdown({ content, empty }: { content?: string | null; empty: string }) {
+function ReaderPageMarkdown({ content, empty, searchTerm = "" }: { content?: string | null; empty: string; searchTerm?: string }) {
   const source = decodeHtmlEntities(content || "")
     .replace(/\r/g, "")
     .trim();
@@ -4386,7 +4425,7 @@ function ReaderPageMarkdown({ content, empty }: { content?: string | null; empty
       const key = `reader-text-${blocks.length}`;
       blocks.push(
         <p className="reader-page-text-block" key={key}>
-          {renderInlineMarkdownWithBreaks(text, key)}
+          {searchTerm.trim() ? renderReaderHighlightedText(text, searchTerm, key) : renderInlineMarkdownWithBreaks(text, key)}
         </p>,
       );
     }
@@ -8643,6 +8682,7 @@ function DocumentPanelContent({
   const [pageTextDraft, setPageTextDraft] = useState("");
   const [pageTextError, setPageTextError] = useState<string | null>(null);
   const [pageTextSelection, setPageTextSelection] = useState("");
+  const [readerSearchQuery, setReaderSearchQuery] = useState("");
   const [visualScanPageDraft, setVisualScanPageDraft] = useState("1");
   const [pdfPreviewPageTarget, setPdfPreviewPageTarget] = useState(1);
   const [visualScanReview, setVisualScanReview] = useState<VisualScanReview | null>(null);
@@ -9183,6 +9223,7 @@ function DocumentPanelContent({
     setPageTextDraft("");
     setPageTextError(null);
     setPageTextSelection("");
+    setReaderSearchQuery("");
     setVisualScanPageDraft("1");
     setPdfPreviewPageTarget(1);
     pdfDrivenReaderPageRef.current = false;
@@ -9260,6 +9301,24 @@ function DocumentPanelContent({
         : "normalized"
       : currentPage.text_source
     : "";
+  const readerSearchNeedle = readerSearchQuery.trim();
+  const readerSearchMatches = useMemo(
+    () =>
+      readerSearchNeedle
+        ? pages
+            .map((page, pageIndex) => ({
+              count: countCaseInsensitiveOccurrences(pageReadableText(page), readerSearchNeedle),
+              pageIndex,
+              pageNumber: page.page_number,
+            }))
+            .filter((match) => match.count > 0)
+        : [],
+    [pages, readerSearchNeedle],
+  );
+  const readerSearchTotal = readerSearchMatches.reduce((total, match) => total + match.count, 0);
+  const currentReaderSearchMatchIndex = readerSearchMatches.findIndex((match) => match.pageIndex === currentPageIndex);
+  const currentReaderSearchPageLabel =
+    currentReaderSearchMatchIndex >= 0 ? `${currentReaderSearchMatchIndex + 1} / ${readerSearchMatches.length}` : "";
   const maxVisualScanPage = Math.max(document.page_count || 0, pages.length ? pages[pages.length - 1].page_number : 0, 1);
   const parsedVisualScanPage = Number.parseInt(visualScanPageDraft, 10);
   const visualScanPageNumber = Math.min(
@@ -10937,6 +10996,24 @@ function DocumentPanelContent({
     setSelectedVisualScanCandidateIds(new Set());
     scanVisualPage.mutate(pageNumber);
   };
+  const jumpToReaderSearchPage = (direction: 1 | -1) => {
+    if (!readerSearchMatches.length) return;
+    let nextIndex = currentReaderSearchMatchIndex;
+    if (nextIndex >= 0) {
+      nextIndex = (nextIndex + direction + readerSearchMatches.length) % readerSearchMatches.length;
+    } else if (direction > 0) {
+      const forwardIndex = readerSearchMatches.findIndex((match) => match.pageIndex > currentPageIndex);
+      nextIndex = forwardIndex >= 0 ? forwardIndex : 0;
+    } else {
+      const reverseIndex = [...readerSearchMatches].reverse().findIndex((match) => match.pageIndex < currentPageIndex);
+      nextIndex = reverseIndex >= 0 ? readerSearchMatches.length - 1 - reverseIndex : readerSearchMatches.length - 1;
+    }
+    const target = readerSearchMatches[nextIndex];
+    if (!target) return;
+    setReaderPageIndex(target.pageIndex);
+    setPdfPreviewPageTarget(target.pageNumber);
+    setVisualScanPageDraft(String(target.pageNumber));
+  };
   const renderPdfPreview = (compare = false) => {
     const renderPageStack = readerExpanded;
     const focusedPreviewPage = Math.min(
@@ -11006,6 +11083,66 @@ function DocumentPanelContent({
             </AsyncActionSlot>
           </div>
         </div>
+      </div>
+    );
+  };
+
+  const renderReaderSearchControls = () => {
+    const statusText =
+      readerSearchTotal > 0
+        ? `${readerSearchTotal} match${readerSearchTotal === 1 ? "" : "es"}${currentReaderSearchPageLabel ? ` / ${currentReaderSearchPageLabel}` : ""}`
+        : "No matches";
+    return (
+      <div className="reader-search-controls">
+        <Search size={14} />
+        <input
+          aria-label="Search within parsed document text"
+          data-tooltip="Search parsed document text. Press Enter to jump to the next matching page."
+          onChange={(event) => setReaderSearchQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && readerSearchMatches.length) {
+              event.preventDefault();
+              jumpToReaderSearchPage(event.shiftKey ? -1 : 1);
+            }
+          }}
+          placeholder="Find in document"
+          type="search"
+          value={readerSearchQuery}
+        />
+        {readerSearchQuery ? (
+          <button
+            aria-label="Clear Reader search"
+            className="icon-button compact"
+            data-tooltip="Clear the Reader search."
+            onClick={() => setReaderSearchQuery("")}
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        ) : null}
+        {readerSearchNeedle ? <span className={!readerSearchTotal ? "empty" : ""}>{statusText}</span> : null}
+        <button
+          aria-label="Previous Reader search match"
+          className="icon-button compact"
+          data-disabled-reason="there are no parsed-text search matches."
+          data-tooltip="Jump to the previous matching parsed-text page."
+          disabled={!readerSearchMatches.length}
+          onClick={() => jumpToReaderSearchPage(-1)}
+          type="button"
+        >
+          <ChevronLeft size={14} />
+        </button>
+        <button
+          aria-label="Next Reader search match"
+          className="icon-button compact"
+          data-disabled-reason="there are no parsed-text search matches."
+          data-tooltip="Jump to the next matching parsed-text page."
+          disabled={!readerSearchMatches.length}
+          onClick={() => jumpToReaderSearchPage(1)}
+          type="button"
+        >
+          <ChevronRight size={14} />
+        </button>
       </div>
     );
   };
@@ -11103,11 +11240,14 @@ function DocumentPanelContent({
   const renderTextReader = (compare = false) => (
     <section className={`text-reader ${compare ? "compare-pane" : ""}`}>
       <div className="text-reader-head">
-        <div>
+        <div className="text-reader-title">
           <strong>Parsed text</strong>
           <span>{pages.length ? `Page ${currentPageIndex + 1} of ${pages.length}` : `${document.page_count || "?"} pages`}</span>
         </div>
-        {renderReaderActions("top")}
+        <div className="text-reader-toolbar">
+          {renderReaderSearchControls()}
+          {renderReaderActions("top")}
+        </div>
       </div>
       {currentPage ? (
         <article
@@ -11161,7 +11301,7 @@ function DocumentPanelContent({
               {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
             </div>
           ) : (
-            <ReaderPageMarkdown content={currentPageText} empty="No extracted text." />
+            <ReaderPageMarkdown content={currentPageText} empty="No extracted text." searchTerm={readerSearchNeedle} />
           )}
         </article>
       ) : (
