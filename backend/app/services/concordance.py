@@ -1209,6 +1209,7 @@ class ConcordanceProcessor:
         if bibliography:
             before = document_correction_snapshot(document)
             document.bibliography = bibliography
+            evidence["generated_at"] = utc_now().isoformat()
             metadata_evidence = dict(document.metadata_evidence or {})
             metadata_evidence["bibliography_extraction"] = evidence
             document.metadata_evidence = metadata_evidence

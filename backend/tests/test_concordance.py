@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -134,6 +136,8 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         assert capability.evidence["model_cleanup"]["model"] == "gpt-5.4-nano"
         assert capability.evidence["model_cleanup"]["formatting"] == "alphabetized_apa_markdown_one_source_per_line"
         assert document.metadata_evidence["bibliography_extraction"]["status"] == "extracted"
+        assert document.metadata_evidence["bibliography_extraction"]["generated_at"] == capability.evidence["generated_at"]
+        assert datetime.fromisoformat(capability.evidence["generated_at"])
         assert len(cleanup_calls) == 1
         assert cleanup_calls[0]["model"] == "gpt-5.4-nano"
         assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"

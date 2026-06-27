@@ -1359,6 +1359,29 @@ function backupShortDateLabel(value?: string | null) {
   return date.toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
+function relativeTimeLabel(value?: string | null, now = Date.now()) {
+  if (!value) return "";
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return "";
+  const elapsedSeconds = Math.max(0, Math.round((now - timestamp) / 1000));
+  if (elapsedSeconds < 45) return "just now";
+  if (elapsedSeconds < 90) return "about 1 minute ago";
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (elapsedMinutes < 45) return `about ${elapsedMinutes} minutes ago`;
+  if (elapsedMinutes < 90) return "about 1 hour ago";
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 22) return `about ${elapsedHours} hours ago`;
+  if (elapsedHours < 36) return "about 1 day ago";
+  const elapsedDays = Math.round(elapsedHours / 24);
+  if (elapsedDays < 45) return `about ${elapsedDays} days ago`;
+  if (elapsedDays < 320) {
+    const elapsedMonths = Math.max(1, Math.round(elapsedDays / 30));
+    return elapsedMonths === 1 ? "about 1 month ago" : `about ${elapsedMonths} months ago`;
+  }
+  const elapsedYears = Math.max(1, Math.round(elapsedDays / 365));
+  return elapsedYears === 1 ? "about 1 year ago" : `about ${elapsedYears} years ago`;
+}
+
 function modelPricingDateLabel(value?: string | null) {
   if (!value) return "";
   const date = new Date(value.includes("T") ? value : `${value}T00:00:00`);
@@ -7135,6 +7158,7 @@ function DocumentPanelContent({
   const [selectedHistoryVersionId, setSelectedHistoryVersionId] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [historyRestoreError, setHistoryRestoreError] = useState<string | null>(null);
+  const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
@@ -7653,6 +7677,13 @@ function DocumentPanelContent({
   useEffect(() => {
     setAccessoryModel(accessorySummaryDefaultModel);
   }, [accessorySummaryDefaultModel, document.id]);
+
+  useEffect(() => {
+    if (!document.bibliography_generated_at) return;
+    setRelativeTimeNow(Date.now());
+    const timer = window.setInterval(() => setRelativeTimeNow(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, [document.bibliography_generated_at]);
 
   useEffect(() => {
     if (!domainAssignOpen) return;
@@ -8586,6 +8617,7 @@ function DocumentPanelContent({
     setDocumentTags(currentTagNames.filter((tagName) => tagName.toLocaleLowerCase() !== normalizedKey));
   };
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
+  const bibliographyGeneratedLabel = relativeTimeLabel(document.bibliography_generated_at, relativeTimeNow);
   const renderDomainsSection = () => (
     <section className="detail-section detail-domains-section">
       <h3>Domains</h3>
@@ -9055,6 +9087,7 @@ function DocumentPanelContent({
   const renderBibliographySection = () => (
     <section className="detail-section bibliography-section">
       <h3>Bibliography</h3>
+      {bibliographyGeneratedLabel ? <p className="section-kicker">Generated {bibliographyGeneratedLabel}</p> : null}
       <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
       <div className="citation-actions">
         <button

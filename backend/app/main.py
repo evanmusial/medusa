@@ -29,6 +29,7 @@ from app.models import (
     ConcordanceRun,
     Document,
     DocumentAccessorySummary,
+    DocumentCapability,
     DocumentCompositionRecord,
     DocumentAttributeValue,
     DocumentPage,
@@ -782,17 +783,53 @@ def document_list_row_out(document: Document, projects: list[ProjectOut] | None 
     )
 
 
+def parse_evidence_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def document_bibliography_generated_at(document: Document, db: Session) -> datetime | None:
+    if not document.bibliography:
+        return None
+    evidence = document.metadata_evidence or {}
+    bibliography_evidence = evidence.get("bibliography_extraction")
+    if isinstance(bibliography_evidence, dict):
+        generated_at = parse_evidence_datetime(bibliography_evidence.get("generated_at"))
+        if generated_at:
+            return generated_at
+    capability = (
+        db.query(DocumentCapability)
+        .filter(
+            DocumentCapability.document_id == document.id,
+            DocumentCapability.capability_key == "bibliography_extraction",
+            DocumentCapability.status == "complete",
+        )
+        .one_or_none()
+    )
+    return parse_evidence_datetime(capability.completed_at) if capability else None
+
+
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
-    duplicate_summary = duplicate_summary_by_document(db).get(document.id, {})
-    duplicate_ids = duplicate_summary.get("duplicate_document_ids", [])
+    duplicate_summary = persisted_duplicate_summary_by_document([document]).get(document.id, {})
     projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
     return DocumentDetail.model_validate(document).model_copy(
         update={
-            "duplicate_count": len(duplicate_ids),
+            "duplicate_count": duplicate_summary.get("duplicate_count", 0),
             "duplicate_reasons": duplicate_summary.get("duplicate_reasons", []),
-            "duplicate_document_ids": duplicate_ids,
+            "duplicate_document_ids": [],
             "projects": projects,
             "no_doi": document_no_doi(document),
+            "bibliography_generated_at": document_bibliography_generated_at(document, db),
         }
     )
 

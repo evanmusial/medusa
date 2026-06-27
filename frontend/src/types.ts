@@ -918,6 +918,7 @@ export type DocumentDetail = DocumentSummary & {
   source_url?: string | null;
   abstract?: string | null;
   bibliography?: string | null;
+  bibliography_generated_at?: string | null;
   metadata_evidence: Record<string, unknown>;
   gcs_uri?: string | null;
   storage_status: string;

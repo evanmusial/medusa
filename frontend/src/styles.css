@@ -3801,6 +3801,13 @@ textarea {
   line-height: 1.5;
 }
 
+.section-kicker {
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .markdown-content {
   display: grid;
   gap: 8px;

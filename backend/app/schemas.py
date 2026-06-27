@@ -568,6 +568,7 @@ class DocumentDetail(DocumentSummary):
     source_url: str | None = None
     abstract: str | None = None
     bibliography: str | None = None
+    bibliography_generated_at: datetime | None = None
     metadata_evidence: dict[str, Any]
     gcs_uri: str | None = None
     storage_status: str

@@ -465,6 +465,34 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
         assert [document.title for document in unique_documents] == ["Unique"]
 
 
+def test_get_document_uses_persisted_duplicate_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import get_document, scan_document_duplicates
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        first = Document(title="First duplicate", original_filename="first.pdf", checksum_sha256="d" * 64, processing_status="ready")
+        second = Document(title="Second duplicate", original_filename="second.pdf", checksum_sha256="d" * 64, processing_status="ready")
+        db.add_all([first, second])
+        db.commit()
+
+        scan_document_duplicates(object(), db)
+
+        def fail_full_duplicate_summary(*args, **kwargs):
+            raise AssertionError("Document detail should not scan the full duplicate graph")
+
+        monkeypatch.setattr("app.main.duplicate_summary_by_document", fail_full_duplicate_summary)
+
+        detail = get_document(first.id, object(), db)
+
+        assert detail.duplicate_count == 1
+        assert detail.duplicate_reasons == ["sha256"]
+        assert detail.duplicate_document_ids == []
+
+
 def test_list_documents_can_skip_library_only_enrichments(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -845,6 +873,70 @@ def test_document_detail_schema_includes_parsed_pages(monkeypatch, tmp_path):
         assert detail.pages[0].page_number == 1
         assert detail.pages[0].text == "Parsed page text."
         assert detail.pages[0].normalized_text == "Readable page text."
+
+
+def test_document_detail_includes_bibliography_generated_time(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import document_detail_out
+    from app.models import Document, DocumentCapability, utc_now
+
+    Session = make_session()
+    with Session() as db:
+        generated_at = utc_now()
+        document = Document(
+            title="References Paper",
+            original_filename="references.pdf",
+            checksum_sha256="g" * 64,
+            bibliography="Smith, A. (2024). Source. Journal.",
+            metadata_evidence={"bibliography_extraction": {"status": "extracted"}},
+            page_count=1,
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            DocumentCapability(
+                document_id=document.id,
+                capability_key="bibliography_extraction",
+                version=1,
+                status="complete",
+                completed_at=generated_at,
+            )
+        )
+        db.commit()
+        db.refresh(document)
+
+        detail = document_detail_out(document, db)
+
+        assert detail.bibliography_generated_at == generated_at
+
+
+def test_document_detail_prefers_bibliography_generated_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import document_detail_out
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Evidence References Paper",
+            original_filename="evidence-references.pdf",
+            checksum_sha256="h" * 64,
+            bibliography="Jones, B. (2025). Evidence source. Journal.",
+            metadata_evidence={"bibliography_extraction": {"status": "extracted", "generated_at": "2026-06-26T12:34:56+00:00"}},
+            page_count=1,
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        detail = document_detail_out(document, db)
+
+        assert detail.bibliography_generated_at is not None
+        assert detail.bibliography_generated_at.isoformat() == "2026-06-26T12:34:56+00:00"
 
 
 def test_patch_document_page_records_history_and_updates_search_text(monkeypatch, tmp_path):
