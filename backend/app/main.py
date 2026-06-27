@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +51,7 @@ from app.models import (
     SavedSearch,
     Tag,
     TagRelationship,
+    TextChunk,
     User,
     document_domains,
     document_tags,
@@ -125,6 +127,7 @@ from app.schemas import (
     ImportJobOut,
     ImportQueueActionOut,
     HAProxyStatsStatusOut,
+    LibraryFunStatsOut,
     LoginRequest,
     NoteCreate,
     NoteOut,
@@ -331,6 +334,8 @@ PDF_PREVIEW_RENDER_SCALE = 2.5
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
+WORD_RE = re.compile(r"\b[\w]+(?:[’'\-][\w]+)*\b", re.UNICODE)
+REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[\).]|[A-Z][\w'’\-]+,\s+[A-Z])")
 DATABASE_MAINTENANCE_LABELS = {
     "backfill_document_md5": "Backfill Document Hashes",
     "compact_database": "Compact Database",
@@ -1660,6 +1665,158 @@ def update_me(
     return user
 
 
+def count_words_in_text(value: str | None) -> int:
+    return len(WORD_RE.findall(value or ""))
+
+
+def bibliography_reference_count(value: str | None) -> int:
+    normalized = (value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return 0
+    paragraphs = [" ".join(part.split()) for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+    if len(paragraphs) > 1:
+        return len(paragraphs)
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return 0
+    if len(lines) == 1:
+        return 1
+    marked_lines = sum(1 for line in lines if REFERENCE_ENTRY_RE.match(line))
+    if marked_lines:
+        return max(1, marked_lines)
+    return len(lines)
+
+
+def author_identity(author: Any) -> str | None:
+    if isinstance(author, dict):
+        parts = [
+            str(author.get("given") or "").strip(),
+            str(author.get("family") or "").strip(),
+        ]
+        value = " ".join(part for part in parts if part)
+    else:
+        value = str(author or "").strip()
+    normalized = " ".join(value.split()).lower()
+    return normalized or None
+
+
+def library_fun_stats_out(db: Session) -> LibraryFunStatsOut:
+    document_counts = (
+        filter_library_visible_documents(
+            db.query(
+                func.count(Document.id),
+                func.coalesce(func.sum(Document.page_count), 0),
+                func.coalesce(
+                    func.sum(case((func.nullif(func.trim(Document.doi), "").isnot(None), 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(func.sum(case((Document.citation_status == "verified", 1), else_=0)), 0),
+            )
+        )
+        .one()
+    )
+    page_record_count = (
+        db.query(func.count(DocumentPage.id))
+        .join(Document, DocumentPage.document_id == Document.id)
+        .filter(library_visible_document_filter())
+        .scalar()
+        or 0
+    )
+    figure_count = (
+        db.query(func.count(Figure.id))
+        .join(Document, Figure.document_id == Document.id)
+        .filter(library_visible_document_filter())
+        .scalar()
+        or 0
+    )
+    chunk_counts = (
+        db.query(func.count(TextChunk.id), func.coalesce(func.sum(TextChunk.token_count), 0))
+        .join(Document, TextChunk.document_id == Document.id)
+        .filter(library_visible_document_filter())
+        .one()
+    )
+    annotation_count = (
+        db.query(func.count(Annotation.id))
+        .join(Document, Annotation.document_id == Document.id)
+        .filter(library_visible_document_filter(), Annotation.deleted_at.is_(None))
+        .scalar()
+        or 0
+    )
+    project_resource_count = (
+        db.query(func.count(ProjectItem.id))
+        .join(Document, ProjectItem.document_id == Document.id)
+        .join(Project, ProjectItem.project_id == Project.id)
+        .filter(library_visible_document_filter(), Project.deleted_at.is_(None))
+        .scalar()
+        or 0
+    )
+    used_project_resource_count = (
+        db.query(func.count(ProjectItem.id))
+        .join(Document, ProjectItem.document_id == Document.id)
+        .join(Project, ProjectItem.project_id == Project.id)
+        .filter(library_visible_document_filter(), Project.deleted_at.is_(None), ProjectItem.used_in_output.is_(True))
+        .scalar()
+        or 0
+    )
+
+    parsed_word_count = 0
+    parsed_character_count = 0
+    for normalized_text, raw_text in (
+        db.query(DocumentPage.normalized_text, DocumentPage.text)
+        .join(Document, DocumentPage.document_id == Document.id)
+        .filter(library_visible_document_filter())
+        .yield_per(500)
+    ):
+        text_value = normalized_text or raw_text or ""
+        parsed_character_count += len(text_value)
+        parsed_word_count += count_words_in_text(text_value)
+
+    indexed_word_count = 0
+    indexed_character_count = 0
+    bibliography_document_count = 0
+    bibliography_references = 0
+    unique_authors: set[str] = set()
+    for authors, bibliography, search_text in filter_library_visible_documents(
+        db.query(Document.authors, Document.bibliography, Document.search_text)
+    ).yield_per(200):
+        indexed_character_count += len(search_text or "")
+        indexed_word_count += count_words_in_text(search_text)
+        reference_count = bibliography_reference_count(bibliography)
+        if reference_count:
+            bibliography_document_count += 1
+            bibliography_references += reference_count
+        if isinstance(authors, list):
+            for author in authors:
+                identity = author_identity(author)
+                if identity:
+                    unique_authors.add(identity)
+
+    return LibraryFunStatsOut(
+        checked_at=utc_now(),
+        document_count=int(document_counts[0] or 0),
+        page_count=int(document_counts[1] or 0),
+        page_record_count=int(page_record_count),
+        figure_count=int(figure_count),
+        bibliography_reference_count=int(bibliography_references),
+        bibliography_document_count=int(bibliography_document_count),
+        parsed_word_count=int(parsed_word_count),
+        indexed_word_count=int(indexed_word_count),
+        parsed_character_count=int(parsed_character_count),
+        indexed_character_count=int(indexed_character_count),
+        text_chunk_count=int(chunk_counts[0] or 0),
+        text_chunk_token_count=int(chunk_counts[1] or 0),
+        doi_count=int(document_counts[2] or 0),
+        verified_citation_count=int(document_counts[3] or 0),
+        unique_author_count=len(unique_authors),
+        annotation_count=int(annotation_count),
+        note_count=db.query(Note).filter(Note.deleted_at.is_(None)).count(),
+        project_resource_count=int(project_resource_count),
+        used_project_resource_count=int(used_project_resource_count),
+        domain_count=db.query(Domain).filter(Domain.deleted_at.is_(None)).count(),
+        tag_count=db.query(Tag).count(),
+    )
+
+
 @app.get("/api/dashboard", response_model=DashboardOut)
 def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> DashboardOut:
     import_queued_jobs = db.query(ImportJob).filter(ImportJob.status == "queued").count()
@@ -1731,6 +1888,11 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
         failed_accessory_summary_jobs=failed_accessory_summary_jobs,
         projects=db.query(Project).filter(Project.deleted_at.is_(None)).count(),
     )
+
+
+@app.get("/api/status/library-fun", response_model=LibraryFunStatsOut)
+def library_fun_stats(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> LibraryFunStatsOut:
+    return library_fun_stats_out(db)
 
 
 @app.get("/api/preferences", response_model=AppPreferencesOut)

@@ -165,16 +165,22 @@ def test_bibliography_sort_fallback_uses_surname_for_initials_first_entries():
         "S. Jakobwitz, & V. Egan. (2006). The dark triad and normal personality traits.",
         "T. Buchanan, J. A. Johnson, & L. R. Goldberg. (2005). Implementing a five-factor inventory.",
         "W. H. Hendrix, N. K. Ovalle, & R. G. Troxler. (1985). Behavioral consequences of stress.",
+        "A. Fülöp, L. Kovács, T. Kurics, and E. Windhager-Pokol. (2016). Balabit mouse dynamics challenge data set.",
+        "(2001). The famous cases and criminals archive.",
         "S. S. Russell, M. J. Cullen, & M. J. Bosshardt. (2009). Cyber behavior and personnel security.",
         "S. R. Band, D. M. Cappelli, & L. F. Fischer. (1995). A typology of deviant workplace behaviors.",
+        "Z.-K. Zhang, M. C. Y. Cho, C.-W. Wang, C.-W. Hsu, C.-K. Chen, and S. Shieh. (2014). IoT security.",
     ]
 
     assert sorted_bibliography_entries(entries) == [
         "S. R. Band, D. M. Cappelli, & L. F. Fischer. (1995). A typology of deviant workplace behaviors.",
         "T. Buchanan, J. A. Johnson, & L. R. Goldberg. (2005). Implementing a five-factor inventory.",
+        "(2001). The famous cases and criminals archive.",
+        "A. Fülöp, L. Kovács, T. Kurics, and E. Windhager-Pokol. (2016). Balabit mouse dynamics challenge data set.",
         "W. H. Hendrix, N. K. Ovalle, & R. G. Troxler. (1985). Behavioral consequences of stress.",
         "S. Jakobwitz, & V. Egan. (2006). The dark triad and normal personality traits.",
         "S. S. Russell, M. J. Cullen, & M. J. Bosshardt. (2009). Cyber behavior and personnel security.",
+        "Z.-K. Zhang, M. C. Y. Cho, C.-W. Wang, C.-W. Hsu, C.-K. Chen, and S. Shieh. (2014). IoT security.",
     ]
 
 

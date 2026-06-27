@@ -100,6 +100,31 @@ export type Dashboard = {
   projects: number;
 };
 
+export type LibraryFunStats = {
+  checked_at: string;
+  document_count: number;
+  page_count: number;
+  page_record_count: number;
+  figure_count: number;
+  bibliography_reference_count: number;
+  bibliography_document_count: number;
+  parsed_word_count: number;
+  indexed_word_count: number;
+  parsed_character_count: number;
+  indexed_character_count: number;
+  text_chunk_count: number;
+  text_chunk_token_count: number;
+  doi_count: number;
+  verified_citation_count: number;
+  unique_author_count: number;
+  annotation_count: number;
+  note_count: number;
+  project_resource_count: number;
+  used_project_resource_count: number;
+  domain_count: number;
+  tag_count: number;
+};
+
 export type AppPreferences = {
   import_worker_concurrency: number;
   recommended_import_worker_concurrency: number;

@@ -1074,6 +1074,31 @@ class DashboardOut(BaseModel):
     projects: int
 
 
+class LibraryFunStatsOut(BaseModel):
+    checked_at: datetime
+    document_count: int = 0
+    page_count: int = 0
+    page_record_count: int = 0
+    figure_count: int = 0
+    bibliography_reference_count: int = 0
+    bibliography_document_count: int = 0
+    parsed_word_count: int = 0
+    indexed_word_count: int = 0
+    parsed_character_count: int = 0
+    indexed_character_count: int = 0
+    text_chunk_count: int = 0
+    text_chunk_token_count: int = 0
+    doi_count: int = 0
+    verified_citation_count: int = 0
+    unique_author_count: int = 0
+    annotation_count: int = 0
+    note_count: int = 0
+    project_resource_count: int = 0
+    used_project_resource_count: int = 0
+    domain_count: int = 0
+    tag_count: int = 0
+
+
 class BackupRunOut(ApiModel):
     id: str
     kind: str

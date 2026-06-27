@@ -953,10 +953,6 @@ textarea {
   background: var(--blue);
 }
 
-.workspace-nav-item.settings {
-  margin-left: auto;
-}
-
 .workspace-nav-count {
   font-size: 12px;
   font-weight: 400;
@@ -2115,7 +2111,7 @@ textarea {
 
 .confirm-backdrop {
   position: fixed;
-  z-index: 80;
+  z-index: 125;
   inset: 0;
   display: grid;
   place-items: center;
@@ -2124,7 +2120,7 @@ textarea {
 }
 
 .confirm-dialog {
-  width: min(430px, 100%);
+  width: min(460px, 100%);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -2145,6 +2141,7 @@ textarea {
   margin: 0;
   color: var(--ink);
   font-size: 18px;
+  font-weight: 620;
   letter-spacing: 0;
 }
 
@@ -2166,10 +2163,52 @@ textarea {
   line-height: 1.45;
 }
 
+.confirm-dialog-message {
+  display: grid;
+  gap: 8px;
+}
+
+.confirm-dialog-icon {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-style: normal;
+}
+
+.confirm-dialog-icon.warning {
+  border-color: color-mix(in srgb, var(--amber) 36%, var(--line));
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.confirm-dialog-icon.danger {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--line));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.confirm-dialog .primary-button.danger {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--button-line));
+  background: color-mix(in srgb, var(--danger) 18%, var(--panel));
+  color: var(--danger);
+}
+
+.confirm-dialog .primary-button.danger:hover,
+.confirm-dialog .primary-button.danger:focus-visible {
+  background: color-mix(in srgb, var(--danger) 24%, var(--panel));
 }
 
 .modal-backdrop {
@@ -8316,6 +8355,29 @@ pre {
   padding: 14px;
 }
 
+.status-fun-section {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.status-fun-title h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 850;
+  line-height: 1.1;
+}
+
+.status-fun-title > svg {
+  color: var(--blue);
+}
+
+.status-fun-detail {
+  background: var(--panel-2);
+}
+
 .status-fact-list {
   min-width: 0;
   display: grid;
@@ -9919,10 +9981,6 @@ button.history-row,
     min-width: 0;
     width: min(100%, 360px);
     flex: 1 1 220px;
-  }
-
-  .workspace-nav-item.settings {
-    margin-left: 0;
   }
 
   .recommendations-head,

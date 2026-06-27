@@ -20,7 +20,7 @@ from app.models import (
     Tag,
     utc_now,
 )
-from app.services.ai import get_ai_service
+from app.services.ai import BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS, get_ai_service, sorted_bibliography_entries
 from app.services.analysis_models import (
     MODEL_APA_CITATION,
     MODEL_BIBLIOGRAPHY_CLEANUP,
@@ -70,8 +70,8 @@ from app.services.verifier import (
     extract_doi_from_text,
 )
 
-BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = 30000
-BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 80
+BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS
+BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 300
 
 
 @dataclass(frozen=True)
@@ -1174,6 +1174,13 @@ class ConcordanceProcessor:
         bibliography = result.get("bibliography")
         evidence = result.get("evidence") or {}
         if bibliography and run_force:
+            sorted_bibliography = "\n".join(sorted_bibliography_entries(bibliography.splitlines())).strip()
+            if sorted_bibliography:
+                evidence["deterministic_sort"] = {
+                    "status": "applied" if sorted_bibliography != bibliography.strip() else "already_sorted",
+                    "sort_order": "apa_first_author_surname",
+                }
+                bibliography = sorted_bibliography
             cleanup_model = get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
             bibliography_entry_count = len([line for line in bibliography.splitlines() if line.strip()])
             if (
@@ -1198,15 +1205,23 @@ class ConcordanceProcessor:
                         usage_context=self._usage_context(document, job, "bibliography_extraction"),
                         prompt_cache_key=f"medusa-bibliography:{document.id}",
                     )
-                    bibliography = cleanup.get("bibliography") or bibliography
+                    cleanup_bibliography = cleanup.get("bibliography") or ""
+                    cleanup_entry_count = len([line for line in cleanup_bibliography.splitlines() if line.strip()])
+                    cleanup_status = "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback"
+                    if cleanup_bibliography and cleanup_entry_count >= bibliography_entry_count:
+                        bibliography = cleanup_bibliography
+                    elif cleanup_bibliography:
+                        cleanup_status = "rejected_incomplete"
                     evidence["model_cleanup"] = {
-                        "status": "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback",
+                        "status": cleanup_status,
                         "model": (cleanup.get("_openai") or {}).get("model") or cleanup_model,
                         "confidence": cleanup.get("confidence"),
                         "notes": cleanup.get("notes") or [],
+                        "input_entry_count": bibliography_entry_count,
+                        "output_entry_count": cleanup_entry_count,
                         "formatting": "alphabetized_apa_markdown_one_source_per_line",
                     }
-                    if (cleanup.get("_openai") or {}).get("configured"):
+                    if (cleanup.get("_openai") or {}).get("configured") and cleanup_status != "rejected_incomplete":
                         evidence["formatting"] = "apa_markdown_model_cleanup"
                 except Exception as exc:
                     evidence["model_cleanup"] = {

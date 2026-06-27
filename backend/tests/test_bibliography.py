@@ -75,6 +75,43 @@ def test_extract_document_bibliography_prefers_pdf_span_markdown(monkeypatch, tm
     assert result["evidence"]["formatting"] == "markdown_italics_from_pdf_spans"
 
 
+def test_extract_document_bibliography_prefers_late_complete_references_over_table_label(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Appendix Table References Paper",
+        original_filename="appendix-table-references.pdf",
+        checksum_sha256="e" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=15, normalized_text="References\n[32,46,55]\nAppendix A"))
+    pdf_path = tmp_path / "references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (15, "References"),
+            (16, "Table 4. Definitions of statistical measures."),
+            (16, "TP Number of malicious insiders correctly classified."),
+            (23, "Appendix A"),
+            (32, "References"),
+            (32, "1. Homoliak, I.; Toffalini, F.; Guarnizo, J. Insight into Insiders. ACM Comput. Surv. 2019, 52."),
+            (32, "2. Al-Mhiqani, M.N.; Ahmad, R.; Abidin, Z.Z. A new taxonomy of insider threats. 2018, 1, 343-359."),
+            (32, "3. Kim, J.; Park, M.; Kim, H. Insider threat detection based on user behavior modeling. Appl. Sci. 2019, 9, 4018."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+
+    assert result["evidence"]["page_start"] == 32
+    assert result["evidence"]["entry_count_estimate"] == 3
+    assert result["bibliography"].splitlines()[0].startswith("Homoliak, I.")
+    assert "Definitions of statistical measures" not in result["bibliography"]
+
+
 def test_extract_document_bibliography_folds_blank_bullet_continuation():
     from app.models import Document, DocumentPage
     from app.services.bibliography import extract_document_bibliography

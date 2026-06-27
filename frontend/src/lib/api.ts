@@ -49,6 +49,7 @@ import type {
   ImportDuplicateCheck,
   ImportJob,
   ImportQueueActionResult,
+  LibraryFunStats,
   Note,
   NotePayload,
   ModelPricingStatus,
@@ -77,6 +78,18 @@ import type {
   VisualScanReview,
 } from "../types";
 
+export class ApiError extends Error {
+  path: string;
+  status: number;
+
+  constructor(message: string, status: number, path: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.path = path;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -85,7 +98,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(body.detail || response.statusText);
+    const detail = typeof body.detail === "string" ? body.detail : response.statusText;
+    throw new ApiError(detail || response.statusText || `HTTP ${response.status}`, response.status, path);
   }
   return response.json() as Promise<T>;
 }
@@ -127,6 +141,7 @@ export const api = {
   containerFootprintStatus: () => request<ContainerFootprintStatus>("/api/utilities/container/status"),
   restartContainer: () => request<ContainerRestartResult>("/api/utilities/container/restart", { method: "POST" }),
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
+  libraryFunStats: () => request<LibraryFunStats>("/api/status/library-fun"),
   ingestionHistory: () => request<IngestionHistory[]>("/api/utilities/ingestion-history"),
   gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
   startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),

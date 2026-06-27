@@ -99,7 +99,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { api } from "./lib/api";
+import { api, ApiError } from "./lib/api";
 import type {
   AccessorySummary,
   AppPreferences,
@@ -141,6 +141,7 @@ import type {
   ImportDuplicateFile,
   ImportJob,
   ImportProcessingPreset,
+  LibraryFunStats,
   ModelOptionGroup,
   Note,
   NotePayload,
@@ -287,12 +288,33 @@ type ConcordanceRunRequest = {
 type StartConcordanceRun = (request: ConcordanceRunRequest) => Promise<ConcordanceRun>;
 type SettingsSaveHandler = () => Promise<boolean>;
 type SelectMenuOption = { id: string; name: string; depth?: number; meta?: string };
+type AppDialogTone = "default" | "danger" | "warning";
+type AppDialogOptions = {
+  cancelLabel?: string;
+  confirmLabel?: string;
+  eyebrow?: string;
+  message?: ReactNode;
+  title: string;
+  tone?: AppDialogTone;
+};
+type AppDialogRequest = AppDialogOptions & {
+  id: number;
+  mode: "alert" | "confirm";
+};
+type ShowAppConfirmDialog = (options: AppDialogOptions) => Promise<boolean>;
+type ShowAppAlertDialog = (options: AppDialogOptions) => Promise<void>;
+type AppDialogController = {
+  alert: ShowAppAlertDialog;
+  confirm: ShowAppConfirmDialog;
+};
 
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
 const RELEASE_POLL_INTERVAL_MS = 1000;
 const RELEASE_RELOAD_DELAY_MS = 900;
 const RELEASE_RELOAD_PARAM = "_medusa_reload";
 const RELEASE_RELOAD_TARGET_PARAM = "_medusa_release";
+const RELEASE_READY_TIMEOUT_MS = 120_000;
+const STARTUP_HEALTH_RETRY_LIMIT = 120;
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
 const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
@@ -360,6 +382,142 @@ const APP_TOOLTIP_SELECTOR = [
   "[role='button']",
 ].join(",");
 
+function AppDialogMessage({ message }: { message?: ReactNode }) {
+  if (!message) return null;
+  if (typeof message !== "string") return <div className="confirm-dialog-message">{message}</div>;
+  return (
+    <div className="confirm-dialog-message">
+      {message.split(/\n{2,}/).map((paragraph, paragraphIndex) => {
+        const lines = paragraph.split("\n");
+        return (
+          <p key={`${paragraphIndex}-${paragraph.slice(0, 12)}`}>
+            {lines.map((line, lineIndex) => (
+              <span key={`${lineIndex}-${line.slice(0, 12)}`}>
+                {line}
+                {lineIndex < lines.length - 1 ? <br /> : null}
+              </span>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function AppConfirmDialog({
+  onResolve,
+  request,
+}: {
+  onResolve: (confirmed: boolean) => void;
+  request: AppDialogRequest | null;
+}) {
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  useEscapeLayer(Boolean(request), () => onResolve(false), ESCAPE_PRIORITY_DIALOG);
+  useEffect(() => {
+    if (!request) return;
+    window.requestAnimationFrame(() => {
+      if (request.mode === "alert") confirmButtonRef.current?.focus();
+      else cancelButtonRef.current?.focus();
+    });
+  }, [request]);
+  if (!request) return null;
+
+  const tone = request.tone || "default";
+  const titleId = `app-confirm-title-${request.id}`;
+  const confirmLabel = request.confirmLabel || "OK";
+  const cancelLabel = request.cancelLabel || "Cancel";
+  const icon =
+    tone === "danger" ? (
+      <AlertTriangle size={18} />
+    ) : tone === "warning" ? (
+      <Info size={18} />
+    ) : request.mode === "alert" ? (
+      <Info size={18} />
+    ) : (
+      <CheckCircle2 size={18} />
+    );
+  const dialog = (
+    <div
+      className="confirm-backdrop"
+      data-escape-layer="dialog"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onResolve(false);
+      }}
+    >
+      <form
+        className={`confirm-dialog app-confirm-dialog ${tone}`}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onResolve(true);
+        }}
+      >
+        <div className="confirm-dialog-heading">
+          <div>
+            <span>{request.eyebrow || (request.mode === "alert" ? "Notice" : "Confirmation")}</span>
+            <h2 id={titleId}>{request.title}</h2>
+          </div>
+          <i className={`confirm-dialog-icon ${tone}`} aria-hidden="true">
+            {icon}
+          </i>
+        </div>
+        <AppDialogMessage message={request.message} />
+        <div className="confirm-dialog-actions">
+          {request.mode === "confirm" ? (
+            <button ref={cancelButtonRef} className="secondary-button" type="button" onClick={() => onResolve(false)}>
+              <X size={16} />
+              {cancelLabel}
+            </button>
+          ) : null}
+          <button ref={confirmButtonRef} className={`primary-button${tone === "danger" ? " danger" : ""}`} type="submit">
+            {tone === "danger" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+            {confirmLabel}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+  return createPortal(dialog, document.body);
+}
+
+function useAppDialogController() {
+  const [request, setRequest] = useState<AppDialogRequest | null>(null);
+  const nextRequestIdRef = useRef(0);
+  const resolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const resolveDialog = useCallback((confirmed: boolean) => {
+    const resolver = resolverRef.current;
+    resolverRef.current = null;
+    setRequest(null);
+    if (resolver) resolver(confirmed);
+  }, []);
+  const confirm = useCallback<ShowAppConfirmDialog>((options) => {
+    if (resolverRef.current) resolverRef.current(false);
+    return new Promise<boolean>((resolve) => {
+      resolverRef.current = resolve;
+      setRequest({ ...options, id: ++nextRequestIdRef.current, mode: "confirm" });
+    });
+  }, []);
+  const alert = useCallback<ShowAppAlertDialog>((options) => {
+    if (resolverRef.current) resolverRef.current(false);
+    return new Promise<void>((resolve) => {
+      resolverRef.current = () => resolve();
+      setRequest({ ...options, id: ++nextRequestIdRef.current, mode: "alert" });
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (resolverRef.current) resolverRef.current(false);
+    },
+    [],
+  );
+  const node = <AppConfirmDialog request={request} onResolve={resolveDialog} />;
+  return { alert, confirm, node };
+}
+
 function isLibraryNumericPageSize(value: number): value is (typeof LIBRARY_NUMERIC_PAGE_SIZES)[number] {
   return LIBRARY_NUMERIC_PAGE_SIZES.some((option) => option === value);
 }
@@ -415,7 +573,7 @@ type AppRoute = { view: View; documentId?: string };
 
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
 
-type WorkspaceNavItem = { id: View; label: string; icon: typeof Library; shortcut: string; align?: "end" };
+type WorkspaceNavItem = { id: View; label: string; icon: typeof Library; shortcut: string };
 
 const navItems: WorkspaceNavItem[] = [
   { id: "library", label: "Library", icon: Library, shortcut: "L" },
@@ -427,7 +585,6 @@ const navItems: WorkspaceNavItem[] = [
   { id: "import", label: "Import", icon: Upload, shortcut: "I" },
   { id: "budget", label: "Finances", icon: CircleDollarSign, shortcut: "B" },
   { id: "utilities", label: "Utilities", icon: Wrench, shortcut: "U" },
-  { id: "settings", label: "Settings", icon: Settings, shortcut: "S", align: "end" },
 ];
 const navShortcutByKey = new Map(navItems.map((item) => [item.shortcut.toLowerCase(), item.id]));
 const DEFAULT_VIEW: View = "library";
@@ -1747,8 +1904,8 @@ function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgrad
   }
   if (status.browser_reload_recommended) {
     return {
-      detail: "The updated server is healthy. Reload when you are ready to enter the new browser build.",
-      message: "Reload ready",
+      detail: "The updated server is healthy. Medusa is preparing the browser for the new build.",
+      message: "Reloading Medusa",
       stage: "health",
       targetVersion: status.running.version || targetVersion,
     };
@@ -2252,9 +2409,58 @@ function formatDatabaseSize(bytes?: number | null) {
   return `${value.toFixed(2)} ${units[unitIndex]}`;
 }
 
+function backendRuntimeImageName(container?: ContainerFootprintStatus) {
+  const pythonRuntime = container?.runtime_versions?.find((row) => row.name === "Python");
+  const source = pythonRuntime?.source || "";
+  const match = source.match(/^Backend image\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+function backendImageSummary(container?: ContainerFootprintStatus) {
+  const dockerImage = container?.docker_image;
+  const runtimeImageName = backendRuntimeImageName(container);
+  if (dockerImage) {
+    const imageName =
+      dockerImage.repo_tags?.[0] ||
+      (dockerImage.id ? dockerImage.id.replace(/^sha256:/, "").slice(0, 12) : "") ||
+      runtimeImageName ||
+      "Image unavailable";
+    const sizeLabel = formatDatabaseSize(dockerImage.unique_size_bytes ?? dockerImage.size_bytes ?? dockerImage.virtual_size_bytes);
+    const detail = [
+      sizeLabel,
+      dockerImage.layer_count ? `${formatMetric(dockerImage.layer_count)} layers` : "",
+      dockerImage.containers !== undefined && dockerImage.containers !== null ? `${formatMetric(dockerImage.containers)} containers` : "",
+    ]
+      .filter(Boolean)
+      .join(" / ");
+    return {
+      imageName,
+      sizeLabel,
+      detail: detail || "Docker image details",
+      layers: (dockerImage.layers || []).slice(0, 10),
+    };
+  }
+  const detail = !container
+    ? "Waiting for runtime status"
+    : container.docker_socket_available
+      ? container.docker_engine_note || "Docker Engine did not return a matching backend image."
+      : "Layer sizing disabled; Docker socket is not mounted.";
+  return {
+    imageName: runtimeImageName || (container ? "Image unavailable" : "Loading"),
+    sizeLabel: "Layer size unavailable",
+    detail,
+    layers: [],
+  };
+}
+
 function formatPercent(value?: number | null) {
   if (value === undefined || value === null || !Number.isFinite(value)) return "";
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}%`;
+}
+
+function formatDecimal(value?: number | null, maximumFractionDigits = 1) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "0";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits }).format(value);
 }
 
 function formatCpuLimit(value?: number | null) {
@@ -2264,6 +2470,35 @@ function formatCpuLimit(value?: number | null) {
 
 function waitMs(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isTransientAppStartupError(error: unknown) {
+  if (error instanceof ApiError) return error.status >= 500 || error.status === 429;
+  return isLikelyRestartInterruption(error);
+}
+
+async function probeApplicationReadiness() {
+  await api.health();
+  const response = await fetch(`/?release_shell_check=${Date.now()}`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`App shell returned HTTP ${response.status}`);
+}
+
+async function waitForApplicationReadiness(timeoutMs = RELEASE_READY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "";
+  while (Date.now() < deadline) {
+    try {
+      await probeApplicationReadiness();
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error || "");
+      await waitMs(1000);
+    }
+  }
+  throw new Error(lastError ? `Medusa health checks did not pass: ${lastError}` : "Medusa health checks did not pass.");
 }
 
 function isLikelyRestartInterruption(error: unknown) {
@@ -3982,7 +4217,7 @@ function WorkspaceNav({
             key={item.id}
             aria-current={activeView === item.id ? "page" : undefined}
             aria-keyshortcuts={item.shortcut}
-            className={`workspace-nav-item${activeView === item.id ? " active" : ""}${item.align === "end" ? " settings" : ""}`}
+            className={`workspace-nav-item${activeView === item.id ? " active" : ""}`}
             data-tooltip={workspaceNavTooltip(item)}
             href={pathForView(item.id)}
             onClick={(event) => handleNavClick(event, item.id)}
@@ -5378,6 +5613,7 @@ function DuplicateReviewDialog({
 }
 
 function LibraryView({
+  dialogs,
   documents,
   document,
   selectedId,
@@ -5406,6 +5642,7 @@ function LibraryView({
   onPageSizeChange,
   preferences,
 }: {
+  dialogs: AppDialogController;
   documents: LibraryDocumentRow[];
   document?: DocumentDetail;
   selectedId?: string;
@@ -5700,24 +5937,29 @@ function LibraryView({
     setDuplicateReviewOpen(true);
   };
 
-  const confirmTrashDocuments = (documentIds: string[], label: string) => {
+  const confirmTrashDocuments = async (documentIds: string[], label: string) => {
     const uniqueIds = uniqueValues(documentIds);
     if (!uniqueIds.length || trashDocuments.isPending) return;
-    const ok = window.confirm(
-      `Move ${label} to Trash?\n\nThe document${uniqueIds.length === 1 ? "" : "s"} will leave Library, search, domains, projects, recommendations, and Concordance scopes. Originals and history are preserved for a future restore flow.`,
-    );
+    const ok = await dialogs.confirm({
+      cancelLabel: "Keep",
+      confirmLabel: "Move to Trash",
+      eyebrow: "Trash",
+      message: `${label} will leave Library, search, domains, projects, recommendations, and Concordance scopes. Originals and history are preserved for a future restore flow.`,
+      title: uniqueIds.length === 1 ? "Move document to Trash?" : "Move documents to Trash?",
+      tone: "danger",
+    });
     if (ok) trashDocuments.mutate(uniqueIds);
   };
 
   const trashSelectedDocuments = () => {
-    confirmTrashDocuments(
+    void confirmTrashDocuments(
       selectedIds,
       selectedIds.length === 1 ? "this document" : `${selectedIds.length} selected documents`,
     );
   };
 
   const trashFocusedDocument = (target: DocumentDetail) => {
-    confirmTrashDocuments([target.id], `"${target.title}"`);
+    void confirmTrashDocuments([target.id], `"${target.title}"`);
   };
 
   const applySavedSearch = (savedSearch: SavedSearch) => {
@@ -5747,6 +5989,7 @@ function LibraryView({
         <DocumentPanel
           citationJobs={citationJobs}
           concordanceRuns={concordanceRuns}
+          dialogs={dialogs}
           document={document}
           domains={domains}
           onCloseReader={() => setReaderOpen(false)}
@@ -6169,6 +6412,7 @@ function LibraryView({
       <DocumentPanel
         citationJobs={citationJobs}
         concordanceRuns={concordanceRuns}
+        dialogs={dialogs}
         document={document}
         domains={domains}
         onTrashDocument={trashFocusedDocument}
@@ -6282,6 +6526,7 @@ function figureDraftFromFigure(figure: FigureRecord): FigureEditDraft {
 function DocumentPanel({
   citationJobs,
   concordanceRuns,
+  dialogs,
   document,
   domains,
   onCloseReader,
@@ -6296,6 +6541,7 @@ function DocumentPanel({
 }: {
   citationJobs: ConcordanceJob[];
   concordanceRuns: ConcordanceRun[];
+  dialogs: AppDialogController;
   document?: DocumentDetail;
   domains: Domain[];
   onCloseReader?: () => void;
@@ -6321,6 +6567,7 @@ function DocumentPanel({
     <DocumentPanelContent
       citationJobs={citationJobs}
       concordanceRuns={concordanceRuns}
+      dialogs={dialogs}
       document={document}
       domains={domains}
       onCloseReader={onCloseReader}
@@ -7109,6 +7356,7 @@ function CompositionDialog({
 function DocumentPanelContent({
   citationJobs,
   concordanceRuns,
+  dialogs,
   document,
   domains,
   onCloseReader,
@@ -7123,6 +7371,7 @@ function DocumentPanelContent({
 }: {
   citationJobs: ConcordanceJob[];
   concordanceRuns: ConcordanceRun[];
+  dialogs: AppDialogController;
   document: DocumentDetail;
   domains: Domain[];
   onCloseReader?: () => void;
@@ -7402,14 +7651,22 @@ function DocumentPanelContent({
         scope_data: { document_ids: [document.id] },
       });
       if (estimate.planned_jobs <= 0) {
-        window.alert(
-          `Document Concordance estimate: ${formatUsd(estimate.estimated_cost_usd)}.\n\nNo jobs need to run because the selected work is already current or same-model no-op.`,
-        );
+        await dialogs.alert({
+          confirmLabel: "OK",
+          eyebrow: "Concordance",
+          message: `Document Concordance estimate: ${formatUsd(estimate.estimated_cost_usd)}.\n\nNo jobs need to run because the selected work is already current or same-model no-op.`,
+          title: "No Concordance jobs needed",
+        });
         return { run: null, skipped: true };
       }
-      const ok = window.confirm(
-        `Start Document Concordance?\n\nEstimated cloud cost: ${formatUsd(estimate.estimated_cost_usd)}\nJobs to run: ${estimate.planned_jobs}\nNo-op or skipped: ${estimate.skipped_jobs}`,
-      );
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Start Run",
+        eyebrow: "Concordance",
+        message: `Estimated cloud cost: ${formatUsd(estimate.estimated_cost_usd)}\nJobs to run: ${estimate.planned_jobs}\nNo-op or skipped: ${estimate.skipped_jobs}`,
+        title: "Start Document Concordance?",
+        tone: "warning",
+      });
       if (!ok) return { run: null, skipped: false };
       const run = await startConcordanceRun({
         backgroundDetail: document.title,
@@ -8449,10 +8706,16 @@ function DocumentPanelContent({
   const checkBibliography = () => {
     refreshBibliography.mutate();
   };
-  const checkTags = () => {
-    const ok = window.confirm(
-      "Refresh document tags?\n\nMedusa will remove this document's current tag assignments, run Tag Suggestions again, prefer existing tags when they fit, and add a new candidate tag only when the current tag inventory does not cover the concept.",
-    );
+  const checkTags = async () => {
+    const ok = await dialogs.confirm({
+      cancelLabel: "Cancel",
+      confirmLabel: "Refresh Tags",
+      eyebrow: "Tag Refresh",
+      message:
+        "Medusa will remove this document's current tag assignments, run Tag Suggestions again, prefer existing tags when they fit, and add a new candidate tag only when the current tag inventory does not cover the concept.",
+      title: "Refresh document tags?",
+      tone: "warning",
+    });
     if (!ok) return;
     refreshTags.mutate();
   };
@@ -8580,10 +8843,18 @@ function DocumentPanelContent({
     if (figureEditBusy) return;
     updateFigure.mutate({ figureId: figure.id, draft: figureDrafts[figure.id] || figureDraftFromFigure(figure) });
   };
-  const deleteExtractedFigure = (figure: FigureRecord) => {
+  const deleteExtractedFigure = async (figure: FigureRecord) => {
     if (figureEditBusy) return;
     const label = figure.figure_label || `page ${figure.page_number || "?"} figure`;
-    if (!window.confirm(`Delete extracted ${label}?`)) return;
+    const ok = await dialogs.confirm({
+      cancelLabel: "Keep",
+      confirmLabel: "Delete Figure",
+      eyebrow: "Extracted Figure",
+      message: "This removes the extracted figure record from the document. The original PDF remains unchanged.",
+      title: `Delete extracted ${label}?`,
+      tone: "danger",
+    });
+    if (!ok) return;
     deleteFigure.mutate(figure.id);
   };
 
@@ -14522,9 +14793,11 @@ function BackupSizeTrend({ points }: { points: BackupSizeTrendPoint[] }) {
 
 function DatabaseBackupRestorePanel({
   backupRuns,
+  dialogs,
   preferences,
 }: {
   backupRuns: BackupRun[];
+  dialogs: AppDialogController;
   preferences?: AppPreferences;
 }) {
   const queryClient = useQueryClient();
@@ -14676,13 +14949,18 @@ function DatabaseBackupRestorePanel({
     }
     setTrackedRestoreRunId(null);
   }, [restoreFeedback, trackedRestoreRun]);
-  const confirmDatabaseRestore = () => {
+  const confirmDatabaseRestore = async () => {
     if (!selectedBackupUri) return;
     const artifact = backupArtifacts.find((item) => item.gcs_uri === selectedBackupUri);
     const restoreLabel = artifact ? backupArtifactLabel(artifact) : selectedBackupUri;
-    const ok = window.confirm(
-      `Restore the database from ${restoreLabel}?\n\nMedusa will first create and verify a fresh safety backup. The selected restore will only run after that safety backup succeeds.`,
-    );
+    const ok = await dialogs.confirm({
+      cancelLabel: "Cancel",
+      confirmLabel: "Restore",
+      eyebrow: "Database Restore",
+      message: `Restore from ${restoreLabel}?\n\nMedusa will first create and verify a fresh safety backup. The selected restore will only run after that safety backup succeeds.`,
+      title: "Restore the database?",
+      tone: "danger",
+    });
     if (ok) startRestore.mutate();
   };
 
@@ -15138,10 +15416,12 @@ function UtilitiesBulkIntakePanel() {
 
 function UtilitiesView({
   backupRuns,
+  dialogs,
   ingestionHistory,
   preferences,
 }: {
   backupRuns: BackupRun[];
+  dialogs: AppDialogController;
   ingestionHistory: IngestionHistory[];
   preferences?: AppPreferences;
 }) {
@@ -15400,23 +15680,11 @@ function UtilitiesView({
     .filter(Boolean)
     .join(" / ");
   const dockerImage = container?.docker_image;
-  const dockerImageName =
-    dockerImage?.repo_tags?.[0] ||
-    (dockerImage?.id ? dockerImage.id.replace(/^sha256:/, "").slice(0, 12) : "") ||
-    "Image unavailable";
-  const dockerImageSize = dockerImage
-    ? formatDatabaseSize(dockerImage.unique_size_bytes ?? dockerImage.size_bytes ?? dockerImage.virtual_size_bytes)
-    : "Unavailable";
-  const dockerImageDetail = dockerImage
-    ? [
-        dockerImageName,
-        dockerImage.layer_count ? `${formatMetric(dockerImage.layer_count)} layers` : "",
-        dockerImage.containers !== undefined && dockerImage.containers !== null ? `${formatMetric(dockerImage.containers)} containers` : "",
-      ]
-        .filter(Boolean)
-        .join(" / ")
-    : container?.docker_engine_note || "Docker Engine data unavailable";
-  const dockerLayerRows = (dockerImage?.layers || []).slice(0, 10);
+  const backendImage = backendImageSummary(container);
+  const dockerImageName = backendImage.imageName;
+  const dockerImageSize = backendImage.sizeLabel;
+  const dockerImageDetail = backendImage.detail;
+  const dockerLayerRows = backendImage.layers;
   const runtimeVersionRows: ContainerRuntimeVersion[] = [
     ...(container?.runtime_versions || []),
     {
@@ -15629,7 +15897,7 @@ function UtilitiesView({
             </div>
           </div>
         </section>
-        <DatabaseBackupRestorePanel backupRuns={backupRuns} preferences={preferences} />
+        <DatabaseBackupRestorePanel backupRuns={backupRuns} dialogs={dialogs} preferences={preferences} />
         <section className="utilities-section">
           <div className="panel-title-row utility-section-title">
             <div>
@@ -15761,7 +16029,7 @@ function UtilitiesView({
               <Archive size={16} />
               <div>
                 <span>Backend image</span>
-                <strong>{dockerImageSize}</strong>
+                <strong>{dockerImageName}</strong>
                 <em>{dockerImageDetail}</em>
               </div>
             </div>
@@ -16033,16 +16301,26 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
     queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
     refetchInterval: 30000,
   });
+  const libraryFunStats = useQuery({
+    queryKey: ["library-fun-stats"],
+    queryFn: api.libraryFunStats,
+    refetchInterval: 120000,
+  });
 
   const container = containerStatus.data;
   const database = databaseStatus.data;
   const haproxy = haproxyStatus.data;
   const release = releaseStatus.data;
+  const funStats: LibraryFunStats | undefined = libraryFunStats.data;
   const statusLoading =
     (containerStatus.isFetching && !container) ||
     (databaseStatus.isFetching && !database) ||
     (haproxyStatus.isFetching && !haproxy) ||
     (releaseStatus.isFetching && !release);
+  const funStatsLoading = libraryFunStats.isFetching && !funStats;
+  const funMetric = (value?: number | null) => (funStatsLoading ? "..." : formatMetric(value));
+  const funDecimal = (value?: number | null) => (funStatsLoading ? "..." : formatDecimal(value));
+  const funPercent = (value?: number | null) => (funStatsLoading ? "..." : formatPercent(value) || "0%");
   const memoryPercent =
     container?.memory_current_bytes !== undefined && container?.memory_current_bytes !== null && container?.memory_limit_bytes
       ? (container.memory_current_bytes / container.memory_limit_bytes) * 100
@@ -16065,14 +16343,7 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
   ]
     .filter(Boolean)
     .join(" / ");
-  const dockerImage = container?.docker_image;
-  const dockerImageName =
-    dockerImage?.repo_tags?.[0] ||
-    (dockerImage?.id ? dockerImage.id.replace(/^sha256:/, "").slice(0, 12) : "") ||
-    "Image unavailable";
-  const dockerImageSize = dockerImage
-    ? formatDatabaseSize(dockerImage.unique_size_bytes ?? dockerImage.size_bytes ?? dockerImage.virtual_size_bytes)
-    : "Unavailable";
+  const backendImage = backendImageSummary(container);
   const proxyRows = haproxy?.services || [];
   const proxyServer = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.kind === "server");
   const proxyBackend = proxyRows.find((row) => row.proxy_name === "medusa_frontend" && row.service_name === "BACKEND");
@@ -16112,6 +16383,18 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
     container?.process_count !== undefined && container?.process_count !== null
       ? `${formatMetric(container.process_count)} processes / ${formatMetric(container?.thread_count)} threads`
       : "Process counts unavailable";
+  const averagePagesPerDocument = funStats?.document_count ? funStats.page_count / funStats.document_count : 0;
+  const figureDensity = funStats?.page_count ? (funStats.figure_count / funStats.page_count) * 100 : 0;
+  const referencesPerBibliography = funStats?.bibliography_document_count
+    ? funStats.bibliography_reference_count / funStats.bibliography_document_count
+    : 0;
+  const doiCoverage = funStats?.document_count ? (funStats.doi_count / funStats.document_count) * 100 : 0;
+  const verifiedCitationCoverage = funStats?.document_count ? (funStats.verified_citation_count / funStats.document_count) * 100 : 0;
+  const funStatsUpdated = funStats?.checked_at
+    ? `Updated ${releaseDateLabel(funStats.checked_at)}`
+    : libraryFunStats.isError
+      ? "Fun stats unavailable"
+      : "Gathering corpus totals";
 
   return (
     <section className="workbench status-workbench">
@@ -16151,7 +16434,7 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
             value={haproxy?.available ? "Online" : "Unavailable"}
             detail={proxyServer?.status || proxyBackend?.status || haproxy?.message || "HAProxy status"}
           />
-          <StatusMetricCard icon={<Archive size={17} />} label="Backend image" value={dockerImageSize} detail={dockerImageName} />
+          <StatusMetricCard icon={<Archive size={17} />} label="Backend image" value={backendImage.imageName} detail={backendImage.detail} />
           <StatusMetricCard
             icon={<Library size={17} />}
             label="Library"
@@ -16202,6 +16485,107 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
             </div>
           </section>
         </div>
+        <section className="status-fun-section">
+          <div className="panel-title-row status-fun-title">
+            <div>
+              <h3>Library Fun Stats</h3>
+              <span>{funStatsUpdated}</span>
+            </div>
+            <Sparkles size={18} />
+          </div>
+          <div className="status-metric-grid status-fun-grid">
+            <StatusMetricCard
+              icon={<Library size={17} />}
+              label="Documents"
+              value={funMetric(funStats?.document_count)}
+              detail={`${funDecimal(averagePagesPerDocument)} pages per document`}
+            />
+            <StatusMetricCard
+              icon={<FileText size={17} />}
+              label="Pages"
+              value={funMetric(funStats?.page_count)}
+              detail={`${funMetric(funStats?.page_record_count)} parsed page records`}
+            />
+            <StatusMetricCard
+              icon={<Image size={17} />}
+              label="Figures"
+              value={funMetric(funStats?.figure_count)}
+              detail={`${funDecimal(figureDensity)} figures per 100 pages`}
+            />
+            <StatusMetricCard
+              icon={<BookOpen size={17} />}
+              label="Bibliography references"
+              value={funMetric(funStats?.bibliography_reference_count)}
+              detail={`${funDecimal(referencesPerBibliography)} per bibliography-bearing document`}
+            />
+            <StatusMetricCard
+              icon={<Sigma size={17} />}
+              label="Indexed words"
+              value={funMetric(funStats?.indexed_word_count)}
+              detail={`${funMetric(funStats?.indexed_character_count)} searchable characters`}
+            />
+            <StatusMetricCard
+              icon={<FileSearch size={17} />}
+              label="Parsed words"
+              value={funMetric(funStats?.parsed_word_count)}
+              detail={`${funMetric(funStats?.parsed_character_count)} reader-text characters`}
+            />
+            <StatusMetricCard
+              icon={<Users size={17} />}
+              label="Named authors"
+              value={funMetric(funStats?.unique_author_count)}
+              detail={`${funMetric(funStats?.doi_count)} DOI-linked documents`}
+            />
+            <StatusMetricCard
+              icon={<ListChecks size={17} />}
+              label="Project sources"
+              value={funMetric(funStats?.project_resource_count)}
+              detail={`${funMetric(funStats?.used_project_resource_count)} marked used`}
+            />
+            <StatusMetricCard
+              icon={<Tags size={17} />}
+              label="Organization"
+              value={`${funMetric(funStats?.tag_count)} tags`}
+              detail={`${funMetric(funStats?.domain_count)} domains / ${funMetric(funStats?.note_count)} notes`}
+            />
+          </div>
+          <section className="status-detail-panel status-fun-detail">
+            <div className="panel-title-row">
+              <div>
+                <h3>Derived Counts</h3>
+                <span>{funStatsLoading ? "Counting the corpus" : "Coverage, structure, and reader traces"}</span>
+              </div>
+              <Gauge size={18} />
+            </div>
+            <div className="status-fact-list">
+              <StatusFactRow
+                label="DOI coverage"
+                value={funPercent(doiCoverage)}
+                detail={`${funMetric(funStats?.doi_count)} of ${funMetric(funStats?.document_count)} documents have DOI values`}
+              />
+              <StatusFactRow
+                label="Verified citation coverage"
+                value={funPercent(verifiedCitationCoverage)}
+                detail={`${funMetric(funStats?.verified_citation_count)} documents are verified`}
+              />
+              <StatusFactRow
+                label="Search chunks"
+                value={funMetric(funStats?.text_chunk_count)}
+                detail={`${funMetric(funStats?.text_chunk_token_count)} stored chunk tokens`}
+              />
+              <StatusFactRow
+                label="Bibliography-bearing documents"
+                value={funMetric(funStats?.bibliography_document_count)}
+                detail={`${funMetric(funStats?.bibliography_reference_count)} total extracted source references`}
+              />
+              <StatusFactRow
+                label="Annotations and notes"
+                value={`${funMetric(funStats?.annotation_count)} annotations`}
+                detail={`${funMetric(funStats?.note_count)} active notes in the workbench`}
+              />
+            </div>
+          </section>
+        </section>
       </div>
     </section>
   );
@@ -17937,6 +18321,11 @@ export default function App() {
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
   const releaseReloadScheduledRef = useRef(false);
   const queryClient = useQueryClient();
+  const appDialogController = useAppDialogController();
+  const appDialogs = useMemo<AppDialogController>(
+    () => ({ alert: appDialogController.alert, confirm: appDialogController.confirm }),
+    [appDialogController.alert, appDialogController.confirm],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -17954,7 +18343,12 @@ export default function App() {
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
   const documentQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
 
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: api.me,
+    retry: (failureCount, error) => isTransientAppStartupError(error) && failureCount < STARTUP_HEALTH_RETRY_LIMIT,
+    retryDelay: 1000,
+  });
   const dashboard = useQuery({
     queryKey: ["dashboard"],
     queryFn: api.dashboard,
@@ -18101,19 +18495,29 @@ export default function App() {
     onSuccess: () => queryClient.clear(),
   });
   const confirmReleaseReload = useCallback(() => {
-    return window.confirm(
-      settingsDirty
-        ? "You have unsaved changes. Reloading Medusa will discard them. Continue?"
-        : "Reload Medusa to finish the upgrade? Unsaved page edits will be discarded.",
-    );
-  }, [settingsDirty]);
+    return appDialogs.confirm({
+      cancelLabel: "Not Yet",
+      confirmLabel: "Reload",
+      eyebrow: "Release",
+      message: settingsDirty
+        ? "You have unsaved changes. Reloading Medusa will discard them."
+        : "Reloading will enter the new browser build. Unsaved page edits will be discarded.",
+      title: "Reload Medusa to finish the upgrade?",
+      tone: "warning",
+    });
+  }, [appDialogs, settingsDirty]);
   const confirmReleaseUpgrade = useCallback(() => {
-    return window.confirm(
-      settingsDirty
-        ? "You have unsaved Settings changes. Upgrading Medusa will lock the app, restart the server, and reload this tab after health checks pass. Those unsaved changes will be discarded. Continue?"
-        : "Upgrade Medusa now? The app will be locked while the server updates, then this tab will reload after health checks pass. Unsaved page edits will be discarded.",
-    );
-  }, [settingsDirty]);
+    return appDialogs.confirm({
+      cancelLabel: "Not Yet",
+      confirmLabel: "Upgrade Now",
+      eyebrow: "Release",
+      message: settingsDirty
+        ? "You have unsaved Settings changes. Upgrading Medusa will lock the app, restart the server, and reload this tab after health checks pass. Those unsaved changes will be discarded."
+        : "The app will be locked while the server updates, then this tab will reload after health checks pass. Unsaved page edits will be discarded.",
+      title: "Upgrade Medusa now?",
+      tone: "warning",
+    });
+  }, [appDialogs, settingsDirty]);
   const releaseUpgrade = useMutation({
     mutationFn: () => api.requestReleaseUpgrade(MEDUSA_BUILD_VERSION),
     onSuccess: (status) => {
@@ -18189,20 +18593,42 @@ export default function App() {
     if (!status) return;
     if (releaseUpgradeLock && releaseUpgradeLock.stage !== "failed") return;
     if (status.browser_reload_recommended) {
-      if (!confirmReleaseReload()) return;
-      releaseReloadScheduledRef.current = true;
+      if (!(await confirmReleaseReload())) return;
       setReleaseUpgradeLock({
         ...releaseUpgradeLockFromStatus(status),
-        detail: "The updated server is healthy. This browser tab is reloading into the new build.",
-        message: "Reloading Medusa",
-        stage: "reloading",
+        detail: "Checking Medusa health before loading the new browser build.",
+        message: "Checking Medusa health",
+        stage: "health",
         startedAt: Date.now(),
         targetVersion: status.running.version,
       });
-      scheduleReleaseReload(status);
+      try {
+        await waitForApplicationReadiness();
+        releaseReloadScheduledRef.current = true;
+        setReleaseUpgradeLock({
+          ...releaseUpgradeLockFromStatus(status),
+          detail: "Health checks passed. This browser tab is reloading into the new build.",
+          message: "Reloading Medusa",
+          stage: "reloading",
+          startedAt: Date.now(),
+          targetVersion: status.running.version,
+        });
+        scheduleReleaseReload(status);
+      } catch (error) {
+        releaseReloadScheduledRef.current = false;
+        setReleaseUpgradeLock({
+          ...releaseUpgradeLockFromStatus(status),
+          detail: "Medusa did not pass health checks, so this tab will stay on the current build.",
+          error: actionFailureMessage("Could not verify Medusa health", error),
+          message: "Reload paused",
+          stage: "failed",
+          startedAt: Date.now(),
+          targetVersion: status.running.version,
+        });
+      }
       return;
     }
-    if (!confirmReleaseUpgrade()) return;
+    if (!(await confirmReleaseUpgrade())) return;
     releaseReloadScheduledRef.current = false;
     setReleaseUpgradeLock({
       detail: "The host agent will update the server in the background. Medusa will stay locked until the new build is healthy.",
@@ -18276,7 +18702,7 @@ export default function App() {
           current
             ? {
                 ...current,
-                detail: "The update is applied. Verifying the health endpoint before returning control.",
+                detail: "The update is applied. Verifying health and the app shell before loading the new build.",
                 message: "Checking the new build",
                 stage: "health",
                 targetVersion: status.running.version || nextLock.targetVersion,
@@ -18284,14 +18710,14 @@ export default function App() {
             : current,
         );
         try {
-          await api.health();
+          await probeApplicationReadiness();
         } catch {
           if (!cancelled) {
             setReleaseUpgradeLock((current) =>
               current
                 ? {
                     ...current,
-                    detail: "The server has updated, but the health endpoint is not ready yet.",
+                    detail: "The server has updated, but Medusa is not ready to load the app shell yet.",
                     message: "Waiting for Medusa health",
                     stage: "health",
                     targetVersion: status.running.version || nextLock.targetVersion,
@@ -18303,8 +18729,20 @@ export default function App() {
         }
         if (cancelled) return;
         if (status.browser_reload_recommended) {
-          releaseReloadScheduledRef.current = false;
-          setReleaseUpgradeLock(null);
+          if (releaseReloadScheduledRef.current) return;
+          releaseReloadScheduledRef.current = true;
+          setReleaseUpgradeLock((current) =>
+            current
+              ? {
+                  ...current,
+                  detail: "Health checks passed. This browser tab is reloading into the new build.",
+                  message: "Reloading Medusa",
+                  stage: "reloading",
+                  targetVersion: status.running.version || nextLock.targetVersion,
+                }
+              : current,
+          );
+          scheduleReleaseReload(status);
           return;
         }
         releaseReloadScheduledRef.current = false;
@@ -18414,9 +18852,14 @@ export default function App() {
         return true;
       }
       if (activeView === "settings" && settingsDirty) {
-        const shouldSave = window.confirm(
-          "You have unsaved Settings changes. Save before leaving this page?\n\nOK saves first. Cancel leaves without saving.",
-        );
+        const shouldSave = await appDialogs.confirm({
+          cancelLabel: "Leave Without Saving",
+          confirmLabel: "Save First",
+          eyebrow: "Unsaved Settings",
+          message: "You have unsaved Settings changes. Saving first keeps those changes before moving to another workspace.",
+          title: "Save before leaving Settings?",
+          tone: "warning",
+        });
         if (shouldSave) {
           const saved = settingsSaveHandlerRef.current ? await settingsSaveHandlerRef.current() : false;
           if (!saved) return false;
@@ -18426,7 +18869,7 @@ export default function App() {
       if (historyMode !== "none") syncBrowserUrlForView(view, historyMode);
       return true;
     },
-    [activeView, settingsDirty],
+    [activeView, appDialogs, settingsDirty],
   );
   const requestDocumentFocus = useCallback(
     async (documentId: string, historyMode: BrowserHistoryMode = "push") => {
@@ -18523,7 +18966,9 @@ export default function App() {
     });
   }, []);
 
-  if (me.isLoading) return <div className="loading-screen">Medusa</div>;
+  const startupHealthPending =
+    Boolean(me.error && isTransientAppStartupError(me.error)) && me.failureCount < STARTUP_HEALTH_RETRY_LIMIT;
+  if (me.isLoading || startupHealthPending) return <div className="loading-screen">Medusa</div>;
   if (me.error || !me.data) {
     return (
       <AppTooltipProvider>
@@ -18598,6 +19043,7 @@ export default function App() {
         </section>
         {activeView === "library" ? (
           <LibraryView
+            dialogs={appDialogs}
             documents={libraryRows}
             document={selectedDocument.data}
             selectedId={selectedId}
@@ -18685,7 +19131,12 @@ export default function App() {
         ) : null}
         {activeView === "budget" ? <BudgetView /> : null}
         {activeView === "utilities" ? (
-          <UtilitiesView backupRuns={backupRuns.data || []} ingestionHistory={ingestionHistory.data || []} preferences={preferences.data} />
+          <UtilitiesView
+            backupRuns={backupRuns.data || []}
+            dialogs={appDialogs}
+            ingestionHistory={ingestionHistory.data || []}
+            preferences={preferences.data}
+          />
         ) : null}
         {activeView === "status" ? <StatusView dashboard={dashboard.data} /> : null}
         {activeView === "settings" ? (
@@ -18707,6 +19158,7 @@ export default function App() {
           />
         ) : null}
       </main>
+      {appDialogController.node}
       {releaseUpgradeLock ? (
         <ReleaseUpgradeOverlay
           lock={releaseUpgradeLock}

@@ -163,6 +163,81 @@ def test_clear_import_cache_tolerates_original_delete_failure(monkeypatch, tmp_p
         assert db.query(DocumentCompositionRecord).count() == 0
 
 
+def test_library_fun_stats_counts_visible_corpus_only(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import library_fun_stats_out
+    from app.models import Annotation, Document, DocumentPage, Figure, Note, Project, ProjectItem, Tag, TextChunk
+
+    with Session() as db:
+        tag = Tag(name="systems")
+        project = Project(name="Methods")
+        ready_document = Document(
+            title="Ready Corpus",
+            original_filename="ready.pdf",
+            checksum_sha256="r" * 64,
+            processing_status="ready",
+            page_count=2,
+            doi="10.1000/ready",
+            citation_status="verified",
+            authors=[{"given": "Ada", "family": "Lovelace"}, {"given": "Alan", "family": "Turing"}],
+            bibliography="Lovelace, A. (1843). Notes.\nTuring, A. (1950). Computing machinery.",
+            search_text="alpha beta gamma delta index",
+        )
+        hidden_document = Document(
+            title="Queued Corpus",
+            original_filename="queued.pdf",
+            checksum_sha256="q" * 64,
+            processing_status="queued",
+            page_count=9,
+            bibliography="Hidden, H. (2024). Waiting.",
+            search_text="hidden indexed words",
+        )
+        ready_document.tags.append(tag)
+        db.add_all([tag, project, ready_document, hidden_document])
+        db.flush()
+        db.add_all(
+            [
+                DocumentPage(document_id=ready_document.id, page_number=1, normalized_text="alpha beta gamma", text="ignored text"),
+                DocumentPage(document_id=ready_document.id, page_number=2, text="delta epsilon"),
+                Figure(document_id=ready_document.id, page_number=1, figure_label="Figure 1"),
+                TextChunk(document_id=ready_document.id, page_start=1, page_end=2, text="alpha beta gamma delta", token_count=7),
+                Annotation(document_id=ready_document.id, page_number=1, body="Important"),
+                Note(document_id=ready_document.id, title="Use this", body="Add to chapter."),
+                ProjectItem(project_id=project.id, document_id=ready_document.id, used_in_output=True),
+                DocumentPage(document_id=hidden_document.id, page_number=1, text="hidden page words"),
+                Figure(document_id=hidden_document.id, page_number=1, figure_label="Hidden"),
+                TextChunk(document_id=hidden_document.id, text="hidden chunk words", token_count=99),
+                Annotation(document_id=hidden_document.id, page_number=1, body="Hidden"),
+                ProjectItem(project_id=project.id, document_id=hidden_document.id, used_in_output=True),
+            ]
+        )
+        db.commit()
+
+        stats = library_fun_stats_out(db)
+
+        assert stats.document_count == 1
+        assert stats.page_count == 2
+        assert stats.page_record_count == 2
+        assert stats.figure_count == 1
+        assert stats.bibliography_reference_count == 2
+        assert stats.bibliography_document_count == 1
+        assert stats.parsed_word_count == 5
+        assert stats.indexed_word_count == 5
+        assert stats.parsed_character_count == len("alpha beta gamma") + len("delta epsilon")
+        assert stats.indexed_character_count == len("alpha beta gamma delta index")
+        assert stats.text_chunk_count == 1
+        assert stats.text_chunk_token_count == 7
+        assert stats.doi_count == 1
+        assert stats.verified_citation_count == 1
+        assert stats.unique_author_count == 2
+        assert stats.annotation_count == 1
+        assert stats.note_count == 1
+        assert stats.project_resource_count == 1
+        assert stats.used_project_resource_count == 1
+        assert stats.domain_count == 0
+        assert stats.tag_count == 1
+
+
 def test_database_sql_maintenance_starts_background_job(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     import app.main as main

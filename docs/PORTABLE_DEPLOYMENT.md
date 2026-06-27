@@ -136,7 +136,7 @@ Apply a requested upgrade:
 scripts/medusa-release-agent.py apply --repo /path/to/medusa --data-dir /path/to/medusa/data --compose-file docker-compose.yml --compose-file docker-compose.server.yml
 ```
 
-The agent fetches the configured upstream, refuses to deploy from a dirty checkout, fast-forwards only, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with the requested Compose files, then waits for `/api/health`. Its health probe resolves `MEDUSA_PUBLIC_HOST` to `MEDUSA_RELEASE_HEALTHCHECK_IP` when set, otherwise to `MEDUSA_BIND_IP`, then `MEDUSA_BIND_IPV6`, then localhost.
+The agent fetches the configured upstream, refuses to deploy from a dirty checkout, fast-forwards only, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with the requested Compose files, then waits for both `/api/health` and `/` through the public TLS/proxy path. Its health probes resolve `MEDUSA_PUBLIC_HOST` to `MEDUSA_RELEASE_HEALTHCHECK_IP` when set, otherwise to `MEDUSA_BIND_IP`, then `MEDUSA_BIND_IPV6`, then localhost.
 
 A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
 

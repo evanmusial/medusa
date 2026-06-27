@@ -224,11 +224,19 @@ def curl_resolve_address(address: str) -> str:
     return f"[{address}]" if ":" in address and not address.startswith("[") else address
 
 
-def health_url(repo: Path) -> tuple[list[str], str]:
+def probe_url(repo: Path, path: str) -> tuple[list[str], str]:
     host = os.environ.get("MEDUSA_PUBLIC_HOST") or env_file_value(repo, "MEDUSA_PUBLIC_HOST") or "medusa.home.musial.io"
     address = curl_resolve_address(release_healthcheck_ip(repo))
-    url = f"https://{host}:3737/api/health"
-    return ["curl", "-kfsS", "--resolve", f"{host}:3737:{address}", url], url
+    url = f"https://{host}:3737{path}"
+    return ["curl", "-kfsS", "--connect-timeout", "5", "--max-time", "10", "--resolve", f"{host}:3737:{address}", url], url
+
+
+def health_url(repo: Path) -> tuple[list[str], str]:
+    return probe_url(repo, "/api/health")
+
+
+def app_shell_url(repo: Path) -> tuple[list[str], str]:
+    return probe_url(repo, "/")
 
 
 def compose_up_command(args: argparse.Namespace) -> list[str]:
@@ -241,16 +249,22 @@ def compose_up_command(args: argparse.Namespace) -> list[str]:
 
 
 def wait_for_health(repo: Path, timeout_seconds: int) -> None:
-    command, url = health_url(repo)
+    probes = [health_url(repo), app_shell_url(repo)]
     deadline = time.monotonic() + timeout_seconds
     last_error = ""
     while time.monotonic() < deadline:
-        result = run_command(command, cwd=repo, check=False)
-        if result.returncode == 0:
+        failures: list[str] = []
+        for command, url in probes:
+            result = run_command(command, cwd=repo, check=False)
+            if result.returncode == 0:
+                continue
+            detail = result.stderr.strip() or result.stdout.strip() or f"curl exited with {result.returncode}"
+            failures.append(f"{url}: {detail}")
+        if not failures:
             return
-        last_error = result.stderr.strip() or result.stdout.strip()
+        last_error = "; ".join(failures)
         time.sleep(2)
-    raise RuntimeError(f"Medusa health check did not pass at {url}: {last_error}")
+    raise RuntimeError(f"Medusa health checks did not pass: {last_error}")
 
 
 def apply(args: argparse.Namespace) -> int:

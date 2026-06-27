@@ -8,6 +8,7 @@ import signal
 import threading
 import json
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -285,6 +286,7 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "the supplied text is incomplete, keep the available source wording in the closest sensible APA order. Do not "
     "return bullets, numbering, blank lines, headings, explanations, or multiple sources in one reference string."
 )
+BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS = 120_000
 
 BIBLIOGRAPHY_CLEANUP_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -423,8 +425,9 @@ _SUMMARY_SCHEMA_TRAILER_LABEL_RE = re.compile(
 _SUMMARY_CONFIDENCE_VALUE_RE = re.compile(r"(?i)\bconfidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\b")
 _BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\s+")
 _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE = re.compile(
-    r"^\s*(?P<initials>(?:[A-Z]\.\s*){1,5})(?P<surname>[A-Z][A-Za-z'.-]+)\b"
+    r"^\s*(?P<initials>(?:[A-Z]\.(?:-[A-Z]\.)?\s*){1,5})(?P<surname>[^\W\d_][^\s,.;:()]*)"
 )
+_BIBLIOGRAPHY_NO_AUTHOR_YEAR_RE = re.compile(r"^\s*\(?\d{4}[a-z]?\)?[.)]\s+(?P<title>.+)")
 _BIBLIOGRAPHY_SORT_LEADING_RE = re.compile(r"^[\s*_`\"'(\[]+")
 _BIBLIOGRAPHY_SORT_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+", re.IGNORECASE)
 _BIBLIOGRAPHY_SORT_KEY_RE = re.compile(r"[^a-z0-9]+")
@@ -503,13 +506,15 @@ def normalize_model_bibliography_entry(value: Any) -> str:
 def bibliography_entry_sort_key(value: Any) -> tuple[str, str]:
     entry = normalize_model_bibliography_entry(value)
     raw_key = _BIBLIOGRAPHY_SORT_LEADING_RE.sub("", entry)
-    initials_first_match = _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE.match(raw_key)
-    if initials_first_match:
+    no_author_year_match = _BIBLIOGRAPHY_NO_AUTHOR_YEAR_RE.match(raw_key)
+    if no_author_year_match:
+        raw_key = _BIBLIOGRAPHY_SORT_LEADING_RE.sub("", no_author_year_match.group("title"))
+    elif initials_first_match := _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE.match(raw_key):
         raw_key = (
             f"{initials_first_match.group('surname')} {initials_first_match.group('initials')} "
             f"{raw_key[initials_first_match.end():]}"
         )
-    key = raw_key.casefold()
+    key = unicodedata.normalize("NFKD", raw_key).encode("ascii", "ignore").decode("ascii").casefold()
     key = _BIBLIOGRAPHY_SORT_ARTICLE_RE.sub("", key)
     key = _BIBLIOGRAPHY_SORT_KEY_RE.sub(" ", key).strip()
     return (key or entry.casefold(), entry.casefold())
@@ -1093,10 +1098,11 @@ class AiService:
                 "notes": ["AI bibliography cleanup is not configured for the selected model."],
                 "_openai": {"model": selected_model, "configured": False},
             }
+        clipped_bibliography = fallback[:BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS]
         input_text = (
             f"Filename: {filename}\n\n"
             "Extracted source bibliography text. Format this as APA-style references, one source per item:\n"
-            f"{fallback[:60_000]}"
+            f"{clipped_bibliography}"
         )
         result = self._responses_json(
             model=selected_model,
