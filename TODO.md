@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -12,6 +12,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add real low-text OCR fallback with Google Vision.
   - Acceptance: low-text/scanned PDF pages are detected, OCR is run only when needed, OCR text is stored per page, and processing remains resumable.
+  - Partial: bibliography extraction now records symbol-heavy unreadable text pages with `ocr_recommended=true` when a PDF has a corrupt but non-empty text layer. Remaining work is real OCR execution for both low-text and corrupt-text-layer pages, plus persistence of rescued OCR page text.
 
 - [ ] Add manual Reader region nomination for missed figures and tables.
   - Acceptance: Reader PDF/Scan Page offers an Add Region or Draw Region mode where the user can draw one or more rough bounding boxes on a rendered PDF page, label each region as table/figure/chart/photo/diagram, optionally provide a label and description, preview the exact crop, and keep or discard each candidate. Kept regions create durable figure/table extraction records with page geometry, searchable captions/descriptions, document history, and safe retry semantics; the flow must support multiple regions on one page and work as a rescue path when automatic table/visual extraction misses subtle or mostly text-based tables.
@@ -40,6 +41,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [x] Extract source-document bibliographies into a dedicated field.
   - Acceptance: imports and Concordance detect references, bibliography, or works-cited sections; `Document.bibliography` stores the extracted reference list separately from generated APA citation text and project bibliographies; Markdown-compatible italics are preserved when PDF span metadata exposes emphasis; document detail displays and allows editing, copying, and explicitly refreshing the Bibliography field; search, export, restore, and history include it.
+  - Completed: bibliography extraction now rejects publisher reference-count front matter such as `References: this document contains references to N other documents`; forced Bibliography Refresh clears stale machine-extracted bibliography text when current extraction returns `not_found`, while preserving user-supplied bibliography text.
 
 - [ ] Add structured table extraction and persistence.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data; Markdown table text remains searchable; tables can link to nearby headings, captions, and explicit `Table N` mentions; imports and Concordance are idempotent and retry-safe.
@@ -55,7 +57,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Wire second-pass capabilities into Concordance.
   - Acceptance: `document_structure_cleanup`, `bibliography_extraction`, `formula_capture`, `visual_asset_extraction`, `visual_asset_context`, `structured_tables`, and `ocr_fallback` are versioned Concordance capabilities; old documents can be upgraded without re-upload; jobs are durable, resumable, idempotent, and visible through events/progress; manual page text is skipped or turned into reviewable candidates unless explicit replacement is requested.
-  - Partial: the listed capabilities exist and route to current cleanup, bibliography, manual formula capture, visual extraction, visual context, structured-table evidence, and OCR eligibility audit handlers. Concordance now estimates scoped run cost before queuing, reports planned/same-model no-op/current/already-queued work, skips model-backed fields when document evidence or usage history already matches the selected model, exposes document-level Formula Capture from the preview/Reader action row, and renders captured LaTeX formulas inside parsed document text read mode. Remaining work is real OCR execution, first-class structured-table persistence, stronger idempotency tests for visual/table runs, dedicated formula review/display beyond rendered parsed text/evidence, and broader progress/evidence UI for each capability.
+  - Partial: the listed capabilities exist and route to current cleanup, bibliography, manual formula capture, visual extraction, visual context, structured-table evidence, and OCR eligibility audit handlers. Concordance now estimates scoped run cost before queuing, reports planned/same-model no-op/current/already-queued work, skips model-backed fields when document evidence or usage history already matches the selected model, exposes document-level Formula Capture from the preview/Reader action row, renders captured LaTeX formulas inside parsed document text read mode, and lets forced Bibliography Refresh clear stale machine-extracted bibliography output when the current extractor cannot support it. Remaining work is real OCR execution, first-class structured-table persistence, stronger idempotency tests for visual/table runs, dedicated formula review/display beyond rendered parsed text/evidence, and broader progress/evidence UI for each capability.
 
 - [ ] Design and implement Recon for corpus-grounded research inquiries.
   - Acceptance: add a Recon workspace between Projects and Tags; inquiries store scope, question/instructions, selected model, run mode, run history, answers, evidence, usage, and cost; scopes support whole library, domains, projects, saved searches/views, and eventually selected documents; the Start Research action uses Medusa's durable async progress convention with cost/time preview; Quick Answer uses retrieval over the selected corpus, Broad Sweep inspects every scoped document at least lightly, and Exhaustive is an explicit deep mode rather than the default; answers cite exact document/page/chunk evidence and can be re-run when the question, model, scope, or corpus changes. Planning notes live in `docs/RECON.md`.

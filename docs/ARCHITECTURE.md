@@ -1,6 +1,6 @@
 # Medusa Design And Architecture Record
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 This is the living record of Medusa's product, design, and architecture decisions. Future Codex sessions should read this before changing the app and update it when decisions change. Details matter here because Medusa is meant to become a long-lived research system, not a one-off prototype.
 
@@ -1321,3 +1321,16 @@ Consequences:
 - Settings > Account generates a setup key, confirms the first code before enabling 2FA, shows recovery codes once, and requires current password plus TOTP or recovery code to disable 2FA.
 - Enabling or disabling 2FA revokes other active sessions. Password changes continue to revoke other sessions while preserving the current browser session.
 - Legacy metadata exports and restore validation treat TOTP secrets and recovery-code hashes as secret auth material. Full PostgreSQL backups include them because they are complete database snapshots.
+
+### 2026-06-27: Bibliography refresh stale-output handling
+
+Decision: Treat publisher "References: this document contains references to N other documents" front matter as bibliography boilerplate, not a source-reference heading, and let forced Bibliography Refresh clear stale machine-extracted bibliography text when the current extractor finds no supported reference list.
+
+Why: Some publisher PDFs include clean front/back matter but corrupt embedded text for the article body. A stale import-time bibliography can therefore be visibly worse than no bibliography because it may contain publisher recommendations, download notices, or encoded symbol noise instead of the document's own references.
+
+Consequences:
+
+- `bibliography_extraction` capability version 2 rejects publisher reference-count boilerplate before scoring reference-section candidates.
+- Bibliography extraction evidence records symbol-heavy unreadable text pages and `ocr_recommended=true` when the text layer looks OCR-worthy even though it is not low-text.
+- Forced document-scoped Bibliography Refresh clears the existing `Document.bibliography` only when prior bibliography evidence shows it was machine-extracted from `page_text` or `pdf_span_layout`; user-supplied bibliography text remains intact when extraction returns `not_found`.
+- Real OCR execution for corrupt-but-not-low-text pages remains part of the OCR fallback backlog; until then, stale machine output is removed rather than preserved as if it were refreshed.

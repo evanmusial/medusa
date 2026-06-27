@@ -485,6 +485,72 @@ def test_extract_document_bibliography_ignores_inline_references_word_before_rea
     assert not any(entry.startswith(("references to", "Savage,")) for entry in entries)
 
 
+def test_extract_document_bibliography_rejects_publisher_reference_count_front_matter(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Publisher Front Matter Paper",
+        original_filename="publisher-front-matter.pdf",
+        checksum_sha256="7" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="References\nPlain fallback."))
+    pdf_path = tmp_path / "publisher-front-matter.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (1, "References: this document contains references to 16 other documents."),
+            (1, "Users who downloaded this article also downloaded:"),
+            (1, '(2005), "Unrelated publisher recommendation", Management Decision, Vol. 43.'),
+            (11, "References"),
+            (11, "Anderson, J.P. (1980), Computer Security Threat Monitoring and Surveillance, James P."),
+            (11, "Anderson Co., April, Fort Washington, PA."),
+            (11, "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+
+    assert result["evidence"]["page_start"] == 11
+    assert result["bibliography"].splitlines() == [
+        "Anderson, J.P. (1980), Computer Security Threat Monitoring and Surveillance, James P. Anderson Co., April, Fort Washington, PA.",
+        "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford.",
+    ]
+    assert "Users who downloaded" not in result["bibliography"]
+
+
+def test_extract_document_bibliography_marks_symbol_heavy_text_for_ocr():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Symbol Heavy Paper",
+        original_filename="symbol-heavy.pdf",
+        checksum_sha256="8" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=11,
+            normalized_text=(
+                '@ H%\',, 4!!(# BB? ==!" A & -? I.A"A\n'
+                "- -/!\".# BB$ #,/ I8# 888I8 - >,%,4 8(((# BB/ *== $%&&&' I; >%,4!!<# "
+                "BB- / == >- 9 > 9H) '!!(# BB$ == (& (8 1 A!<<. ' & F 4!! # BBJ == E;:"
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+
+    assert result["bibliography"] is None
+    assert result["evidence"]["status"] == "not_found"
+    assert result["evidence"]["unreadable_text_pages"] == [11]
+    assert result["evidence"]["ocr_recommended"] is True
+
+
 def test_extract_document_bibliography_numbered_entries_ignore_author_initial_continuations():
     from app.models import Document, DocumentPage
     from app.services.bibliography import extract_document_bibliography

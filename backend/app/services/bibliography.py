@@ -13,6 +13,10 @@ REFERENCE_HEADING_INLINE_RE = re.compile(
     r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\s*[:\-\u2013\u2014]\s+",
     re.IGNORECASE,
 )
+REFERENCE_COUNT_BOILERPLATE_RE = re.compile(
+    r"^\s*references\s*:\s*this\s+document\s+contains\s+references\s+to\s+\d+\s+other\s+documents?\.?\s*$",
+    re.IGNORECASE,
+)
 STOP_HEADING_RE = re.compile(r"^\s*(?:appendix|appendices|acknowledg(?:e)?ments?|notes?|about\s+the\s+authors?)\b", re.IGNORECASE)
 REFERENCE_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)")
 REFERENCE_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)")
@@ -80,6 +84,8 @@ PAGE_FURNITURE_RE = re.compile(
     re.IGNORECASE,
 )
 PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
+READABLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]{2,}")
+GARBLED_SYMBOL_RE = re.compile(r"[#@$%^&*=<>\\|~]{2,}|(?:[!?][!?#<>{}=])")
 
 
 def _strip_markdown(value: str) -> str:
@@ -131,7 +137,7 @@ def _line_is_reference_heading(line: str) -> bool:
 
 def _line_starts_reference_section(line: str) -> bool:
     plain = _strip_markdown(line).strip()
-    return bool(REFERENCE_HEADING_INLINE_RE.match(plain))
+    return bool(REFERENCE_HEADING_INLINE_RE.match(plain) and not REFERENCE_COUNT_BOILERPLATE_RE.match(plain))
 
 
 def _line_stops_reference_section(line: str) -> bool:
@@ -156,6 +162,27 @@ def _reference_heading_indexes(lines: list[str]) -> list[int]:
         for index, line in enumerate(lines)
         if _line_is_reference_heading(line) or _line_starts_reference_section(line)
     ]
+
+
+def _text_layer_looks_garbled(text: str) -> bool:
+    compact = re.sub(r"\s+", "", _strip_markdown(text))
+    if len(compact) < 120:
+        return False
+    symbol_count = sum(1 for char in compact if not char.isalnum())
+    symbol_ratio = symbol_count / max(len(compact), 1)
+    readable_words = READABLE_WORD_RE.findall(text)
+    readable_word_chars = sum(len(word) for word in readable_words)
+    readable_ratio = readable_word_chars / max(len(compact), 1)
+    return bool(symbol_ratio >= 0.34 and readable_ratio < 0.52 and GARBLED_SYMBOL_RE.search(text))
+
+
+def _unreadable_text_pages(document: Document) -> list[int]:
+    pages: list[int] = []
+    for page in sorted(document.pages, key=lambda item: item.page_number):
+        text = page.normalized_text if page.normalized_text is not None else page.text
+        if text and _text_layer_looks_garbled(text):
+            pages.append(page.page_number)
+    return pages
 
 
 def _collect_reference_lines(lines: list[str], heading_index: int) -> tuple[list[str], int, int]:
@@ -267,8 +294,13 @@ def _plain_bibliography_from_pages(document: Document) -> dict[str, Any]:
     page_rows = _page_lines(document)
     lines = [line for _, line in page_rows]
     selected, start, end = _extract_reference_lines(lines)
+    unreadable_pages = _unreadable_text_pages(document)
     if not selected:
-        return {"bibliography": None, "evidence": {"source": "page_text", "status": "not_found"}}
+        evidence: dict[str, Any] = {"source": "page_text", "status": "not_found"}
+        if unreadable_pages:
+            evidence["unreadable_text_pages"] = unreadable_pages
+            evidence["ocr_recommended"] = True
+        return {"bibliography": None, "evidence": evidence}
     page_numbers = [page for page, _ in page_rows[start:end] if page] if start is not None and end is not None else []
     text = _format_reference_lines(selected)
     return {
@@ -280,6 +312,7 @@ def _plain_bibliography_from_pages(document: Document) -> dict[str, Any]:
             "page_end": max(page_numbers) if page_numbers else None,
             "formatting": "plain_or_existing_markdown",
             "entry_count_estimate": _entry_count(text),
+            **({"unreadable_text_pages": unreadable_pages, "ocr_recommended": True} if unreadable_pages else {}),
         },
     }
 

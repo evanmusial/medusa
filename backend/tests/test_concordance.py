@@ -143,6 +143,130 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"
 
 
+def test_forced_bibliography_refresh_clears_stale_machine_output_when_not_found(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentCapability, DocumentPage
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    monkeypatch.setattr(
+        concordance_service,
+        "extract_document_bibliography",
+        lambda _document, _pdf_path=None: {
+            "bibliography": None,
+            "evidence": {
+                "source": "page_text",
+                "status": "not_found",
+                "unreadable_text_pages": [11],
+                "ocr_recommended": True,
+            },
+        },
+    )
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Stale References Target",
+            original_filename="stale-references.pdf",
+            checksum_sha256="s" * 64,
+            processing_status="ready",
+            bibliography="References: this document contains references to 16 other documents. Publisher boilerplate.",
+            metadata_evidence={
+                "bibliography_extraction": {
+                    "source": "pdf_span_layout",
+                    "status": "extracted",
+                    "page_start": 1,
+                    "page_end": 12,
+                }
+            },
+        )
+        document.pages.append(DocumentPage(page_number=11, normalized_text="# $ BB == 4!!(# BB? ==!"))
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert job.status == "complete"
+        assert document.bibliography is None
+        evidence = document.metadata_evidence["bibliography_extraction"]
+        assert evidence["status"] == "not_found"
+        assert evidence["stale_bibliography_cleared"] is True
+        assert evidence["stale_bibliography_characters"] > 0
+        assert evidence["unreadable_text_pages"] == [11]
+        capability = db.query(DocumentCapability).filter_by(document_id=document.id, capability_key="bibliography_extraction").one()
+        assert capability.version == CAPABILITY_BY_KEY["bibliography_extraction"].version
+        assert capability.evidence["stale_bibliography_cleared"] is True
+        versions = [version for version in document.versions if version.change_note == "Concordance bibliography stale clear"]
+        assert len(versions) == 1
+        assert "bibliography" in versions[0].metadata_snapshot["changed_fields"]
+
+
+def test_forced_bibliography_refresh_preserves_user_text_when_not_found(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    monkeypatch.setattr(
+        concordance_service,
+        "extract_document_bibliography",
+        lambda _document, _pdf_path=None: {"bibliography": None, "evidence": {"source": "page_text", "status": "not_found"}},
+    )
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Manual References Target",
+            original_filename="manual-references.pdf",
+            checksum_sha256="m" * 64,
+            processing_status="ready",
+            bibliography="User supplied bibliography.",
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert job.status == "complete"
+        assert document.bibliography == "User supplied bibliography."
+        assert document.metadata_evidence["bibliography_extraction"]["status"] == "not_found"
+        assert not document.versions
+
+
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

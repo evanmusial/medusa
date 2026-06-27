@@ -137,8 +137,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="bibliography_extraction",
         label="Bibliography extraction",
-        version=1,
-        description="Extract the source document's own reference list into the Bibliography field, preserving Markdown italics from PDF span evidence when available.",
+        version=2,
+        description="Extract the source document's own reference list into the Bibliography field, rejecting publisher boilerplate and preserving Markdown italics from PDF span evidence when available.",
     ),
     CapabilityDefinition(
         key="formula_capture",
@@ -277,6 +277,15 @@ def concordance_stage_status(evidence: dict[str, Any]) -> str:
     if evidence.get("skipped"):
         return "skipped"
     return "complete"
+
+
+def _existing_bibliography_is_machine_extracted(document: Document) -> bool:
+    evidence = (document.metadata_evidence or {}).get("bibliography_extraction")
+    if not isinstance(evidence, dict):
+        return False
+    if evidence.get("status") != "extracted":
+        return False
+    return str(evidence.get("source") or "") in {"page_text", "pdf_span_layout"}
 
 
 def _document_page_count(document: Document) -> int:
@@ -1223,6 +1232,30 @@ class ConcordanceProcessor:
                 after=document_correction_snapshot(document),
             )
             return {**evidence, "characters": len(bibliography)}
+        if run_force and document.bibliography and _existing_bibliography_is_machine_extracted(document):
+            before = document_correction_snapshot(document)
+            stale_characters = len(document.bibliography)
+            document.bibliography = None
+            evidence = {
+                **evidence,
+                "status": evidence.get("status") or "not_found",
+                "checked_at": utc_now().isoformat(),
+                "stale_bibliography_cleared": True,
+                "stale_bibliography_characters": stale_characters,
+            }
+            metadata_evidence = dict(document.metadata_evidence or {})
+            metadata_evidence["bibliography_extraction"] = evidence
+            document.metadata_evidence = metadata_evidence
+            document.search_text = rebuild_document_search_text(document)
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance bibliography stale clear",
+                changed_fields={"bibliography", "metadata_evidence", "search_text"},
+                before=before,
+                after=document_correction_snapshot(document),
+            )
+            return {**evidence, "characters": 0}
         metadata_evidence = dict(document.metadata_evidence or {})
         metadata_evidence["bibliography_extraction"] = evidence
         document.metadata_evidence = metadata_evidence
