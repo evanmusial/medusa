@@ -162,6 +162,8 @@ import type {
   RecommendationView,
   ReleaseStatus,
   SavedSearch,
+  SlipstreamLease,
+  SlipstreamStatus,
   Tag,
   TagOrphanPruneSuggestion,
   TagOptimizationResult,
@@ -318,6 +320,16 @@ type AppDialogController = {
 };
 
 const RELEASE_BUSY_PHASES = new Set(["requested", "fetching", "applying", "building", "restarting", "verifying"]);
+const MAINTENANCE_BUSY_PHASES = new Set([
+  "requested",
+  "readiness",
+  "backup",
+  "backup_required",
+  "backup_complete",
+  "applying",
+  "building",
+  "verifying",
+]);
 const RELEASE_POLL_INTERVAL_MS = 1000;
 const RELEASE_RELOAD_DELAY_MS = 900;
 const RELEASE_RELOAD_PARAM = "_medusa_reload";
@@ -1804,10 +1816,13 @@ function ReleaseUpgradeButton({
 }) {
   if (!status) return null;
   const phaseBusy = RELEASE_BUSY_PHASES.has(status.phase);
-  const visible = status.browser_reload_recommended || status.update_available || phaseBusy;
+  const maintenanceBusy = MAINTENANCE_BUSY_PHASES.has(status.maintenance_phase);
+  const visible = status.browser_reload_recommended || status.update_available || phaseBusy || maintenanceBusy;
   if (!visible) return null;
   const disabledReason = busy
     ? "upgrade request is already being sent."
+    : maintenanceBusy
+      ? status.maintenance_message || "maintenance is already in progress."
     : phaseBusy
       ? status.message || "upgrade is already in progress."
       : status.browser_reload_recommended
@@ -1816,17 +1831,17 @@ function ReleaseUpgradeButton({
           ? status.last_error || status.message || "automatic upgrade is not available from this Medusa runtime."
           : undefined;
   const tooltip = releaseUpgradeTooltip(status);
-  const label = status.browser_reload_recommended ? "Reload Now" : "Upgrade Now";
+  const label = maintenanceBusy ? "Maintaining" : status.browser_reload_recommended ? "Reload Now" : "Upgrade Now";
   return (
     <button
-      className={`primary-button release-upgrade-button${busy || phaseBusy ? " pending" : ""}`}
+      className={`primary-button release-upgrade-button${busy || phaseBusy || maintenanceBusy ? " pending" : ""}`}
       data-disabled-reason={disabledReason}
       data-tooltip={tooltip}
       disabled={Boolean(disabledReason)}
       onClick={onUpgrade}
       type="button"
     >
-      <Rocket className={busy || phaseBusy ? "spin" : ""} size={15} />
+      <Rocket className={busy || phaseBusy || maintenanceBusy ? "spin" : ""} size={15} />
       {label}
     </button>
   );
@@ -1870,6 +1885,12 @@ function releaseUpgradeTooltip(status: ReleaseStatus) {
   const requestedAt = releaseDateLabel(status.requested_at);
   if (requestedAt) lines.push(`Upgrade requested: ${requestedAt}`);
   if (status.phase) lines.push(`Phase: ${status.phase.replaceAll("_", " ")}`);
+  if (status.maintenance_phase) lines.push(`Maintenance: ${status.maintenance_phase.replaceAll("_", " ")}`);
+  if (status.maintenance_update_classification) lines.push(`Classification: ${status.maintenance_update_classification.replaceAll("_", " ")}`);
+  if (status.maintenance_backup_status) lines.push(`Backup gate: ${status.maintenance_backup_status.replaceAll("_", " ")}`);
+  if (status.maintenance_blockers.length) lines.push(`Blocked by: ${status.maintenance_blockers.join("; ")}`);
+  if (status.docker_engine_version) lines.push(`Docker: ${status.docker_engine_version}`);
+  if (status.docker_compose_version) lines.push(`Compose: ${status.docker_compose_version}`);
   if (status.dirty) lines.push("Server checkout has local changes.");
   if (status.last_error) lines.push(`Last error: ${status.last_error}`);
   return lines.filter(Boolean).join("\n");
@@ -1896,6 +1917,55 @@ function scheduleReleaseReload(status: ReleaseStatus) {
 
 function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgradeLock, "detail" | "message" | "stage" | "targetVersion"> {
   const targetVersion = status.available?.version || status.running.version || null;
+  const maintenanceTarget = status.running.version || targetVersion;
+  if (status.maintenance_phase === "requested") {
+    return {
+      detail: status.maintenance_message || "The host agent has received the maintenance request and will start when gates pass.",
+      message: "Maintenance requested",
+      stage: "requested",
+      targetVersion: maintenanceTarget,
+    };
+  }
+  if (status.maintenance_phase === "readiness" || status.maintenance_phase === "backup_required") {
+    return {
+      detail: status.maintenance_message || "Checking active sessions and background work before maintenance.",
+      message: "Checking maintenance gates",
+      stage: "polling",
+      targetVersion: maintenanceTarget,
+    };
+  }
+  if (status.maintenance_phase === "backup" || status.maintenance_phase === "backup_complete") {
+    return {
+      detail: status.maintenance_message || "Creating and verifying a full PostgreSQL backup before Docker changes.",
+      message: "Backing up Medusa",
+      stage: "polling",
+      targetVersion: maintenanceTarget,
+    };
+  }
+  if (status.maintenance_phase === "applying" || status.maintenance_phase === "building") {
+    return {
+      detail: status.maintenance_message || "Applying safe maintenance updates and rebuilding Compose services.",
+      message: "Maintaining Medusa",
+      stage: "polling",
+      targetVersion: maintenanceTarget,
+    };
+  }
+  if (status.maintenance_phase === "verifying") {
+    return {
+      detail: status.maintenance_message || "Waiting for Medusa health after maintenance.",
+      message: "Checking Medusa health",
+      stage: "health",
+      targetVersion: maintenanceTarget,
+    };
+  }
+  if (status.maintenance_phase === "failed") {
+    return {
+      detail: status.last_error || status.maintenance_message || "The host agent reported that maintenance failed.",
+      message: "Maintenance needs attention",
+      stage: "failed",
+      targetVersion: maintenanceTarget,
+    };
+  }
   if (status.phase === "requested") {
     return {
       detail: "The host agent has received the request and will start the server update shortly.",
@@ -3021,13 +3091,23 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
   const model = modelDisplayName(job.current_model);
   const cost = formatUsd(job.estimated_cost_usd ?? 0);
   const preset = job.processing_preset_name ? ` / ${job.processing_preset_name}` : "";
+  const worker = importJobWorkerLabel(job);
   return (
     <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : importJobEstimateTitle(job)}>
       <strong>{status}</strong>
       {model ? ` (${model})` : ""}
       {` (${importJobEstimatePrefix(job)}${cost}${preset})`}
+      {worker ? <span className="job-worker-label">{worker}</span> : null}
     </small>
   );
+}
+
+function importJobWorkerLabel(job: ImportJob) {
+  if (job.status !== "running" || !job.assigned_worker_kind) return "";
+  const heartbeat = job.lease_heartbeat_at ? `, heartbeat ${relativeTimeLabel(job.lease_heartbeat_at)}` : "";
+  if (job.assigned_worker_kind === "local") return `Local worker${heartbeat}`;
+  const name = job.assigned_client_name || job.assigned_client_id || "client";
+  return `Slipstream: ${name}${heartbeat}`;
 }
 
 function importJobTone(job: ImportJob): "neutral" | "good" | "warn" | "blue" {
@@ -16497,6 +16577,8 @@ function UtilitiesView({
   const clearCacheFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const hashBackfillFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const restartFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const releaseCheckFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const maintenanceRunFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const maintenanceStatus = useQuery({
     queryKey: ["database-maintenance-status"],
     queryFn: api.databaseMaintenanceStatus,
@@ -16512,9 +16594,15 @@ function UtilitiesView({
     queryFn: api.haproxyStatus,
     refetchInterval: 10000,
   });
+  const releaseStatus = useQuery({
+    queryKey: ["release-status", MEDUSA_BUILD_VERSION],
+    queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
+    refetchInterval: 10000,
+  });
   const status: DatabaseMaintenanceStatus | undefined = maintenanceStatus.data;
   const container: ContainerFootprintStatus | undefined = containerStatus.data;
   const haproxy: HAProxyStatsStatus | undefined = haproxyStatus.data;
+  const release: ReleaseStatus | undefined = releaseStatus.data;
   const ingestionRows = ingestionHistory.slice(0, 12);
   const latestIngestion = ingestionRows[0];
   const refreshMaintenanceQueries = (result: DatabaseMaintenanceStatus & { message?: string; database_size_after_bytes?: number | null }) => {
@@ -16637,6 +16725,36 @@ function UtilitiesView({
       restartFeedback.showError(message);
     },
   });
+  const requestReleaseCheck = useMutation({
+    mutationFn: () => api.requestReleaseCheck(MEDUSA_BUILD_VERSION),
+    onSuccess: (result) => {
+      releaseCheckFeedback.showSuccess();
+      queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], result);
+      void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
+    },
+    onError: (error) => releaseCheckFeedback.showError(actionFailureMessage("Could not request release check", error)),
+  });
+  const requestMaintenanceRun = useMutation({
+    mutationFn: () => api.requestMaintenanceRun(MEDUSA_BUILD_VERSION),
+    onSuccess: (result) => {
+      maintenanceRunFeedback.showSuccess();
+      queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], result);
+      void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
+    },
+    onError: (error) => maintenanceRunFeedback.showError(actionFailureMessage("Could not request maintenance", error)),
+  });
+  const confirmMaintenanceRun = useCallback(async () => {
+    const confirmed = await dialogs.confirm({
+      cancelLabel: "Not Yet",
+      confirmLabel: "Run Maintenance",
+      eyebrow: "Maintenance",
+      message:
+        "Medusa will ask the host agent to check already-merged safe updates, create and verify a full database backup, then rebuild only if the maintenance gates pass. Active document work still blocks the run.",
+      title: "Run Medusa maintenance now?",
+      tone: "warning",
+    });
+    if (confirmed) requestMaintenanceRun.mutate();
+  }, [dialogs, requestMaintenanceRun]);
   const activeMaintenanceOperation = status?.active_operation || null;
   const activeMaintenanceRef = useRef<string | null>(null);
   useEffect(() => {
@@ -16960,6 +17078,15 @@ function UtilitiesView({
           </div>
         </section>
         <DatabaseBackupRestorePanel backupRuns={backupRuns} dialogs={dialogs} preferences={preferences} />
+        <MaintenanceControlPanel
+          checkBusy={requestReleaseCheck.isPending}
+          checkFeedback={releaseCheckFeedback.feedback}
+          onCheck={() => requestReleaseCheck.mutate()}
+          onRun={() => void confirmMaintenanceRun()}
+          release={release}
+          runBusy={requestMaintenanceRun.isPending}
+          runFeedback={maintenanceRunFeedback.feedback}
+        />
         <section className="utilities-section">
           <div className="panel-title-row utility-section-title">
             <div>
@@ -17307,6 +17434,153 @@ function releaseCommitLabel(status?: ReleaseStatus) {
   return stampHash ? stampHash.slice(0, 12) : "Unavailable";
 }
 
+function maintenancePhaseLabel(phase?: string | null) {
+  if (!phase || phase === "idle") return "Ready";
+  return phase.replaceAll("_", " ");
+}
+
+function maintenanceStatusLine(status?: ReleaseStatus) {
+  if (!status) return "Loading maintenance status";
+  if (status.maintenance_message) return status.maintenance_message;
+  if (status.maintenance_phase && status.maintenance_phase !== "idle") return maintenancePhaseLabel(status.maintenance_phase);
+  if (status.maintenance_requires_approval) return "Approval required";
+  if (status.maintenance_auto_apply_eligible) return "Auto-eligible";
+  return "Ready";
+}
+
+function maintenanceBackupLabel(status?: ReleaseStatus) {
+  if (!status) return "Loading";
+  if (status.maintenance_backup_run_id) return `${status.maintenance_backup_status.replaceAll("_", " ")} / ${status.maintenance_backup_run_id.slice(0, 8)}`;
+  return status.maintenance_backup_status?.replaceAll("_", " ") || (status.maintenance_backup_required ? "Required" : "Not required");
+}
+
+function maintenanceClassificationLabel(status?: ReleaseStatus) {
+  if (!status) return "Loading";
+  const classification = status.maintenance_update_classification || "unknown";
+  const label = classification.replaceAll("_", " ");
+  if (status.maintenance_requires_approval) return `${label} / approval`;
+  if (status.maintenance_auto_apply_eligible) return `${label} / auto`;
+  return label;
+}
+
+function maintenanceDockerHostLabel(status?: ReleaseStatus) {
+  const engine = status?.docker_engine_version || "Docker unknown";
+  const compose = status?.docker_compose_version || "Compose unknown";
+  return `${engine} / ${compose}`;
+}
+
+function maintenanceRunDisabledReason(status?: ReleaseStatus, busy = false) {
+  if (busy) return "maintenance request is already in progress.";
+  if (!status) return "maintenance status is still loading.";
+  if (MAINTENANCE_BUSY_PHASES.has(status.maintenance_phase)) return "maintenance is already running.";
+  if (status.maintenance_requires_approval) return "this update needs the header Upgrade Now approval path.";
+  return "";
+}
+
+function MaintenanceControlPanel({
+  checkBusy,
+  checkFeedback,
+  onCheck,
+  onRun,
+  release,
+  runBusy,
+  runFeedback,
+  statusMode = false,
+}: {
+  checkBusy: boolean;
+  checkFeedback?: AsyncActionFeedback | null;
+  onCheck: () => void;
+  onRun: () => void;
+  release?: ReleaseStatus;
+  runBusy: boolean;
+  runFeedback?: AsyncActionFeedback | null;
+  statusMode?: boolean;
+}) {
+  const maintenanceBusy = release ? MAINTENANCE_BUSY_PHASES.has(release.maintenance_phase) : false;
+  const checkDisabledReason = checkBusy
+    ? "release check request is already in progress."
+    : maintenanceBusy
+      ? "maintenance is already running."
+      : "";
+  const runDisabledReason = maintenanceRunDisabledReason(release, runBusy);
+  const blockerDetail = release?.maintenance_blockers.length
+    ? release.maintenance_blockers.join(" / ")
+    : release?.maintenance_idle === false
+      ? "Waiting for the idle grace period"
+      : "No blockers reported";
+  const autoPolicy = release?.maintenance_requires_approval
+    ? "Manual approval"
+    : release?.maintenance_auto_apply_eligible
+      ? "Auto lane"
+      : "Check pending";
+  const sectionClass = statusMode ? "status-detail-panel maintenance-control-panel" : "utilities-section";
+  const titleClass = statusMode ? "panel-title-row" : "panel-title-row utility-section-title";
+
+  return (
+    <section className={sectionClass}>
+      <div className={titleClass}>
+        <div>
+          <h3>Maintenance</h3>
+          <span>{maintenanceStatusLine(release)}</span>
+        </div>
+        <Wrench size={statusMode ? 18 : 19} />
+      </div>
+      <div className={statusMode ? "maintenance-status-grid compact" : "utilities-status-grid maintenance-status-grid"}>
+        <div>
+          <span>Update class</span>
+          <strong>{maintenanceClassificationLabel(release)}</strong>
+        </div>
+        <div>
+          <span>Backup gate</span>
+          <strong>{maintenanceBackupLabel(release)}</strong>
+        </div>
+        <div>
+          <span>Active sessions</span>
+          <strong>{release ? formatMetric(release.maintenance_active_session_count) : "..."}</strong>
+        </div>
+        <div>
+          <span>Host Docker</span>
+          <strong>{maintenanceDockerHostLabel(release)}</strong>
+        </div>
+      </div>
+      <div className="container-control-row maintenance-control-row">
+        <div>
+          <strong>{autoPolicy}</strong>
+          <span>{blockerDetail}</span>
+        </div>
+        <div className="maintenance-control-actions">
+          <AsyncActionSlot busy={checkBusy} feedback={checkFeedback} label="Release check request in progress">
+            <button
+              className={asyncFeedbackClass("secondary-button compact", checkFeedback, checkBusy)}
+              data-disabled-reason={checkDisabledReason}
+              data-tooltip="Ask the host agent to fetch upstream release state and refresh the maintenance classification."
+              disabled={Boolean(checkDisabledReason)}
+              onClick={onCheck}
+              type="button"
+            >
+              <RefreshCw className={checkBusy ? "spin" : ""} size={14} />
+              {checkBusy ? "Checking" : "Check Now"}
+            </button>
+          </AsyncActionSlot>
+          <AsyncActionSlot busy={runBusy} feedback={runFeedback} label="Maintenance request in progress">
+            <button
+              className={asyncFeedbackClass("secondary-button compact", runFeedback, runBusy)}
+              data-disabled-reason={runDisabledReason}
+              data-tooltip="Request the idle-gated host maintenance lane. It must create and verify a full PostgreSQL backup before any rebuild or runtime refresh."
+              disabled={Boolean(runDisabledReason)}
+              onClick={onRun}
+              type="button"
+            >
+              <Wrench className={runBusy || maintenanceBusy ? "spin" : ""} size={14} />
+              {runBusy || maintenanceBusy ? "Maintaining" : "Run Maintenance Now"}
+            </button>
+          </AsyncActionSlot>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function StatusMetricCard({
   detail,
   icon,
@@ -17342,7 +17616,10 @@ function StatusFactRow({ label, value, detail }: { label: string; value: string;
   );
 }
 
-function StatusView({ dashboard }: { dashboard?: Dashboard }) {
+function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: AppDialogController }) {
+  const queryClient = useQueryClient();
+  const releaseCheckFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const maintenanceRunFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const containerStatus = useQuery({
     queryKey: ["container-footprint-status"],
     queryFn: api.containerFootprintStatus,
@@ -17373,6 +17650,36 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
     queryFn: api.cacheStatus,
     refetchInterval: 30000,
   });
+  const requestReleaseCheck = useMutation({
+    mutationFn: () => api.requestReleaseCheck(MEDUSA_BUILD_VERSION),
+    onSuccess: (result) => {
+      releaseCheckFeedback.showSuccess();
+      queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], result);
+      void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
+    },
+    onError: (error) => releaseCheckFeedback.showError(actionFailureMessage("Could not request release check", error)),
+  });
+  const requestMaintenanceRun = useMutation({
+    mutationFn: () => api.requestMaintenanceRun(MEDUSA_BUILD_VERSION),
+    onSuccess: (result) => {
+      maintenanceRunFeedback.showSuccess();
+      queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], result);
+      void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
+    },
+    onError: (error) => maintenanceRunFeedback.showError(actionFailureMessage("Could not request maintenance", error)),
+  });
+  const confirmMaintenanceRun = useCallback(async () => {
+    const confirmed = await dialogs.confirm({
+      cancelLabel: "Not Yet",
+      confirmLabel: "Run Maintenance",
+      eyebrow: "Maintenance",
+      message:
+        "Medusa will ask the host agent to check already-merged safe updates, create and verify a full database backup, then rebuild only if the maintenance gates pass. Active document work still blocks the run.",
+      title: "Run Medusa maintenance now?",
+      tone: "warning",
+    });
+    if (confirmed) requestMaintenanceRun.mutate();
+  }, [dialogs, requestMaintenanceRun]);
 
   const container = containerStatus.data;
   const database = databaseStatus.data;
@@ -17526,6 +17833,16 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
             detail={`${formatMetric(dashboard?.queue_import_jobs)} queue items / ${formatMetric(dashboard?.review_items)} review items`}
           />
         </div>
+        <MaintenanceControlPanel
+          checkBusy={requestReleaseCheck.isPending}
+          checkFeedback={releaseCheckFeedback.feedback}
+          onCheck={() => requestReleaseCheck.mutate()}
+          onRun={() => void confirmMaintenanceRun()}
+          release={release}
+          runBusy={requestMaintenanceRun.isPending}
+          runFeedback={maintenanceRunFeedback.feedback}
+          statusMode
+        />
         <div className="status-detail-grid">
           <section className="status-detail-panel">
             <div className="panel-title-row">
@@ -17839,6 +18156,219 @@ function ConcordanceEstimatePanel({
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function SlipstreamSettingsPanel() {
+  const queryClient = useQueryClient();
+  const [enrollmentLabel, setEnrollmentLabel] = useState("");
+  const [enrollmentTtl, setEnrollmentTtl] = useState(60);
+  const [createdEnrollment, setCreatedEnrollment] = useState<string | null>(null);
+  const enrollmentFeedback = useAsyncActionFeedback();
+  const clientActionFeedback = useAsyncActionFeedbackMap();
+  const leaseActionFeedback = useAsyncActionFeedbackMap();
+  const status = useQuery({
+    queryKey: ["slipstream-status"],
+    queryFn: api.slipstreamStatus,
+    refetchInterval: 10000,
+  });
+  const slipstream = status.data;
+  const createEnrollment = useMutation({
+    mutationFn: () => api.createSlipstreamEnrollment({ label: enrollmentLabel.trim() || null, ttl_minutes: enrollmentTtl }),
+    onSuccess: (enrollment) => {
+      enrollmentFeedback.showSuccess();
+      setCreatedEnrollment(enrollment.token || "");
+      void queryClient.invalidateQueries({ queryKey: ["slipstream-status"] });
+    },
+    onError: (error) => {
+      enrollmentFeedback.showError(actionFailureMessage("Could not create Slipstream enrollment", error));
+    },
+  });
+  const disableClient = useMutation({
+    mutationFn: api.disableSlipstreamClient,
+    onSuccess: (_result, clientId) => {
+      clientActionFeedback.showSuccess(clientId);
+      void queryClient.invalidateQueries({ queryKey: ["slipstream-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (error, clientId) => clientActionFeedback.showError(clientId, actionFailureMessage("Could not disable Slipstream client", error)),
+  });
+  const revokeClientMutation = useMutation({
+    mutationFn: api.revokeSlipstreamClient,
+    onSuccess: (_result, clientId) => {
+      clientActionFeedback.showSuccess(clientId);
+      void queryClient.invalidateQueries({ queryKey: ["slipstream-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (error, clientId) => clientActionFeedback.showError(clientId, actionFailureMessage("Could not revoke Slipstream client", error)),
+  });
+  const cancelLeaseMutation = useMutation({
+    mutationFn: api.cancelSlipstreamLease,
+    onSuccess: (_result, leaseId) => {
+      leaseActionFeedback.showSuccess(leaseId);
+      void queryClient.invalidateQueries({ queryKey: ["slipstream-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+    },
+    onError: (error, leaseId) => leaseActionFeedback.showError(leaseId, actionFailureMessage("Could not cancel Slipstream lease", error)),
+  });
+  const activeLeases = slipstream?.active_leases || [];
+  const clients = slipstream?.clients || [];
+  const statusText = !slipstream
+    ? "Loading"
+    : slipstream.enabled
+      ? `${slipstream.online_client_count} online; ${slipstream.active_lease_count} active`
+      : "Disabled by env";
+  const createDisabledReason = createEnrollment.isPending
+    ? "enrollment creation is already running."
+    : !slipstream?.enabled
+      ? "Slipstream is disabled by environment settings."
+      : "";
+  return (
+    <div className="slipstream-settings-panel">
+      <div className="panel-title-row">
+        <div>
+          <h2>Slipstream</h2>
+          <span>{statusText}</span>
+        </div>
+        <Server size={20} />
+      </div>
+      <div className="slipstream-metric-grid">
+        <div>
+          <span>Clients</span>
+          <strong>{formatMetric(clients.length)}</strong>
+        </div>
+        <div>
+          <span>Online</span>
+          <strong>{formatMetric(slipstream?.online_client_count || 0)}</strong>
+        </div>
+        <div>
+          <span>Leases</span>
+          <strong>{formatMetric(slipstream?.active_lease_count || 0)}</strong>
+        </div>
+        <div>
+          <span>TTL</span>
+          <strong>{formatDuration(slipstream?.lease_ttl_seconds) || "0s"}</strong>
+        </div>
+      </div>
+      <div className="slipstream-enrollment-row">
+        <label>
+          Label
+          <input
+            data-tooltip="Name the next Slipstream enrollment token."
+            onChange={(event) => setEnrollmentLabel(event.target.value)}
+            placeholder="Desktop import helper"
+            value={enrollmentLabel}
+          />
+        </label>
+        <label>
+          Minutes
+          <input
+            data-tooltip="Set how long the next enrollment token remains usable."
+            min={1}
+            onChange={(event) => setEnrollmentTtl(Math.max(1, Number(event.target.value) || 1))}
+            type="number"
+            value={enrollmentTtl}
+          />
+        </label>
+        <AsyncActionSlot busy={createEnrollment.isPending} feedback={enrollmentFeedback.feedback} label="Slipstream enrollment creation in progress">
+          <button
+            className={asyncFeedbackClass("secondary-button", enrollmentFeedback.feedback, createEnrollment.isPending)}
+            data-disabled-reason={createDisabledReason}
+            data-tooltip="Create a one-time Slipstream enrollment token."
+            disabled={Boolean(createDisabledReason)}
+            onClick={() => createEnrollment.mutate()}
+            type="button"
+          >
+            <KeyRound className={createEnrollment.isPending ? "spin" : ""} size={16} />
+            {createEnrollment.isPending ? "Creating" : "Create Token"}
+          </button>
+        </AsyncActionSlot>
+      </div>
+      {createdEnrollment ? (
+        <div className="slipstream-token-row">
+          <input readOnly value={createdEnrollment} />
+          <button
+            className="icon-button compact"
+            data-tooltip="Copy the Slipstream enrollment token."
+            onClick={() => void navigator.clipboard?.writeText(createdEnrollment)}
+            type="button"
+          >
+            <Copy size={15} />
+          </button>
+        </div>
+      ) : null}
+      <div className="slipstream-list">
+        {clients.map((client) => {
+          const feedback = clientActionFeedback.feedbackFor(client.id);
+          const busy = disableClient.isPending || revokeClientMutation.isPending;
+          return (
+            <div className="slipstream-row" key={client.id}>
+              <div>
+                <strong>{client.name}</strong>
+                <span>{client.online ? "online" : client.last_check_in_at ? `last ${relativeTimeLabel(client.last_check_in_at)}` : "not checked in"}</span>
+              </div>
+              <StatusPill value={client.status} tone={client.status === "active" ? "good" : "neutral"} />
+              <span>{client.capabilities.join(", ") || "no capabilities"}</span>
+              <AsyncActionSlot busy={busy} feedback={feedback} label="Slipstream client action in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button compact", feedback, busy)}
+                  data-disabled-reason={client.status !== "active" ? "client is not active." : ""}
+                  data-tooltip="Disable this Slipstream client and return any active lease to the queue."
+                  disabled={client.status !== "active" || busy}
+                  onClick={() => disableClient.mutate(client.id)}
+                  type="button"
+                >
+                  <Ban size={14} />
+                  Disable
+                </button>
+              </AsyncActionSlot>
+              <button
+                className="secondary-button compact"
+                data-disabled-reason={client.status === "revoked" ? "client is already revoked." : ""}
+                data-tooltip="Revoke this Slipstream client permanently."
+                disabled={client.status === "revoked" || busy}
+                onClick={() => revokeClientMutation.mutate(client.id)}
+                type="button"
+              >
+                <Trash2 size={14} />
+                Revoke
+              </button>
+            </div>
+          );
+        })}
+        {!clients.length ? <p className="empty-note">No Slipstream clients registered.</p> : null}
+      </div>
+      <div className="slipstream-list">
+        {activeLeases.map((lease: SlipstreamLease) => {
+          const feedback = leaseActionFeedback.feedbackFor(lease.id);
+          const busy = cancelLeaseMutation.isPending;
+          return (
+            <div className="slipstream-row" key={lease.id}>
+              <div>
+                <strong>{lease.job_type} job</strong>
+                <span>{lease.client_name || lease.worker_kind}</span>
+              </div>
+              <StatusPill value={lease.status} tone="blue" />
+              <span>{lease.heartbeat_at ? `heartbeat ${relativeTimeLabel(lease.heartbeat_at)}` : "no heartbeat"}</span>
+              <AsyncActionSlot busy={busy} feedback={feedback} label="Slipstream lease cancel in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button compact", feedback, busy)}
+                  data-tooltip="Cancel this active Slipstream lease and return the job to the queue."
+                  disabled={busy}
+                  onClick={() => cancelLeaseMutation.mutate(lease.id)}
+                  type="button"
+                >
+                  <X size={14} />
+                  Cancel
+                </button>
+              </AsyncActionSlot>
+            </div>
+          );
+        })}
+        {!activeLeases.length ? <p className="empty-note">No active Slipstream leases.</p> : null}
+      </div>
     </div>
   );
 }
@@ -18612,6 +19142,7 @@ function SettingsView({
           </div>
         </div>
       </div>
+      <SlipstreamSettingsPanel />
       <div className="preferences-panel">
         <div className="panel-title-row">
           <div>
@@ -19533,6 +20064,23 @@ export default function App() {
     retry: (failureCount, error) => isTransientAppStartupError(error) && failureCount < STARTUP_HEALTH_RETRY_LIMIT,
     retryDelay: 1000,
   });
+  useEffect(() => {
+    if (!me.data) return;
+    let cancelled = false;
+    const sendHeartbeat = () => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      void api.heartbeat().catch(() => undefined);
+    };
+    sendHeartbeat();
+    const interval = window.setInterval(sendHeartbeat, 60_000);
+    const handleVisibilityChange = () => sendHeartbeat();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [me.data]);
   const dashboard = useQuery({
     queryKey: ["dashboard"],
     queryFn: api.dashboard,
@@ -19686,6 +20234,16 @@ export default function App() {
     enabled: Boolean(me.data),
     refetchInterval: releaseUpgradeLocked ? RELEASE_POLL_INTERVAL_MS : IDLE_RELEASE_REFETCH_INTERVAL_MS,
   });
+  useEffect(() => {
+    const status = releaseStatus.data;
+    if (!status || releaseUpgradeLock) return;
+    const transactionActive = RELEASE_BUSY_PHASES.has(status.phase) || MAINTENANCE_BUSY_PHASES.has(status.maintenance_phase);
+    if (!transactionActive) return;
+    setReleaseUpgradeLock({
+      ...releaseUpgradeLockFromStatus(status),
+      startedAt: Date.now(),
+    });
+  }, [releaseStatus.data, releaseUpgradeLock]);
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => queryClient.clear(),
@@ -19880,14 +20438,25 @@ export default function App() {
         if (cancelled) return;
         queryClient.setQueryData(["release-status", MEDUSA_BUILD_VERSION], status);
         const nextLock = releaseUpgradeLockFromStatus(status);
-        if (status.phase === "failed") {
+        if (status.phase === "failed" || status.maintenance_phase === "failed") {
           setReleaseUpgradeLock((current) =>
             current
               ? {
                   ...current,
                   ...nextLock,
-                  error: status.last_error || status.message,
+                  error: status.last_error || status.maintenance_message || status.message,
                   stage: "failed",
+                }
+              : current,
+          );
+          return;
+        }
+        if (MAINTENANCE_BUSY_PHASES.has(status.maintenance_phase)) {
+          setReleaseUpgradeLock((current) =>
+            current
+              ? {
+                  ...current,
+                  ...nextLock,
                 }
               : current,
           );
@@ -20358,7 +20927,7 @@ export default function App() {
             preferences={preferences.data}
           />
         ) : null}
-        {activeView === "status" ? <StatusView dashboard={dashboard.data} /> : null}
+        {activeView === "status" ? <StatusView dashboard={dashboard.data} dialogs={appDialogs} /> : null}
         {activeView === "settings" ? (
           <SettingsView
             capabilities={concordanceCapabilities.data || []}

@@ -180,6 +180,70 @@ def test_two_factor_setup_enable_and_recovery_code_login(monkeypatch, tmp_path):
         assert user.two_factor_recovery_codes_remaining == 9
 
 
+def test_activity_heartbeat_updates_last_seen_without_reviving_invalid_sessions(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.main import activity_heartbeat
+    from app.models import SessionToken, User
+    from app.security import hash_password, hash_token
+
+    Session = make_session()
+    now = datetime.now(timezone.utc)
+    with Session() as db:
+        user = User(
+            email="admin@medusa.local",
+            display_name="Admin",
+            password_hash=hash_password("correct-password"),
+        )
+        db.add(user)
+        db.flush()
+        active_session = SessionToken(
+            user_id=user.id,
+            token_hash=hash_token("active-token"),
+            expires_at=now + timedelta(days=1),
+            last_seen_at=now - timedelta(minutes=20),
+        )
+        revoked_session = SessionToken(
+            user_id=user.id,
+            token_hash=hash_token("revoked-token"),
+            expires_at=now + timedelta(days=1),
+            last_seen_at=now - timedelta(minutes=20),
+            revoked_at=now - timedelta(minutes=1),
+        )
+        expired_session = SessionToken(
+            user_id=user.id,
+            token_hash=hash_token("expired-token"),
+            expires_at=now - timedelta(minutes=1),
+            last_seen_at=now - timedelta(minutes=20),
+        )
+        db.add_all([active_session, revoked_session, expired_session])
+        db.commit()
+
+        result = activity_heartbeat(db, token="active-token")
+        db.refresh(active_session)
+        assert result["status"] == "ok"
+        assert active_session.last_seen_at is not None
+        assert active_session.last_seen_at > now - timedelta(minutes=1)
+
+        with pytest.raises(HTTPException) as revoked:
+            activity_heartbeat(db, token="revoked-token")
+        with pytest.raises(HTTPException) as expired:
+            activity_heartbeat(db, token="expired-token")
+
+        db.refresh(revoked_session)
+        db.refresh(expired_session)
+        assert revoked.value.status_code == 401
+        assert expired.value.status_code == 401
+        assert revoked_session.last_seen_at == now - timedelta(minutes=20)
+        assert expired_session.last_seen_at == now - timedelta(minutes=20)
+
+
 def test_ensure_admin_user_handles_concurrent_insert(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

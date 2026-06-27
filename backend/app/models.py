@@ -10,12 +10,14 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Table,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -117,10 +119,28 @@ class SessionToken(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512))
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+def _restore_session_token_timezone(session_token: SessionToken) -> None:
+    for field in ("expires_at", "last_seen_at", "revoked_at"):
+        value = getattr(session_token, field, None)
+        if value is not None and value.tzinfo is None:
+            setattr(session_token, field, value.replace(tzinfo=timezone.utc))
+
+
+@event.listens_for(SessionToken, "load")
+def _session_token_loaded(session_token: SessionToken, _: object) -> None:
+    _restore_session_token_timezone(session_token)
+
+
+@event.listens_for(SessionToken, "refresh")
+def _session_token_refreshed(session_token: SessionToken, _: object, __: object) -> None:
+    _restore_session_token_timezone(session_token)
 
 
 class CacheRevision(Base):
@@ -533,6 +553,68 @@ class DocumentAccessorySummary(Base, TimestampMixin):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     document: Mapped[Document] = relationship(back_populates="accessory_summaries")
+
+
+class SlipstreamClient(Base, TimestampMixin):
+    __tablename__ = "slipstream_clients"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str | None] = mapped_column(String(120))
+    capabilities: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    capacity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="active", nullable=False, index=True)
+    last_check_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_nonce: Mapped[str | None] = mapped_column(String(160))
+    client_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    leases: Mapped[list["SlipstreamLease"]] = relationship(back_populates="client")
+
+
+class SlipstreamEnrollment(Base, TimestampMixin):
+    __tablename__ = "slipstream_enrollments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    label: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    client_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("slipstream_clients.id", ondelete="SET NULL"))
+
+
+class SlipstreamLease(Base, TimestampMixin):
+    __tablename__ = "slipstream_leases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    client_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("slipstream_clients.id", ondelete="SET NULL"))
+    worker_kind: Mapped[str] = mapped_column(String(40), default="slipstream", nullable=False, index=True)
+    job_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="active", nullable=False, index=True)
+    lease_token_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_idempotency_key: Mapped[str | None] = mapped_column(String(120))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+
+    client: Mapped[SlipstreamClient | None] = relationship(back_populates="leases")
+
+
+Index(
+    "uq_slipstream_active_job_lease",
+    SlipstreamLease.job_type,
+    SlipstreamLease.job_id,
+    unique=True,
+    postgresql_where=SlipstreamLease.status == "active",
+    sqlite_where=SlipstreamLease.status == "active",
+)
 
 
 class Note(Base, TimestampMixin, SoftDeleteMixin):

@@ -5,6 +5,7 @@ Medusa keeps runtime and package dependencies current through a twice-weekly rev
 ## Cadence
 
 - Renovate checks for dependency updates on Tuesdays and Fridays between 9:00 AM and 5:00 PM America/Indiana/Indianapolis.
+- The host maintenance agent may apply already-merged safe updates and same-tag image/base refreshes on Tuesdays and Fridays during the quiet `03:00-06:00 America/Indiana/Indianapolis` window.
 - Critical security advisories can be handled outside the twice-weekly window when waiting would leave a known exposure in a public-facing or data-adjacent component.
 - Routine patch and minor updates should usually be reviewed in the next scheduled window.
 - Major updates should be reviewed as explicit upgrade work with release notes, migration notes, and rollback expectations.
@@ -14,6 +15,40 @@ Medusa keeps runtime and package dependencies current through a twice-weekly rev
 The root `renovate.json` file is the checked-in update policy. To make it active, enable the Renovate GitHub app for this repository or run a Renovate bot/runner against `evanmusial/medusa` with permission to open dependency update pull requests. Until that app or runner is active, the plan is documented and versioned but will not automatically create PRs.
 
 After activation, the first dependency dashboard should be reviewed to confirm that Docker Compose images, Dockerfiles, backend Python requirements, frontend npm dependencies, and lockfile maintenance are all being detected.
+
+## Maintenance Apply Lane
+
+`scripts/medusa-release-agent.py auto-maintenance` is the host-owned apply lane for already-reviewed maintenance. It runs outside the web container and can be triggered by systemd on the Tuesday/Friday quiet window or by the app writing `data/deploy/maintenance-request.json` after the user clicks `Run Maintenance Now` in Utilities or Status.
+
+The lane is auto-eligible only for:
+
+- Already-merged dependency-only patch or security updates.
+- Same-tag runtime image/base rebuild refreshes using `docker compose up -d --build --pull always`.
+
+The lane is approval-required for:
+
+- Major or minor dependency jumps.
+- HAProxy, Valkey, PostgreSQL, or pgvector runtime image tag changes.
+- Non-dependency code diffs.
+- Dirty checkouts.
+- Unknown classifications.
+- Any migration, release-note, or operational risk that cannot be classified as a dependency-only patch/security update.
+
+Docker Engine and Docker Compose plugin updates are never auto-applied by Medusa. The release status surface may report host Docker/Compose versions, but host package-manager updates remain an explicit operator checklist item.
+
+## Backup And Idle Gates
+
+Every maintenance apply that can recreate Docker services or touch PostgreSQL is hard-gated by a fresh successful full PostgreSQL backup. The agent invokes the backend CLI inside the current backend container:
+
+```bash
+python -m app.tools.database_backup --reason pre_maintenance --wait --json
+```
+
+Success requires a complete `BackupRun`, a GCS URI, SHA-256 value, nonzero size, uploaded manifest, and checksum verification evidence. If the backup cannot be created, uploaded, and checksum-verified, no Docker or PostgreSQL patching command runs.
+
+Scheduled maintenance also requires Medusa to be idle. Signed-in visible tabs call `/api/activity/heartbeat` roughly once per minute, and the agent treats sessions seen within the five-minute grace period as active. Scheduled maintenance blocks on active sessions, active imports, Concordance jobs, accessory summaries, backup/restore runs, and database maintenance. Explicit user approval can override active browser sessions, but not active document-processing work, backup/restore, or database maintenance.
+
+Utilities and Status show the maintenance phase, auto-apply eligibility, active session count, active work blockers, backup gate state, backup run id, update classification, and host Docker/Compose versions. `Check Now` asks the host agent to refresh release state; `Run Maintenance Now` requests the same gated apply lane immediately.
 
 ## Covered Surfaces
 
@@ -58,6 +93,12 @@ For Docker runtime image changes, also run:
 ```bash
 docker compose up -d --build
 docker compose ps
+```
+
+For runtime refreshes in the maintenance lane, the agent uses:
+
+```bash
+docker compose up -d --build --pull always
 ```
 
 The published-port invariant is:

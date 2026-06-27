@@ -69,6 +69,22 @@ export type ReleaseStatus = {
   request_id?: string | null;
   last_error?: string | null;
   dirty: boolean;
+  maintenance_phase: string;
+  maintenance_message?: string | null;
+  maintenance_auto_apply_eligible: boolean;
+  maintenance_requires_approval: boolean;
+  maintenance_update_classification: string;
+  maintenance_backup_required: boolean;
+  maintenance_backup_status: string;
+  maintenance_backup_run_id?: string | null;
+  maintenance_idle: boolean;
+  maintenance_active_session_count: number;
+  maintenance_blockers: string[];
+  maintenance_window?: string | null;
+  maintenance_last_checked_at?: string | null;
+  docker_engine_version?: string | null;
+  docker_compose_version?: string | null;
+  docker_host_updates: string;
 };
 
 export type Dashboard = {
@@ -195,6 +211,61 @@ export type CacheStatus = {
   queue_stats: CacheQueueStat[];
   database_footprints: CacheDatabaseFootprint[];
   storage_footprints: CacheStorageFootprint[];
+};
+
+export type SlipstreamClient = {
+  id: string;
+  name: string;
+  version?: string | null;
+  capabilities: string[];
+  capacity: number;
+  status: string;
+  last_check_in_at?: string | null;
+  online: boolean;
+  revoked_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SlipstreamLease = {
+  id: string;
+  client_id?: string | null;
+  client_name?: string | null;
+  worker_kind: string;
+  job_type: string;
+  job_id: string;
+  status: string;
+  claimed_at: string;
+  heartbeat_at: string;
+  expires_at: string;
+  completed_at?: string | null;
+  canceled_at?: string | null;
+  last_error?: string | null;
+};
+
+export type SlipstreamStatus = {
+  enabled: boolean;
+  public_base_url?: string | null;
+  heartbeat_seconds: number;
+  lease_ttl_seconds: number;
+  require_tls: boolean;
+  clients: SlipstreamClient[];
+  active_leases: SlipstreamLease[];
+  online_client_count: number;
+  active_lease_count: number;
+  oldest_active_lease_age_seconds?: number | null;
+  failed_or_expired_lease_count: number;
+};
+
+export type SlipstreamEnrollment = {
+  id: string;
+  label?: string | null;
+  status: string;
+  expires_at: string;
+  used_at?: string | null;
+  client_id?: string | null;
+  token?: string | null;
+  created_at: string;
 };
 
 export type CacheRefreshResult = {
@@ -1358,6 +1429,11 @@ export type ImportJob = {
   attempts: number;
   last_error?: string | null;
   locked_at?: string | null;
+  assigned_worker_kind?: string | null;
+  assigned_client_id?: string | null;
+  assigned_client_name?: string | null;
+  lease_heartbeat_at?: string | null;
+  lease_expires_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -1532,6 +1608,12 @@ export type ConcordanceJob = {
   status: string;
   attempts: number;
   last_error?: string | null;
+  locked_at?: string | null;
+  assigned_worker_kind?: string | null;
+  assigned_client_id?: string | null;
+  assigned_client_name?: string | null;
+  lease_heartbeat_at?: string | null;
+  lease_expires_at?: string | null;
   created_at: string;
   updated_at: string;
 };

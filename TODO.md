@@ -25,6 +25,10 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Document Processing And Intelligence
 
+- [ ] Extend Slipstream remote processing beyond the v1 lease/result foundation.
+  - Acceptance: remote clients can run the same configured import and Concordance capability set as local workers, including capability-specific result bundle schemas, derived asset uploads with checksum validation, central scoped provider-call proxying for any model-backed step, per-call usage/cost attribution, richer client health/rate-limit surfaces, and end-to-end UI smoke coverage for Settings, Queue, Status, import completion, Concordance completion, failure recovery, and lease cancellation.
+  - Partial: Slipstream v1 now has one-time enrollment tokens, Ed25519 signed polling, nonce/timestamp replay protection, registered clients, active lease quorum over `(job_type, job_id)`, shared local/remote claim coordination, heartbeat expiry/requeue, artifact download, event/fail/result endpoints, manifest-driven import and Concordance result application, Settings client/lease controls, Queue assignment labels, and a basic PDF text-import client. Remaining work is richer portable runners, provider-call proxying, asset bundle validation/storage beyond document/page/capability manifests, and broader integration smoke coverage.
+
 - [ ] Implement second-pass import processing on `codex/second-pass-document-processing`.
   - Acceptance: `docs/SECOND_PASS_DOCUMENT_PROCESSING.md`, `docs/ARCHITECTURE.md`, and this TODO ledger are committed before runtime code begins; the branch keeps second-pass work isolated; built-in Balanced/Strict Local/Deep Review presets exist; an emergency disable path can return imports to the current pipeline; final verification includes backend tests, frontend build, and app health.
 
@@ -261,6 +265,10 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 - [x] Add twice-weekly dependency update plan.
   - Acceptance: once Renovate is enabled for the repo, dependency update tooling checks Docker Compose images, Dockerfile base images, backend Python packages, and frontend npm packages twice weekly; critical security updates can bypass the normal window; runtime image PRs keep explicit tags, are not auto-merged, and preserve the invariant that HAProxy is the only host-published service on `3737` while Valkey remains private to backend/worker.
   - Completed: root `renovate.json` schedules Tuesday/Friday checks, and `docs/DEPENDENCY_UPDATE_PLAN.md` documents the activation prerequisite, Valkey-specific review checklist, verification commands, published-port invariant, and rollback path.
+
+- [x] Add idle-gated maintenance builds with a mandatory backup gate.
+  - Acceptance: the host release agent supports scheduled Tuesday/Friday maintenance plus on-demand app requests, classifies already-merged safe dependency updates separately from approval-required changes, waits for idle sessions and active-work blockers, creates and verifies a full GCS PostgreSQL backup before any Compose rebuild/runtime refresh, reports Docker/Compose versions without auto-updating the host engine, and exposes maintenance status/actions in Utilities and Status.
+  - Completed: `scripts/medusa-release-agent.py auto-maintenance`, backend backup/readiness CLIs, session heartbeat tracking, maintenance release-status fields, Utilities/Status controls, HAProxy maintenance copy, and systemd maintenance timer/path templates are implemented.
 
 - [x] Make Utilities database maintenance visible during long runs.
   - Acceptance: Compact Database and Optimize Database start backend-owned maintenance work, return immediately, report active operation/detail/elapsed time through database maintenance status, prevent overlapping maintenance operations, and keep the Utilities page responsive while PostgreSQL runs `VACUUM (FULL, ANALYZE)` or `ANALYZE`.

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run idle-gated Medusa maintenance
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/medusa
+ExecStart=/opt/medusa/scripts/medusa-release-agent.py auto-maintenance --repo /opt/medusa --data-dir /opt/medusa/data --compose-file docker-compose.yml --compose-file docker-compose.server.yml

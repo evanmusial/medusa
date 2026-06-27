@@ -1090,6 +1090,11 @@ class ImportJobOut(ApiModel):
     attempts: int
     last_error: str | None = None
     locked_at: datetime | None = None
+    assigned_worker_kind: str | None = None
+    assigned_client_id: str | None = None
+    assigned_client_name: str | None = None
+    lease_heartbeat_at: datetime | None = None
+    lease_expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1540,6 +1545,22 @@ class ReleaseStatusOut(BaseModel):
     request_id: str | None = None
     last_error: str | None = None
     dirty: bool = False
+    maintenance_phase: str = "idle"
+    maintenance_message: str | None = None
+    maintenance_auto_apply_eligible: bool = False
+    maintenance_requires_approval: bool = False
+    maintenance_update_classification: str = "unknown"
+    maintenance_backup_required: bool = True
+    maintenance_backup_status: str = "not_started"
+    maintenance_backup_run_id: str | None = None
+    maintenance_idle: bool = True
+    maintenance_active_session_count: int = 0
+    maintenance_blockers: list[str] = Field(default_factory=list)
+    maintenance_window: str | None = None
+    maintenance_last_checked_at: datetime | None = None
+    docker_engine_version: str | None = None
+    docker_compose_version: str | None = None
+    docker_host_updates: str = "report_only"
 
 
 class HAProxyServiceStatOut(BaseModel):
@@ -1841,5 +1862,144 @@ class ConcordanceJobOut(ApiModel):
     status: str
     attempts: int
     last_error: str | None = None
+    locked_at: datetime | None = None
+    assigned_worker_kind: str | None = None
+    assigned_client_id: str | None = None
+    assigned_client_name: str | None = None
+    lease_heartbeat_at: datetime | None = None
+    lease_expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class SlipstreamRegisterCreate(BaseModel):
+    enrollment_token: str
+    name: str
+    public_key: str
+    version: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    capacity: int = 1
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SlipstreamClientOut(ApiModel):
+    id: str
+    name: str
+    version: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    capacity: int
+    status: str
+    last_check_in_at: datetime | None = None
+    online: bool = False
+    revoked_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SlipstreamEnrollmentCreate(BaseModel):
+    label: str | None = None
+    ttl_minutes: int = 60
+
+
+class SlipstreamEnrollmentOut(BaseModel):
+    id: str
+    label: str | None = None
+    status: str
+    expires_at: datetime
+    used_at: datetime | None = None
+    client_id: str | None = None
+    token: str | None = None
+    created_at: datetime
+
+
+class SlipstreamCheckInCreate(BaseModel):
+    version: str | None = None
+    capabilities: list[str] | None = None
+    capacity: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SlipstreamClaimCreate(BaseModel):
+    job_types: list[str] = Field(default_factory=list)
+
+
+class SlipstreamHeartbeatCreate(BaseModel):
+    detail: str | None = None
+
+
+class SlipstreamEventCreate(BaseModel):
+    event_type: str = "slipstream_client_event"
+    message: str
+    level: str = "info"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class SlipstreamFailCreate(BaseModel):
+    error: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class SlipstreamResultCreate(BaseModel):
+    idempotency_key: str | None = None
+    current_step: str | None = None
+    document: dict[str, Any] = Field(default_factory=dict)
+    pages: list[dict[str, Any]] = Field(default_factory=list)
+    capabilities: list[dict[str, Any]] = Field(default_factory=list)
+    composition: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SlipstreamLeaseOut(BaseModel):
+    id: str
+    client_id: str | None = None
+    client_name: str | None = None
+    worker_kind: str
+    job_type: str
+    job_id: str
+    status: str
+    claimed_at: datetime
+    heartbeat_at: datetime
+    expires_at: datetime
+    completed_at: datetime | None = None
+    canceled_at: datetime | None = None
+    last_error: str | None = None
+
+
+class SlipstreamWorkOut(BaseModel):
+    job_type: str
+    job_id: str
+    lease_id: str
+    document_id: str | None = None
+    document_title: str | None = None
+    original_filename: str | None = None
+    checksum_sha256: str | None = None
+    artifact_url: str
+    idempotency_key: str
+    model_preferences: dict[str, str] = Field(default_factory=dict)
+    capability_versions: dict[str, int] = Field(default_factory=dict)
+    batch_id: str | None = None
+    current_step: str | None = None
+    processing_preset: dict[str, Any] = Field(default_factory=dict)
+    run_id: str | None = None
+    capability_keys: list[str] = Field(default_factory=list)
+    target_version: int | None = None
+
+
+class SlipstreamClaimOut(BaseModel):
+    lease: SlipstreamLeaseOut | None = None
+    lease_token: str | None = None
+    work: SlipstreamWorkOut | None = None
+
+
+class SlipstreamStatusOut(BaseModel):
+    enabled: bool
+    public_base_url: str | None = None
+    heartbeat_seconds: int
+    lease_ttl_seconds: int
+    require_tls: bool
+    clients: list[SlipstreamClientOut] = Field(default_factory=list)
+    active_leases: list[SlipstreamLeaseOut] = Field(default_factory=list)
+    online_client_count: int = 0
+    active_lease_count: int = 0
+    oldest_active_lease_age_seconds: int | None = None
+    failed_or_expired_lease_count: int = 0

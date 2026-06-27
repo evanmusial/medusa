@@ -122,6 +122,13 @@ When the authenticated user clicks `Upgrade Now`, Medusa writes:
 data/deploy/release-request.json
 ```
 
+Utilities and Status can also request release checks or gated maintenance runs by writing:
+
+```text
+data/deploy/release-check-request.json
+data/deploy/maintenance-request.json
+```
+
 The web backend does not run `git`, `docker`, or arbitrary host scripts. A host-side agent on the server owns those operations.
 
 Check for newer pushed code:
@@ -136,11 +143,19 @@ Apply a requested upgrade:
 scripts/medusa-release-agent.py apply --repo /path/to/medusa --data-dir /path/to/medusa/data --compose-file docker-compose.yml --compose-file docker-compose.server.yml
 ```
 
-The agent fetches the configured upstream, refuses to deploy from a dirty checkout, fast-forwards only, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with the requested Compose files, then waits for both `/api/health` and `/` through the public TLS/proxy path. Its health probes resolve `MEDUSA_PUBLIC_HOST` to `MEDUSA_RELEASE_HEALTHCHECK_IP` when set, otherwise to `MEDUSA_BIND_IP`, then `MEDUSA_BIND_IPV6`, then localhost.
+Run the idle-gated maintenance lane manually:
 
-A typical server setup is a timer for `check` plus a path or short timer for `apply` when `data/deploy/release-request.json` appears.
+```bash
+scripts/medusa-release-agent.py auto-maintenance --repo /path/to/medusa --data-dir /path/to/medusa/data --compose-file docker-compose.yml --compose-file docker-compose.server.yml --force-window
+```
 
-Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, and `medusa-release-apply.path` watches for authenticated upgrade requests written by the app. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and run them as the checkout owner so Git SSH credentials and Docker group membership are available.
+The agent fetches the configured upstream, refuses risky dirty or unknown checkouts, classifies dependency/runtime changes, sets `MEDUSA_BUILD_VERSION`, `MEDUSA_BUILD_DATE`, `MEDUSA_BUILD_HASH`, and `MEDUSA_GIT_SHA` for the Compose run, rebuilds with the requested Compose files, then waits for both `/api/health` and `/` through the public TLS/proxy path. Its health probes resolve `MEDUSA_PUBLIC_HOST` to `MEDUSA_RELEASE_HEALTHCHECK_IP` when set, otherwise to `MEDUSA_BIND_IP`, then `MEDUSA_BIND_IPV6`, then localhost. Any path that can recreate Docker services or touch PostgreSQL first runs a full backend PostgreSQL backup inside the current backend container and requires a completed, uploaded, checksum-verified GCS backup before Docker Compose is invoked.
+
+Scheduled maintenance defaults to Tuesdays and Fridays in the `03:00-06:00 America/Indiana/Indianapolis` window. It requires no active browser sessions within the five-minute grace period and no active imports, Concordance jobs, accessory summaries, backup/restore, or database maintenance. A user-requested maintenance run can override active browser sessions, but it still cannot override active document-processing or database/backup work.
+
+A typical server setup is a timer for `check`, a path or short timer for `apply` when `data/deploy/release-request.json` appears, a Tuesday/Friday timer for `auto-maintenance`, and path units for the on-demand check and maintenance request files.
+
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, `medusa-release-check.path` handles app-requested checks, `medusa-release-apply.path` watches for authenticated upgrade requests, and `medusa-maintenance.timer` plus `medusa-maintenance.path` run the idle-gated maintenance lane. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and run them as the checkout owner so Git SSH credentials and Docker group membership are available.
 
 ```ini
 ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
@@ -153,7 +168,10 @@ Then enable:
 ```bash
 sudo systemctl enable --now medusa.service
 sudo systemctl enable --now medusa-release-check.timer
+sudo systemctl enable --now medusa-release-check.path
 sudo systemctl enable --now medusa-release-apply.path
+sudo systemctl enable --now medusa-maintenance.timer
+sudo systemctl enable --now medusa-maintenance.path
 ```
 
 For a checkout at `~/git/medusa`, replace `/opt/medusa` with the absolute home path before enabling. If Docker is installed from Snap, keep `/snap/bin` in the unit `PATH` or point `ExecStart` directly at the Snap `docker` binary.

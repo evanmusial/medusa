@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     worker_import_concurrency: int = Field(default=4, validation_alias="MEDUSA_IMPORT_WORKER_CONCURRENCY")
     worker_stale_job_seconds: int = Field(default=900, validation_alias="MEDUSA_WORKER_STALE_JOB_SECONDS")
     document_cache_size_mb: int = Field(default=1024, validation_alias="MEDUSA_DOCUMENT_CACHE_SIZE_MB")
+    slipstream_enabled: bool = Field(default=False, validation_alias="MEDUSA_SLIPSTREAM_ENABLED")
+    slipstream_public_base_url: str | None = Field(default=None, validation_alias="MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL")
+    slipstream_lease_ttl_seconds: int = Field(default=180, validation_alias="MEDUSA_SLIPSTREAM_LEASE_TTL_SECONDS")
+    slipstream_heartbeat_seconds: int = Field(default=30, validation_alias="MEDUSA_SLIPSTREAM_HEARTBEAT_SECONDS")
+    slipstream_max_result_mb: int = Field(default=512, validation_alias="MEDUSA_SLIPSTREAM_MAX_RESULT_MB")
+    slipstream_require_tls: bool = Field(default=True, validation_alias="MEDUSA_SLIPSTREAM_REQUIRE_TLS")
+    slipstream_signature_window_seconds: int = Field(default=300, validation_alias="MEDUSA_SLIPSTREAM_SIGNATURE_WINDOW_SECONDS")
 
     cors_origins: list[str] = [
         "http://localhost:3737",

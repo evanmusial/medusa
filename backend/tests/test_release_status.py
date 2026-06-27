@@ -99,3 +99,29 @@ def test_release_status_recommends_browser_reload_when_server_is_newer(monkeypat
     assert status.phase == "reload_ready"
 
     reset_settings_cache()
+
+
+def test_release_status_writes_check_and_maintenance_requests(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    reset_settings_cache()
+
+    from app.services.release_status import request_maintenance_run, request_release_check
+
+    checked = request_release_check(client_version="20260627 (aaaaaaaaaaaa)", requested_by="admin@medusa.local")
+    check_path = tmp_path / "data" / "deploy" / "release-check-request.json"
+    check_payload = json.loads(check_path.read_text())
+
+    assert checked.maintenance_phase == "idle"
+    assert check_payload["requested_by"] == "admin@medusa.local"
+    assert check_payload["client_version"] == "20260627 (aaaaaaaaaaaa)"
+
+    maintenance = request_maintenance_run(client_version="20260627 (aaaaaaaaaaaa)", requested_by="admin@medusa.local")
+    maintenance_path = tmp_path / "data" / "deploy" / "maintenance-request.json"
+    maintenance_payload = json.loads(maintenance_path.read_text())
+
+    assert maintenance.maintenance_phase == "requested"
+    assert maintenance_payload["requested_by"] == "admin@medusa.local"
+    assert maintenance_payload["ignore_active_sessions"] is True
+    assert maintenance_payload["force_window"] is True
+
+    reset_settings_cache()

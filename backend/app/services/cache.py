@@ -21,7 +21,8 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session as SQLAlchemySession
 
 from app.config import get_settings
-from app.models import CacheRevision, ConcordanceJob, DocumentAccessorySummary, ImportJob, utc_now
+from app.models import CacheRevision, ConcordanceJob, DocumentAccessorySummary, ImportJob, SlipstreamClient, SlipstreamLease, utc_now
+from app.services.slipstream import client_is_online
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,9 @@ MODEL_CACHE_FAMILIES: dict[str, set[str]] = {
     "Project": {"organization", "library", "document_detail", "dashboard", "status"},
     "ProjectItem": {"organization", "library", "document_detail", "dashboard", "status"},
     "SavedSearch": {"organization"},
+    "SlipstreamClient": {"dashboard", "jobs", "status"},
+    "SlipstreamEnrollment": {"status"},
+    "SlipstreamLease": {"dashboard", "jobs", "status", "document_detail"},
     "Tag": {"organization", "library", "document_detail", "dashboard", "status"},
     "TagAlias": {"organization"},
     "TagRelationship": {"organization"},
@@ -537,6 +541,7 @@ def queue_stats(db: Session) -> list[dict[str, Any]]:
         ("Imports", ImportJob, ("queued", "running")),
         ("Concordance", ConcordanceJob, ("queued", "running")),
         ("Accessory summaries", DocumentAccessorySummary, ("queued", "running")),
+        ("Slipstream leases", SlipstreamLease, ("active",)),
     ]
     rows = []
     for label, model, statuses in specs:
@@ -550,6 +555,14 @@ def queue_stats(db: Session) -> list[dict[str, Any]]:
                 "oldest_age_seconds": int((now - oldest.created_at).total_seconds()) if oldest and oldest.created_at else None,
             }
         )
+    online_clients = [client for client in db.query(SlipstreamClient).all() if client_is_online(client)]
+    rows.append(
+        {
+            "queue": "Slipstream clients",
+            "active_count": len(online_clients),
+            "oldest_age_seconds": None,
+        }
+    )
     return rows
 
 

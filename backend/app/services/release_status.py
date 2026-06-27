@@ -6,8 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from app.config import get_settings
 from app.schemas import ReleaseStatusOut, ReleaseVersionOut
+from app.services.maintenance import DEFAULT_IDLE_GRACE_SECONDS, maintenance_readiness
 
 
 STATUS_SCHEMA_VERSION = 1
@@ -25,6 +28,14 @@ def _release_status_path() -> Path:
 def _release_request_path() -> Path:
     settings = get_settings()
     return settings.release_request_path or settings.data_dir / "deploy" / "release-request.json"
+
+
+def _release_check_request_path() -> Path:
+    return get_settings().data_dir / "deploy" / "release-check-request.json"
+
+
+def _maintenance_request_path() -> Path:
+    return get_settings().data_dir / "deploy" / "maintenance-request.json"
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -106,11 +117,12 @@ def _request_summary() -> tuple[datetime | None, str | None]:
     return _parse_datetime(payload.get("requested_at")), request_id if isinstance(request_id, str) else None
 
 
-def release_status(client_version: str | None = None) -> ReleaseStatusOut:
+def release_status(client_version: str | None = None, db: Session | None = None) -> ReleaseStatusOut:
     status_path = _release_status_path()
     payload = _read_json(status_path)
     request_path = _release_request_path()
     request_exists = request_path.exists()
+    maintenance_request_exists = _maintenance_request_path().exists()
     requested_at, request_id = _request_summary()
 
     runtime = _runtime_version()
@@ -140,6 +152,23 @@ def release_status(client_version: str | None = None) -> ReleaseStatusOut:
     last_error = payload.get("last_error") if payload else None
     last_error = last_error if isinstance(last_error, str) and last_error else None
 
+    maintenance = payload.get("maintenance") if payload else None
+    maintenance = maintenance if isinstance(maintenance, dict) else {}
+    readiness = maintenance.get("readiness") if isinstance(maintenance.get("readiness"), dict) else {}
+    if db is not None:
+        try:
+            readiness = maintenance_readiness(
+                db,
+                idle_grace_seconds=int(maintenance.get("idle_grace_seconds") or DEFAULT_IDLE_GRACE_SECONDS),
+            )
+        except Exception:
+            readiness = readiness or {}
+    maintenance_blockers = readiness.get("blockers") if isinstance(readiness.get("blockers"), list) else []
+    maintenance_last_checked_at = _parse_datetime(maintenance.get("checked_at"))
+    maintenance_phase = str(maintenance.get("phase") or "idle")
+    if maintenance_request_exists and maintenance_phase in {"idle", "current", "skipped", "blocked"}:
+        maintenance_phase = "requested"
+
     normalized_client_version = (client_version or "").strip()
     browser_reload_recommended = bool(
         normalized_client_version
@@ -165,6 +194,22 @@ def release_status(client_version: str | None = None) -> ReleaseStatusOut:
         request_id=request_id,
         last_error=last_error,
         dirty=dirty,
+        maintenance_phase=maintenance_phase,
+        maintenance_message=maintenance.get("message") if isinstance(maintenance.get("message"), str) else None,
+        maintenance_auto_apply_eligible=bool(maintenance.get("auto_apply_eligible")),
+        maintenance_requires_approval=bool(maintenance.get("requires_approval")),
+        maintenance_update_classification=str(maintenance.get("update_classification") or "unknown"),
+        maintenance_backup_required=bool(maintenance.get("backup_required", True)),
+        maintenance_backup_status=str(maintenance.get("backup_status") or "not_started"),
+        maintenance_backup_run_id=maintenance.get("backup_run_id") if isinstance(maintenance.get("backup_run_id"), str) else None,
+        maintenance_idle=bool(readiness.get("idle", True)),
+        maintenance_active_session_count=int(readiness.get("active_session_count") or 0),
+        maintenance_blockers=[str(blocker) for blocker in maintenance_blockers],
+        maintenance_window=maintenance.get("window") if isinstance(maintenance.get("window"), str) else None,
+        maintenance_last_checked_at=maintenance_last_checked_at,
+        docker_engine_version=maintenance.get("docker_engine_version") if isinstance(maintenance.get("docker_engine_version"), str) else None,
+        docker_compose_version=maintenance.get("docker_compose_version") if isinstance(maintenance.get("docker_compose_version"), str) else None,
+        docker_host_updates=str(maintenance.get("docker_host_updates") or "report_only"),
     )
 
 
@@ -186,4 +231,31 @@ def request_release_upgrade(client_version: str | None = None, requested_by: str
         "target": status.available.model_dump() if status.available else None,
     }
     _atomic_write_json(_release_request_path(), payload)
+    return release_status(client_version=client_version)
+
+
+def request_release_check(client_version: str | None = None, requested_by: str | None = None) -> ReleaseStatusOut:
+    payload = {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "request_id": secrets.token_urlsafe(12),
+        "requested_at": _now().isoformat(),
+        "requested_by": requested_by,
+        "client_version": (client_version or "").strip() or None,
+    }
+    _atomic_write_json(_release_check_request_path(), payload)
+    return release_status(client_version=client_version)
+
+
+def request_maintenance_run(client_version: str | None = None, requested_by: str | None = None) -> ReleaseStatusOut:
+    payload = {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "request_id": secrets.token_urlsafe(12),
+        "requested_at": _now().isoformat(),
+        "requested_by": requested_by,
+        "client_version": (client_version or "").strip() or None,
+        "ignore_active_sessions": True,
+        "force_window": True,
+        "source": "user_approved",
+    }
+    _atomic_write_json(_maintenance_request_path(), payload)
     return release_status(client_version=client_version)

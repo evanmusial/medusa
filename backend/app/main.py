@@ -56,6 +56,8 @@ from app.models import (
     ProjectBibliography,
     ProjectItem,
     SavedSearch,
+    SlipstreamClient,
+    SlipstreamLease,
     Tag,
     TagRelationship,
     TextChunk,
@@ -164,6 +166,19 @@ from app.schemas import (
     SavedSearchCreate,
     SavedSearchOut,
     SavedSearchPatch,
+    SlipstreamCheckInCreate,
+    SlipstreamClaimCreate,
+    SlipstreamClaimOut,
+    SlipstreamClientOut,
+    SlipstreamEnrollmentCreate,
+    SlipstreamEnrollmentOut,
+    SlipstreamEventCreate,
+    SlipstreamFailCreate,
+    SlipstreamHeartbeatCreate,
+    SlipstreamLeaseOut,
+    SlipstreamRegisterCreate,
+    SlipstreamResultCreate,
+    SlipstreamStatusOut,
     TagCreate,
     TagAssignmentPruneCreate,
     TagGovernancePatch,
@@ -197,6 +212,7 @@ from app.security import (
     hash_recovery_codes,
     revoke_other_sessions,
     revoke_session,
+    touch_session,
     totp_setup_uri,
     user_for_token,
     verify_password,
@@ -269,6 +285,11 @@ from app.services.exports import build_metadata_export, build_storage_manifest
 from app.services.haproxy_stats import haproxy_stats_status
 from app.services.history import changed_snapshot_fields, document_correction_snapshot, document_page_snapshot, record_document_version
 from app.services.import_sources import ImportSourceError, estimate_pdf_page_count, prepare_import_source
+from app.services.maintenance import (
+    mark_database_maintenance_active,
+    mark_database_maintenance_finished,
+    maintenance_readiness,
+)
 from app.services.ai import get_ai_service
 from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage
 from app.services.processing import (
@@ -313,9 +334,33 @@ from app.services.recommendations import (
     refresh_document_recommendations,
     resolve_doi_metadata_candidate,
 )
-from app.services.release_status import release_status, request_release_upgrade
+from app.services.release_status import (
+    release_status,
+    request_maintenance_run,
+    request_release_check,
+    request_release_upgrade,
+)
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import document_search_condition_and_rank, rebuild_document_search_text
+from app.services.slipstream import (
+    SlipstreamAuthError,
+    SlipstreamError,
+    artifact_for_lease,
+    cancel_lease,
+    claim_next_job_lease,
+    client_out,
+    complete_lease_from_result,
+    create_enrollment,
+    enrollment_out,
+    fail_lease,
+    heartbeat_lease,
+    record_client_event,
+    register_client,
+    revoke_client,
+    slipstream_status,
+    validate_lease_access,
+    verify_signature,
+)
 from app.services.verifier import normalized_title_similarity
 from app.services.tag_governance import (
     hybrid_tag_similarity,
@@ -467,6 +512,59 @@ def current_user(
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
+
+
+def _request_uses_tls(request: Request) -> bool:
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if forwarded_proto == "https" or request.url.scheme == "https":
+        return True
+    client_host = request.client.host if request.client else ""
+    return client_host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+async def current_slipstream_client(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> SlipstreamClient:
+    if settings.slipstream_require_tls and not _request_uses_tls(request):
+        raise HTTPException(status_code=403, detail="Slipstream requires HTTPS.")
+    client_id = request.headers.get("x-slipstream-client-id")
+    timestamp = request.headers.get("x-slipstream-timestamp")
+    nonce = request.headers.get("x-slipstream-nonce")
+    request_body_hash = request.headers.get("x-slipstream-body-sha256")
+    signature = request.headers.get("x-slipstream-signature")
+    if not all([client_id, timestamp, nonce, request_body_hash, signature]):
+        raise HTTPException(status_code=401, detail="Slipstream signature headers are required.")
+    client = db.get(SlipstreamClient, client_id)
+    if not client:
+        raise HTTPException(status_code=401, detail="Slipstream client not found.")
+    body = await request.body()
+    try:
+        verify_signature(
+            client,
+            method=request.method,
+            path=request.url.path,
+            timestamp=str(timestamp),
+            nonce=str(nonce),
+            request_body_hash=str(request_body_hash),
+            signature=str(signature),
+            body=body,
+        )
+    except SlipstreamAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return client
+
+
+def slipstream_lease_token(request: Request) -> str | None:
+    return request.headers.get("x-slipstream-lease-token")
+
+
+def http_error_for_slipstream(exc: Exception) -> HTTPException:
+    if isinstance(exc, SlipstreamAuthError):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, SlipstreamError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
 
 
 def set_cache_response_headers(response: Response | None, family: str, status: str) -> None:
@@ -1636,6 +1734,247 @@ def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
 
 
+@app.get("/api/slipstream/status", response_model=SlipstreamStatusOut)
+def slipstream_admin_status(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    payload = slipstream_status(db)
+    db.commit()
+    return payload
+
+
+@app.post("/api/slipstream/enrollments", response_model=SlipstreamEnrollmentOut)
+def create_slipstream_enrollment(
+    payload: SlipstreamEnrollmentCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    enrollment, token = create_enrollment(db, label=payload.label, ttl_minutes=payload.ttl_minutes)
+    db.commit()
+    db.refresh(enrollment)
+    return enrollment_out(enrollment, token=token)
+
+
+@app.get("/api/slipstream/clients", response_model=list[SlipstreamClientOut])
+def list_slipstream_clients(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, Any]]:
+    return [client_out(client) for client in db.query(SlipstreamClient).order_by(SlipstreamClient.created_at.asc()).all()]
+
+
+@app.post("/api/slipstream/clients/{client_id}/disable", response_model=SlipstreamClientOut)
+def disable_slipstream_client(
+    client_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    client = db.get(SlipstreamClient, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Slipstream client not found")
+    revoke_client(db, client, disable_only=True)
+    db.commit()
+    db.refresh(client)
+    return client_out(client)
+
+
+@app.post("/api/slipstream/clients/{client_id}/revoke", response_model=SlipstreamClientOut)
+def revoke_slipstream_client(
+    client_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    client = db.get(SlipstreamClient, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Slipstream client not found")
+    revoke_client(db, client)
+    db.commit()
+    db.refresh(client)
+    return client_out(client)
+
+
+@app.post("/api/slipstream/leases/{lease_id}/cancel", response_model=SlipstreamLeaseOut)
+def cancel_slipstream_lease(
+    lease_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    lease = db.get(SlipstreamLease, lease_id)
+    if not lease:
+        raise HTTPException(status_code=404, detail="Slipstream lease not found")
+    result = cancel_lease(db, lease)
+    db.commit()
+    return result
+
+
+@app.post("/api/slipstream/register", response_model=SlipstreamClientOut)
+def register_slipstream_client(
+    payload: SlipstreamRegisterCreate,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        client = register_client(
+            db,
+            enrollment_token=payload.enrollment_token,
+            name=payload.name,
+            public_key=payload.public_key,
+            version=payload.version,
+            capabilities=payload.capabilities or None,
+            capacity=payload.capacity,
+            metadata=payload.metadata,
+        )
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    db.refresh(client)
+    return client_out(client)
+
+
+@app.post("/api/slipstream/check-in", response_model=SlipstreamClientOut)
+def check_in_slipstream_client(
+    payload: SlipstreamCheckInCreate,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    client.last_check_in_at = utc_now()
+    if payload.version is not None:
+        client.version = payload.version
+    if payload.capabilities is not None:
+        client.capabilities = payload.capabilities
+    if payload.capacity is not None:
+        client.capacity = max(1, payload.capacity)
+    if payload.metadata:
+        metadata = dict(client.client_metadata or {})
+        metadata.update(payload.metadata)
+        client.client_metadata = metadata
+    db.commit()
+    db.refresh(client)
+    return client_out(client)
+
+
+@app.post("/api/slipstream/leases/claim", response_model=SlipstreamClaimOut)
+def claim_slipstream_lease(
+    payload: SlipstreamClaimCreate,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        claim = claim_next_job_lease(db, client=client, worker_kind="slipstream", job_types=payload.job_types or None)
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    return claim or {"lease": None, "lease_token": None, "work": None}
+
+
+@app.post("/api/slipstream/leases/{lease_id}/heartbeat", response_model=SlipstreamLeaseOut)
+def heartbeat_slipstream_lease(
+    lease_id: str,
+    payload: SlipstreamHeartbeatCreate,
+    request: Request,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        lease = validate_lease_access(db, lease_id=lease_id, client=client, lease_token=slipstream_lease_token(request))
+        result = heartbeat_lease(db, lease, detail=payload.detail)
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    return result
+
+
+@app.get("/api/slipstream/leases/{lease_id}/artifact")
+def slipstream_lease_artifact(
+    lease_id: str,
+    request: Request,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> FastAPIResponse:
+    try:
+        lease = validate_lease_access(db, lease_id=lease_id, client=client, lease_token=slipstream_lease_token(request))
+        data, filename = artifact_for_lease(db, lease)
+        heartbeat_lease(db, lease, detail="artifact downloaded")
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    return FastAPIResponse(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": content_disposition_header("attachment", filename)},
+    )
+
+
+@app.post("/api/slipstream/leases/{lease_id}/events", response_model=SlipstreamLeaseOut)
+def slipstream_lease_event(
+    lease_id: str,
+    payload: SlipstreamEventCreate,
+    request: Request,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        lease = validate_lease_access(db, lease_id=lease_id, client=client, lease_token=slipstream_lease_token(request))
+        record_client_event(db, lease, event_type=payload.event_type, message=payload.message, level=payload.level, payload=payload.payload)
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    db.refresh(lease)
+    return {
+        "id": lease.id,
+        "client_id": lease.client_id,
+        "client_name": lease.client.name if lease.client else None,
+        "worker_kind": lease.worker_kind,
+        "job_type": lease.job_type,
+        "job_id": lease.job_id,
+        "status": lease.status,
+        "claimed_at": lease.claimed_at,
+        "heartbeat_at": lease.heartbeat_at,
+        "expires_at": lease.expires_at,
+        "completed_at": lease.completed_at,
+        "canceled_at": lease.canceled_at,
+        "last_error": lease.last_error,
+    }
+
+
+@app.post("/api/slipstream/leases/{lease_id}/results", response_model=SlipstreamLeaseOut)
+async def slipstream_lease_result(
+    lease_id: str,
+    payload: SlipstreamResultCreate,
+    request: Request,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    body = await request.body()
+    max_bytes = max(1, settings.slipstream_max_result_mb) * 1024 * 1024
+    if len(body) > max_bytes:
+        raise HTTPException(status_code=413, detail="Slipstream result payload is too large.")
+    try:
+        lease = validate_lease_access(db, lease_id=lease_id, client=client, lease_token=slipstream_lease_token(request), require_active=False)
+        result = complete_lease_from_result(db, lease, manifest=payload.model_dump())
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    return result
+
+
+@app.post("/api/slipstream/leases/{lease_id}/fail", response_model=SlipstreamLeaseOut)
+def slipstream_lease_fail(
+    lease_id: str,
+    payload: SlipstreamFailCreate,
+    request: Request,
+    client: Annotated[SlipstreamClient, Depends(current_slipstream_client)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        lease = validate_lease_access(db, lease_id=lease_id, client=client, lease_token=slipstream_lease_token(request))
+        result = fail_lease(db, lease, error=payload.error, payload=payload.payload)
+    except Exception as exc:
+        raise http_error_for_slipstream(exc) from exc
+    db.commit()
+    return result
+
+
 @app.post("/api/auth/login", response_model=UserOut)
 def login(payload: LoginRequest, request: Request, response: Response, db: Annotated[Session, Depends(get_db)]) -> User:
     login_email = payload.email.strip().lower()
@@ -1671,6 +2010,18 @@ def logout(
 @app.get("/api/me", response_model=UserOut)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
     return user
+
+
+@app.post("/api/activity/heartbeat")
+def activity_heartbeat(
+    db: Annotated[Session, Depends(get_db)],
+    token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> dict[str, Any]:
+    session = touch_session(db, token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    db.commit()
+    return {"status": "ok", "last_seen_at": session.last_seen_at}
 
 
 @app.post("/api/me/two-factor/setup", response_model=TwoFactorSetupOut)
@@ -1739,9 +2090,10 @@ def disable_two_factor(
 @app.get("/api/release/status", response_model=ReleaseStatusOut)
 def read_release_status(
     _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
     client_version: str | None = Query(default=None, max_length=120),
 ) -> ReleaseStatusOut:
-    return release_status(client_version=client_version)
+    return release_status(client_version=client_version, db=db)
 
 
 @app.post("/api/release/upgrade", response_model=ReleaseStatusOut)
@@ -1755,6 +2107,22 @@ def start_release_upgrade(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/release/check", response_model=ReleaseStatusOut)
+def start_release_check(
+    user: Annotated[User, Depends(current_user)],
+    client_version: str | None = Query(default=None, max_length=120),
+) -> ReleaseStatusOut:
+    return request_release_check(client_version=client_version, requested_by=user.email)
+
+
+@app.post("/api/release/maintenance", response_model=ReleaseStatusOut)
+def start_maintenance_run(
+    user: Annotated[User, Depends(current_user)],
+    client_version: str | None = Query(default=None, max_length=120),
+) -> ReleaseStatusOut:
+    return request_maintenance_run(client_version=client_version, requested_by=user.email)
 
 
 @app.patch("/api/me", response_model=UserOut)
@@ -7525,12 +7893,47 @@ def import_job_event_message(job: ImportJob, event_type: str | None = None) -> s
     return None
 
 
+def active_slipstream_leases_by_job(db: Session, job_type: str, job_ids: list[str]) -> dict[str, SlipstreamLease]:
+    if not job_ids:
+        return {}
+    leases = (
+        db.query(SlipstreamLease)
+        .options(joinedload(SlipstreamLease.client))
+        .filter(
+            SlipstreamLease.job_type == job_type,
+            SlipstreamLease.job_id.in_(job_ids),
+            SlipstreamLease.status == "active",
+        )
+        .all()
+    )
+    return {lease.job_id: lease for lease in leases}
+
+
+def lease_assignment_payload(lease: SlipstreamLease | None) -> dict[str, Any]:
+    if not lease:
+        return {
+            "assigned_worker_kind": None,
+            "assigned_client_id": None,
+            "assigned_client_name": None,
+            "lease_heartbeat_at": None,
+            "lease_expires_at": None,
+        }
+    return {
+        "assigned_worker_kind": lease.worker_kind,
+        "assigned_client_id": lease.client_id,
+        "assigned_client_name": lease.client.name if lease.client else None,
+        "lease_heartbeat_at": lease.heartbeat_at,
+        "lease_expires_at": lease.expires_at,
+    }
+
+
 def import_job_out(
     job: ImportJob,
     *,
     model_preferences: dict[str, str] | None = None,
     estimated_cost_usd: float = 0.0,
     cost_estimate: tuple[float, str, int | None] | None = None,
+    lease: SlipstreamLease | None = None,
 ) -> dict[str, Any]:
     model_preferences = model_preferences or {}
     projected_cost, estimate_basis, estimate_page_count = cost_estimate or (0.0, "none", document_estimated_page_count(job.document))
@@ -7569,6 +7972,24 @@ def import_job_out(
         "attempts": job.attempts,
         "last_error": last_error or (event_error if job.status == "failed" else None),
         "locked_at": job.locked_at,
+        **lease_assignment_payload(lease),
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+
+
+def concordance_job_out(job: ConcordanceJob, *, lease: SlipstreamLease | None = None) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "run_id": job.run_id,
+        "document_id": job.document_id,
+        "capability_key": job.capability_key,
+        "target_version": job.target_version,
+        "status": job.status,
+        "attempts": job.attempts,
+        "last_error": job.last_error,
+        "locked_at": job.locked_at,
+        **lease_assignment_payload(lease),
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
@@ -7686,12 +8107,14 @@ def list_import_jobs(_: Annotated[User, Depends(current_user)], db: Annotated[Se
         estimate_rates=estimate_rates,
     )
     costs = import_job_costs_usd(db, [job.id for job in jobs])
+    leases = active_slipstream_leases_by_job(db, "import", [job.id for job in jobs])
     return [
         import_job_out(
             job,
             model_preferences=model_preferences,
             estimated_cost_usd=costs.get(job.id, 0.0),
             cost_estimate=estimate_import_job_cost_usd(job, model_preferences=model_preferences, rates=estimate_rates, db=db),
+            lease=leases.get(job.id),
         )
         for job in jobs
     ]
@@ -7914,6 +8337,10 @@ def _set_database_maintenance_active(operation: str, *, database_size_before: in
                 "last_operation_database_size_after_bytes": None,
             }
         )
+    mark_database_maintenance_active(
+        operation,
+        DATABASE_MAINTENANCE_DETAILS.get(operation, "Database maintenance is running."),
+    )
 
 
 def _update_database_maintenance_detail(detail: str) -> None:
@@ -7944,6 +8371,7 @@ def _finish_database_maintenance(
                 "last_operation_database_size_after_bytes": database_size_after,
             }
         )
+    mark_database_maintenance_finished(operation, status=status, detail=detail, error=error)
 
 
 def _execute_document_md5_backfill() -> None:
@@ -8556,7 +8984,9 @@ def list_concordance_jobs(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    return db.query(ConcordanceJob).order_by(ConcordanceJob.created_at.desc()).limit(100).all()
+    jobs = db.query(ConcordanceJob).order_by(ConcordanceJob.created_at.desc()).limit(100).all()
+    leases = active_slipstream_leases_by_job(db, "concordance", [job.id for job in jobs])
+    return [concordance_job_out(job, lease=leases.get(job.id)) for job in jobs]
 
 
 @app.get("/api/documents/{document_id}/events", response_model=list[ProcessingEventOut])

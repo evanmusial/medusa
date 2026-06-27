@@ -100,6 +100,43 @@ def test_backup_runs_block_overlapping_work(monkeypatch, tmp_path):
             raise AssertionError("Expected active backup to block restore.")
 
 
+def test_backup_run_is_verified_requires_manifest_checksum_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import BackupRun
+    from app.services.backups import backup_run_is_verified
+
+    run = BackupRun(
+        kind="backup",
+        reason="pre_maintenance",
+        status="complete",
+        phase="complete",
+        progress=100,
+        gcs_uri="gs://bucket/medusa/backups/pre-maintenance.dump.zst",
+        size_bytes=512,
+        sha256="a" * 64,
+        backup_metadata={
+            "gcs_uri": "gs://bucket/medusa/backups/pre-maintenance.dump.zst",
+            "size_bytes": 512,
+            "verified_at": "2026-06-27T03:14:00+00:00",
+            "verification_sha256": "a" * 64,
+        },
+    )
+
+    assert backup_run_is_verified(run) is True
+
+    run.backup_metadata = {**run.backup_metadata, "verification_sha256": "b" * 64}
+    assert backup_run_is_verified(run) is False
+
+    run.backup_metadata = {
+        "gcs_uri": "gs://bucket/medusa/backups/pre-maintenance.dump.zst",
+        "size_bytes": 512,
+        "verification_sha256": "a" * 64,
+    }
+    assert backup_run_is_verified(run) is False
+
+
 def test_list_backup_runs_returns_recent_history(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

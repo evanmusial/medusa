@@ -148,10 +148,12 @@ def verify_two_factor_code(user: User, code: str | None) -> bool:
 def create_session(db: Session, user: User, user_agent: str | None = None) -> str:
     settings = get_settings()
     token = secrets.token_urlsafe(48)
+    now = utc_now()
     session = SessionToken(
         user_id=user.id,
         token_hash=hash_token(token),
-        expires_at=utc_now() + timedelta(hours=settings.session_ttl_hours),
+        expires_at=now + timedelta(hours=settings.session_ttl_hours),
+        last_seen_at=now,
         user_agent=user_agent,
     )
     db.add(session)
@@ -191,6 +193,23 @@ def user_for_token(db: Session, token: str | None) -> User | None:
     if not session or not session.user.is_active:
         return None
     return session.user
+
+
+def touch_session(db: Session, token: str | None) -> SessionToken | None:
+    if not token:
+        return None
+    now = datetime.now(timezone.utc)
+    session = (
+        db.query(SessionToken)
+        .filter(SessionToken.token_hash == hash_token(token))
+        .filter(SessionToken.revoked_at.is_(None))
+        .filter(SessionToken.expires_at > now)
+        .one_or_none()
+    )
+    if not session or not session.user.is_active:
+        return None
+    session.last_seen_at = now
+    return session
 
 
 def ensure_admin_user(db: Session) -> User:

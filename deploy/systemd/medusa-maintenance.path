@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for user-approved Medusa maintenance requests
+
+[Path]
+PathExists=/opt/medusa/data/deploy/maintenance-request.json
+Unit=medusa-maintenance.service
+
+[Install]
+WantedBy=multi-user.target

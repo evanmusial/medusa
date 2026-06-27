@@ -180,6 +180,21 @@ def list_backup_runs(db: Session, limit: int = 50) -> list[BackupRun]:
     return db.query(BackupRun).order_by(BackupRun.created_at.desc()).limit(limit).all()
 
 
+def backup_run_is_verified(run: BackupRun | None) -> bool:
+    if not run or run.status != "complete":
+        return False
+    if not run.gcs_uri or not run.sha256 or not run.size_bytes or run.size_bytes <= 0:
+        return False
+    metadata = run.backup_metadata if isinstance(run.backup_metadata, dict) else {}
+    return bool(
+        metadata.get("verified_at")
+        and metadata.get("verification_sha256")
+        and metadata.get("verification_sha256") == run.sha256
+        and metadata.get("gcs_uri") == run.gcs_uri
+        and metadata.get("size_bytes") == run.size_bytes
+    )
+
+
 def estimate_backup_size(db: Session) -> dict[str, Any]:
     database_size_bytes = current_database_size_bytes(db)
     latest_backup = (

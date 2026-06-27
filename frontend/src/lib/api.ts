@@ -71,6 +71,8 @@ import type {
   ReleaseStatus,
   RuntimeLocation,
   SavedSearch,
+  SlipstreamEnrollment,
+  SlipstreamStatus,
   Tag,
   TagOptimizationApproveAllPayload,
   TagOptimizationApproveAllResult,
@@ -117,6 +119,7 @@ export const api = {
     request<User>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password, otp_code: otpCode || null }) }),
   logout: () => request<{ status: string }>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/me"),
+  heartbeat: () => request<{ status: string; last_seen_at?: string | null }>("/api/activity/heartbeat", { method: "POST" }),
   updateMe: (body: AccountUpdatePayload) =>
     request<User>("/api/me", { method: "PATCH", body: JSON.stringify(body) }),
   startTwoFactorSetup: (body: TwoFactorSetupPayload) =>
@@ -131,6 +134,10 @@ export const api = {
     request<ReleaseStatus>(`/api/release/status?client_version=${encodeURIComponent(clientVersion)}`),
   requestReleaseUpgrade: (clientVersion: string) =>
     request<ReleaseStatus>(`/api/release/upgrade?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
+  requestReleaseCheck: (clientVersion: string) =>
+    request<ReleaseStatus>(`/api/release/check?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
+  requestMaintenanceRun: (clientVersion: string) =>
+    request<ReleaseStatus>(`/api/release/maintenance?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
   health: () => request<{ status: string; app: string }>(`/api/health?release_check=${Date.now()}`),
   cacheStatus: () => request<CacheStatus>("/api/cache/status"),
   refreshCache: () => request<CacheRefreshResult>("/api/cache/refresh", { method: "POST" }),
@@ -152,6 +159,15 @@ export const api = {
   restartContainer: () => request<ContainerRestartResult>("/api/utilities/container/restart", { method: "POST" }),
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
   libraryFunStats: () => request<LibraryFunStats>("/api/status/library-fun"),
+  slipstreamStatus: () => request<SlipstreamStatus>("/api/slipstream/status"),
+  createSlipstreamEnrollment: (body: { label?: string | null; ttl_minutes?: number }) =>
+    request<SlipstreamEnrollment>("/api/slipstream/enrollments", { method: "POST", body: JSON.stringify(body) }),
+  disableSlipstreamClient: (id: string) =>
+    request<SlipstreamStatus>(`/api/slipstream/clients/${id}/disable`, { method: "POST" }).then(() => api.slipstreamStatus()),
+  revokeSlipstreamClient: (id: string) =>
+    request<SlipstreamStatus>(`/api/slipstream/clients/${id}/revoke`, { method: "POST" }).then(() => api.slipstreamStatus()),
+  cancelSlipstreamLease: (id: string) =>
+    request<SlipstreamStatus>(`/api/slipstream/leases/${id}/cancel`, { method: "POST" }).then(() => api.slipstreamStatus()),
   ingestionHistory: () => request<IngestionHistory[]>("/api/utilities/ingestion-history"),
   gcsBackups: () => request<BackupArtifact[]>("/api/backups/gcs"),
   startDatabaseBackup: () => request<BackupRun>("/api/backups/database", { method: "POST" }),

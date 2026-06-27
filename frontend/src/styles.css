@@ -7003,6 +7003,13 @@ pre {
   font-weight: 800;
 }
 
+.job-worker-label {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .inline-form {
   gap: 8px;
   margin-bottom: 10px;
@@ -7428,6 +7435,7 @@ pre {
 .account-settings-panel h2,
 .preferences-panel h2,
 .storage-settings-panel h2,
+.slipstream-settings-panel h2,
 .import-processing-panel h2,
 .model-settings-panel h2,
 .openai-usage-panel h2,
@@ -7442,6 +7450,7 @@ pre {
 .account-settings-panel p,
 .preferences-panel p,
 .storage-settings-panel p,
+.slipstream-settings-panel p,
 .import-processing-panel p,
 .model-settings-panel p,
 .capability-grid p {
@@ -7741,6 +7750,101 @@ pre {
 
 .storage-settings-grid input[readonly] {
   color: var(--muted);
+}
+
+.slipstream-settings-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+
+.slipstream-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.slipstream-metric-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.slipstream-metric-grid span,
+.slipstream-row span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.slipstream-metric-grid strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.slipstream-enrollment-row,
+.slipstream-token-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 110px auto;
+  gap: 8px;
+  align-items: end;
+  min-width: 0;
+}
+
+.slipstream-enrollment-row label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.slipstream-token-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.slipstream-token-row input {
+  min-width: 0;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.slipstream-list {
+  display: grid;
+  gap: 6px;
+}
+
+.slipstream-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) auto minmax(120px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.slipstream-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.slipstream-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hidden-file-input {
@@ -8310,6 +8414,43 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.maintenance-status-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.maintenance-status-grid.compact {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.maintenance-status-grid.compact > div {
+  min-width: 0;
+  min-height: 66px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px 12px;
+}
+
+.maintenance-status-grid.compact span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.maintenance-status-grid.compact strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
 .database-size-readout {
   min-width: 0;
   display: flex;
@@ -8694,6 +8835,22 @@ pre {
 }
 
 .container-control-row .async-action-slot {
+  width: auto;
+}
+
+.maintenance-control-row {
+  align-items: start;
+}
+
+.maintenance-control-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.maintenance-control-actions .async-action-slot {
   width: auto;
 }
 
@@ -10605,6 +10762,9 @@ button.history-row,
   .import-toggle-list,
   .import-processing-step-row,
   .import-picker-grid,
+  .slipstream-enrollment-row,
+  .slipstream-metric-grid,
+  .slipstream-row,
   .note-link-grid,
   .status-metric-grid,
   .review-card {
@@ -10691,6 +10851,7 @@ button.history-row,
   .model-pricing-status,
   .budget-metric-grid,
   .utilities-status-grid,
+  .maintenance-status-grid.compact,
   .utilities-action-grid,
   .bulk-intake-summary,
   .bulk-intake-row,
@@ -10752,7 +10913,10 @@ button.history-row,
   }
 
   .container-control-row .async-action-slot,
-  .container-control-row button {
+  .container-control-row button,
+  .maintenance-control-actions,
+  .maintenance-control-actions .async-action-slot,
+  .maintenance-control-actions button {
     width: 100%;
   }
 

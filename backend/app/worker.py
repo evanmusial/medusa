@@ -11,13 +11,20 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import engine, init_db, is_postgres, session_scope
-from app.models import ConcordanceJob, DocumentAccessorySummary, ImportJob, ProcessingEvent, utc_now
+from app.models import ConcordanceJob, DocumentAccessorySummary, ImportJob, ProcessingEvent, SlipstreamLease, utc_now
 from app.security import ensure_admin_user
 from app.services.cache import install_cache_revision_hooks
 from app.services.accessory_summaries import AccessorySummaryProcessor
 from app.services.concordance import ConcordanceProcessor, refresh_concordance_run_progress
 from app.services.processing import DocumentProcessor, refresh_import_batch_progress
 from app.services.preferences import get_import_worker_concurrency
+from app.services.slipstream import (
+    SLIPSTREAM_JOB_CONCORDANCE,
+    SLIPSTREAM_JOB_IMPORT,
+    claim_next_job_lease,
+    complete_local_lease_for_job,
+    slipstream_tables_available,
+)
 
 
 running = True
@@ -45,42 +52,14 @@ def stale_running_filter(model, cutoff):
 
 
 def claim_import_job(db: Session, stale_after_seconds: int, exclude_ids: set[str] | None = None) -> str | None:
-    cutoff = stale_cutoff(stale_after_seconds)
-    now = utc_now()
-    query = (
-        db.query(ImportJob)
-        .filter(or_(ImportJob.status == "queued", stale_running_filter(ImportJob, cutoff)))
-        .order_by(asc(ImportJob.created_at))
+    claim = claim_next_job_lease(
+        db,
+        worker_kind="local",
+        job_types=[SLIPSTREAM_JOB_IMPORT],
+        exclude_import_ids=exclude_ids,
+        local_stale_after_seconds=stale_after_seconds,
     )
-    if exclude_ids:
-        query = query.filter(ImportJob.id.notin_(exclude_ids))
-    job = query.first()
-    if not job:
-        return None
-
-    was_stale = job.status == "running"
-    previous_locked_at = job.locked_at
-    previous_step = job.current_step
-    if was_stale:
-        db.add(
-            ProcessingEvent(
-                import_job_id=job.id,
-                document_id=job.document_id,
-                level="warning",
-                event_type="stale_import_recovered",
-                message="Import job was recovered after a previous worker stopped before completion.",
-                payload={
-                    "previous_step": previous_step,
-                    "previous_locked_at": previous_locked_at.isoformat() if previous_locked_at else None,
-                },
-            )
-        )
-
-    job.status = "running"
-    job.locked_at = now
-    job.last_error = None
-    db.flush()
-    return job.id
+    return (claim or {}).get("lease", {}).get("job_id")
 
 
 def import_pipeline_active(db: Session) -> bool:
@@ -99,23 +78,13 @@ def vacuum_database_after_import_queue() -> None:
 
 
 def claim_concordance_job(db: Session, stale_after_seconds: int) -> str | None:
-    cutoff = stale_cutoff(stale_after_seconds)
-    job = (
-        db.query(ConcordanceJob)
-        .filter(or_(ConcordanceJob.status == "queued", stale_running_filter(ConcordanceJob, cutoff)))
-        .order_by(asc(ConcordanceJob.created_at))
-        .first()
+    claim = claim_next_job_lease(
+        db,
+        worker_kind="local",
+        job_types=[SLIPSTREAM_JOB_CONCORDANCE],
+        local_stale_after_seconds=stale_after_seconds,
     )
-    if not job:
-        return None
-
-    job.status = "running"
-    job.locked_at = utc_now()
-    job.last_error = None
-    if job.run:
-        refresh_concordance_run_progress(db, job.run)
-    db.flush()
-    return job.id
+    return (claim or {}).get("lease", {}).get("job_id")
 
 
 def claim_accessory_summary(db: Session, stale_after_seconds: int) -> str | None:
@@ -137,8 +106,22 @@ def claim_accessory_summary(db: Session, stale_after_seconds: int) -> str | None
 
 
 def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int, int]:
+    active_leases = {}
+    if slipstream_tables_available(db):
+        active_leases = {
+            (lease.job_type, lease.job_id): lease
+            for lease in db.query(SlipstreamLease).filter(SlipstreamLease.status == "active").all()
+        }
     import_jobs = db.query(ImportJob).filter(ImportJob.status == "running").all()
+    recovered_import_jobs = 0
     for job in import_jobs:
+        lease = active_leases.get((SLIPSTREAM_JOB_IMPORT, job.id))
+        if lease and lease.worker_kind == "slipstream":
+            continue
+        if lease:
+            lease.status = "expired"
+            lease.completed_at = utc_now()
+            lease.last_error = "Local worker restarted before completion."
         previous_locked_at = job.locked_at
         db.add(
             ProcessingEvent(
@@ -159,14 +142,24 @@ def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int, int]:
             job.document.processing_status = "queued"
         if job.batch:
             refresh_import_batch_progress(db, job.batch)
+        recovered_import_jobs += 1
 
     concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "running").all()
     touched_runs = {}
+    recovered_concordance_jobs = 0
     for job in concordance_jobs:
+        lease = active_leases.get((SLIPSTREAM_JOB_CONCORDANCE, job.id))
+        if lease and lease.worker_kind == "slipstream":
+            continue
+        if lease:
+            lease.status = "expired"
+            lease.completed_at = utc_now()
+            lease.last_error = "Local worker restarted before completion."
         job.status = "queued"
         job.locked_at = None
         if job.run:
             touched_runs[job.run.id] = job.run
+        recovered_concordance_jobs += 1
     for run in touched_runs.values():
         refresh_concordance_run_progress(db, run)
 
@@ -176,7 +169,7 @@ def recover_interrupted_jobs_on_start(db: Session) -> tuple[int, int, int]:
         summary.locked_at = None
 
     db.flush()
-    return len(import_jobs), len(concordance_jobs), len(accessory_summaries)
+    return recovered_import_jobs, recovered_concordance_jobs, len(accessory_summaries)
 
 
 def claim_next_import_job(exclude_ids: set[str] | None = None):
@@ -226,16 +219,28 @@ def process_once(
 
 def process_import_job(job_id: str) -> None:
     with session_scope() as db:
-        job = db.get(ImportJob, job_id)
-        if job:
-            DocumentProcessor().process_job(db, job)
+        try:
+            job = db.get(ImportJob, job_id)
+            if job:
+                DocumentProcessor().process_job(db, job)
+            complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_IMPORT, job_id=job_id)
+        except Exception as exc:
+            complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_IMPORT, job_id=job_id, failed_error=str(exc))
+            db.commit()
+            raise
 
 
 def process_concordance_job(job_id: str) -> None:
     with session_scope() as db:
-        job = db.get(ConcordanceJob, job_id)
-        if job:
-            ConcordanceProcessor().process_job(db, job)
+        try:
+            job = db.get(ConcordanceJob, job_id)
+            if job:
+                ConcordanceProcessor().process_job(db, job)
+            complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_CONCORDANCE, job_id=job_id)
+        except Exception as exc:
+            complete_local_lease_for_job(db, job_type=SLIPSTREAM_JOB_CONCORDANCE, job_id=job_id, failed_error=str(exc))
+            db.commit()
+            raise
 
 
 def process_accessory_summary(summary_id: str, processor: AccessorySummaryProcessor | None = None) -> None:
