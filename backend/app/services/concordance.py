@@ -70,6 +70,9 @@ from app.services.verifier import (
     extract_doi_from_text,
 )
 
+BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = 30000
+BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 80
+
 
 @dataclass(frozen=True)
 class CapabilityDefinition:
@@ -1163,31 +1166,46 @@ class ConcordanceProcessor:
         evidence = result.get("evidence") or {}
         if bibliography and run_force:
             cleanup_model = get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
-            try:
-                cleanup = get_ai_service().normalize_bibliography(
-                    document.original_filename or document.title or "document.pdf",
-                    bibliography,
-                    model=cleanup_model,
-                    usage_context=self._usage_context(document, job, "bibliography_extraction"),
-                    prompt_cache_key=f"medusa-bibliography:{document.id}",
-                )
-                bibliography = cleanup.get("bibliography") or bibliography
+            bibliography_entry_count = len([line for line in bibliography.splitlines() if line.strip()])
+            if (
+                len(bibliography) > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS
+                or bibliography_entry_count > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES
+            ):
                 evidence["model_cleanup"] = {
-                    "status": "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback",
-                    "model": (cleanup.get("_openai") or {}).get("model") or cleanup_model,
-                    "confidence": cleanup.get("confidence"),
-                    "notes": cleanup.get("notes") or [],
-                    "formatting": "alphabetized_apa_markdown_one_source_per_line",
-                }
-                if (cleanup.get("_openai") or {}).get("configured"):
-                    evidence["formatting"] = "apa_markdown_model_cleanup"
-            except Exception as exc:
-                evidence["model_cleanup"] = {
-                    "status": "failed",
+                    "status": "skipped_large_bibliography",
                     "model": cleanup_model,
-                    "error": str(exc),
-                    "formatting": "local_fallback",
+                    "characters": len(bibliography),
+                    "entry_count": bibliography_entry_count,
+                    "max_characters": BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS,
+                    "max_entries": BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES,
+                    "formatting": evidence.get("formatting") or "deterministic_extraction",
                 }
+            else:
+                try:
+                    cleanup = get_ai_service().normalize_bibliography(
+                        document.original_filename or document.title or "document.pdf",
+                        bibliography,
+                        model=cleanup_model,
+                        usage_context=self._usage_context(document, job, "bibliography_extraction"),
+                        prompt_cache_key=f"medusa-bibliography:{document.id}",
+                    )
+                    bibliography = cleanup.get("bibliography") or bibliography
+                    evidence["model_cleanup"] = {
+                        "status": "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback",
+                        "model": (cleanup.get("_openai") or {}).get("model") or cleanup_model,
+                        "confidence": cleanup.get("confidence"),
+                        "notes": cleanup.get("notes") or [],
+                        "formatting": "alphabetized_apa_markdown_one_source_per_line",
+                    }
+                    if (cleanup.get("_openai") or {}).get("configured"):
+                        evidence["formatting"] = "apa_markdown_model_cleanup"
+                except Exception as exc:
+                    evidence["model_cleanup"] = {
+                        "status": "failed",
+                        "model": cleanup_model,
+                        "error": str(exc),
+                        "formatting": "local_fallback",
+                    }
         if bibliography:
             before = document_correction_snapshot(document)
             document.bibliography = bibliography

@@ -332,6 +332,7 @@ const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
+const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 45000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
 const IMPORT_ACCEPT = "application/pdf,text/html,text/plain,text/markdown,.pdf,.html,.htm,.txt,.text,.md,.markdown";
@@ -5341,6 +5342,7 @@ function LibraryView({
   tags,
   projects,
   citationJobs,
+  concordanceRuns,
   query,
   setQuery,
   filters,
@@ -5366,6 +5368,7 @@ function LibraryView({
   tags: Tag[];
   projects: Project[];
   citationJobs: ConcordanceJob[];
+  concordanceRuns: ConcordanceRun[];
   query: string;
   setQuery: (query: string) => void;
   filters: DocumentFilters;
@@ -5694,6 +5697,7 @@ function LibraryView({
       <section className="library-grid reader-mode" style={paneStyle}>
         <DocumentPanel
           citationJobs={citationJobs}
+          concordanceRuns={concordanceRuns}
           document={document}
           domains={domains}
           onCloseReader={() => setReaderOpen(false)}
@@ -6101,6 +6105,7 @@ function LibraryView({
       />
       <DocumentPanel
         citationJobs={citationJobs}
+        concordanceRuns={concordanceRuns}
         document={document}
         domains={domains}
         onTrashDocument={trashFocusedDocument}
@@ -6213,6 +6218,7 @@ function figureDraftFromFigure(figure: FigureRecord): FigureEditDraft {
 
 function DocumentPanel({
   citationJobs,
+  concordanceRuns,
   document,
   domains,
   onCloseReader,
@@ -6226,6 +6232,7 @@ function DocumentPanel({
   tags,
 }: {
   citationJobs: ConcordanceJob[];
+  concordanceRuns: ConcordanceRun[];
   document?: DocumentDetail;
   domains: Domain[];
   onCloseReader?: () => void;
@@ -6250,6 +6257,7 @@ function DocumentPanel({
   return (
     <DocumentPanelContent
       citationJobs={citationJobs}
+      concordanceRuns={concordanceRuns}
       document={document}
       domains={domains}
       onCloseReader={onCloseReader}
@@ -7037,6 +7045,7 @@ function CompositionDialog({
 
 function DocumentPanelContent({
   citationJobs,
+  concordanceRuns,
   document,
   domains,
   onCloseReader,
@@ -7050,6 +7059,7 @@ function DocumentPanelContent({
   tags,
 }: {
   citationJobs: ConcordanceJob[];
+  concordanceRuns: ConcordanceRun[];
   document: DocumentDetail;
   domains: Domain[];
   onCloseReader?: () => void;
@@ -7767,6 +7777,10 @@ function DocumentPanelContent({
         : [],
     [bibliographyRunId, citationJobs, document.id],
   );
+  const trackedBibliographyRun = useMemo(
+    () => (bibliographyRunId ? concordanceRuns.find((run) => run.id === bibliographyRunId) : undefined),
+    [bibliographyRunId, concordanceRuns],
+  );
   const trackedFormulaCaptureJobs = useMemo(
     () =>
       formulaCaptureRunId
@@ -7797,7 +7811,8 @@ function DocumentPanelContent({
     bibliographyRefreshActive ||
     Boolean(
       bibliographyRunId &&
-        (!trackedBibliographyJobs.length || trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status))),
+        (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status)) ||
+          (!trackedBibliographyJobs.length && trackedBibliographyRun && isActiveConcordanceStatus(trackedBibliographyRun.status))),
     );
   const formulaCaptureBusy =
     captureFormulas.isPending ||
@@ -7996,7 +8011,25 @@ function DocumentPanelContent({
   }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs]);
 
   useEffect(() => {
-    if (!bibliographyRunId || trackedBibliographyJobs.length === 0) return;
+    if (!bibliographyRunId) return;
+    if (trackedBibliographyJobs.length === 0) {
+      if (!trackedBibliographyRun) {
+        setBibliographyRunId(null);
+        return;
+      }
+      if (isActiveConcordanceStatus(trackedBibliographyRun.status)) return;
+      if (trackedBibliographyRun.status === "failed" || trackedBibliographyRun.failed_jobs > 0) {
+        bibliographyRefreshFeedback.showError("Bibliography refresh failed.");
+      } else {
+        bibliographyRefreshFeedback.showSuccess();
+      }
+      setBibliographyRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+      return;
+    }
     if (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedBibliographyJobs.find((job) => job.status === "failed");
     if (failedJob) {
@@ -8011,7 +8044,7 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["documents"] });
     void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
-  }, [bibliographyRefreshFeedback, bibliographyRunId, document.id, queryClient, trackedBibliographyJobs]);
+  }, [bibliographyRefreshFeedback, bibliographyRunId, document.id, queryClient, trackedBibliographyJobs, trackedBibliographyRun]);
 
   useEffect(() => {
     if (!formulaCaptureRunId || trackedFormulaCaptureJobs.length === 0) return;
@@ -18343,7 +18376,15 @@ export default function App() {
         .map((job) => {
           if (!job.runId) return job;
           const run = runs.find((item) => item.id === job.runId);
-          if (!run) return job;
+          if (!run) {
+            if (now - job.createdAt < BACKGROUND_JOB_MISSING_SERVER_GRACE_MS) return job;
+            return {
+              ...job,
+              status: "complete" as const,
+              detail: "No longer active",
+              completedAt: now,
+            };
+          }
           return backgroundJobFromRun(
             run,
             jobs.filter((item) => item.run_id === run.id),
@@ -18490,6 +18531,7 @@ export default function App() {
             tags={tags.data || []}
             projects={projects.data || []}
             citationJobs={concordanceJobs.data || []}
+            concordanceRuns={concordanceRuns.data || []}
             query={query}
             setQuery={setQuery}
             filters={filters}

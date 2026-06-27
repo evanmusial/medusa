@@ -139,6 +139,66 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"
 
 
+def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentPage
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES, ConcordanceProcessor
+
+    cleanup_calls = []
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+            cleanup_calls.append(bibliography)
+            raise AssertionError("large bibliography should not be sent to model cleanup")
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    entries = [
+        f"Smith, A., 2024. Large bibliography source {index}. Journal of Tests."
+        for index in range(BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES + 1)
+    ]
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Large References Target",
+            original_filename="large-references.pdf",
+            checksum_sha256="l" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        document.pages.append(DocumentPage(page_number=1, normalized_text="Body text.\n\nReferences\n" + "\n".join(entries)))
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        bibliography_lines = [line for line in (document.bibliography or "").splitlines() if line.strip()]
+        cleanup = document.metadata_evidence["bibliography_extraction"]["model_cleanup"]
+        assert job.status == "complete"
+        assert len(bibliography_lines) == BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES + 1
+        assert cleanup["status"] == "skipped_large_bibliography"
+        assert cleanup["entry_count"] == BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES + 1
+        assert cleanup_calls == []
+
+
 def test_citation_refresh_discovers_missing_doi_from_title(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
