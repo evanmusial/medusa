@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -13,7 +15,7 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
@@ -105,6 +107,8 @@ from app.schemas import (
     DoiStashCreate,
     DoiStashImportOut,
     DoiStashOut,
+    DocumentListOut,
+    DocumentListRow,
     DocumentSummary,
     FigurePatch,
     DomainCreate,
@@ -222,11 +226,11 @@ from app.services.duplicates import (
     active_duplicate_matches_for_profile,
     document_duplicate_profile,
     duplicate_false_positive_document_ids,
-    duplicate_document_id_set,
     duplicate_document_version_stats,
     duplicate_match_reasons,
     duplicate_match_score,
     duplicate_matches_by_document,
+    duplicate_pair_dismissed,
     import_duplicate_profile,
     match_basis,
 )
@@ -260,7 +264,14 @@ from app.services.openai_usage import (
     openai_usage_summary,
     refresh_model_pricing,
 )
+from app.services.performance import (
+    begin_request_performance_stats,
+    current_request_performance_stats,
+    install_sqlalchemy_performance_timing,
+    reset_request_performance_stats,
+)
 from app.services.recommendations import (
+    document_has_recommendation_inputs,
     doi_url,
     list_document_recommendations,
     normalize_doi,
@@ -271,7 +282,7 @@ from app.services.recommendations import (
 )
 from app.services.release_status import release_status, request_release_upgrade
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
-from app.services.search import rebuild_document_search_text
+from app.services.search import document_search_condition_and_rank, rebuild_document_search_text
 from app.services.verifier import normalized_title_similarity
 from app.services.tag_governance import (
     hybrid_tag_similarity,
@@ -294,6 +305,9 @@ from app.services.tags import (
 settings = get_settings()
 app = FastAPI(title="Medusa Research Library", version="0.1.0")
 SERVER_IPV4: str | None = None
+PERFORMANCE_LOG_MIN_MS = 250.0
+performance_logger = logging.getLogger("medusa.performance")
+install_sqlalchemy_performance_timing(engine)
 
 DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 STAGED_IMPORT_STATUS = "staged"
@@ -357,6 +371,34 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def record_request_performance(request: Request, call_next):
+    token = begin_request_performance_stats()
+    started_at = perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        stats = current_request_performance_stats()
+        reset_request_performance_stats(token)
+        if response is not None and request.url.path.startswith("/api/"):
+            response.headers["X-Medusa-Request-Duration-Ms"] = f"{elapsed_ms:.1f}"
+            response.headers["X-Medusa-Sql-Count"] = str(stats.sql_count if stats else 0)
+            response.headers["X-Medusa-Sql-Duration-Ms"] = f"{stats.sql_ms:.1f}" if stats else "0.0"
+        if request.url.path.startswith("/api/") and elapsed_ms >= PERFORMANCE_LOG_MIN_MS:
+            performance_logger.info(
+                "slow_api_request method=%s path=%s status=%s duration_ms=%.1f sql_count=%s sql_ms=%.1f",
+                request.method,
+                request.url.path,
+                getattr(response, "status_code", "error"),
+                elapsed_ms,
+                stats.sql_count if stats else 0,
+                stats.sql_ms if stats else 0.0,
+            )
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     global SERVER_IPV4
@@ -390,12 +432,21 @@ def current_user(
     return user
 
 
-def domain_out(domain: Domain, db: Session | None = None, subtree_document_count: int | None = None) -> DomainOut:
+def domain_out(
+    domain: Domain,
+    db: Session | None = None,
+    subtree_document_count: int | None = None,
+    document_count: int | None = None,
+    tag_count_map: dict[str, int] | None = None,
+) -> DomainOut:
     document_count = (
-        domain_document_count(db, domain.id)
-        if db
+        document_count
+        if document_count is not None
+        else domain_document_count(db, domain.id)
+        if db is not None
         else len([document for document in domain.documents if document_is_library_visible(document)])
     )
+    tag_counts = tag_count_map or {}
     return DomainOut(
         id=domain.id,
         parent_id=domain.parent_id,
@@ -407,7 +458,7 @@ def domain_out(domain: Domain, db: Session | None = None, subtree_document_count
         subtree_document_count=subtree_document_count
         if subtree_document_count is not None
         else (domain_subtree_document_count(db, domain.id) if db else document_count),
-        tags=[tag_out(tag, db) for tag in sorted(domain.tags, key=lambda item: item.name.lower())] if db else [],
+        tags=[tag_out(tag, db, document_count=tag_counts.get(tag.id)) for tag in sorted(domain.tags, key=lambda item: item.name.lower())] if db else [],
     )
 
 
@@ -441,7 +492,7 @@ def tag_document_link_count(db: Session, tag_id: str) -> int:
     return int(db.execute(select(func.count()).select_from(document_tags).where(document_tags.c.tag_id == tag_id)).scalar() or 0)
 
 
-def tag_out(tag: Tag, db: Session) -> TagOut:
+def tag_out(tag: Tag, db: Session, document_count: int | None = None) -> TagOut:
     return TagOut(
         id=tag.id,
         name=tag.name,
@@ -451,7 +502,7 @@ def tag_out(tag: Tag, db: Session) -> TagOut:
         definition=tag.definition,
         use_guidance=tag.use_guidance,
         avoid_guidance=tag.avoid_guidance,
-        document_count=tag_document_count(db, tag.id),
+        document_count=tag_document_count(db, tag.id) if document_count is None else document_count,
     )
 
 
@@ -539,6 +590,7 @@ def project_summaries_for_documents(db: Session, document_ids: list[str]) -> dic
 
 def apply_document_filters(
     query,
+    db: Session,
     *,
     q: str | None = None,
     domain_id: str | None = None,
@@ -547,16 +599,11 @@ def apply_document_filters(
     priority: str | None = None,
     citation_status: str | None = None,
 ):
+    search_rank = None
     if q:
-        like = f"%{q}%"
-        query = query.filter(
-            or_(
-                Document.title.ilike(like),
-                Document.search_text.ilike(like),
-                Document.apa_citation.ilike(like),
-                Document.apa_in_text_citation.ilike(like),
-            )
-        )
+        condition, search_rank = document_search_condition_and_rank(db, q)
+        if condition is not None:
+            query = query.filter(condition)
     if domain_id:
         query = query.filter(Document.domains.any(Domain.id == domain_id))
     if tag_id:
@@ -567,7 +614,7 @@ def apply_document_filters(
         query = query.filter(Document.priority == priority)
     if citation_status:
         query = query.filter(Document.citation_status == citation_status)
-    return query
+    return query, search_rank
 
 
 def document_title_order_columns(db: Session):
@@ -594,8 +641,33 @@ def duplicate_reason_labels(matches: list[DuplicateMatch]) -> list[str]:
     return labels
 
 
-def duplicate_summary_by_document(db: Session) -> dict[str, dict[str, Any]]:
-    matches = duplicate_matches_by_document(db)
+def duplicate_matches_for_documents(db: Session, documents: list[Document]) -> dict[str, list[DuplicateMatch]]:
+    if not documents:
+        return {}
+    visible_documents = filter_library_visible_documents(db.query(Document)).all()
+    target_ids = {document.id for document in documents}
+    visible_ids = {document.id for document in visible_documents}
+    if target_ids == visible_ids:
+        return duplicate_matches_by_document(db, documents=visible_documents)
+    profiles = {document.id: document_duplicate_profile(document) for document in visible_documents}
+    matches: dict[str, list[DuplicateMatch]] = {document.id: [] for document in documents}
+    for document in documents:
+        left_profile = profiles.get(document.id) or document_duplicate_profile(document)
+        for candidate in visible_documents:
+            if candidate.id == document.id or duplicate_pair_dismissed(document, candidate):
+                continue
+            reasons = duplicate_match_reasons(left_profile, profiles[candidate.id])
+            score = duplicate_match_score(reasons)
+            if score < 60:
+                continue
+            matches[document.id].append(DuplicateMatch(document=candidate, match_reasons=reasons, match_score=score))
+    for document_matches in matches.values():
+        document_matches.sort(key=lambda item: (-item.match_score, item.document.created_at, item.document.id))
+    return matches
+
+
+def duplicate_summary_by_document(db: Session, documents: list[Document] | None = None) -> dict[str, dict[str, Any]]:
+    matches = duplicate_matches_for_documents(db, documents) if documents is not None else duplicate_matches_by_document(db)
     return {
         document_id: {
             "duplicate_count": len(document_matches),
@@ -603,6 +675,37 @@ def duplicate_summary_by_document(db: Session) -> dict[str, dict[str, Any]]:
             "duplicate_reasons": duplicate_reason_labels(document_matches),
         }
         for document_id, document_matches in matches.items()
+    }
+
+
+def persist_duplicate_match_summaries(
+    db: Session,
+    documents: list[Document],
+    matches: dict[str, list[DuplicateMatch]],
+):
+    checked_at = utc_now()
+    for document in documents:
+        document_matches = matches.get(document.id, [])
+        document.duplicate_count = len(document_matches)
+        document.duplicate_reasons = duplicate_reason_labels(document_matches)
+        document.duplicate_checked_at = checked_at
+        db.add(document)
+
+
+def refresh_duplicate_match_summaries(db: Session) -> dict[str, list[DuplicateMatch]]:
+    documents = filter_library_visible_documents(db.query(Document)).all()
+    matches = duplicate_matches_by_document(db, documents=documents)
+    persist_duplicate_match_summaries(db, documents, matches)
+    return matches
+
+
+def persisted_duplicate_summary_by_document(documents: list[Document]) -> dict[str, dict[str, Any]]:
+    return {
+        document.id: {
+            "duplicate_count": int(document.duplicate_count or 0),
+            "duplicate_reasons": list(document.duplicate_reasons or []),
+        }
+        for document in documents
     }
 
 
@@ -662,6 +765,17 @@ def document_summary_out(
         update={
             "duplicate_count": duplicate_count,
             "duplicate_reasons": duplicate_reasons or [],
+            "projects": projects or [],
+            "no_doi": document_no_doi(document),
+        }
+    )
+
+
+def document_list_row_out(document: Document, projects: list[ProjectOut] | None = None) -> DocumentListRow:
+    return DocumentListRow.model_validate(document).model_copy(
+        update={
+            "duplicate_count": int(document.duplicate_count or 0),
+            "duplicate_reasons": list(document.duplicate_reasons or []),
             "projects": projects or [],
             "no_doi": document_no_doi(document),
         }
@@ -770,6 +884,21 @@ def domain_document_count(db: Session | None, domain_id: str) -> int:
         .filter(library_visible_document_filter(), Document.domains.any(Domain.id == domain_id))
         .count()
     )
+
+
+def domain_document_counts(db: Session, domain_ids: list[str]) -> dict[str, int]:
+    unique_ids = list(dict.fromkeys(domain_id for domain_id in domain_ids if domain_id))
+    if not unique_ids:
+        return {}
+    rows = (
+        db.query(document_domains.c.domain_id, func.count(Document.id))
+        .select_from(document_domains)
+        .join(Document, Document.id == document_domains.c.document_id)
+        .filter(document_domains.c.domain_id.in_(unique_ids), library_visible_document_filter())
+        .group_by(document_domains.c.domain_id)
+        .all()
+    )
+    return {str(domain_id): int(count or 0) for domain_id, count in rows}
 
 
 def domain_subtree_document_counts(db: Session, domains: list[Domain]) -> dict[str, int]:
@@ -1529,11 +1658,18 @@ def dashboard(_: Annotated[User, Depends(current_user)], db: Annotated[Session, 
     if active_import_job:
         active_started_at = active_import_job.locked_at or active_import_job.updated_at
     active_elapsed_seconds = int((utc_now() - active_started_at).total_seconds()) if active_started_at else None
-    visible_documents = filter_library_visible_documents(db.query(Document))
+    document_counts = (
+        filter_library_visible_documents(db.query(
+            func.count(Document.id),
+            func.coalesce(func.sum(case((Document.read_status == "unread", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Document.citation_status == "needs_review", 1), else_=0)), 0),
+        ))
+        .one()
+    )
     return DashboardOut(
-        documents=visible_documents.count(),
-        unread=filter_library_visible_documents(db.query(Document)).filter(Document.read_status == "unread").count(),
-        needs_review=filter_library_visible_documents(db.query(Document)).filter(Document.citation_status == "needs_review").count(),
+        documents=int(document_counts[0] or 0),
+        unread=int(document_counts[1] or 0),
+        needs_review=int(document_counts[2] or 0),
         domains=db.query(Domain).filter(Domain.deleted_at.is_(None)).count(),
         tags=db.query(Tag).count(),
         notes=db.query(Note).filter(Note.deleted_at.is_(None)).count(),
@@ -1720,7 +1856,19 @@ def list_domains(_: Annotated[User, Depends(current_user)], db: Annotated[Sessio
         .all()
     )
     subtree_counts = domain_subtree_document_counts(db, domains)
-    return [domain_out(domain, db, subtree_document_count=subtree_counts.get(domain.id, 0)) for domain in domains]
+    direct_counts = domain_document_counts(db, [domain.id for domain in domains])
+    domain_tag_ids = list({tag.id for domain in domains for tag in domain.tags})
+    tag_counts = tag_document_counts(db, domain_tag_ids)
+    return [
+        domain_out(
+            domain,
+            db,
+            subtree_document_count=subtree_counts.get(domain.id, 0),
+            document_count=direct_counts.get(domain.id, 0),
+            tag_count_map=tag_counts,
+        )
+        for domain in domains
+    ]
 
 
 @app.post("/api/domains", response_model=DomainOut)
@@ -1862,7 +2010,19 @@ def reorder_domains(
         .all()
     )
     subtree_counts = domain_subtree_document_counts(db, domains)
-    return [domain_out(domain, db, subtree_document_count=subtree_counts.get(domain.id, 0)) for domain in domains]
+    direct_counts = domain_document_counts(db, [domain.id for domain in domains])
+    domain_tag_ids = list({tag.id for domain in domains for tag in domain.tags})
+    tag_counts = tag_document_counts(db, domain_tag_ids)
+    return [
+        domain_out(
+            domain,
+            db,
+            subtree_document_count=subtree_counts.get(domain.id, 0),
+            document_count=direct_counts.get(domain.id, 0),
+            tag_count_map=tag_counts,
+        )
+        for domain in domains
+    ]
 
 
 @app.delete("/api/domains/{domain_id}", response_model=DomainDeleteOut)
@@ -1906,7 +2066,9 @@ def delete_domain(
 
 @app.get("/api/tags", response_model=list[TagOut])
 def list_tags(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[TagOut]:
-    return [tag_out(tag, db) for tag in db.query(Tag).order_by(Tag.name).all()]
+    tags = db.query(Tag).order_by(Tag.name).all()
+    counts = tag_document_counts(db, [tag.id for tag in tags])
+    return [tag_out(tag, db, document_count=counts.get(tag.id, 0)) for tag in tags]
 
 
 @app.post("/api/tags", response_model=TagOut)
@@ -2822,11 +2984,14 @@ def list_documents(
     priority: str | None = None,
     citation_status: str | None = None,
     duplicate_status: str | None = None,
+    include_duplicate_summary: bool = True,
+    include_projects: bool = True,
     limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
 ) -> list[DocumentSummary]:
-    query = filter_library_visible_documents(db.query(Document))
-    query = apply_document_filters(
+    query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
+    query, search_rank = apply_document_filters(
         query,
+        db,
         q=q,
         domain_id=domain_id,
         tag_id=tag_id,
@@ -2835,20 +3000,18 @@ def list_documents(
         citation_status=citation_status,
     )
     if duplicate_status:
-        duplicate_ids = duplicate_document_id_set(db)
         if duplicate_status == "duplicates":
-            if not duplicate_ids:
-                return []
-            query = query.filter(Document.id.in_(duplicate_ids))
+            query = query.filter(Document.duplicate_count > 0)
         elif duplicate_status == "unique":
-            if duplicate_ids:
-                query = query.filter(Document.id.notin_(duplicate_ids))
-    query = query.order_by(None).order_by(*document_title_order_columns(db))
+            query = query.filter(Document.duplicate_count == 0)
+    order_columns = [search_rank.desc()] if search_rank is not None else []
+    order_columns.extend(document_title_order_columns(db))
+    query = query.order_by(None).order_by(*order_columns)
     if limit is not None:
         query = query.limit(limit)
     documents = query.all()
-    duplicate_summary = duplicate_summary_by_document(db)
-    project_map = project_summaries_for_documents(db, [document.id for document in documents])
+    duplicate_summary = persisted_duplicate_summary_by_document(documents) if include_duplicate_summary else {}
+    project_map = project_summaries_for_documents(db, [document.id for document in documents]) if include_projects else {}
     return [
         document_summary_out(
             document,
@@ -2858,6 +3021,55 @@ def list_documents(
         )
         for document in documents
     ]
+
+
+@app.get("/api/documents/list", response_model=DocumentListOut)
+def list_document_rows(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    q: str | None = None,
+    domain_id: str | None = None,
+    tag_id: str | None = None,
+    read_status: str | None = None,
+    priority: str | None = None,
+    citation_status: str | None = None,
+    duplicate_status: str | None = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+) -> DocumentListOut:
+    query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
+    query, search_rank = apply_document_filters(
+        query,
+        db,
+        q=q,
+        domain_id=domain_id,
+        tag_id=tag_id,
+        read_status=read_status,
+        priority=priority,
+        citation_status=citation_status,
+    )
+    if duplicate_status == "duplicates":
+        query = query.filter(Document.duplicate_count > 0)
+    elif duplicate_status == "unique":
+        query = query.filter(Document.duplicate_count == 0)
+
+    total_count = int(query.order_by(None).count())
+    total_page_count = int(query.order_by(None).with_entities(func.coalesce(func.sum(Document.page_count), 0)).scalar() or 0)
+    latest_updated = query.order_by(None).with_entities(func.max(Document.updated_at)).scalar()
+    order_columns = [search_rank.desc()] if search_rank is not None else []
+    order_columns.extend(document_title_order_columns(db))
+    documents = query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
+    project_map = project_summaries_for_documents(db, [document.id for document in documents])
+    revision_parts = [str(total_count), str(total_page_count), latest_updated.isoformat() if latest_updated else "none"]
+    return DocumentListOut(
+        items=[document_list_row_out(document, project_map.get(document.id, [])) for document in documents],
+        total_count=total_count,
+        total_page_count=total_page_count,
+        offset=offset,
+        limit=limit,
+        has_more=offset + len(documents) < total_count,
+        revision=":".join(revision_parts),
+    )
 
 
 @app.get("/api/documents/{document_id}", response_model=DocumentDetail)
@@ -2879,6 +3091,8 @@ def scan_document_duplicates(
 ) -> DuplicateScanOut:
     documents = filter_library_visible_documents(db.query(Document)).order_by(*document_title_order_columns(db)).all()
     matches = duplicate_matches_by_document(db, documents=documents)
+    persist_duplicate_match_summaries(db, documents, matches)
+    db.commit()
     stats = duplicate_document_version_stats(db, [document.id for document in documents])
     by_id = {document.id: document for document in documents}
     pairs: list[DuplicatePairOut] = []
@@ -2972,6 +3186,7 @@ def resolve_document_duplicate(
         message="Duplicate resolution removed",
         metadata={"kept_document_id": keep_document.id, "match_reasons": reasons, "match_basis": basis},
     )
+    refresh_duplicate_match_summaries(db)
     db.commit()
     return DuplicateResolveOut(keep_document_id=keep_document.id, duplicate_document_id=duplicate_document.id)
 
@@ -3047,6 +3262,7 @@ def dismiss_document_duplicate(
         message="Duplicate match marked different",
         metadata={"other_document_id": left_document.id, "match_reasons": reasons, "match_basis": basis},
     )
+    refresh_duplicate_match_summaries(db)
     db.commit()
     return DuplicateDismissOut(left_document_id=left_document.id, right_document_id=right_document.id)
 
@@ -3161,8 +3377,8 @@ def refresh_recommendations(
         raise HTTPException(status_code=404, detail="Document not found")
     if document.processing_status != "ready":
         raise HTTPException(status_code=409, detail="Recommendations are available after processing is complete")
-    if not document.doi and not (document.bibliography or "").strip():
-        raise HTTPException(status_code=400, detail="A DOI or extracted bibliography is required to refresh related-paper recommendations")
+    if not document_has_recommendation_inputs(document):
+        raise HTTPException(status_code=400, detail="A title, DOI, extracted bibliography, summary, tag, or domain is required to refresh related-paper recommendations")
     rows = refresh_document_recommendations(db, document)
     db.commit()
     return DocumentRecommendationRefreshOut(

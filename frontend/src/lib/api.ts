@@ -23,6 +23,7 @@ import type {
   DocumentCacheStatus,
   DocumentComposition,
   DocumentFilters,
+  DocumentListResponse,
   DocumentPageUpdatePayload,
   DocumentRecommendation,
   DocumentRecommendationDownload,
@@ -211,14 +212,30 @@ export const api = {
     request<ProjectItem>(`/api/projects/${projectId}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProjectItem: (projectId: string, itemId: string) =>
     request<{ status: string }>(`/api/projects/${projectId}/items/${itemId}`, { method: "DELETE" }),
-  documents: (query: string, filters: DocumentFilters = {}) => {
+  documents: (
+    query: string,
+    filters: DocumentFilters = {},
+    options: { includeDuplicateSummary?: boolean; includeProjects?: boolean } = {},
+  ) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
     Object.entries(filters).forEach(([key, value]) => {
       if (value) params.set(key, value);
     });
+    if (options.includeDuplicateSummary === false) params.set("include_duplicate_summary", "false");
+    if (options.includeProjects === false) params.set("include_projects", "false");
     const suffix = params.toString();
     return request<DocumentSummary[]>(`/api/documents${suffix ? `?${suffix}` : ""}`);
+  },
+  documentList: (query: string, filters: DocumentFilters = {}, options: { offset?: number; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    params.set("offset", String(Math.max(0, options.offset ?? 0)));
+    params.set("limit", String(Math.max(1, options.limit ?? 500)));
+    return request<DocumentListResponse>(`/api/documents/list?${params.toString()}`);
   },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),
   scanDocumentDuplicates: () => request<DuplicateScan>("/api/documents/duplicates/scan"),

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy import String, func, literal_column, or_
+from sqlalchemy.orm import Session
+
 from app.models import Document
 from app.services.extraction import sanitize_extracted_text
 from app.services.formulas import formula_capture_search_text
@@ -55,4 +58,41 @@ def rebuild_document_search_text(document: Document) -> str:
             ]
             if part
         )
+    )
+
+
+def document_search_condition_and_rank(db: Session, term: str):
+    cleaned = term.strip()
+    if not cleaned:
+        return None, None
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        empty = literal_column("''", type_=String())
+        space = literal_column("' '", type_=String())
+        search_document = (
+            func.coalesce(Document.title, empty)
+            + space
+            + func.coalesce(Document.search_text, empty)
+            + space
+            + func.coalesce(Document.apa_citation, empty)
+            + space
+            + func.coalesce(Document.apa_in_text_citation, empty)
+        )
+        vector = func.to_tsvector(
+            literal_column("'english'"),
+            search_document,
+        )
+        query = func.websearch_to_tsquery(literal_column("'english'"), cleaned)
+        title_like = f"%{cleaned}%"
+        return or_(vector.op("@@")(query), Document.title.ilike(title_like)), func.ts_rank_cd(vector, query)
+
+    like = f"%{cleaned}%"
+    return (
+        or_(
+            Document.title.ilike(like),
+            Document.search_text.ilike(like),
+            Document.apa_citation.ilike(like),
+            Document.apa_in_text_citation.ilike(like),
+        ),
+        None,
     )

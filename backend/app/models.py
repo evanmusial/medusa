@@ -374,6 +374,9 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     read_status: Mapped[str] = mapped_column(String(40), default="unread", nullable=False, index=True)
     priority: Mapped[str] = mapped_column(String(40), default="normal", nullable=False, index=True)
     search_text: Mapped[str | None] = mapped_column(Text)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)
+    duplicate_reasons: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    duplicate_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     domains: Mapped[list[Domain]] = relationship(secondary=document_domains, back_populates="documents")
     tags: Mapped[list[Tag]] = relationship(secondary=document_tags, back_populates="documents")

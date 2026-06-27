@@ -121,6 +121,8 @@ import type {
   DocumentCompositionEntry,
   DocumentDetail,
   DocumentFilters,
+  DocumentListResponse,
+  DocumentListRow,
   DuplicateDocument,
   DuplicatePair,
   DuplicateScan,
@@ -197,6 +199,7 @@ type BackgroundJob = {
   createdAt: number;
   completedAt?: number;
 };
+type LibraryDocumentRow = DocumentListRow | DocumentSummary | DocumentDetail;
 type ReleaseUpgradeLockStage = "requesting" | "requested" | "polling" | "health" | "reloading" | "failed";
 type ReleaseUpgradeLock = {
   detail?: string;
@@ -260,6 +263,16 @@ function useEscapeLayer(active: boolean, onEscape: () => void, priority: number)
     };
   }, [active, priority]);
 }
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+  return debounced;
+}
+
 type ConcordanceRunRequest = {
   backgroundDetail?: string;
   backgroundLabel?: string;
@@ -285,6 +298,8 @@ const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
 const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
 const WORKSPACE_REFETCH_INTERVAL_MS = 15000;
 const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
+const DOCUMENT_LIST_STALE_MS = 30000;
+const SEARCH_DEBOUNCE_MS = 350;
 const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
 const COMPLETED_INGESTION_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
 
@@ -301,6 +316,10 @@ const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
+const LIBRARY_PAGE_SIZE = 500;
+const LIBRARY_ROW_HEIGHT = 118;
+const LIBRARY_ROW_OVERSCAN = 6;
+const EMPTY_LIBRARY_ROWS: DocumentListRow[] = [];
 const MEDUSA_BUILD_VERSION = import.meta.env.VITE_MEDUSA_BUILD_VERSION || "local";
 const MEDUSA_FRONTEND_NODE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_NODE_VERSION || "unknown";
 const MEDUSA_FRONTEND_VITE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_VITE_VERSION || "unknown";
@@ -532,7 +551,7 @@ function syncBrowserUrlForDocument(documentId: string, mode: Exclude<BrowserHist
   syncBrowserUrl(pathForDocument(documentId), { medusaView: "library", medusaDocumentId: documentId }, mode);
 }
 
-function authorLine(document: DocumentSummary | DocumentDetail) {
+function authorLine(document: LibraryDocumentRow) {
   const authors = document.authors || [];
   if (!authors.length) return "Unknown author";
   return authors
@@ -541,7 +560,7 @@ function authorLine(document: DocumentSummary | DocumentDetail) {
     .join(", ");
 }
 
-function pageCountMarker(document: DocumentSummary | DocumentDetail) {
+function pageCountMarker(document: LibraryDocumentRow) {
   return document.page_count > 0 ? `${document.page_count}p` : "?p";
 }
 
@@ -1937,7 +1956,7 @@ function inputEventShiftKey(event: ChangeEvent<HTMLInputElement>) {
   return nativeEvent.shiftKey === true;
 }
 
-function authorsToText(document: DocumentSummary | DocumentDetail) {
+function authorsToText(document: LibraryDocumentRow) {
   return (document.authors || [])
     .map((author) => {
       const given = author.given || "";
@@ -2024,6 +2043,8 @@ function emptyFilters(): DocumentFilters {
   return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "", duplicate_status: "" };
 }
 
+const EMPTY_DOCUMENT_FILTERS = emptyFilters();
+
 function cleanFilters(filters: DocumentFilters): DocumentFilters {
   return Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value))) as DocumentFilters;
 }
@@ -2108,11 +2129,13 @@ function MissingDoiPill() {
 
 function patchCachedDocumentSummaries(
   queryClient: QueryClient,
-  patch: Partial<DocumentSummary> & Pick<DocumentSummary, "id">,
+  patch: Partial<LibraryDocumentRow> & Pick<LibraryDocumentRow, "id">,
 ) {
-  queryClient.setQueriesData<DocumentSummary[]>({ queryKey: ["documents"] }, (current) =>
-    current?.map((item) => (item.id === patch.id ? { ...item, ...patch } : item)),
-  );
+  queryClient.setQueriesData<DocumentSummary[] | DocumentListResponse>({ queryKey: ["documents"] }, (current) => {
+    if (!current) return current;
+    if (Array.isArray(current)) return current.map((item) => (item.id === patch.id ? { ...item, ...patch } : item));
+    return { ...current, items: current.items.map((item) => (item.id === patch.id ? { ...item, ...patch } : item)) };
+  });
 }
 
 function showLibraryPriorityPill(value?: string | null) {
@@ -5326,9 +5349,16 @@ function LibraryView({
   startConcordanceRun,
   loading,
   alternatingRows,
+  totalDocumentCount,
+  totalPageCount,
+  pageOffset,
+  pageLimit,
+  hasMoreDocuments,
+  onPreviousPage,
+  onNextPage,
   preferences,
 }: {
-  documents: DocumentSummary[];
+  documents: LibraryDocumentRow[];
   document?: DocumentDetail;
   selectedId?: string;
   setSelectedId: (id: string, options?: { updateUrl?: boolean }) => void;
@@ -5344,11 +5374,21 @@ function LibraryView({
   startConcordanceRun: StartConcordanceRun;
   loading: boolean;
   alternatingRows: boolean;
+  totalDocumentCount: number;
+  totalPageCount: number;
+  pageOffset: number;
+  pageLimit: number;
+  hasMoreDocuments: boolean;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
   preferences?: AppPreferences;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
   const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const rowsViewportRef = useRef<HTMLDivElement | null>(null);
+  const [rowsScrollTop, setRowsScrollTop] = useState(0);
+  const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
   const [readerOpen, setReaderOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [bulkReadStatus, setBulkReadStatus] = useState("");
@@ -5420,9 +5460,17 @@ function LibraryView({
     onSuccess: (result) => {
       trashFeedback.showSuccess();
       const trashedIds = new Set(result.document_ids);
-      queryClient.setQueriesData<DocumentSummary[]>({ queryKey: ["documents"] }, (current) =>
-        current ? current.filter((item) => !trashedIds.has(item.id)) : current,
-      );
+      queryClient.setQueriesData<DocumentSummary[] | DocumentListResponse>({ queryKey: ["documents"] }, (current) => {
+        if (!current) return current;
+        if (Array.isArray(current)) return current.filter((item) => !trashedIds.has(item.id));
+        const nextItems = current.items.filter((item) => !trashedIds.has(item.id));
+        const removedCount = current.items.length - nextItems.length;
+        return {
+          ...current,
+          items: nextItems,
+          total_count: Math.max(0, current.total_count - removedCount),
+        };
+      });
       setReaderOpen(false);
       setSelectedIds((current) => current.filter((id) => !trashedIds.has(id)));
       if (selectedId && trashedIds.has(selectedId)) {
@@ -5525,8 +5573,19 @@ function LibraryView({
     [documents],
   );
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
-  const libraryPageCount = sortedDocuments.reduce((total, item) => total + Math.max(0, item.page_count || 0), 0);
-  const libraryCountLabel = `Browsing ${formatWholeNumber(sortedDocuments.length)} document${sortedDocuments.length === 1 ? "" : "s"} (${formatWholeNumber(libraryPageCount)} page${libraryPageCount === 1 ? "" : "s"})`;
+  const visibleStart = totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
+  const visibleEnd = Math.min(pageOffset + sortedDocuments.length, totalDocumentCount);
+  const libraryCountLabel =
+    totalDocumentCount === sortedDocuments.length && pageOffset === 0
+      ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
+      : `Browsing ${formatWholeNumber(visibleStart)}-${formatWholeNumber(visibleEnd)} of ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
+  const virtualStartIndex = Math.max(0, Math.floor(rowsScrollTop / LIBRARY_ROW_HEIGHT) - LIBRARY_ROW_OVERSCAN);
+  const virtualEndIndex = Math.min(
+    sortedDocuments.length,
+    Math.ceil((rowsScrollTop + rowsViewportHeight) / LIBRARY_ROW_HEIGHT) + LIBRARY_ROW_OVERSCAN,
+  );
+  const virtualDocuments = sortedDocuments.slice(virtualStartIndex, virtualEndIndex);
+  const virtualSpacerHeight = sortedDocuments.length * LIBRARY_ROW_HEIGHT;
   const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
@@ -5561,6 +5620,15 @@ function LibraryView({
     setBulkDomainIds(selectedBulkDomainIds);
     setBulkProjectIds(selectedBulkProjectIds);
   }, [selectedBulkDomainIds, selectedBulkProjectIds]);
+  useEffect(() => {
+    const element = rowsViewportRef.current;
+    if (!element) return;
+    const updateSize = () => setRowsViewportHeight(element.clientHeight);
+    updateSize();
+    const resizeObserver = new ResizeObserver(updateSize);
+    resizeObserver.observe(element);
+    return () => resizeObserver.disconnect();
+  }, []);
   const hasBulkUpdate = selectedBulkDocument
     ? Boolean(
         bulkReadStatus ||
@@ -5921,13 +5989,46 @@ function LibraryView({
               </AsyncActionSlot>
             </div>
           ) : null}
+          <div className="library-page-controls">
+            <button
+              className="secondary-button compact"
+              data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
+              data-tooltip="Load the previous Library result window."
+              disabled={pageOffset <= 0 || loading}
+              onClick={onPreviousPage}
+              type="button"
+            >
+              <ChevronLeft size={15} />
+              Previous
+            </button>
+            <span>{pageLimit ? `${formatWholeNumber(Math.floor(pageOffset / pageLimit) + 1)}` : "1"}</span>
+            <button
+              className="secondary-button compact"
+              data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
+              data-tooltip="Load the next Library result window."
+              disabled={!hasMoreDocuments || loading}
+              onClick={onNextPage}
+              type="button"
+            >
+              Next
+              <ChevronRight size={15} />
+            </button>
+          </div>
         </div>
-        <div className={`rows ${alternatingRows ? "alternating-rows" : ""}`}>
-          {sortedDocuments.map((item) => (
+        <div
+          ref={rowsViewportRef}
+          className={`rows virtual-rows ${alternatingRows ? "alternating-rows" : ""}`}
+          onScroll={(event) => setRowsScrollTop(event.currentTarget.scrollTop)}
+        >
+          <div className="virtual-rows-spacer" style={{ height: virtualSpacerHeight }}>
+          {virtualDocuments.map((item, virtualIndex) => {
+            const actualIndex = virtualStartIndex + virtualIndex;
+            return (
             <div
               key={item.id}
-              className={`doc-row ${selectedId === item.id ? "selected" : ""} ${draggedDocumentId === item.id ? "dragging" : ""}`}
+              className={`doc-row virtual-doc-row ${alternatingRows && actualIndex % 2 === 1 ? "even-row" : ""} ${selectedId === item.id ? "selected" : ""} ${draggedDocumentId === item.id ? "dragging" : ""}`}
               draggable
+              style={{ height: LIBRARY_ROW_HEIGHT, transform: `translateY(${actualIndex * LIBRARY_ROW_HEIGHT}px)` }}
               onDragEnd={() => setDraggedDocumentId(null)}
               onDragStart={(event) => {
                 setDraggedDocumentId(item.id);
@@ -5984,7 +6085,9 @@ function LibraryView({
                 <MarkdownBlock compact content={markdownExcerpt(item.rich_summary || "", 320)} empty="Summary pending." />
               </div>
             </div>
-          ))}
+            );
+          })}
+          </div>
         </div>
       </section>
       <ResizeHandle
@@ -6184,7 +6287,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const stashFeedback = useAsyncActionFeedbackMap();
   const bibliographyEntries = useMemo(() => bibliographyEntriesFromText(document.bibliography), [document.bibliography]);
   const hasBibliography = bibliographyEntries.length > 0;
-  const canRefresh = document.processing_status === "ready" && (Boolean(document.doi) || hasBibliography);
+  const canRefresh = document.processing_status === "ready" && Boolean(document.title?.trim());
   const recommendations = useQuery({
     queryKey: ["document-recommendations", document.id, view, family],
     queryFn: () => api.documentRecommendations(document.id, { view, family }),
@@ -6580,9 +6683,9 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                 data-disabled-reason={
                   refresh.isPending
                     ? "recommendation refresh is already running."
-                    : "related recommendations need a completed document with a DOI or extracted bibliography."
+                    : "related recommendations need a completed document with a searchable title."
                 }
-                data-tooltip="Refresh related-paper recommendations for this document from scholarly metadata services and extracted bibliography references."
+                data-tooltip="Refresh related-paper recommendations from scholarly metadata search, extracted bibliography references, and nearby project/domain/tag context."
                 disabled={!canRefresh || refresh.isPending}
                 onClick={() => refresh.mutate()}
                 type="button"
@@ -6677,7 +6780,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
         {!canRefresh ? (
           <div className="empty-inline recommendations-dialog-empty">
             <Sparkles size={17} />
-            <span>Related needs a completed document with a DOI or extracted bibliography.</span>
+            <span>Related needs a completed document with a searchable title.</span>
           </div>
         ) : (
           <div className="recommendations-dialog-body">
@@ -9474,7 +9577,7 @@ function DocumentPanelContent({
     <button
       className="secondary-button"
       aria-expanded={recommendationsOpen}
-      data-tooltip={document.doi ? "Open related-paper recommendations for this DOI-bearing document." : "Open the recommendations panel to see why related papers are unavailable."}
+      data-tooltip="Open related-paper recommendations and discovery leads for this document."
       onClick={() => setRecommendationsOpen((value) => !value)}
       type="button"
     >
@@ -15903,6 +16006,7 @@ function StatusView({ dashboard }: { dashboard?: Dashboard }) {
     container?.process_count !== undefined && container?.process_count !== null
       ? `${formatMetric(container.process_count)} processes / ${formatMetric(container?.thread_count)} threads`
       : "Process counts unavailable";
+
   return (
     <section className="workbench status-workbench">
       <div className="status-panel">
@@ -17716,6 +17820,7 @@ export default function App() {
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
+  const [libraryOffset, setLibraryOffset] = useState(0);
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
@@ -17731,7 +17836,8 @@ export default function App() {
     localStorage.setItem("medusa-theme", theme);
   }, [theme]);
 
-  const needsDocumentList = activeView === "library" || activeView === "domains" || activeView === "projects" || activeView === "notes";
+  const needsLibraryDocumentList = activeView === "library";
+  const needsReferenceDocumentList = activeView === "domains" || activeView === "projects" || activeView === "notes";
   const needsDomains = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "notes" || activeView === "settings";
   const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
   const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
@@ -17739,6 +17845,7 @@ export default function App() {
   const needsImportJobs = activeView === "import" || activeView === "queue";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
+  const documentQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
 
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const dashboard = useQuery({
@@ -17780,11 +17887,26 @@ export default function App() {
   const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data && needsDomains) });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data && needsTags) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data && needsSavedSearches) });
+  useEffect(() => {
+    setLibraryOffset(0);
+  }, [documentQuery, filters]);
+  const libraryDocumentList = useQuery({
+    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, LIBRARY_PAGE_SIZE],
+    queryFn: () => api.documentList(documentQuery, filters, { offset: libraryOffset, limit: LIBRARY_PAGE_SIZE }),
+    enabled: Boolean(me.data && needsLibraryDocumentList),
+    staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
+    refetchInterval: needsLibraryDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
+  });
   const documents = useQuery({
-    queryKey: ["documents", query, filters],
-    queryFn: () => api.documents(query, filters),
-    enabled: Boolean(me.data && needsDocumentList),
-    refetchInterval: needsDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
+    queryKey: ["documents", "reference-list"],
+    queryFn: () =>
+      api.documents("", EMPTY_DOCUMENT_FILTERS, {
+        includeDuplicateSummary: false,
+        includeProjects: false,
+      }),
+    enabled: Boolean(me.data && needsReferenceDocumentList),
+    staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
+    refetchInterval: needsReferenceDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
   const selectedDocument = useQuery({
     queryKey: ["document", selectedId],
@@ -17899,14 +18021,17 @@ export default function App() {
       return next;
     });
   }, []);
+  const libraryRows = libraryDocumentList.data?.items ?? EMPTY_LIBRARY_ROWS;
+  const libraryTotalDocumentCount = libraryDocumentList.data?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
+  const libraryTotalPageCount = libraryDocumentList.data?.total_page_count ?? 0;
 
   const activeTitleSubject = useMemo(() => {
     if (activeView === "library") {
-      const summaryTitle = selectedId ? documents.data?.find((item) => item.id === selectedId)?.title : "";
+      const summaryTitle = selectedId ? libraryRows.find((item) => item.id === selectedId)?.title : "";
       return selectedDocument.data?.title || summaryTitle || (selectedId ? "Document" : VIEW_TITLE_LABELS.library);
     }
     return viewTitleSubjects[activeView] || VIEW_TITLE_LABELS[activeView];
-  }, [activeView, documents.data, selectedDocument.data?.title, selectedId, viewTitleSubjects]);
+  }, [activeView, libraryRows, selectedDocument.data?.title, selectedId, viewTitleSubjects]);
 
   const browserTitle = me.data
     ? medusaBrowserTitle(activeTitleSubject)
@@ -18206,8 +18331,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeView === "library" && !selectedId && documents.data?.[0]) setSelectedId(documents.data[0].id);
-  }, [activeView, documents.data, selectedId]);
+    if (activeView === "library" && !selectedId && libraryRows[0]) setSelectedId(libraryRows[0].id);
+  }, [activeView, libraryRows, selectedId]);
 
   useEffect(() => {
     const runs = concordanceRuns.data || [];
@@ -18351,7 +18476,7 @@ export default function App() {
         </section>
         {activeView === "library" ? (
           <LibraryView
-            documents={documents.data || []}
+            documents={libraryRows}
             document={selectedDocument.data}
             selectedId={selectedId}
             setSelectedId={(id, options) => {
@@ -18371,8 +18496,17 @@ export default function App() {
             setFilters={setFilters}
             savedSearches={savedSearches.data || []}
             startConcordanceRun={startConcordanceRun}
-            loading={documents.isFetching}
+            loading={libraryDocumentList.isFetching}
             alternatingRows={preferences.data?.library_alternating_rows ?? true}
+            totalDocumentCount={libraryTotalDocumentCount}
+            totalPageCount={libraryTotalPageCount}
+            pageOffset={libraryDocumentList.data?.offset ?? libraryOffset}
+            pageLimit={libraryDocumentList.data?.limit ?? LIBRARY_PAGE_SIZE}
+            hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
+            onPreviousPage={() => setLibraryOffset((current) => Math.max(0, current - LIBRARY_PAGE_SIZE))}
+            onNextPage={() => {
+              if (libraryDocumentList.data?.has_more) setLibraryOffset((current) => current + LIBRARY_PAGE_SIZE);
+            }}
             preferences={preferences.data}
           />
         ) : null}

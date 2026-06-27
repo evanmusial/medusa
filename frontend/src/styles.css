@@ -1923,6 +1923,23 @@ textarea {
   min-height: 34px;
 }
 
+.library-page-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: max-content;
+  margin-left: auto;
+}
+
+.library-page-controls span {
+  min-width: 28px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
 .bulk-multi-select {
   position: relative;
   min-width: 0;
@@ -2648,6 +2665,25 @@ textarea {
   overflow: auto;
 }
 
+.virtual-rows {
+  position: relative;
+  min-height: 0;
+}
+
+.virtual-rows-spacer {
+  position: relative;
+  min-width: 100%;
+}
+
+.virtual-doc-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  will-change: transform;
+}
+
 .doc-row {
   width: 100%;
   border-bottom: 1px solid var(--line);
@@ -2662,7 +2698,11 @@ textarea {
   cursor: pointer;
 }
 
-.rows.alternating-rows .doc-row:nth-child(even):not(:hover):not(.selected) {
+.rows.alternating-rows:not(.virtual-rows) .doc-row:nth-child(even):not(:hover):not(.selected) {
+  background: var(--library-row-alt);
+}
+
+.rows.alternating-rows .doc-row.even-row:not(:hover):not(.selected) {
   background: var(--library-row-alt);
 }
 
@@ -10060,9 +10100,15 @@ button.history-row,
 
   .list-toolbar,
   .bulk-bar,
+  .library-page-controls,
   .import-defaults-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .library-page-controls {
+    margin-left: 0;
+    width: 100%;
   }
 
   .doc-row {

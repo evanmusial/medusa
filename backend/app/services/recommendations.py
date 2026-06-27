@@ -11,10 +11,10 @@ from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
-from app.models import Document, DocumentRecommendation, DoiStash, ImportBatch, ImportJob, ProcessingEvent, utc_now
+from app.models import Document, DocumentRecommendation, DoiStash, ImportBatch, ImportJob, ProcessingEvent, ProjectItem, utc_now
 from app.services.document_cache import document_cache_path, document_cache_root, register_document_cache
 from app.services.document_visibility import LIBRARY_VISIBLE_DOCUMENT_STATUSES, filter_library_visible_documents, library_visible_document_filter
 from app.services.processing import refresh_import_batch_progress
@@ -90,6 +90,47 @@ METHOD_TERMS = {
 }
 CONTRAST_TERMS = {"challenge", "contrary", "contrast", "critique", "critical", "debate", "limitation", "opposing"}
 REFERENCE_MATERIAL_TERMS = {"book", "chapter", "dataset", "handbook", "manual", "policy", "report", "standard", "survey"}
+CONTEXT_SOURCE_LIMIT = 8
+CONTEXT_PROVIDER_SOURCE_LIMIT = 2
+CONTEXT_PROVIDER_PER_SOURCE_LIMIT = 8
+CONTEXT_BIBLIOGRAPHY_PER_SOURCE_LIMIT = 8
+QUERY_SOURCE_LIMIT = 3
+QUERY_PROVIDER_PER_QUERY_LIMIT = 10
+QUERY_STOPWORDS = {
+    "about",
+    "across",
+    "after",
+    "against",
+    "analysis",
+    "approach",
+    "based",
+    "between",
+    "case",
+    "data",
+    "document",
+    "documents",
+    "during",
+    "effect",
+    "effects",
+    "from",
+    "into",
+    "method",
+    "model",
+    "paper",
+    "research",
+    "results",
+    "study",
+    "studies",
+    "system",
+    "systems",
+    "that",
+    "their",
+    "these",
+    "this",
+    "through",
+    "using",
+    "with",
+}
 
 
 @dataclass
@@ -111,6 +152,41 @@ class RecommendationCandidate:
     @property
     def match_key(self) -> str:
         return recommendation_match_key(self.doi, self.title)
+
+
+@dataclass
+class RecommendationContextSource:
+    document: Document
+    score: float
+    reason_chips: list[str]
+    domain_overlap_count: int = 0
+    tag_overlap_count: int = 0
+    project_overlap_count: int = 0
+
+
+@dataclass
+class RecommendationContextExpansion:
+    candidates: list[RecommendationCandidate] = field(default_factory=list)
+    seed_document_count: int = 0
+    bibliography_reference_count: int = 0
+    provider_candidate_count: int = 0
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RecommendationSearchQuery:
+    text: str
+    kind: str
+    reason_chips: list[str]
+    score: float
+
+
+@dataclass
+class RecommendationQueryExpansion:
+    candidates: list[RecommendationCandidate] = field(default_factory=list)
+    query_count: int = 0
+    provider_candidate_count: int = 0
+    errors: dict[str, str] = field(default_factory=dict)
 
 
 def normalize_doi(value: str | None) -> str | None:
@@ -305,6 +381,9 @@ def _base_recommendation_score(source_document: Document, row: DocumentRecommend
         score = float(row.score or 0)
     except (TypeError, ValueError):
         score = 0.0
+    context_score = _recommendation_context_score(row)
+    if context_score:
+        score += min(0.28, context_score * 0.22)
     if row.has_pdf:
         score += 0.18
     if normalize_doi(row.doi):
@@ -328,6 +407,7 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
     limit = limit or settings.recommendations_max_results_per_source
     candidates: dict[str, RecommendationCandidate] = {}
     errors: dict[str, str] = {}
+    provider_candidate_count = 0
 
     for provider, fetcher in _enabled_fetchers():
         try:
@@ -335,6 +415,7 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
                 if not candidate.title.strip():
                     continue
                 _merge_candidate(candidates, candidate)
+                provider_candidate_count += 1
         except Exception as exc:
             errors[provider] = str(exc)
 
@@ -344,12 +425,28 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
             continue
         _merge_candidate(candidates, candidate)
 
+    query_expansion = query_recommendation_candidates(document, limit)
+    for candidate in query_expansion.candidates:
+        if not candidate.title.strip():
+            continue
+        _merge_candidate(candidates, candidate)
+    errors.update(query_expansion.errors)
+    provider_candidate_count += query_expansion.provider_candidate_count
+
+    context_expansion = context_recommendation_candidates(db, document, limit)
+    for candidate in context_expansion.candidates:
+        if not candidate.title.strip():
+            continue
+        _merge_candidate(candidates, candidate)
+    errors.update(context_expansion.errors)
+
     for provider, enricher in _enabled_enrichers():
         try:
             for candidate in enricher(list(candidates.values()), limit):
                 if not candidate.title.strip():
                     continue
                 _merge_candidate(candidates, candidate)
+                provider_candidate_count += 1
         except Exception as exc:
             errors[provider] = str(exc)
 
@@ -394,13 +491,150 @@ def refresh_document_recommendations(db: Session, document: Document, *, limit: 
             message=f"Recommendation refresh found {len(rows)} related papers.",
             payload={
                 "candidate_count": len(candidates),
+                "provider_candidate_count": provider_candidate_count,
                 "bibliography_reference_count": len(bibliography_candidates),
+                "query_count": query_expansion.query_count,
+                "query_candidate_count": len(query_expansion.candidates),
+                "context_seed_document_count": context_expansion.seed_document_count,
+                "context_candidate_count": len(context_expansion.candidates),
+                "context_bibliography_reference_count": context_expansion.bibliography_reference_count,
+                "context_provider_candidate_count": context_expansion.provider_candidate_count,
                 "providers": sorted({row.source_provider for row in rows}),
                 "errors": errors,
             },
         )
     )
     return rows
+
+
+def document_has_recommendation_inputs(document: Document | None) -> bool:
+    if not document or document.processing_status != "ready":
+        return False
+    return bool(
+        normalize_doi(document.doi)
+        or (document.bibliography or "").strip()
+        or recommendation_search_queries(document)
+    )
+
+
+def query_recommendation_candidates(document: Document, limit: int) -> RecommendationQueryExpansion:
+    queries = recommendation_search_queries(document)
+    expansion = RecommendationQueryExpansion(query_count=len(queries))
+    if not queries:
+        return expansion
+
+    provider_limit = min(QUERY_PROVIDER_PER_QUERY_LIMIT, max(4, limit // max(1, len(queries))))
+    for query in queries:
+        for provider, fetcher in _enabled_query_fetchers():
+            try:
+                for candidate in fetcher(query, provider_limit):
+                    if not candidate.title.strip() or _candidate_matches_document(document, candidate):
+                        continue
+                    expansion.candidates.append(_search_contextualize_candidate(candidate, query))
+                    expansion.provider_candidate_count += 1
+            except Exception as exc:
+                expansion.errors[f"query:{provider}:{query.kind}"] = str(exc)
+    return expansion
+
+
+def recommendation_search_queries(document: Document, *, limit: int = QUERY_SOURCE_LIMIT) -> list[RecommendationSearchQuery]:
+    queries: list[RecommendationSearchQuery] = []
+    title_query = _clean_query_phrase(document.title, max_words=16)
+    if title_query and len(title_query.split()) >= 3:
+        queries.append(RecommendationSearchQuery(title_query, "title", ["Title search"], 0.84))
+
+    topic_terms = _topic_query_terms(document)
+    if len(topic_terms) >= 3:
+        queries.append(RecommendationSearchQuery(" ".join(topic_terms[:8]), "topics", ["Topic search"], 0.74))
+
+    evidence_terms = _ranked_query_terms(
+        " ".join(
+            part
+            for part in [
+                document.title,
+                document.abstract,
+                document.rich_summary,
+                document.search_text[:1600] if document.search_text else "",
+            ]
+            if part
+        )
+    )
+    if len(evidence_terms) >= 5:
+        queries.append(RecommendationSearchQuery(" ".join(evidence_terms[:9]), "evidence", ["Evidence search"], 0.68))
+
+    unique: list[RecommendationSearchQuery] = []
+    seen: set[str] = set()
+    for query in queries:
+        key = normalize_title_key(query.text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(query)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _topic_query_terms(document: Document) -> list[str]:
+    structured = " ".join(
+        [
+            *(tag.name for tag in document.tags[:8]),
+            *(domain.name for domain in document.domains[:5]),
+            document.title or "",
+        ]
+    )
+    return _ranked_query_terms(structured)
+
+
+def _ranked_query_terms(text: str | None) -> list[str]:
+    tokens = [
+        token
+        for token in normalize_title_key(text).split()
+        if len(token) >= 4 and token not in QUERY_STOPWORDS and not token.isdigit()
+    ]
+    counts: dict[str, int] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    return [
+        token
+        for token, _count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], tokens.index(item[0])),
+        )
+    ]
+
+
+def _clean_query_phrase(text: str | None, *, max_words: int) -> str | None:
+    words = normalize_title_key(text).split()
+    filtered = [word for word in words if len(word) >= 2 and word not in QUERY_STOPWORDS]
+    if len(filtered) < 3:
+        return None
+    return " ".join(filtered[:max_words])
+
+
+def _search_contextualize_candidate(candidate: RecommendationCandidate, query: RecommendationSearchQuery) -> RecommendationCandidate:
+    raw_metadata = dict(candidate.raw_metadata or {})
+    raw_metadata["search_query"] = {
+        "query": query.text,
+        "kind": query.kind,
+        "reason_chips": query.reason_chips,
+        "score": query.score,
+    }
+    return RecommendationCandidate(
+        title=candidate.title,
+        provider=candidate.provider,
+        relation=unique_join(candidate.relation, f"{query.kind}_search"),
+        doi=candidate.doi,
+        authors=candidate.authors,
+        publication_year=candidate.publication_year,
+        journal=candidate.journal,
+        description=candidate.description,
+        external_id=candidate.external_id,
+        source_url=candidate.source_url,
+        pdf_url=candidate.pdf_url,
+        score=max(float(candidate.score or 0), query.score),
+        raw_metadata=raw_metadata,
+    )
 
 
 def bibliography_reference_candidates(document: Document, limit: int) -> list[RecommendationCandidate]:
@@ -420,6 +654,181 @@ def bibliography_reference_candidates(document: Document, limit: int) -> list[Re
         if len(candidates) >= limit:
             break
     return candidates
+
+
+def context_recommendation_candidates(db: Session, document: Document, limit: int) -> RecommendationContextExpansion:
+    context_sources = _contextual_source_documents(db, document, limit=CONTEXT_SOURCE_LIMIT)
+    expansion = RecommendationContextExpansion(seed_document_count=len(context_sources))
+    if not context_sources:
+        return expansion
+
+    for context in context_sources:
+        if peer_candidate := _contextual_library_candidate(context):
+            if not _candidate_matches_document(document, peer_candidate):
+                expansion.candidates.append(peer_candidate)
+
+        for candidate in bibliography_reference_candidates(context.document, CONTEXT_BIBLIOGRAPHY_PER_SOURCE_LIMIT):
+            if _candidate_matches_document(document, candidate) or _candidate_matches_document(context.document, candidate):
+                continue
+            expansion.candidates.append(_contextualize_candidate(candidate, context, source_kind="bibliography_reference"))
+            expansion.bibliography_reference_count += 1
+            if len(expansion.candidates) >= limit * 3:
+                break
+
+    provider_limit = min(CONTEXT_PROVIDER_PER_SOURCE_LIMIT, max(3, limit // 4))
+    for context in context_sources[:CONTEXT_PROVIDER_SOURCE_LIMIT]:
+        if not normalize_doi(context.document.doi):
+            continue
+        for provider, fetcher in _enabled_fetchers():
+            try:
+                for candidate in fetcher(context.document, provider_limit):
+                    if not candidate.title.strip() or _candidate_matches_document(document, candidate):
+                        continue
+                    expansion.candidates.append(_contextualize_candidate(candidate, context, source_kind=provider))
+                    expansion.provider_candidate_count += 1
+            except Exception as exc:
+                expansion.errors[f"context:{provider}:{context.document.id}"] = str(exc)
+
+    return expansion
+
+
+def _contextual_source_documents(db: Session, document: Document, *, limit: int) -> list[RecommendationContextSource]:
+    source_domain_ids = {domain.id for domain in document.domains}
+    source_tag_ids = {tag.id for tag in document.tags}
+    source_project_ids = {
+        project_id
+        for (project_id,) in db.query(ProjectItem.project_id).filter(ProjectItem.document_id == document.id).all()
+    }
+    if not source_domain_ids and not source_tag_ids and not source_project_ids:
+        return []
+
+    project_peer_map: dict[str, set[str]] = {}
+    if source_project_ids:
+        for item in (
+            db.query(ProjectItem)
+            .filter(ProjectItem.project_id.in_(source_project_ids), ProjectItem.document_id != document.id)
+            .all()
+        ):
+            project_peer_map.setdefault(item.document_id, set()).add(item.project_id)
+
+    candidates = (
+        filter_library_visible_documents(db.query(Document))
+        .options(selectinload(Document.domains), selectinload(Document.tags))
+        .filter(Document.id != document.id)
+        .all()
+    )
+    contexts: list[RecommendationContextSource] = []
+    source_authors = _author_families(document.authors)
+    for candidate in candidates:
+        domain_overlap = source_domain_ids & {domain.id for domain in candidate.domains}
+        tag_overlap = source_tag_ids & {tag.id for tag in candidate.tags}
+        project_overlap = source_project_ids & project_peer_map.get(candidate.id, set())
+        reason_chips: list[str] = []
+        score = 0.0
+
+        if project_overlap:
+            score += 0.48 + min(0.12, 0.04 * (len(project_overlap) - 1))
+            reason_chips.append("Same project")
+        if domain_overlap:
+            score += 0.34 + min(0.15, 0.05 * (len(domain_overlap) - 1))
+            reason_chips.append("Same domain")
+        if tag_overlap:
+            score += 0.22 + min(0.12, 0.03 * (len(tag_overlap) - 1))
+            reason_chips.append("Shared tags")
+        if source_authors and not source_authors.isdisjoint(_author_families(candidate.authors)):
+            score += 0.08
+            reason_chips.append("Shared author")
+        if _publication_year_matches(document.publication_year, candidate.publication_year):
+            score += 0.04
+            reason_chips.append("Nearby year")
+
+        if score <= 0:
+            continue
+        contexts.append(
+            RecommendationContextSource(
+                document=candidate,
+                score=score,
+                reason_chips=_unique_reason_chips(reason_chips),
+                domain_overlap_count=len(domain_overlap),
+                tag_overlap_count=len(tag_overlap),
+                project_overlap_count=len(project_overlap),
+            )
+        )
+
+    return sorted(contexts, key=lambda item: (-item.score, normalize_title_key(item.document.title)))[:limit]
+
+
+def _contextual_library_candidate(context: RecommendationContextSource) -> RecommendationCandidate | None:
+    document = context.document
+    if not normalize_doi(document.doi) and not document.source_url:
+        return None
+    return RecommendationCandidate(
+        title=document.title,
+        provider="medusa_context",
+        relation="library_neighbor",
+        doi=document.doi,
+        authors=document.authors or [],
+        publication_year=document.publication_year,
+        journal=document.journal,
+        description=document.abstract or document.rich_summary,
+        source_url=document.source_url or doi_url(document.doi),
+        score=min(0.96, 0.5 + context.score * 0.25),
+        raw_metadata={
+            "provider": "medusa_context",
+            "relation": "library_neighbor",
+            "context": _context_metadata(context, source_kind="library_neighbor"),
+        },
+    )
+
+
+def _contextualize_candidate(
+    candidate: RecommendationCandidate,
+    context: RecommendationContextSource,
+    *,
+    source_kind: str,
+) -> RecommendationCandidate:
+    provider = "context" if source_kind == "bibliography_reference" else unique_join(candidate.provider, "context")
+    relation = "context_reference" if source_kind == "bibliography_reference" else unique_join(candidate.relation, "context_neighbor")
+    raw_metadata = dict(candidate.raw_metadata or {})
+    raw_metadata["context"] = _context_metadata(context, source_kind=source_kind)
+    base_score = float(candidate.score or 0.0)
+    score = min(0.99, max(base_score, 0.34) + min(0.26, context.score * 0.22))
+    return RecommendationCandidate(
+        title=candidate.title,
+        provider=provider,
+        relation=relation,
+        doi=candidate.doi,
+        authors=candidate.authors,
+        publication_year=candidate.publication_year,
+        journal=candidate.journal,
+        description=candidate.description,
+        external_id=candidate.external_id,
+        source_url=candidate.source_url,
+        pdf_url=candidate.pdf_url,
+        score=score,
+        raw_metadata=raw_metadata,
+    )
+
+
+def _context_metadata(context: RecommendationContextSource, *, source_kind: str) -> dict[str, Any]:
+    return {
+        "source": "project_domain_tag_neighborhood",
+        "source_kind": source_kind,
+        "seed_document_id": context.document.id,
+        "seed_document_title": context.document.title,
+        "score": round(context.score, 3),
+        "reason_chips": context.reason_chips,
+        "domain_overlap_count": context.domain_overlap_count,
+        "tag_overlap_count": context.tag_overlap_count,
+        "project_overlap_count": context.project_overlap_count,
+    }
+
+
+def _candidate_matches_document(document: Document, candidate: RecommendationCandidate) -> bool:
+    candidate_doi = normalize_doi(candidate.doi)
+    if candidate_doi and normalize_doi(document.doi) == candidate_doi:
+        return True
+    return bool(candidate.title and normalized_title_similarity(document.title, candidate.title) >= 0.985)
 
 
 def _bibliography_reference_entries(text: str | None, *, limit: int) -> list[str]:
@@ -863,6 +1272,16 @@ def _enabled_fetchers():
         yield "crossref", fetch_crossref_recommendations
 
 
+def _enabled_query_fetchers():
+    settings = get_settings()
+    if settings.recommendations_enable_openalex:
+        yield "openalex", fetch_openalex_search_recommendations
+    if settings.recommendations_enable_semantic_scholar:
+        yield "semantic_scholar", fetch_semantic_scholar_search_recommendations
+    if settings.recommendations_enable_crossref:
+        yield "crossref", fetch_crossref_search_recommendations
+
+
 def _enabled_enrichers():
     settings = get_settings()
     if settings.recommendations_enable_unpaywall:
@@ -1039,6 +1458,67 @@ def fetch_crossref_recommendations(document: Document, limit: int) -> list[Recom
             if len(candidates) >= limit:
                 return candidates
     return candidates[:limit]
+
+
+def fetch_openalex_search_recommendations(query: RecommendationSearchQuery, limit: int) -> list[RecommendationCandidate]:
+    if not query.text:
+        return []
+    candidates: list[RecommendationCandidate] = []
+    with _client() as client:
+        response = client.get(
+            "https://api.openalex.org/works",
+            params=_params({"search": query.text, "per-page": str(limit)}),
+        )
+        response.raise_for_status()
+        for item in response.json().get("results") or []:
+            if candidate := _openalex_work_to_candidate(item, "search"):
+                candidates.append(candidate)
+            if len(candidates) >= limit:
+                break
+    return candidates
+
+
+def fetch_semantic_scholar_search_recommendations(query: RecommendationSearchQuery, limit: int) -> list[RecommendationCandidate]:
+    if not query.text:
+        return []
+    settings = get_settings()
+    headers = {"x-api-key": settings.semantic_scholar_api_key} if settings.semantic_scholar_api_key else {}
+    fields = "paperId,title,abstract,venue,year,externalIds,openAccessPdf,url,authors"
+    candidates: list[RecommendationCandidate] = []
+    with httpx.Client(
+        timeout=settings.recommendations_request_timeout_seconds,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        response = client.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params={"query": query.text, "limit": str(limit), "fields": fields},
+        )
+        response.raise_for_status()
+        for item in response.json().get("data") or []:
+            if candidate := _semantic_scholar_paper_to_candidate(item, "search"):
+                candidates.append(candidate)
+            if len(candidates) >= limit:
+                break
+    return candidates
+
+
+def fetch_crossref_search_recommendations(query: RecommendationSearchQuery, limit: int) -> list[RecommendationCandidate]:
+    if not query.text:
+        return []
+    candidates: list[RecommendationCandidate] = []
+    with _client() as client:
+        response = client.get(
+            "https://api.crossref.org/works",
+            params={"query.bibliographic": query.text, "rows": str(limit)},
+        )
+        response.raise_for_status()
+        for item in (response.json().get("message") or {}).get("items") or []:
+            if candidate := _crossref_work_to_candidate(item, "search"):
+                candidates.append(candidate)
+            if len(candidates) >= limit:
+                break
+    return candidates
 
 
 def enrich_unpaywall_recommendations(
@@ -1516,6 +1996,7 @@ def mark_recommendation_discovery_state(
             recommendation.existing_document_id = None
 
         relation_family = _classify_relation_family(source_document, recommendation)
+        context_score = _recommendation_context_score(recommendation)
         _write_recommendation_v2_metadata(
             recommendation,
             {
@@ -1526,6 +2007,9 @@ def mark_recommendation_discovery_state(
                 "matched_document_id": matched_document_id,
                 "matched_document_title": matched_document_title,
                 "doi_stash_id": stash_match.id if stash_match else None,
+                "context_score": round(context_score, 3) if context_score else None,
+                "context_sources": _recommendation_context_summary(recommendation),
+                "search_queries": _recommendation_search_summary(recommendation),
                 "reason_chips": _recommendation_reason_chips(recommendation, relation_family, known_status),
                 "evidence": _recommendation_v2_evidence(
                     recommendation,
@@ -1655,6 +2139,8 @@ def _recommendation_reason_chips(
     relation_chip = _relation_reason_chip(recommendation.source_relation)
     if relation_chip:
         chips.append(relation_chip)
+    chips.extend(_recommendation_context_reason_chips(recommendation))
+    chips.extend(_recommendation_search_reason_chips(recommendation))
     if recommendation.has_pdf:
         chips.append("Open PDF")
     if normalize_doi(recommendation.doi):
@@ -1696,6 +2182,123 @@ def _unique_reason_chips(values: list[str]) -> list[str]:
     return chips[:7]
 
 
+def _recommendation_context_entries(recommendation: DocumentRecommendation) -> list[dict[str, Any]]:
+    return _context_entries_from_metadata(recommendation.raw_metadata)
+
+
+def _recommendation_search_entries(recommendation: DocumentRecommendation) -> list[dict[str, Any]]:
+    return _search_entries_from_metadata(recommendation.raw_metadata)
+
+
+def _context_entries_from_metadata(metadata: Any) -> list[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return []
+    entries: list[dict[str, Any]] = []
+    context = metadata.get("context")
+    if isinstance(context, dict):
+        entries.append(context)
+    for source in metadata.get("sources") or []:
+        entries.extend(_context_entries_from_metadata(source))
+    return entries
+
+
+def _search_entries_from_metadata(metadata: Any) -> list[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return []
+    entries: list[dict[str, Any]] = []
+    query = metadata.get("search_query")
+    if isinstance(query, dict):
+        entries.append(query)
+    for source in metadata.get("sources") or []:
+        entries.extend(_search_entries_from_metadata(source))
+    return entries
+
+
+def _recommendation_context_score(recommendation: DocumentRecommendation) -> float:
+    score = 0.0
+    for context in _recommendation_context_entries(recommendation):
+        score = max(score, _context_entry_score(context))
+    return score
+
+
+def _context_entry_score(context: dict[str, Any]) -> float:
+    try:
+        return float(context.get("score") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _recommendation_context_reason_chips(recommendation: DocumentRecommendation) -> list[str]:
+    if not _recommendation_context_entries(recommendation):
+        return []
+    chips = ["Context match"]
+    for context in _recommendation_context_entries(recommendation):
+        reasons = context.get("reason_chips")
+        if isinstance(reasons, list):
+            chips.extend(str(reason) for reason in reasons if reason)
+    return _unique_reason_chips(chips)[:4]
+
+
+def _recommendation_search_reason_chips(recommendation: DocumentRecommendation) -> list[str]:
+    if not _recommendation_search_entries(recommendation):
+        return []
+    chips = ["Search match"]
+    for query in _recommendation_search_entries(recommendation):
+        reasons = query.get("reason_chips")
+        if isinstance(reasons, list):
+            chips.extend(str(reason) for reason in reasons if reason)
+    return _unique_reason_chips(chips)[:4]
+
+
+def _recommendation_context_summary(recommendation: DocumentRecommendation) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for context in sorted(
+        _recommendation_context_entries(recommendation),
+        key=_context_entry_score,
+        reverse=True,
+    ):
+        seed_id = str(context.get("seed_document_id") or "")
+        source_kind = str(context.get("source_kind") or "")
+        key = f"{seed_id}:{source_kind}"
+        if key in seen:
+            continue
+        seen.add(key)
+        summary.append(
+            {
+                "source_kind": source_kind,
+                "seed_document_id": seed_id or None,
+                "seed_document_title": context.get("seed_document_title"),
+                "score": context.get("score"),
+                "reason_chips": context.get("reason_chips") if isinstance(context.get("reason_chips"), list) else [],
+            }
+        )
+        if len(summary) >= 4:
+            break
+    return summary
+
+
+def _recommendation_search_summary(recommendation: DocumentRecommendation) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for query in _recommendation_search_entries(recommendation):
+        text = str(query.get("query") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        summary.append(
+            {
+                "query": text,
+                "kind": query.get("kind"),
+                "score": query.get("score"),
+                "reason_chips": query.get("reason_chips") if isinstance(query.get("reason_chips"), list) else [],
+            }
+        )
+        if len(summary) >= 4:
+            break
+    return summary
+
+
 def _recommendation_v2_evidence(
     recommendation: DocumentRecommendation,
     *,
@@ -1718,6 +2321,8 @@ def _recommendation_v2_evidence(
         "match_basis": match_basis,
         "matched_document_id": matched_document_id,
         "open_pdf_evidence": bool(recommendation.pdf_url),
+        "context_sources": _recommendation_context_summary(recommendation),
+        "search_queries": _recommendation_search_summary(recommendation),
     }
 
 

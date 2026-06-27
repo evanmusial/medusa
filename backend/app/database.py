@@ -37,6 +37,33 @@ def _create_postgres_supporting_objects(conn: Connection) -> None:
     conn.execute(
         text(
             """
+            CREATE INDEX IF NOT EXISTS ix_documents_full_text_gin
+            ON documents USING gin (
+              to_tsvector(
+                'english',
+                coalesce(title, '') || ' ' ||
+                coalesce(search_text, '') || ' ' ||
+                coalesce(apa_citation, '') || ' ' ||
+                coalesce(apa_in_text_citation, '')
+              )
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_documents_library_ready_filters
+            ON documents (read_status, priority, citation_status, duplicate_count)
+            WHERE deleted_at IS NULL AND processing_status IN ('ready', 'complete', 'completed', 'restored')
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_document_tags_tag_id ON document_tags (tag_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_document_domains_domain_id ON document_domains (domain_id)"))
+    conn.execute(
+        text(
+            """
             CREATE INDEX IF NOT EXISTS ix_documents_title_trgm
             ON documents USING gin (title gin_trgm_ops)
             """

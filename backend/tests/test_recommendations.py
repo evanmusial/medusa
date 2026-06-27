@@ -67,6 +67,7 @@ def test_refresh_recommendations_caches_and_marks_existing_match(monkeypatch, tm
             ]
 
         monkeypatch.setattr(service, "_enabled_fetchers", lambda: [("test", fake_fetcher)])
+        monkeypatch.setattr(service, "_enabled_query_fetchers", lambda: [])
         rows = refresh_document_recommendations(db, source)
         db.commit()
 
@@ -107,6 +108,7 @@ def test_refresh_recommendations_uses_stored_bibliography_references(monkeypatch
         db.commit()
 
         monkeypatch.setattr(service, "_enabled_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_query_fetchers", lambda: [])
         monkeypatch.setattr(service, "_enabled_enrichers", lambda: [])
 
         rows = refresh_document_recommendations(db, source)
@@ -122,6 +124,147 @@ def test_refresh_recommendations_uses_stored_bibliography_references(monkeypatch
         assert known.relation_family == "foundational"
         assert known.raw_metadata["recommendations_v2"]["evidence"]["provider"] == "bibliography"
         assert unheld.source_url == "https://example.test/source"
+
+
+def test_refresh_recommendations_uses_contextual_neighbor_bibliographies(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, Domain, Project, ProjectItem, Tag
+    from app.services import recommendations as service
+    from app.services.recommendations import list_document_recommendations, refresh_document_recommendations
+
+    Session = make_session()
+    with Session() as db:
+        domain = Domain(name="Threat Research")
+        tag = Tag(name="insider threat")
+        project = Project(name="Thesis")
+        source = Document(
+            title="Seed Paper",
+            doi="10.1000/seed",
+            original_filename="seed.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+            publication_year=2021,
+            domains=[domain],
+            tags=[tag],
+        )
+        neighbor = Document(
+            title="Neighbor Paper",
+            doi="10.1000/neighbor",
+            original_filename="neighbor.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+            publication_year=2020,
+            domains=[domain],
+            tags=[tag],
+            bibliography='Lee, A. (2018). Context-only recommended source. Security Journal. https://example.test/context',
+        )
+        db.add_all([domain, tag, project, source, neighbor])
+        db.flush()
+        db.add_all(
+            [
+                ProjectItem(project_id=project.id, document_id=source.id),
+                ProjectItem(project_id=project.id, document_id=neighbor.id),
+            ]
+        )
+        db.commit()
+
+        monkeypatch.setattr(service, "_enabled_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_query_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_enrichers", lambda: [])
+
+        rows = refresh_document_recommendations(db, source)
+        db.commit()
+
+        by_title = {row.title: row for row in rows}
+        context_row = by_title["Context-only recommended source"]
+        neighbor_row = by_title["Neighbor Paper"]
+
+        assert context_row.source_provider == "context"
+        assert context_row.source_relation == "context_reference"
+        assert context_row.known_status == "new"
+        assert "Context match" in context_row.reason_chips
+        assert "Same project" in context_row.reason_chips
+        assert context_row.raw_metadata["recommendations_v2"]["context_score"] > 0
+        assert context_row.raw_metadata["recommendations_v2"]["evidence"]["context_sources"][0]["seed_document_title"] == "Neighbor Paper"
+        assert neighbor_row.known_status == "in_library"
+
+        discover = list_document_recommendations(db, source, view="discover")
+        assert "Context-only recommended source" in {row.title for row in discover}
+        assert "Neighbor Paper" not in {row.title for row in discover}
+
+
+def test_refresh_recommendations_uses_query_search_when_no_doi_or_bibliography(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, Domain, Tag
+    from app.services import recommendations as service
+    from app.services.recommendations import RecommendationCandidate, refresh_document_recommendations
+
+    Session = make_session()
+    with Session() as db:
+        domain = Domain(name="Behavioral Security")
+        tag = Tag(name="insider threat")
+        source = Document(
+            title="Role-Based Insider Threat Detection",
+            abstract="This paper studies behavioral baselines for detecting malicious insiders.",
+            rich_summary="The method compares employee behavior against peer role baselines.",
+            original_filename="source.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+            domains=[domain],
+            tags=[tag],
+        )
+        existing = Document(
+            title="Existing Search Result",
+            doi="10.1000/existing-search",
+            original_filename="existing.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        db.add_all([source, existing])
+        db.commit()
+
+        seen_queries: list[tuple[str, str]] = []
+
+        def fake_query_fetcher(query, _limit):
+            seen_queries.append((query.kind, query.text))
+            return [
+                RecommendationCandidate(
+                    title="Moderately Decent Search Result",
+                    doi="10.1000/search-result",
+                    provider="test_search",
+                    relation="search",
+                    description="A related paper found from scholarly search.",
+                    pdf_url="https://example.test/search-result.pdf",
+                ),
+                RecommendationCandidate(
+                    title="Existing Search Result",
+                    doi="10.1000/existing-search",
+                    provider="test_search",
+                    relation="search",
+                ),
+            ]
+
+        monkeypatch.setattr(service, "_enabled_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_query_fetchers", lambda: [("test_search", fake_query_fetcher)])
+        monkeypatch.setattr(service, "_enabled_enrichers", lambda: [])
+
+        rows = refresh_document_recommendations(db, source)
+        db.commit()
+
+        by_title = {row.title: row for row in rows}
+        new_row = by_title["Moderately Decent Search Result"]
+        known_row = by_title["Existing Search Result"]
+
+        assert seen_queries
+        assert any(kind == "title" and "insider threat detection" in text for kind, text in seen_queries)
+        assert new_row.known_status == "new"
+        assert "Search match" in new_row.reason_chips
+        assert new_row.raw_metadata["recommendations_v2"]["search_queries"][0]["kind"] == "title"
+        assert known_row.known_status == "in_library"
 
 
 def test_refresh_recommendations_route_allows_bibliography_without_doi(monkeypatch, tmp_path):
@@ -144,7 +287,7 @@ def test_refresh_recommendations_route_allows_bibliography_without_doi(monkeypat
             bibliography="Smith, A. (2020). Bibliography seeded paper. Research Press.",
         )
         blocked = Document(
-            title="No Related Inputs",
+            title="No",
             original_filename="blocked.pdf",
             checksum_sha256="b" * 64,
             processing_status="ready",
@@ -153,6 +296,7 @@ def test_refresh_recommendations_route_allows_bibliography_without_doi(monkeypat
         db.commit()
 
         monkeypatch.setattr(service, "_enabled_fetchers", lambda: [])
+        monkeypatch.setattr(service, "_enabled_query_fetchers", lambda: [])
         monkeypatch.setattr(service, "_enabled_enrichers", lambda: [])
 
         result = refresh_recommendations(source.id, object(), db)
@@ -344,6 +488,7 @@ def test_refresh_recommendations_enriches_pdf_availability_and_resets_failure(mo
             ]
 
         monkeypatch.setattr(service, "_enabled_fetchers", lambda: [("crossref", fake_fetcher)])
+        monkeypatch.setattr(service, "_enabled_query_fetchers", lambda: [])
         monkeypatch.setattr(service, "_enabled_enrichers", lambda: [("unpaywall", fake_enricher)])
 
         rows = refresh_document_recommendations(db, source)

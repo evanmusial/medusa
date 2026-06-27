@@ -526,6 +526,41 @@ class DocumentSummary(ApiModel):
         return decode_html_entity_text(value)
 
 
+class DocumentListRow(ApiModel):
+    id: str
+    title: str
+    authors: list[dict[str, Any]]
+    publication_year: int | None = None
+    rich_summary: str | None = None
+    citation_status: str
+    no_doi: bool = False
+    page_count: int
+    processing_status: str
+    read_status: str
+    priority: str
+    updated_at: datetime
+    duplicate_count: int = 0
+    duplicate_reasons: list[str] = Field(default_factory=list)
+    tags: list[TagOut] = Field(default_factory=list)
+    domains: list[DomainOut] = Field(default_factory=list)
+    projects: list[ProjectOut] = Field(default_factory=list)
+
+    @field_validator("title", "rich_summary", mode="before")
+    @classmethod
+    def decode_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class DocumentListOut(BaseModel):
+    items: list[DocumentListRow]
+    total_count: int
+    total_page_count: int
+    offset: int
+    limit: int
+    has_more: bool
+    revision: str
+
+
 class DocumentDetail(DocumentSummary):
     subtitle: str | None = None
     universities: list[str]

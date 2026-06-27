@@ -5,7 +5,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -60,7 +59,7 @@ from app.services.processing import (
 from app.services.second_pass import clean_document_structure
 from app.services.figures import enrich_figure_context
 from app.services.recommendations import refresh_document_recommendations
-from app.services.search import rebuild_document_search_text
+from app.services.search import document_search_condition_and_rank, rebuild_document_search_text
 from app.services.tag_governance import apply_import_tag_governance
 from app.services.tags import existing_tag_manifest
 from app.services.verifier import (
@@ -778,15 +777,9 @@ def documents_for_scope(db: Session, scope_type: str, scope_data: dict[str, Any]
         term = str(scope_data.get("query") or "").strip()
         if not term:
             return []
-        like = f"%{term}%"
-        query = query.filter(
-            or_(
-                Document.title.ilike(like),
-                Document.search_text.ilike(like),
-                Document.apa_citation.ilike(like),
-                Document.apa_in_text_citation.ilike(like),
-            )
-        )
+        condition, _rank = document_search_condition_and_rank(db, term)
+        if condition is not None:
+            query = query.filter(condition)
     elif scope_type == "saved_search":
         saved_search_id = scope_data.get("saved_search_id")
         if not saved_search_id:
@@ -797,15 +790,9 @@ def documents_for_scope(db: Session, scope_type: str, scope_data: dict[str, Any]
         term = str(saved_search.query or "").strip()
         filters = saved_search.filters or {}
         if term:
-            like = f"%{term}%"
-            query = query.filter(
-                or_(
-                    Document.title.ilike(like),
-                    Document.search_text.ilike(like),
-                    Document.apa_citation.ilike(like),
-                    Document.apa_in_text_citation.ilike(like),
-                )
-            )
+            condition, _rank = document_search_condition_and_rank(db, term)
+            if condition is not None:
+                query = query.filter(condition)
         if filters.get("domain_id"):
             query = query.filter(Document.domains.any(Domain.id == filters["domain_id"]))
         if filters.get("tag_id"):

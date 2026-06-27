@@ -881,6 +881,36 @@ export type DocumentSummary = {
   projects?: Project[];
 };
 
+export type DocumentListRow = {
+  id: string;
+  title: string;
+  authors: Array<Record<string, string | null>>;
+  publication_year?: number | null;
+  rich_summary?: string | null;
+  citation_status: string;
+  no_doi: boolean;
+  page_count: number;
+  processing_status: string;
+  read_status: string;
+  priority: string;
+  updated_at: string;
+  duplicate_count: number;
+  duplicate_reasons: string[];
+  tags: Tag[];
+  domains: Domain[];
+  projects?: Project[];
+};
+
+export type DocumentListResponse = {
+  items: DocumentListRow[];
+  total_count: number;
+  total_page_count: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+  revision: string;
+};
+
 export type DocumentDetail = DocumentSummary & {
   subtitle?: string | null;
   universities: string[];

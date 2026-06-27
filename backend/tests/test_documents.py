@@ -441,7 +441,7 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
-    from app.main import list_documents
+    from app.main import list_documents, scan_document_duplicates
     from app.models import Document
 
     Session = make_session()
@@ -452,6 +452,7 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
         db.add_all([first, second, unique])
         db.commit()
 
+        scan_document_duplicates(object(), db)
         all_documents = list_documents(object(), db)
         duplicate_documents = list_documents(object(), db, duplicate_status="duplicates")
         unique_documents = list_documents(object(), db, duplicate_status="unique")
@@ -462,6 +463,35 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
         assert counts["Unique"] == 0
         assert {document.title for document in duplicate_documents} == {"First duplicate", "Second duplicate"}
         assert [document.title for document in unique_documents] == ["Unique"]
+
+
+def test_list_documents_can_skip_library_only_enrichments(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_documents, scan_document_duplicates
+    from app.models import Document, Project, ProjectItem
+
+    Session = make_session()
+    with Session() as db:
+        first = Document(title="First duplicate", original_filename="first.pdf", checksum_sha256="d" * 64, processing_status="ready")
+        second = Document(title="Second duplicate", original_filename="second.pdf", checksum_sha256="d" * 64, processing_status="ready")
+        project = Project(name="Performance pass")
+        db.add_all([first, second, project])
+        db.flush()
+        db.add(ProjectItem(project_id=project.id, document_id=first.id))
+        db.commit()
+
+        scan_document_duplicates(object(), db)
+        enriched_documents = list_documents(object(), db)
+        reference_documents = list_documents(object(), db, include_duplicate_summary=False, include_projects=False)
+
+    enriched_first = next(document for document in enriched_documents if document.id == first.id)
+    reference_first = next(document for document in reference_documents if document.id == first.id)
+    assert enriched_first.duplicate_count == 1
+    assert [project.name for project in enriched_first.projects] == ["Performance pass"]
+    assert reference_first.duplicate_count == 0
+    assert reference_first.projects == []
 
 
 def test_list_documents_sorts_by_title(monkeypatch, tmp_path):
@@ -493,7 +523,7 @@ def test_list_documents_default_does_not_truncate_at_80(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
-    from app.main import list_documents
+    from app.main import list_document_rows, list_documents
     from app.models import Document
 
     Session = make_session()
@@ -513,9 +543,19 @@ def test_list_documents_default_does_not_truncate_at_80(monkeypatch, tmp_path):
 
         documents = list_documents(object(), db)
         limited_documents = list_documents(object(), db, limit=80)
+        first_page = list_document_rows(object(), db, limit=40)
+        second_page = list_document_rows(object(), db, offset=40, limit=40)
 
     assert len(documents) == 85
     assert len(limited_documents) == 80
+    assert len(first_page.items) == 40
+    assert first_page.total_count == 85
+    assert first_page.offset == 0
+    assert first_page.limit == 40
+    assert first_page.has_more is True
+    assert len(second_page.items) == 40
+    assert second_page.offset == 40
+    assert second_page.has_more is True
 
 
 def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):
