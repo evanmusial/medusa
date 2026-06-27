@@ -188,6 +188,7 @@ type View =
   | "tags"
   | "portfolio"
   | "queue"
+  | "activity"
   | "notes"
   | "import"
   | "stashes"
@@ -664,6 +665,7 @@ const navItems: WorkspaceNavItem[] = [
   { id: "stashes", label: "Stashes", icon: Bookmark, shortcut: "A" },
   { id: "portfolio", label: "Portfolio", icon: Briefcase, shortcut: "W" },
   { id: "queue", label: "Queue", icon: Inbox, shortcut: "Q" },
+  { id: "activity", label: "Activity", icon: Activity, shortcut: "Y" },
   { id: "import", label: "Import", icon: Upload, shortcut: "I" },
   { id: "budget", label: "Finances", icon: CircleDollarSign, shortcut: "B" },
   { id: "utilities", label: "Utilities", icon: Wrench, shortcut: "U" },
@@ -677,6 +679,7 @@ const VIEW_PATHS: Record<View, string> = {
   tags: "/tags",
   portfolio: "/portfolio",
   queue: "/queue",
+  activity: "/activity",
   notes: "/notes",
   import: "/import",
   stashes: "/stashes",
@@ -692,6 +695,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   tags: "Tags",
   portfolio: "Portfolio",
   queue: "Import Queue",
+  activity: "Activity",
   notes: "Notes",
   import: "Import",
   stashes: "DOI Stashes",
@@ -15762,6 +15766,297 @@ function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: Ingest
   );
 }
 
+type ActivityLane = "all" | "imports" | "concordance" | "backups" | "review";
+type ActivityRow = {
+  actionLabel?: string;
+  detail: string;
+  icon: typeof Activity;
+  id: string;
+  lane: Exclude<ActivityLane, "all">;
+  meta: string;
+  onOpen?: () => void;
+  progress?: number | null;
+  status: string;
+  time: number;
+  timestamp?: string | null;
+  title: string;
+  tone: "neutral" | "good" | "warn" | "blue";
+};
+
+const ACTIVITY_LANES: Array<{ id: ActivityLane; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "imports", label: "Imports" },
+  { id: "concordance", label: "Concordance" },
+  { id: "backups", label: "Backups" },
+  { id: "review", label: "Review" },
+];
+
+function activityTimestamp(value?: string | null) {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function activityImportStatusTone(status: string): ActivityRow["tone"] {
+  if (status === "complete") return "good";
+  if (status === "failed" || status === "restored_paused") return "warn";
+  if (status === "running" || status === "queued" || status === "staged") return "blue";
+  return "neutral";
+}
+
+function activityBackupTone(run: BackupRun): ActivityRow["tone"] {
+  if (run.status === "complete") return "good";
+  if (run.status === "failed") return "warn";
+  if (isActiveBackupRun(run)) return "blue";
+  return "neutral";
+}
+
+function activityConcordanceTone(status: string): ActivityRow["tone"] {
+  if (status === "complete") return "good";
+  if (status === "failed") return "warn";
+  if (status === "queued" || status === "running") return "blue";
+  return "neutral";
+}
+
+function ActivityView({
+  backupRuns,
+  concordanceJobs,
+  concordanceRuns,
+  ingestionHistory,
+  items,
+  jobs,
+  onOpenDocument,
+  onOpenView,
+}: {
+  backupRuns: BackupRun[];
+  concordanceJobs: ConcordanceJob[];
+  concordanceRuns: ConcordanceRun[];
+  ingestionHistory: IngestionHistory[];
+  items: CitationCandidate[];
+  jobs: ImportJob[];
+  onOpenDocument: (documentId: string) => void;
+  onOpenView: (view: View) => void;
+}) {
+  const [lane, setLane] = useState<ActivityLane>("all");
+  const rows = useMemo<ActivityRow[]>(() => {
+    const ingestionRows = ingestionHistory.slice(0, 24).map<ActivityRow>((row) => {
+      const processedFiles = row.completed_files + row.failed_files;
+      const status = ingestionStatusLabel(row);
+      const detail = [
+        `${formatMetric(processedFiles)} of ${formatMetric(row.total_files)} files`,
+        row.failed_files ? `${formatMetric(row.failed_files)} failed` : "",
+        row.actual_cost_usd > 0 ? formatUsd(row.actual_cost_usd) : "",
+        row.processing_preset_name || row.processing_preset_id || "",
+      ]
+        .filter(Boolean)
+        .join(" / ");
+      return {
+        actionLabel: row.active ? "Open Queue" : "Open Import",
+        detail,
+        icon: UploadCloud,
+        id: `ingestion-${row.batch_id}`,
+        lane: "imports",
+        meta: row.duration_seconds ? formatDuration(row.duration_seconds) || "" : row.active ? "Running" : "Batch",
+        onOpen: () => onOpenView(row.active ? "queue" : "import"),
+        progress: row.total_files > 0 ? progressPercent(((processedFiles + row.running_files * 0.5 + row.queued_files * 0.15) / row.total_files) * 100) : null,
+        status,
+        time: ingestionHistoryCompletionTime(row),
+        timestamp: row.completed_at || row.updated_at || row.created_at,
+        title: row.label || "Import batch",
+        tone: row.active ? "blue" : row.failed_files ? "warn" : "good",
+      };
+    });
+    const importJobRows = orderedImportJobs(jobs).slice(0, 40).map<ActivityRow>((job) => ({
+      actionLabel: job.document_id ? "Open Document" : "Open Queue",
+      detail: [
+        job.current_step?.replaceAll("_", " "),
+        job.current_model || "",
+        job.estimated_cost_usd > 0 ? `~${formatUsd(job.estimated_cost_usd)}` : "",
+        job.assigned_client_name || job.assigned_worker_kind || "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+      icon: Inbox,
+      id: `import-job-${job.id}`,
+      lane: "imports",
+      meta: job.last_error || job.original_filename || "",
+      onOpen: () => (job.document_id ? onOpenDocument(job.document_id) : onOpenView("queue")),
+      progress: importJobProgress(job),
+      status: importJobStatusLabel(job),
+      time: activityTimestamp(job.updated_at || job.created_at),
+      timestamp: job.updated_at || job.created_at,
+      title: importJobLabel(job),
+      tone: activityImportStatusTone(job.status),
+    }));
+    const concordanceRunRows = concordanceRuns.slice(0, 24).map<ActivityRow>((run) => ({
+      actionLabel: "Open Settings",
+      detail: [
+        `${formatMetric(run.completed_jobs)} of ${formatMetric(run.total_jobs)} jobs`,
+        run.failed_jobs ? `${formatMetric(run.failed_jobs)} failed` : "",
+        run.capability_keys.length ? run.capability_keys.join(", ") : "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+      icon: Sparkles,
+      id: `concordance-run-${run.id}`,
+      lane: "concordance",
+      meta: scopeLabel(run.scope_type),
+      onOpen: () => onOpenView("settings"),
+      progress: run.total_jobs > 0 ? progressPercent((run.completed_jobs / run.total_jobs) * 100) : null,
+      status: run.status.replaceAll("_", " "),
+      time: activityTimestamp(run.updated_at || run.created_at),
+      timestamp: run.updated_at || run.created_at,
+      title: run.label || `${scopeLabel(run.scope_type)} Concordance`,
+      tone: activityConcordanceTone(run.status),
+    }));
+    const concordanceJobRows = concordanceJobs
+      .filter((job) => job.status !== "complete")
+      .slice(0, 32)
+      .map<ActivityRow>((job) => ({
+        actionLabel: "Open Document",
+        detail: [`${job.capability_key.replaceAll("_", " ")}`, `v${job.target_version}`, job.assigned_client_name || job.assigned_worker_kind || ""]
+          .filter(Boolean)
+          .join(" / "),
+        icon: RefreshCw,
+        id: `concordance-job-${job.id}`,
+        lane: "concordance",
+        meta: job.last_error || `${job.attempts} ${job.attempts === 1 ? "attempt" : "attempts"}`,
+        onOpen: () => onOpenDocument(job.document_id),
+        progress: job.status === "running" ? 55 : job.status === "queued" ? 15 : null,
+        status: job.status.replaceAll("_", " "),
+        time: activityTimestamp(job.updated_at || job.created_at),
+        timestamp: job.updated_at || job.created_at,
+        title: "Concordance job",
+        tone: activityConcordanceTone(job.status),
+      }));
+    const backupRows = backupRuns.slice(0, 32).map<ActivityRow>((run) => ({
+      actionLabel: "Open Utilities",
+      detail: [
+        backupPhaseLabel(run.phase),
+        run.status_detail || "",
+        run.size_bytes ? formatDatabaseSize(run.size_bytes) : "",
+        run.gcs_uri ? "GCS verified" : "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+      icon: Database,
+      id: `backup-run-${run.id}`,
+      lane: "backups",
+      meta: run.last_error || run.filename || run.source_filename || "",
+      onOpen: () => onOpenView("utilities"),
+      progress: isActiveBackupRun(run) ? progressPercent(run.progress || 8) : null,
+      status: `${run.kind} ${run.status}`.replaceAll("_", " "),
+      time: activityTimestamp(run.completed_at || run.updated_at || run.created_at),
+      timestamp: run.completed_at || run.updated_at || run.created_at,
+      title: run.kind === "restore" ? "Database restore" : "Database backup",
+      tone: activityBackupTone(run),
+    }));
+    const reviewRows = items.slice(0, 24).map<ActivityRow>((item) => ({
+      actionLabel: "Open Queue",
+      detail: [citationCandidateSourceLabel(item), typeof item.confidence === "number" ? `${Math.round(item.confidence * 100)}% confidence` : ""]
+        .filter(Boolean)
+        .join(" / "),
+      icon: FileSearch,
+      id: `review-${item.id}`,
+      lane: "review",
+      meta: item.citation_text ? item.citation_text.replace(/\s+/g, " ").trim() : "",
+      onOpen: () => onOpenView("queue"),
+      status: item.status.replaceAll("_", " "),
+      time: activityTimestamp(item.created_at),
+      timestamp: item.created_at,
+      title: citationCandidateTitle(item),
+      tone: "warn",
+    }));
+    return [...importJobRows, ...ingestionRows, ...concordanceJobRows, ...concordanceRunRows, ...backupRows, ...reviewRows]
+      .sort((left, right) => right.time - left.time)
+      .slice(0, 120);
+  }, [backupRuns, concordanceJobs, concordanceRuns, ingestionHistory, items, jobs, onOpenDocument, onOpenView]);
+  const visibleRows = lane === "all" ? rows : rows.filter((row) => row.lane === lane);
+  const activeRows = rows.filter((row) => row.tone === "blue").length;
+  const failedRows = rows.filter((row) => row.tone === "warn").length;
+  const completedRows = rows.filter((row) => row.tone === "good").length;
+
+  return (
+    <section className="workbench activity-workbench">
+      <section className="activity-hero">
+        <div>
+          <h2>Activity</h2>
+          <span>Imports, Concordance, backups, and review work in one place.</span>
+        </div>
+        <Activity size={22} />
+      </section>
+      <div className="activity-summary-grid">
+        <div>
+          <span>Active</span>
+          <strong>{formatMetric(activeRows)}</strong>
+        </div>
+        <div>
+          <span>Needs attention</span>
+          <strong>{formatMetric(failedRows)}</strong>
+        </div>
+        <div>
+          <span>Completed shown</span>
+          <strong>{formatMetric(completedRows)}</strong>
+        </div>
+        <div>
+          <span>Total rows</span>
+          <strong>{formatMetric(rows.length)}</strong>
+        </div>
+      </div>
+      <div className="activity-filter-row" role="tablist" aria-label="Activity lanes">
+        {ACTIVITY_LANES.map((item) => (
+          <button
+            key={item.id}
+            aria-selected={lane === item.id}
+            className={lane === item.id ? "active" : ""}
+            onClick={() => setLane(item.id)}
+            role="tab"
+            type="button"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div className="activity-row-list">
+        {visibleRows.length ? (
+          visibleRows.map((row) => {
+            const Icon = row.icon;
+            return (
+              <article className={`activity-row ${row.tone}`} key={row.id}>
+                <Icon size={18} />
+                <div className="activity-row-main">
+                  <div>
+                    <strong>{row.title}</strong>
+                    <StatusPill value={row.status} tone={row.tone} />
+                  </div>
+                  <span>{row.detail || row.meta || "No detail recorded"}</span>
+                  {row.progress !== undefined && row.progress !== null ? (
+                    <div className="activity-progress" aria-hidden="true">
+                      <span style={{ width: `${progressPercent(row.progress)}%` }} />
+                    </div>
+                  ) : null}
+                </div>
+                <div className="activity-row-side">
+                  <time>{backupDateLabel(row.timestamp) || "No timestamp"}</time>
+                  {row.meta ? <em>{row.meta}</em> : null}
+                  {row.onOpen ? (
+                    <button className="secondary-button compact" onClick={row.onOpen} type="button">
+                      <ArrowRight size={14} />
+                      {row.actionLabel || "Open"}
+                    </button>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })
+        ) : (
+          <div className="container-path-empty">No activity rows match this lane.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function NotesView({
   notes,
   documents,
@@ -21291,7 +21586,7 @@ export default function App() {
   const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
   const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
   const needsSavedSearches = activeView === "library" || activeView === "settings" || commandPaletteOpen;
-  const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "portfolio";
+  const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "activity" || activeView === "portfolio";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
   const documentQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
@@ -21335,7 +21630,8 @@ export default function App() {
   });
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
-  const needsConcordanceData = activeView === "settings" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
+  const needsConcordanceData =
+    activeView === "settings" || activeView === "activity" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
   useEffect(() => {
     if (!preferences.data) return;
@@ -21458,8 +21754,8 @@ export default function App() {
   const review = useQuery({
     queryKey: ["review"],
     queryFn: api.reviewQueue,
-    enabled: Boolean(me.data && activeView === "queue"),
-    refetchInterval: activeView === "queue" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
+    enabled: Boolean(me.data && (activeView === "queue" || activeView === "activity")),
+    refetchInterval: activeView === "queue" || activeView === "activity" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
   });
   const stashes = useQuery({
     queryKey: ["doi-stashes"],
@@ -22088,6 +22384,11 @@ export default function App() {
     projects: dashboard.data?.projects ?? projects.data?.length ?? 0,
     tags: dashboard.data?.tags ?? tags.data?.length ?? 0,
     queue: (dashboard.data?.queue_import_jobs ?? 0) + (dashboard.data?.review_items ?? review.data?.length ?? 0),
+    activity:
+      (dashboard.data?.active_import_jobs ?? 0) +
+      (dashboard.data?.active_concordance_jobs ?? 0) +
+      (backupRuns.data || []).filter(isActiveBackupRun).length +
+      (dashboard.data?.review_items ?? review.data?.length ?? 0),
     notes: dashboard.data?.notes ?? notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
     stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
@@ -22243,6 +22544,18 @@ export default function App() {
           />
         ) : null}
         {activeView === "queue" ? <QueueView ingestionHistory={ingestionHistory.data || []} items={review.data || []} jobs={jobs.data || []} /> : null}
+        {activeView === "activity" ? (
+          <ActivityView
+            backupRuns={backupRuns.data || []}
+            concordanceJobs={concordanceJobs.data || []}
+            concordanceRuns={concordanceRuns.data || []}
+            ingestionHistory={ingestionHistory.data || []}
+            items={review.data || []}
+            jobs={jobs.data || []}
+            onOpenDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
+            onOpenView={(view) => void requestActiveViewChange(view)}
+          />
+        ) : null}
         {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
         {activeView === "portfolio" ? (
           <PortfolioView
