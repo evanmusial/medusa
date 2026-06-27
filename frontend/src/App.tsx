@@ -640,6 +640,7 @@ type BudgetChartSegment = {
   value: number;
 };
 type StashSortKey = "created" | "doi" | "title" | "status";
+type StashLane = "wishlist" | "open_pdf" | "queued" | "imported" | "all";
 type TagSortKey = "name" | "status" | "documents";
 type SortDirection = "asc" | "desc";
 type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
@@ -648,6 +649,13 @@ type DocumentRouteMode = "detail" | "reader";
 type AppRoute = { view: View; documentId?: string; documentMode?: DocumentRouteMode };
 
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
+const STASH_LANE_OPTIONS: Array<{ id: StashLane; label: string; description: string }> = [
+  { id: "wishlist", label: "Wishlist", description: "Saved DOI leads that still need a PDF or external acquisition." },
+  { id: "open_pdf", label: "Open PDF", description: "Saved leads with open-PDF evidence that can be resolved through Import DOI." },
+  { id: "queued", label: "Queued", description: "Stashed PDFs already queued or running through import." },
+  { id: "imported", label: "In Library", description: "Stashes matched to documents already in the Library." },
+  { id: "all", label: "All", description: "Every active DOI stash." },
+];
 
 type WorkspaceNavItem = { id: View; label: string; icon: typeof Library; shortcut: string };
 type RecentDocumentShortcut = {
@@ -943,6 +951,44 @@ function stashDescriptionPreview(stash: DoiStash) {
   return text.length > 360 ? `${text.slice(0, 357).trim()}...` : text;
 }
 
+function stashBibliographicMetadata(stash: DoiStash) {
+  const value = stash.stash_metadata?.bibliographic;
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stashMetadataString(stash: DoiStash, key: string) {
+  const value = stashBibliographicMetadata(stash)[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function stashOpenPdfUrl(stash: DoiStash) {
+  return stashMetadataString(stash, "pdf_url");
+}
+
+function stashIsQueued(stash: DoiStash) {
+  return stash.status === "import_queued";
+}
+
+function stashIsImported(stash: DoiStash) {
+  return stash.status === "imported" || Boolean(stash.imported_document_id);
+}
+
+function stashHasOpenPdfLead(stash: DoiStash) {
+  return !stashIsQueued(stash) && !stashIsImported(stash) && Boolean(stashOpenPdfUrl(stash));
+}
+
+function stashNeedsAcquisition(stash: DoiStash) {
+  return !stashIsQueued(stash) && !stashIsImported(stash) && !stashHasOpenPdfLead(stash);
+}
+
+function stashMatchesLane(stash: DoiStash, lane: StashLane) {
+  if (lane === "all") return true;
+  if (lane === "wishlist") return stashNeedsAcquisition(stash);
+  if (lane === "open_pdf") return stashHasOpenPdfLead(stash);
+  if (lane === "queued") return stashIsQueued(stash);
+  return stashIsImported(stash);
+}
+
 function recommendationProviderLabel(value: string) {
   return value
     .split(",")
@@ -978,7 +1024,7 @@ function recommendationStatusPill(item: DocumentRecommendation) {
   }
   if (item.status === "download_failed") return <StatusPill value="Download failed" tone="warn" />;
   if (item.has_pdf) return <StatusPill value="Open PDF" tone="blue" />;
-  return null;
+  return <StatusPill value="Needs PDF" tone="warn" />;
 }
 
 function recommendationReasonChips(item: DocumentRecommendation) {
@@ -7924,6 +7970,11 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
     const titleCopied = copiedKey === `title-${item.id}`;
     const statusPill = recommendationStatusPill(item);
     const reasonChips = recommendationReasonChips(item);
+    const stashActionLabel =
+      item.known_status === "stashed" ? (item.has_pdf ? "Stashed" : "Wishlisted") : item.has_pdf ? "Stash" : "Wishlist";
+    const stashTooltip = item.has_pdf
+      ? "Save this DOI to Stashes for later open-PDF import follow-up."
+      : "Save this DOI to the acquisition wishlist in Stashes. No PDF is queued until one is found or uploaded.";
     return (
       <article key={item.id} className={`recommendation-row ${known ? "known" : ""}`}>
         <input
@@ -7989,13 +8040,13 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                       ? "this DOI is already saved in Stashes."
                       : "this recommendation does not include a DOI to stash."
                 }
-                data-tooltip="Save this DOI to Stashes for later follow-up."
+                data-tooltip={stashTooltip}
                 disabled={!item.doi || stashDoi.isPending || item.known_status === "stashed"}
                 onClick={() => stashDoi.mutate(item)}
                 type="button"
               >
                 <Bookmark size={15} />
-                {item.known_status === "stashed" ? "Stashed" : "Stash"}
+                {stashActionLabel}
               </button>
             </AsyncActionSlot>
             <a
@@ -8034,6 +8085,18 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
     const titleCopied = recommendation ? copiedKey === `title-${recommendation.id}` : false;
     const reasonChips = recommendation ? recommendationReasonChips(recommendation) : ["Bibliography"];
     const scholarUrl = recommendation?.scholar_url || bibliographyScholarUrl(item.text);
+    const stashActionLabel = recommendation
+      ? recommendation.known_status === "stashed"
+        ? recommendation.has_pdf
+          ? "Stashed"
+          : "Wishlisted"
+        : recommendation.has_pdf
+          ? "Stash"
+          : "Wishlist"
+      : "Wishlist";
+    const stashTooltip = recommendation?.has_pdf
+      ? "Save this DOI to Stashes for later open-PDF import follow-up."
+      : "Save this DOI to the acquisition wishlist in Stashes. No PDF is queued until one is found or uploaded.";
     return (
       <article key={item.key} className={`bibliography-reference-row ${known ? "known" : ""}`}>
         <label className="bibliography-reference-selector">
@@ -8113,13 +8176,13 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                           ? "this DOI is already saved in Stashes."
                           : "this bibliography source does not include a DOI to stash."
                     }
-                    data-tooltip="Save this DOI to Stashes for later follow-up."
+                    data-tooltip={stashTooltip}
                     disabled={!recommendation.doi || stashDoi.isPending || recommendation.known_status === "stashed"}
                     onClick={() => stashDoi.mutate(recommendation)}
                     type="button"
                   >
                     <Bookmark size={15} />
-                    {recommendation.known_status === "stashed" ? "Stashed" : "Stash"}
+                    {stashActionLabel}
                   </button>
                 </AsyncActionSlot>
               </>
@@ -12096,6 +12159,8 @@ function stashStatusLabel(stash: DoiStash) {
   if (stash.status === "imported") return "Imported";
   if (stash.status === "import_queued") return stash.import_job_status === "running" ? "Import running" : "Import queued";
   if (stash.status === "import_failed") return "Import failed";
+  if (stashHasOpenPdfLead(stash)) return "Open PDF lead";
+  if (stashNeedsAcquisition(stash)) return "Needs PDF";
   return "Stashed";
 }
 
@@ -12103,6 +12168,8 @@ function stashStatusTone(stash: DoiStash): "neutral" | "good" | "warn" | "blue" 
   if (stash.status === "imported") return "good";
   if (stash.status === "import_queued") return "blue";
   if (stash.status === "import_failed") return "warn";
+  if (stashHasOpenPdfLead(stash)) return "blue";
+  if (stashNeedsAcquisition(stash)) return "warn";
   return "neutral";
 }
 
@@ -12141,6 +12208,11 @@ function formatRelationshipType(value: string) {
 }
 
 function StashesView({ stashes }: { stashes: DoiStash[] }) {
+  const [lane, setLane] = useStoredString<StashLane>(
+    "medusa-stash-lane-v1",
+    "wishlist",
+    STASH_LANE_OPTIONS.map((item) => item.id),
+  );
   const [sortKey, setSortKey] = useState<StashSortKey>("created");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [draggingStashId, setDraggingStashId] = useState<string | null>(null);
@@ -12154,9 +12226,21 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
   const importFeedback = useAsyncActionFeedbackMap();
   const removeFeedback = useAsyncActionFeedbackMap();
   const [importingStashId, setImportingStashId] = useState<string | null>(null);
+  const laneCounts = useMemo(
+    () =>
+      STASH_LANE_OPTIONS.reduce(
+        (counts, option) => ({
+          ...counts,
+          [option.id]: stashes.filter((stash) => stashMatchesLane(stash, option.id)).length,
+        }),
+        {} as Record<StashLane, number>,
+      ),
+    [stashes],
+  );
+  const visibleStashes = useMemo(() => stashes.filter((stash) => stashMatchesLane(stash, lane)), [lane, stashes]);
   const sortedStashes = useMemo(() => {
     const direction = sortDirection === "asc" ? 1 : -1;
-    return [...stashes].sort((left, right) => {
+    return [...visibleStashes].sort((left, right) => {
       const leftValue =
         sortKey === "created"
           ? left.created_at
@@ -12175,7 +12259,7 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
               : stashStatusLabel(right);
       return String(leftValue).localeCompare(String(rightValue)) * direction;
     });
-  }, [sortDirection, sortKey, stashes]);
+  }, [sortDirection, sortKey, visibleStashes]);
 
   const createManualStash = useMutation({
     mutationFn: (doi: string) => api.createDoiStash({ doi }),
@@ -12301,13 +12385,18 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
     }
     createManualStash.mutate(doi);
   };
+  const activeLane = STASH_LANE_OPTIONS.find((option) => option.id === lane) || STASH_LANE_OPTIONS[0];
 
   return (
     <section className="workbench stashes-view">
       <div className="stashes-head">
         <div>
-          <h2>DOI Stashes</h2>
-          <p>{stashes.length ? `${stashes.length} saved DOI${stashes.length === 1 ? "" : "s"}` : "No stashed DOIs yet"}</p>
+          <h2>Acquisition Stashes</h2>
+          <p>
+            {stashes.length
+              ? `${laneCounts.wishlist} wishlist / ${laneCounts.open_pdf} open PDF / ${laneCounts.imported} in Library`
+              : "No stashed DOI leads yet"}
+          </p>
         </div>
         <div className="stash-sort-controls" aria-label="Sort stashes">
           <ArrowUpDown size={15} />
@@ -12325,8 +12414,24 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
           ))}
         </div>
       </div>
+      <div className="stash-lane-tabs" role="tablist" aria-label="Acquisition stash lanes">
+        {STASH_LANE_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            className={lane === option.id ? "selected" : ""}
+            data-tooltip={option.description}
+            onClick={() => setLane(option.id)}
+            role="tab"
+            type="button"
+            aria-selected={lane === option.id}
+          >
+            <span>{option.label}</span>
+            <strong>{laneCounts[option.id]}</strong>
+          </button>
+        ))}
+      </div>
       <form className="stash-manual-form" onSubmit={handleManualSubmit}>
-        <label htmlFor="manual-stash-doi">Add DOI</label>
+        <label htmlFor="manual-stash-doi">Add DOI Lead</label>
         <input
           id="manual-stash-doi"
           data-tooltip="Paste a DOI to save it in Stashes and look up public bibliographic metadata."
@@ -12367,8 +12472,14 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
             ].filter(Boolean);
             const description = stashDescriptionPreview(stash);
             const metadataSource = stashMetadataSourceLabel(stash.metadata_source || stash.source_provider);
+            const openPdfUrl = stashOpenPdfUrl(stash);
             return (
-              <article key={stash.id} className="stash-row">
+              <article
+                key={stash.id}
+                className={`stash-row ${stashNeedsAcquisition(stash) ? "needs-acquisition" : ""} ${
+                  stashHasOpenPdfLead(stash) ? "open-pdf-lead" : ""
+                }`}
+              >
                 <div className="stash-main">
                   <div className="stash-title-line">
                     <strong>{stash.title || stash.doi}</strong>
@@ -12403,7 +12514,14 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                   {description ? <p className="stash-description">{description}</p> : null}
                   <code>{stash.doi}</code>
                   <span className="stash-source-line">
-                    {[metadataSource, stash.imported_document_title, backupDateLabel(stash.created_at)].filter(Boolean).join(" / ")}
+                    {[
+                      metadataSource,
+                      stash.imported_document_title,
+                      stashNeedsAcquisition(stash) ? "manual acquisition needed" : "",
+                      backupDateLabel(stash.created_at),
+                    ]
+                      .filter(Boolean)
+                      .join(" / ")}
                   </span>
                 </div>
                 <div className="stash-actions">
@@ -12512,6 +12630,28 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
                       Source
                     </a>
                   ) : null}
+                  {openPdfUrl ? (
+                    <a
+                      className="secondary-button compact"
+                      data-tooltip="Open the saved open-PDF evidence for this DOI lead in a new tab."
+                      href={openPdfUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink size={14} />
+                      Open PDF
+                    </a>
+                  ) : null}
+                  {stash.source_document_id ? (
+                    <a
+                      className="secondary-button compact"
+                      data-tooltip="Open the Library document that produced this recommendation lead."
+                      href={pathForDocument(stash.source_document_id)}
+                    >
+                      <CornerDownRight size={14} />
+                      Source Doc
+                    </a>
+                  ) : null}
                   {matchedLibraryDocumentId ? (
                     <a
                       className="secondary-button compact stash-library-link"
@@ -12551,7 +12691,11 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
       ) : (
         <div className="empty-inline">
           <Bookmark size={17} />
-          <span>Stashed DOI recommendations will appear here.</span>
+          <span>
+            {lane === "all"
+              ? "Stashed DOI recommendations will appear here."
+              : `No ${activeLane.label.toLocaleLowerCase()} stashes right now.`}
+          </span>
         </div>
       )}
     </section>

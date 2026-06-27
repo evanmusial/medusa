@@ -6366,7 +6366,7 @@ pre {
   padding: 14px;
   overflow: auto;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -6374,7 +6374,8 @@ pre {
 .stash-title-line,
 .stash-actions,
 .stash-manual-form,
-.stash-sort-controls {
+.stash-sort-controls,
+.stash-lane-tabs {
   display: flex;
   align-items: center;
 }
@@ -6405,6 +6406,49 @@ pre {
 .stash-sort-controls .active {
   border-color: var(--accent);
   color: var(--ink);
+}
+
+.stash-lane-tabs {
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.stash-lane-tabs button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stash-lane-tabs button.selected {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.stash-lane-tabs strong {
+  min-width: 22px;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.stash-lane-tabs button.selected strong {
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel));
+  color: var(--blue);
 }
 
 .stash-manual-form {
@@ -6444,12 +6488,21 @@ pre {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 9px;
-  padding: 12px 0;
+  padding: 12px 0 12px 10px;
   border-top: 1px solid var(--line);
+  border-left: 3px solid transparent;
 }
 
 .stash-row:first-child {
   border-top: 0;
+}
+
+.stash-row.needs-acquisition {
+  border-left-color: color-mix(in srgb, var(--amber) 46%, transparent);
+}
+
+.stash-row.open-pdf-lead {
+  border-left-color: color-mix(in srgb, var(--blue) 48%, transparent);
 }
 
 .stash-main {
