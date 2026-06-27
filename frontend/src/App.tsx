@@ -1226,10 +1226,15 @@ function versionPageTargets(version: DocumentDetail["versions"][number]) {
 }
 
 function versionIsRestorable(version: DocumentDetail["versions"][number]) {
-  return Boolean(versionDocumentTarget(version) || versionPageTargets(version).length);
+  return versionSnapshot(version).restorable === true || Boolean(versionDocumentTarget(version) || versionPageTargets(version).length);
 }
 
 function versionPreviewLines(version: DocumentDetail["versions"][number]) {
+  const compactPreviewLines = versionSnapshot(version).preview_lines;
+  if (Array.isArray(compactPreviewLines)) {
+    const lines = compactPreviewLines.filter((line): line is string => typeof line === "string" && Boolean(line.trim()));
+    if (lines.length) return lines;
+  }
   const target = versionDocumentTarget(version);
   const pages = versionPageTargets(version);
   const lines: string[] = [];

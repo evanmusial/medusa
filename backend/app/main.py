@@ -104,6 +104,7 @@ from app.schemas import (
     DocumentTextScrub,
     DocumentTrashOut,
     DocumentTrashRequest,
+    DocumentVersionOut,
     DocumentVisualPageScanApplyCreate,
     DocumentVisualPageScanCreate,
     DocumentVisualPageScanReviewOut,
@@ -824,6 +825,57 @@ def document_bibliography_generated_at(document: Document, db: Session) -> datet
     return parse_evidence_datetime(capability.completed_at) if capability else None
 
 
+def compact_document_version_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in (
+        "changed_fields",
+        "operation",
+        "scrub_count",
+        "restored_version_number",
+        "candidate_id",
+        "kept_document_id",
+        "duplicate_document_id",
+    ):
+        if key in snapshot:
+            compact[key] = snapshot[key]
+
+    target_document = restorable_document_snapshot(snapshot)
+    target_pages = restorable_page_snapshots(snapshot)
+    preview_lines: list[str] = []
+    if target_document:
+        title = target_document.get("title")
+        if isinstance(title, str) and title.strip():
+            preview_lines.append(title.strip())
+        year = target_document.get("publication_year")
+        if isinstance(year, int | str):
+            preview_lines.append(f"Year {year}")
+        tags = target_document.get("tags")
+        if isinstance(tags, list) and tags:
+            preview_lines.append(f"{len(tags)} tags")
+        attributes = target_document.get("attributes")
+        if isinstance(attributes, dict) and attributes:
+            preview_lines.append(f"{len(attributes)} attributes")
+    if len(target_pages) == 1 and isinstance(target_pages[0].get("page_number"), int):
+        preview_lines.append(f"Page {target_pages[0]['page_number']}")
+    elif len(target_pages) > 1:
+        preview_lines.append(f"{len(target_pages)} pages")
+    scrub_count = snapshot.get("scrub_count")
+    if isinstance(scrub_count, int):
+        preview_lines.append(f"{scrub_count} scrubbed")
+    compact["restorable"] = bool(target_document or target_pages)
+    if preview_lines:
+        compact["preview_lines"] = preview_lines
+    return compact
+
+
+def document_version_out(version: DocumentVersion) -> DocumentVersionOut:
+    return DocumentVersionOut.model_validate(version).model_copy(
+        update={"metadata_snapshot": compact_document_version_snapshot(version.metadata_snapshot)}
+    )
+
+
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     duplicate_summary = persisted_duplicate_summary_by_document([document]).get(document.id, {})
     projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
@@ -835,6 +887,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "projects": projects,
             "no_doi": document_no_doi(document),
             "bibliography_generated_at": document_bibliography_generated_at(document, db),
+            "versions": [document_version_out(version) for version in document.versions],
         }
     )
 

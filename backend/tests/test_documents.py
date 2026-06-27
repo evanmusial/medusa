@@ -923,6 +923,59 @@ def test_document_detail_includes_bibliography_generated_time(monkeypatch, tmp_p
         assert detail.bibliography_generated_at == generated_at
 
 
+def test_document_detail_compacts_history_snapshots(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import document_detail_out
+    from app.models import Document, DocumentVersion
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Heavy History Paper",
+            original_filename="heavy-history.pdf",
+            checksum_sha256="i" * 64,
+            processing_status="ready",
+            page_count=1,
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            DocumentVersion(
+                document_id=document.id,
+                version_number=1,
+                change_note="Large correction",
+                metadata_snapshot={
+                    "changed_fields": ["title", "pages"],
+                    "after": {
+                        "title": "Restored Heavy History Paper",
+                        "publication_year": 2026,
+                        "tags": ["performance"],
+                        "abstract": "x" * 100_000,
+                    },
+                    "page_after": {
+                        "page_number": 1,
+                        "normalized_text": "y" * 100_000,
+                    },
+                },
+            )
+        )
+        db.commit()
+        db.refresh(document)
+
+        detail = document_detail_out(document, db)
+        db_version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+
+        snapshot = detail.versions[0].metadata_snapshot
+        assert snapshot["changed_fields"] == ["title", "pages"]
+        assert snapshot["restorable"] is True
+        assert snapshot["preview_lines"] == ["Restored Heavy History Paper", "Year 2026", "1 tags", "Page 1"]
+        assert "after" not in snapshot
+        assert "page_after" not in snapshot
+        assert db_version.metadata_snapshot["after"]["abstract"] == "x" * 100_000
+
+
 def test_document_detail_prefers_bibliography_generated_evidence(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

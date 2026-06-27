@@ -23,6 +23,9 @@ The current performance pass added:
   APA in-text citation, with title fallback matching.
 - Persisted duplicate summary fields on `Document` so normal list reads do not
   recompute the duplicate graph.
+- Compact `DocumentVersion` history metadata in document detail responses so
+  opening a document does not transfer full before/after snapshots; restore
+  still reads the durable full snapshots from PostgreSQL.
 - Batched dashboard/domain/tag counts in several hot paths.
 - Request timing headers and slow API logging for `/api/*`.
 
