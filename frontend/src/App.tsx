@@ -189,6 +189,7 @@ type View =
   | "portfolio"
   | "queue"
   | "activity"
+  | "health"
   | "notes"
   | "import"
   | "stashes"
@@ -666,6 +667,7 @@ const navItems: WorkspaceNavItem[] = [
   { id: "portfolio", label: "Portfolio", icon: Briefcase, shortcut: "W" },
   { id: "queue", label: "Queue", icon: Inbox, shortcut: "Q" },
   { id: "activity", label: "Activity", icon: Activity, shortcut: "Y" },
+  { id: "health", label: "Health", icon: Gauge, shortcut: "H" },
   { id: "import", label: "Import", icon: Upload, shortcut: "I" },
   { id: "budget", label: "Finances", icon: CircleDollarSign, shortcut: "B" },
   { id: "utilities", label: "Utilities", icon: Wrench, shortcut: "U" },
@@ -680,6 +682,7 @@ const VIEW_PATHS: Record<View, string> = {
   portfolio: "/portfolio",
   queue: "/queue",
   activity: "/activity",
+  health: "/health",
   notes: "/notes",
   import: "/import",
   stashes: "/stashes",
@@ -696,6 +699,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   portfolio: "Portfolio",
   queue: "Import Queue",
   activity: "Activity",
+  health: "Corpus Health",
   notes: "Notes",
   import: "Import",
   stashes: "DOI Stashes",
@@ -16057,6 +16061,231 @@ function ActivityView({
   );
 }
 
+type CorpusHealthIssue = {
+  actionLabel: string;
+  detail: string;
+  documents: DocumentSummary[];
+  id: string;
+  onAction: () => void;
+  severity: "good" | "warn" | "blue" | "neutral";
+  title: string;
+  total: number;
+};
+
+function documentHasAuthors(document: DocumentSummary) {
+  return (document.authors || []).some((author) => [author.given, author.family].filter(Boolean).join(" ").trim());
+}
+
+function CorpusHealthView({
+  backupRuns,
+  concordanceJobs,
+  documents,
+  jobs,
+  onOpenDocument,
+  onOpenLibraryFilter,
+  onOpenView,
+}: {
+  backupRuns: BackupRun[];
+  concordanceJobs: ConcordanceJob[];
+  documents: DocumentSummary[];
+  jobs: ImportJob[];
+  onOpenDocument: (documentId: string) => void;
+  onOpenLibraryFilter: (query: string, filters?: DocumentFilters) => void;
+  onOpenView: (view: View) => void;
+}) {
+  const readyDocuments = documents.filter((document) => LIBRARY_DOCUMENT_STATUSES.has(document.processing_status));
+  const documentsMissingDoi = readyDocuments.filter((document) => !document.doi && !document.no_doi);
+  const documentsMarkedNoDoi = readyDocuments.filter((document) => !document.doi && document.no_doi);
+  const citationNeedsReview = readyDocuments.filter((document) => document.citation_status !== "verified");
+  const missingSummary = readyDocuments.filter((document) => !document.rich_summary?.trim());
+  const missingAuthorsOrYear = readyDocuments.filter((document) => !documentHasAuthors(document) || !document.publication_year);
+  const unfiledDomains = readyDocuments.filter((document) => !document.domains.length);
+  const untagged = readyDocuments.filter((document) => !document.tags.length);
+  const notInProjects = readyDocuments.filter((document) => !(document.projects || []).length);
+  const duplicateCandidates = readyDocuments.filter((document) => document.duplicate_count > 0);
+  const failedImportJobs = jobs.filter((job) => job.status === "failed");
+  const failedConcordanceJobs = concordanceJobs.filter((job) => job.status === "failed");
+  const failedBackupRuns = backupRuns.filter((run) => run.status === "failed");
+  const activeRepairWork = jobs.filter((job) => job.status === "queued" || job.status === "running").length + concordanceJobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const issueCards: CorpusHealthIssue[] = [
+    {
+      actionLabel: "Review DOI gaps",
+      detail: "Ready documents without DOI evidence or a confirmed No DOI decision.",
+      documents: documentsMissingDoi,
+      id: "doi",
+      onAction: () => onOpenLibraryFilter(""),
+      severity: documentsMissingDoi.length ? "warn" : "good",
+      title: "DOI evidence gaps",
+      total: documentsMissingDoi.length,
+    },
+    {
+      actionLabel: "Open citation filter",
+      detail: "Citation state is not verified, so APA output may still need review.",
+      documents: citationNeedsReview,
+      id: "citation",
+      onAction: () => onOpenLibraryFilter("", { citation_status: "needs_review" }),
+      severity: citationNeedsReview.length ? "warn" : "good",
+      title: "Citation review",
+      total: citationNeedsReview.length,
+    },
+    {
+      actionLabel: "Review summaries",
+      detail: "Documents with no generated summary text.",
+      documents: missingSummary,
+      id: "summary",
+      onAction: () => onOpenView("settings"),
+      severity: missingSummary.length ? "blue" : "good",
+      title: "Missing summaries",
+      total: missingSummary.length,
+    },
+    {
+      actionLabel: "Review identity",
+      detail: "Documents missing authors or publication year.",
+      documents: missingAuthorsOrYear,
+      id: "identity",
+      onAction: () => onOpenLibraryFilter(""),
+      severity: missingAuthorsOrYear.length ? "blue" : "good",
+      title: "Identity metadata",
+      total: missingAuthorsOrYear.length,
+    },
+    {
+      actionLabel: "Open Domains",
+      detail: "Ready documents not filed into any domain.",
+      documents: unfiledDomains,
+      id: "domains",
+      onAction: () => onOpenView("domains"),
+      severity: unfiledDomains.length ? "blue" : "good",
+      title: "Unfiled domains",
+      total: unfiledDomains.length,
+    },
+    {
+      actionLabel: "Open Tags",
+      detail: "Ready documents without any tags.",
+      documents: untagged,
+      id: "tags",
+      onAction: () => onOpenView("tags"),
+      severity: untagged.length ? "blue" : "good",
+      title: "Untagged documents",
+      total: untagged.length,
+    },
+    {
+      actionLabel: "Open Projects",
+      detail: "Ready documents not attached to a project run sheet.",
+      documents: notInProjects,
+      id: "projects",
+      onAction: () => onOpenView("projects"),
+      severity: notInProjects.length ? "neutral" : "good",
+      title: "No project use",
+      total: notInProjects.length,
+    },
+    {
+      actionLabel: "Find duplicates",
+      detail: "Documents with persisted duplicate-summary flags.",
+      documents: duplicateCandidates,
+      id: "duplicates",
+      onAction: () => onOpenLibraryFilter("", { duplicate_status: "duplicates" }),
+      severity: duplicateCandidates.length ? "warn" : "good",
+      title: "Duplicate candidates",
+      total: duplicateCandidates.length,
+    },
+  ];
+  const attentionTotal =
+    documentsMissingDoi.length +
+    citationNeedsReview.length +
+    missingSummary.length +
+    missingAuthorsOrYear.length +
+    unfiledDomains.length +
+    untagged.length +
+    duplicateCandidates.length +
+    failedImportJobs.length +
+    failedConcordanceJobs.length +
+    failedBackupRuns.length;
+  const citationCoverage = readyDocuments.length ? progressPercent(((readyDocuments.length - citationNeedsReview.length) / readyDocuments.length) * 100) : 100;
+  const organizationCoverage = readyDocuments.length ? progressPercent(((readyDocuments.length - unfiledDomains.length - untagged.length / 2) / readyDocuments.length) * 100) : 100;
+
+  return (
+    <section className="workbench corpus-health-workbench">
+      <section className="corpus-health-hero">
+        <div>
+          <h2>Corpus Health</h2>
+          <span>Metadata, organization, processing, and repair entry points for the ready Library.</span>
+        </div>
+        <Gauge size={22} />
+      </section>
+      <div className="corpus-health-summary">
+        <div>
+          <span>Ready documents</span>
+          <strong>{formatMetric(readyDocuments.length)}</strong>
+          <em>{formatMetric(documents.length)} total visible records</em>
+        </div>
+        <div>
+          <span>Attention points</span>
+          <strong>{formatMetric(attentionTotal)}</strong>
+          <em>{activeRepairWork ? `${formatMetric(activeRepairWork)} active repairs` : "No active repair work"}</em>
+        </div>
+        <div>
+          <span>Citation coverage</span>
+          <strong>{formatPercent(citationCoverage)}</strong>
+          <em>{formatMetric(documentsMarkedNoDoi.length)} confirmed No DOI</em>
+        </div>
+        <div>
+          <span>Organization coverage</span>
+          <strong>{formatPercent(organizationCoverage)}</strong>
+          <em>Domains and tags weighted</em>
+        </div>
+      </div>
+      {(failedImportJobs.length || failedConcordanceJobs.length || failedBackupRuns.length) ? (
+        <section className="corpus-health-alerts">
+          <AlertTriangle size={17} />
+          <div>
+            <strong>Failed work needs review</strong>
+            <span>
+              {[
+                failedImportJobs.length ? `${formatMetric(failedImportJobs.length)} imports` : "",
+                failedConcordanceJobs.length ? `${formatMetric(failedConcordanceJobs.length)} Concordance jobs` : "",
+                failedBackupRuns.length ? `${formatMetric(failedBackupRuns.length)} backups/restores` : "",
+              ]
+                .filter(Boolean)
+                .join(" / ")}
+            </span>
+          </div>
+          <button className="secondary-button compact" onClick={() => onOpenView("activity")} type="button">
+            <ArrowRight size={14} />
+            Open Activity
+          </button>
+        </section>
+      ) : null}
+      <div className="corpus-health-grid">
+        {issueCards.map((issue) => (
+          <article className={`corpus-health-card ${issue.severity}`} key={issue.id}>
+            <div className="corpus-health-card-head">
+              <div>
+                <span>{issue.title}</span>
+                <strong>{formatMetric(issue.total)}</strong>
+              </div>
+              <StatusPill value={issue.total ? "Review" : "Clear"} tone={issue.severity} />
+            </div>
+            <p>{issue.detail}</p>
+            <div className="corpus-health-samples">
+              {issue.documents.slice(0, 4).map((document) => (
+                <button key={document.id} onClick={() => onOpenDocument(document.id)} type="button">
+                  <strong>{document.title}</strong>
+                  <span>{[authorLine(document), document.publication_year || "n.d."].filter(Boolean).join(" / ")}</span>
+                </button>
+              ))}
+              {!issue.documents.length ? <span className="corpus-health-empty">No sampled documents.</span> : null}
+            </div>
+            <button className="secondary-button compact" onClick={issue.onAction} type="button">
+              <ArrowRight size={14} />
+              {issue.actionLabel}
+            </button>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function NotesView({
   notes,
   documents,
@@ -21586,7 +21815,7 @@ export default function App() {
   const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
   const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
   const needsSavedSearches = activeView === "library" || activeView === "settings" || commandPaletteOpen;
-  const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "activity" || activeView === "portfolio";
+  const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "activity" || activeView === "health" || activeView === "portfolio";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
   const documentQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
@@ -21631,7 +21860,11 @@ export default function App() {
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
   const needsConcordanceData =
-    activeView === "settings" || activeView === "activity" || activeLocalBackgroundJobs || (dashboard.data?.active_concordance_jobs ?? 0) > 0;
+    activeView === "settings" ||
+    activeView === "activity" ||
+    activeView === "health" ||
+    activeLocalBackgroundJobs ||
+    (dashboard.data?.active_concordance_jobs ?? 0) > 0;
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
   useEffect(() => {
     if (!preferences.data) return;
@@ -21689,6 +21922,17 @@ export default function App() {
     enabled: Boolean(me.data && needsReferenceDocumentList),
     staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
     refetchInterval: needsReferenceDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
+  });
+  const healthDocuments = useQuery({
+    queryKey: ["documents", "health-reference"],
+    queryFn: () =>
+      api.documents("", EMPTY_DOCUMENT_FILTERS, {
+        includeDuplicateSummary: true,
+        includeProjects: true,
+      }),
+    enabled: Boolean(me.data && activeView === "health"),
+    staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
+    refetchInterval: activeView === "health" && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
   const selectedDocument = useQuery({
     queryKey: ["document", selectedId],
@@ -22389,6 +22633,10 @@ export default function App() {
       (dashboard.data?.active_concordance_jobs ?? 0) +
       (backupRuns.data || []).filter(isActiveBackupRun).length +
       (dashboard.data?.review_items ?? review.data?.length ?? 0),
+    health:
+      (dashboard.data?.failed_jobs ?? 0) +
+      (dashboard.data?.needs_review ?? 0) +
+      (healthDocuments.data || []).filter((document) => document.duplicate_count > 0).length,
     notes: dashboard.data?.notes ?? notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
     stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
@@ -22553,6 +22801,22 @@ export default function App() {
             items={review.data || []}
             jobs={jobs.data || []}
             onOpenDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
+            onOpenView={(view) => void requestActiveViewChange(view)}
+          />
+        ) : null}
+        {activeView === "health" ? (
+          <CorpusHealthView
+            backupRuns={backupRuns.data || []}
+            concordanceJobs={concordanceJobs.data || []}
+            documents={healthDocuments.data || []}
+            jobs={jobs.data || []}
+            onOpenDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
+            onOpenLibraryFilter={(nextQuery, nextFilters = emptyFilters()) => {
+              setQuery(nextQuery);
+              setFilters({ ...emptyFilters(), ...nextFilters });
+              setLibraryOffset(0);
+              void requestActiveViewChange("library");
+            }}
             onOpenView={(view) => void requestActiveViewChange(view)}
           />
         ) : null}

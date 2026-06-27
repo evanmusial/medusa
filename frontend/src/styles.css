@@ -8213,6 +8213,224 @@ pre {
   gap: 4px;
 }
 
+.corpus-health-workbench {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.corpus-health-hero {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 2px 0;
+}
+
+.corpus-health-hero h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.corpus-health-hero span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.corpus-health-summary {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.corpus-health-summary > div,
+.corpus-health-card {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 48%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 36%, transparent);
+}
+
+.corpus-health-summary > div {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+}
+
+.corpus-health-summary span,
+.corpus-health-card-head span,
+.corpus-health-summary em,
+.corpus-health-card p,
+.corpus-health-samples span {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.corpus-health-summary span,
+.corpus-health-card-head span {
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.corpus-health-summary strong {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 850;
+}
+
+.corpus-health-alerts {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 36%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 8%, var(--panel));
+  padding: 10px;
+}
+
+.corpus-health-alerts > svg {
+  color: var(--amber);
+}
+
+.corpus-health-alerts strong,
+.corpus-health-alerts span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.corpus-health-alerts strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.corpus-health-alerts span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.corpus-health-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-content: start;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.corpus-health-card {
+  display: grid;
+  gap: 9px;
+  border-left-width: 3px;
+  padding: 11px;
+}
+
+.corpus-health-card.good {
+  border-left-color: var(--teal);
+}
+
+.corpus-health-card.warn {
+  border-left-color: var(--amber);
+}
+
+.corpus-health-card.blue {
+  border-left-color: var(--blue);
+}
+
+.corpus-health-card.neutral {
+  border-left-color: color-mix(in srgb, var(--muted) 46%, transparent);
+}
+
+.corpus-health-card-head {
+  min-width: 0;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.corpus-health-card-head div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.corpus-health-card-head strong {
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 850;
+}
+
+.corpus-health-card p {
+  min-height: 34px;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.corpus-health-samples {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.corpus-health-samples button {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  padding: 6px 7px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.corpus-health-samples button:hover,
+.corpus-health-samples button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--line));
+  background: color-mix(in srgb, var(--blue-soft) 44%, transparent);
+  outline: 0;
+}
+
+.corpus-health-samples strong,
+.corpus-health-samples span,
+.corpus-health-summary em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.corpus-health-samples strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.corpus-health-empty {
+  padding: 8px 2px;
+}
+
 .review-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -32,6 +32,7 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 - App-styled delayed tooltips on buttons, action links, dropdowns, checkboxes, and text inputs, including disabled-state reasons where actions are unavailable
 - App-styled confirmation and acknowledgement modals with darkened backdrops instead of native browser confirm/alert boxes
 - Activity workspace that unifies existing import batches/jobs, Concordance work, backups/restores, and citation review items into lane-filtered operational history
+- Corpus Health workspace for DOI/citation/summary/identity/organization/duplicate/failure review with sampled document shortcuts and repair entry points
 - Queue view with Import-style progress-shaded import rows, a latest import receipt for completed-batch file/cost/preset/duration review, animated processing glyphs, model/cost/stage detail, row retry/cancel, Process Uploads, Retry Failed, Clear, and Clear Failed controls, plus bounded citation-review cards with accept/reject actions and correction history
 - Projects/run sheets with add/remove resources, status/priority/used tracking, notes, bibliography generation, and pane-constrained controls that keep long document titles from spilling into Bibliography
 - Domains management with searchable alphabetized nested trees, top-level/child creation, rename, move, description and tag metadata, color, soft delete, document-count visibility, description/document-based tag suggestions, comma-list tag paste review, and affected-document search/history updates
