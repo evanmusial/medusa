@@ -258,6 +258,10 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 - [x] Add host-agent release refresh for portable server deployments.
   - Acceptance: the backend reads an ignored release-status file, writes an ignored upgrade-request file after authenticated user approval, the header shows a compact accent-colored `Upgrade Now` action with a non-refresh icon when a newer release or newer running build is available, reload confirms with an unsaved-edits warning, and a host-side script can check upstream git state, refuse dirty checkouts, fast-forward only, rebuild Compose with explicit build identity, and verify backend health plus the app shell before release completion.
 
+- [x] Add twice-weekly dependency update plan.
+  - Acceptance: once Renovate is enabled for the repo, dependency update tooling checks Docker Compose images, Dockerfile base images, backend Python packages, and frontend npm packages twice weekly; critical security updates can bypass the normal window; runtime image PRs keep explicit tags, are not auto-merged, and preserve the invariant that HAProxy is the only host-published service on `3737` while Valkey remains private to backend/worker.
+  - Completed: root `renovate.json` schedules Tuesday/Friday checks, and `docs/DEPENDENCY_UPDATE_PLAN.md` documents the activation prerequisite, Valkey-specific review checklist, verification commands, published-port invariant, and rollback path.
+
 - [x] Make Utilities database maintenance visible during long runs.
   - Acceptance: Compact Database and Optimize Database start backend-owned maintenance work, return immediately, report active operation/detail/elapsed time through database maintenance status, prevent overlapping maintenance operations, and keep the Utilities page responsive while PostgreSQL runs `VACUUM (FULL, ANALYZE)` or `ANALYZE`.
 

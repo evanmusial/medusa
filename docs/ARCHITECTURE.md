@@ -91,6 +91,7 @@ Runtime shape:
 - `haproxy`: TLS terminator and redirect/proxy on host port `3737`, with internal stats on `8404`.
 - `docker-compose.yml` wires all services and exposes only HAProxy on host port `3737`; Valkey is not attached to the public-facing proxy/frontend path and has no published host port.
 - Backend and worker startup initialize PostgreSQL through Alembic migrations before normal app workflows open.
+- Dependency freshness is managed through root `renovate.json` plus `docs/DEPENDENCY_UPDATE_PLAN.md`: Renovate checks Docker, backend, and frontend dependency surfaces twice weekly, while critical security updates can be handled immediately. Runtime image updates must preserve explicit tags, the Valkey private cache network, and the invariant that only HAProxy publishes host port `3737`.
 
 Data storage:
 
@@ -510,6 +511,19 @@ Consequences:
 - SQLAlchemy session hooks broadly bump cache revision families after ORM/bulk writes in the same database transaction, while manual Refresh Cache advances all revision families and warms common payloads.
 - Status and the profile menu expose cache memory, hit rate, mode, per-family counters, and refresh controls; `/api/*` cached responses expose `X-Medusa-Cache` and `X-Medusa-Cache-Family`.
 - Valkey contents are internal, derived, non-secret-bearing where practical, not backed up, and never restored as system-of-record data.
+
+### 2026-06-27: Twice-weekly dependency update cadence
+
+Decision: Add a Renovate-backed dependency-update plan that checks Medusa's Docker, Python, and npm dependency surfaces twice weekly while keeping urgent security fixes eligible for immediate handling.
+
+Why: Medusa now depends on more long-running runtime components, including Valkey, HAProxy, PostgreSQL/pgvector, backend/frontend base images, Python packages, and npm tooling. These should receive security patches and useful feature releases on a predictable schedule without floating unreviewed tags into the app.
+
+Consequences:
+
+- Root `renovate.json` schedules checks Tuesday and Friday during the local workday and groups updates by runtime image, backend Python, and frontend npm ecosystem.
+- Docker runtime image PRs are not auto-merged, and Valkey update PRs carry cache/security-review labels.
+- `docs/DEPENDENCY_UPDATE_PLAN.md` is the operating checklist for Valkey review, published-port verification, standard tests, rebuild verification, and rollback.
+- The dependency-update invariant is the same as the runtime security invariant: only HAProxy may publish host port `3737`; Valkey remains internal-only on the private backend/worker cache network.
 
 ### 2026-06-26: Library list and search scale first on PostgreSQL
 

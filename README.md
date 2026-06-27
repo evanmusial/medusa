@@ -112,6 +112,8 @@ MEDUSA_VALKEY_MAXMEMORY=512mb
 
 Valkey stores only derived, rebuildable API payloads and counters. PostgreSQL remains authoritative for documents, search, jobs, history, evidence, auth, and backups. Cache keys include PostgreSQL `cache_revisions`, so manual Refresh Cache and relevant committed writes make older payloads unreachable even if old Valkey keys remain until TTL/LRU eviction.
 
+Dependency freshness is tracked through `renovate.json` and the twice-weekly operating plan in `docs/DEPENDENCY_UPDATE_PLAN.md`. Enable the Renovate GitHub app or a Renovate runner for the repo so the checked-in policy actually opens PRs. Runtime image updates, including Valkey, should keep explicit tags, preserve the private cache network, and verify that HAProxy remains the only host-published service on port `3737`.
+
 HAProxy's stats listener is internal-only. Utilities reads the authenticated backend endpoint `/api/utilities/haproxy/status`, which summarizes the internal CSV stats feed.
 
 HAProxy and the Vite API proxy keep five-minute client/server timeouts so synchronous plan-building requests can finish while the UI progress state remains visible. Tags > Optimize also skips the model planner on broad scopes and returns a deterministic local governance plan quickly enough for whole-library cleanup.

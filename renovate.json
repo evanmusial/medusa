@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "America/Indiana/Indianapolis",
+  "schedule": [
+    "after 9am and before 5pm on tuesday",
+    "after 9am and before 5pm on friday"
+  ],
+  "dependencyDashboard": true,
+  "labels": ["dependencies", "maintenance"],
+  "prConcurrentLimit": 6,
+  "prHourlyLimit": 2,
+  "enabledManagers": [
+    "docker-compose",
+    "dockerfile",
+    "github-actions",
+    "npm",
+    "pep621",
+    "pip_requirements"
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["docker-compose", "dockerfile"],
+      "groupName": "Docker runtime images",
+      "labels": ["dependencies", "docker", "runtime"],
+      "automerge": false
+    },
+    {
+      "matchPackageNames": ["valkey/valkey"],
+      "groupName": "Valkey cache image",
+      "labels": ["dependencies", "docker", "cache", "security-review"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["npm"],
+      "groupName": "Frontend npm dependencies",
+      "labels": ["dependencies", "frontend"]
+    },
+    {
+      "matchManagers": ["pep621", "pip_requirements"],
+      "groupName": "Backend Python dependencies",
+      "labels": ["dependencies", "backend"]
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "labels": ["dependencies", "major-upgrade"],
+      "automerge": false
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["after 9am and before 5pm on friday"]
+  }
+}
