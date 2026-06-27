@@ -102,6 +102,7 @@ services:
     volumes:
       - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - ./deploy/haproxy/restarting.html:/usr/local/etc/haproxy/restarting.html:ro
+      - ./frontend/public/medusa-emblem.svg:/usr/local/etc/haproxy/medusa-emblem.svg:ro
       - ./data/haproxy:/usr/local/etc/haproxy/certs:ro
     depends_on:
       - frontend

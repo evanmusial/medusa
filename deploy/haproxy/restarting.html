@@ -53,19 +53,17 @@
         text-align: center;
       }
 
-      .mark {
+      .emblem {
         width: 70px;
         height: 70px;
-        display: grid;
-        place-items: center;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        background: var(--panel);
-        color: var(--accent);
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: 40px;
-        font-weight: 700;
-        line-height: 1;
+        display: block;
+        object-fit: contain;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .emblem {
+          filter: invert(1);
+        }
       }
 
       .copy {
@@ -124,7 +122,7 @@
   </head>
   <body>
     <main aria-live="polite">
-      <div class="mark" aria-hidden="true">M</div>
+      <img class="emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true">
       <div class="copy">
         <div class="eyebrow">Medusa restart</div>
         <h1>Waiting for Medusa</h1>
