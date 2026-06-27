@@ -158,3 +158,106 @@ def test_valkey_cache_bypasses_oversized_payloads():
 
     assert status == "bypass"
     assert client.setex_calls == []
+
+
+def test_valkey_cache_configures_maxmemory():
+    from app.services.cache import ValkeyCache
+
+    class RecordingClient:
+        def __init__(self):
+            self.config_calls = []
+
+        def config_set(self, key, value):
+            self.config_calls.append((key, value))
+            return True
+
+    client = RecordingClient()
+    cache = ValkeyCache("valkey://unused:6379/0")
+    cache._client = client
+
+    assert cache.configure_maxmemory("8gb") is True
+    assert client.config_calls == [("maxmemory", "8gb")]
+
+
+def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, SavedSearch
+    from app.services import cache as cache_service
+    from app import main
+
+    class RecordingCache:
+        def __init__(self):
+            self.data = {}
+            self.hydrated_at = None
+
+        def get_json(self, key, family):
+            return ("hit", self.data[key]) if key in self.data else ("miss", None)
+
+        def set_json(self, key, family, payload, ttl_seconds, max_payload_bytes):
+            del family, ttl_seconds, max_payload_bytes
+            self.data[key] = payload
+            return "write"
+
+        def remember_refresh(self, refreshed_at=None):
+            return None
+
+        def last_refresh_at(self):
+            return None
+
+        def remember_hydration(self, hydrated_at=None):
+            self.hydrated_at = hydrated_at
+
+        def last_hydration_at(self):
+            return self.hydrated_at
+
+        def status(self):
+            return {
+                "backend": "recording",
+                "enabled": True,
+                "reachable": True,
+                "mode": "online",
+                "message": "Recording cache online.",
+                "key_count": len(self.data),
+            }
+
+    cache = RecordingCache()
+    monkeypatch.setattr(cache_service, "_cache_backend", cache)
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(
+                    title="Alpha",
+                    original_filename="alpha.pdf",
+                    checksum_sha256="d" * 64,
+                    processing_status="ready",
+                    priority="high",
+                    page_count=3,
+                ),
+                Document(
+                    title="Beta",
+                    original_filename="beta.pdf",
+                    checksum_sha256="e" * 64,
+                    processing_status="ready",
+                    page_count=5,
+                ),
+                SavedSearch(name="High Priority", query=None, filters={"priority": "high"}),
+            ]
+        )
+        db.commit()
+
+        result = main.hydrate_cache(None, db, max_documents=10, page_size=25)
+
+    assert result["status"] == "complete"
+    assert result["document_count"] == 2
+    assert result["base_keys"] == 2
+    assert result["organization_keys"] == 3
+    assert result["list_page_keys"] == 1
+    assert result["saved_search_keys"] == 1
+    assert result["document_detail_keys"] == 2
+    assert result["hydrated_keys"] == 9
+    assert result["after"]["last_hydration_at"] == result["hydrated_at"]
+    assert cache.hydrated_at == result["hydrated_at"]

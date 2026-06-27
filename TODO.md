@@ -202,7 +202,7 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Validate Valkey cache behavior at 10x and 50x scale.
   - Acceptance: seed or synthesize representative document/tag/domain/project data at 10x and 50x current corpus size; capture `/api/documents/list`, `/api/documents`, `/api/dashboard`, `/api/domains`, `/api/tags`, search, duplicate-scan, and active-work polling timings with SQL counts and `X-Medusa-Cache` headers; compare the current Valkey read-through layer against PostgreSQL index/query/read-model/materialized-table options; keep Valkey only for workloads it serves better than PostgreSQL.
-  - Completed: Medusa now has an optional internal Valkey service, durable `cache_revisions`, cached hot response families, manual Refresh Cache, and Status/profile cache telemetry.
+  - Completed: Medusa now has an optional internal Valkey service, durable `cache_revisions`, cached hot response families, manual Refresh Cache, manual Hydrate Cache from live PostgreSQL data, app-configurable Valkey memory limits, Status/profile cache telemetry, and a Status-page Valkey resource monitor.
   - Notes: detailed phases, endpoint budgets, PostgreSQL/read-model candidates, frontend/runtime improvements, asset/provider considerations, and Valkey/external-search decision criteria live in `docs/PERFORMANCE_ROADMAP.md`.
 
 - [ ] Add saved-search management improvements.

@@ -205,6 +205,7 @@ export type CacheStatus = {
   ops_per_second: number;
   latency_ms?: number | null;
   last_refresh_at?: string | null;
+  last_hydration_at?: string | null;
   last_invalidation_at?: string | null;
   families: CacheFamilyStats[];
   request_metrics: CacheRequestMetric[];
@@ -278,6 +279,23 @@ export type CacheRefreshResult = {
   after: CacheStatus;
 };
 
+export type CacheHydrateResult = {
+  status: string;
+  message: string;
+  hydrated_at: string;
+  hydrated_keys: number;
+  base_keys: number;
+  document_count: number;
+  document_detail_keys: number;
+  list_page_keys: number;
+  saved_search_keys: number;
+  organization_keys: number;
+  skipped_payloads: number;
+  errored_payloads: number;
+  before: CacheStatus;
+  after: CacheStatus;
+};
+
 export type AppPreferences = {
   import_worker_concurrency: number;
   recommended_import_worker_concurrency: number;
@@ -285,6 +303,7 @@ export type AppPreferences = {
   accent_color_day: string;
   accent_color_night: string;
   document_cache_size_mb: number;
+  valkey_maxmemory: string;
   library_alternating_rows: boolean;
   download_naming_template: string;
   citation_convention: string;

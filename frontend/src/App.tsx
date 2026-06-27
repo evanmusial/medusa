@@ -107,6 +107,7 @@ import type {
   BackupArtifact,
   BackupEstimate,
   BackupRun,
+  CacheHydrateResult,
   Bibliography,
   CacheRefreshResult,
   CacheStatus,
@@ -2562,6 +2563,25 @@ function formatPercent(value?: number | null) {
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}%`;
 }
 
+function ratioPercent(numerator?: number | null, denominator?: number | null) {
+  if (
+    numerator === undefined ||
+    numerator === null ||
+    denominator === undefined ||
+    denominator === null ||
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    denominator <= 0
+  ) {
+    return null;
+  }
+  return (numerator / denominator) * 100;
+}
+
+function cacheMemoryPercent(cache?: CacheStatus | null) {
+  return ratioPercent(cache?.used_memory_bytes, cache?.maxmemory_bytes);
+}
+
 function formatDecimal(value?: number | null, maximumFractionDigits = 1) {
   if (value === undefined || value === null || !Number.isFinite(value)) return "0";
   return new Intl.NumberFormat(undefined, { maximumFractionDigits }).format(value);
@@ -4416,6 +4436,7 @@ function Login() {
 
 function Header({
   backgroundJobs,
+  cacheHydrating,
   cacheRefreshing,
   cacheStatus,
   completedImport,
@@ -4424,6 +4445,7 @@ function Header({
   onOpenQueue,
   onOpenSettings,
   onOpenStatus,
+  onHydrateCache,
   onRefreshCache,
   onReleaseUpgrade,
   query,
@@ -4436,6 +4458,7 @@ function Header({
   onLogout,
 }: {
   backgroundJobs: BackgroundJob[];
+  cacheHydrating: boolean;
   cacheRefreshing: boolean;
   cacheStatus?: CacheStatus;
   completedImport?: IngestionHistory | null;
@@ -4444,6 +4467,7 @@ function Header({
   onOpenQueue: () => void;
   onOpenSettings: () => void;
   onOpenStatus: () => void;
+  onHydrateCache: () => void;
   onRefreshCache: () => void;
   onReleaseUpgrade: () => void;
   query: string;
@@ -4490,10 +4514,17 @@ function Header({
   const refreshCacheFromUserMenu = () => {
     onRefreshCache();
   };
+  const hydrateCacheFromUserMenu = () => {
+    onHydrateCache();
+  };
+  const cacheActionBusy = cacheRefreshing || cacheHydrating;
   const cacheHitPercent = cacheStatus ? Math.round((cacheStatus.hit_rate || 0) * 100) : null;
+  const cacheUsagePercent = cacheMemoryPercent(cacheStatus);
   const cacheGlance = cacheStatus
     ? cacheStatus.reachable
-      ? `Cache ${formatDatabaseSize(cacheStatus.used_memory_bytes)} / ${cacheHitPercent}% hit`
+      ? cacheUsagePercent !== null
+        ? `Cache ${formatPercent(cacheUsagePercent) || "0%"} used / ${cacheHitPercent}% hit`
+        : `Cache ${formatDatabaseSize(cacheStatus.used_memory_bytes)} / ${cacheHitPercent}% hit`
       : `Cache ${cacheStatus.mode}`
     : "Cache loading";
 
@@ -4539,9 +4570,13 @@ function Header({
                 <Database size={16} aria-hidden="true" />
                 <span>{cacheGlance}</span>
               </div>
-              <button className="user-options-menu-item" disabled={cacheRefreshing} onClick={refreshCacheFromUserMenu} role="menuitem" type="button">
+              <button className="user-options-menu-item" disabled={cacheActionBusy} onClick={refreshCacheFromUserMenu} role="menuitem" type="button">
                 <RefreshCw className={cacheRefreshing ? "spin" : ""} size={16} aria-hidden="true" />
                 <span>{cacheRefreshing ? "Refreshing cache" : "Refresh Cache"}</span>
+              </button>
+              <button className="user-options-menu-item" disabled={cacheActionBusy} onClick={hydrateCacheFromUserMenu} role="menuitem" type="button">
+                <UploadCloud className={cacheHydrating ? "spin" : ""} size={16} aria-hidden="true" />
+                <span>{cacheHydrating ? "Hydrating cache" : "Hydrate Cache"}</span>
               </button>
               <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
                 {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
@@ -17616,10 +17651,99 @@ function StatusFactRow({ label, value, detail }: { label: string; value: string;
   );
 }
 
+function valkeyResourceTone(percent: number | null) {
+  if (percent === null) return "unknown";
+  if (percent >= 90) return "danger";
+  if (percent >= 75) return "warning";
+  return "normal";
+}
+
+function ValkeyResourceMonitor({ cache }: { cache?: CacheStatus }) {
+  const memoryPercent = cacheMemoryPercent(cache);
+  const peakPercent = ratioPercent(cache?.peak_memory_bytes, cache?.maxmemory_bytes);
+  const rssPercent = ratioPercent(cache?.rss_memory_bytes, cache?.maxmemory_bytes);
+  const meterPercent = progressPercent(memoryPercent ?? 0);
+  const tone = valkeyResourceTone(memoryPercent);
+  const usedLabel = formatDatabaseSize(cache?.used_memory_bytes);
+  const limitLabel = cache?.maxmemory_bytes ? formatDatabaseSize(cache.maxmemory_bytes) : "No memory limit";
+  const memoryHeadline = !cache
+    ? "Loading"
+    : !cache.enabled
+      ? "Disabled"
+      : !cache.reachable
+        ? cache.mode || "Unavailable"
+        : memoryPercent !== null
+          ? `${formatPercent(memoryPercent) || "0%"} used`
+          : "Usage visible";
+  const memoryDetail = !cache
+    ? "Waiting for Valkey telemetry"
+    : cache.reachable
+      ? `${usedLabel} used / ${limitLabel}`
+      : cache.message || "Valkey telemetry unavailable";
+  const meterStyle = { "--valkey-memory-used": `${meterPercent}%` } as CSSProperties;
+  const stats = [
+    {
+      label: "Peak",
+      value: formatDatabaseSize(cache?.peak_memory_bytes),
+      detail: peakPercent !== null ? `${formatPercent(peakPercent) || "0%"} of limit` : "Peak memory",
+    },
+    {
+      label: "RSS",
+      value: formatDatabaseSize(cache?.rss_memory_bytes),
+      detail: rssPercent !== null ? `${formatPercent(rssPercent) || "0%"} of limit` : "Resident set size",
+    },
+    {
+      label: "Keys",
+      value: formatMetric(cache?.key_count),
+      detail: `${formatMetric(cache?.evicted_keys)} evicted / ${formatMetric(cache?.expired_keys)} expired`,
+    },
+    {
+      label: "Ops",
+      value: `${formatMetric(cache?.ops_per_second)} ops/sec`,
+      detail: `${formatMetric(cache?.connected_clients)} clients`,
+    },
+  ];
+
+  return (
+    <div className={`valkey-resource-monitor ${tone}`}>
+      <div className="valkey-resource-monitor-head">
+        <div>
+          <strong>Valkey Resource Monitor</strong>
+          <span>{memoryDetail}</span>
+        </div>
+        <em>{memoryHeadline}</em>
+      </div>
+      <div
+        aria-label="Valkey memory utilization"
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={memoryPercent !== null ? meterPercent : undefined}
+        aria-valuetext={memoryPercent !== null ? `${formatPercent(memoryPercent)} memory used` : memoryHeadline}
+        className="valkey-resource-meter"
+        role="meter"
+        style={meterStyle}
+      >
+        <span />
+      </div>
+      <div className="valkey-resource-stats">
+        {stats.map((item) => (
+          <div key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+            <small>{item.detail}</small>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: AppDialogController }) {
   const queryClient = useQueryClient();
   const releaseCheckFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const maintenanceRunFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const cacheRefreshFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const cacheHydrateFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const containerStatus = useQuery({
     queryKey: ["container-footprint-status"],
     queryFn: api.containerFootprintStatus,
@@ -17680,6 +17804,29 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
     });
     if (confirmed) requestMaintenanceRun.mutate();
   }, [dialogs, requestMaintenanceRun]);
+  const refreshCache = useMutation<CacheRefreshResult, Error>({
+    mutationFn: api.refreshCache,
+    onSuccess: (result) => {
+      cacheRefreshFeedback.showSuccess();
+      queryClient.setQueryData(["cache-status"], result.after);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["library-fun-stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "documents" || query.queryKey[0] === "document" });
+    },
+    onError: (error) => cacheRefreshFeedback.showError(actionFailureMessage("Could not refresh cache", error)),
+  });
+  const hydrateCache = useMutation<CacheHydrateResult, Error>({
+    mutationFn: api.hydrateCache,
+    onSuccess: (result) => {
+      cacheHydrateFeedback.showSuccess();
+      queryClient.setQueryData(["cache-status"], result.after);
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+    },
+    onError: (error) => cacheHydrateFeedback.showError(actionFailureMessage("Could not hydrate cache", error)),
+  });
 
   const container = containerStatus.data;
   const database = databaseStatus.data;
@@ -17720,9 +17867,19 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
     .filter(Boolean)
     .join(" / ");
   const cacheHitRatePercent = cache ? (cache.hit_rate || 0) * 100 : 0;
-  const cacheValue = cache?.enabled ? formatDatabaseSize(cache.used_memory_bytes) : "Disabled";
+  const cacheUsagePercent = cacheMemoryPercent(cache);
+  const cacheActionBusy = refreshCache.isPending || hydrateCache.isPending;
+  const cacheValue = cache?.enabled
+    ? cacheUsagePercent !== null
+      ? formatPercent(cacheUsagePercent) || "0%"
+      : formatDatabaseSize(cache.used_memory_bytes)
+    : "Disabled";
   const cacheDetail = cache?.reachable
-    ? `${formatPercent(cacheHitRatePercent)} hit / ${formatMetric(cache.key_count)} keys / ${cache.maxmemory_policy || "policy unknown"}`
+    ? `${
+        cacheUsagePercent !== null
+          ? `${formatDatabaseSize(cache.used_memory_bytes)} of ${formatDatabaseSize(cache.maxmemory_bytes)}`
+          : `${formatDatabaseSize(cache.used_memory_bytes)} used`
+      } / ${formatPercent(cacheHitRatePercent)} hit / ${formatMetric(cache.key_count)} keys`
     : cache?.message || "Valkey status unavailable";
   const cacheUpdated = cache?.checked_at
     ? `Updated ${releaseDateLabel(cache.checked_at)}`
@@ -17891,8 +18048,33 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
                 <h3>Cache Details</h3>
                 <span>{cacheUpdated}</span>
               </div>
-              <Database size={18} />
+              <div className="queue-title-actions">
+                <AsyncActionSlot busy={refreshCache.isPending} feedback={cacheRefreshFeedback.feedback} label="Cache refresh in progress">
+                  <button
+                    className={asyncFeedbackClass("secondary-button compact", cacheRefreshFeedback.feedback, refreshCache.isPending)}
+                    disabled={cacheActionBusy}
+                    onClick={() => refreshCache.mutate()}
+                    type="button"
+                  >
+                    <RefreshCw className={refreshCache.isPending ? "spin" : ""} size={14} />
+                    {refreshCache.isPending ? "Refreshing" : "Refresh"}
+                  </button>
+                </AsyncActionSlot>
+                <AsyncActionSlot busy={hydrateCache.isPending} feedback={cacheHydrateFeedback.feedback} label="Cache hydration in progress">
+                  <button
+                    className={asyncFeedbackClass("secondary-button compact", cacheHydrateFeedback.feedback, hydrateCache.isPending)}
+                    disabled={cacheActionBusy}
+                    onClick={() => hydrateCache.mutate()}
+                    type="button"
+                  >
+                    <UploadCloud className={hydrateCache.isPending ? "spin" : ""} size={14} />
+                    {hydrateCache.isPending ? "Hydrating" : "Hydrate"}
+                  </button>
+                </AsyncActionSlot>
+                <Database size={18} />
+              </div>
             </div>
+            <ValkeyResourceMonitor cache={cache} />
             <div className="status-fact-list">
               <StatusFactRow
                 label="Mode"
@@ -17923,6 +18105,11 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
                 label="Last refresh"
                 value={cache?.last_refresh_at ? releaseDateLabel(cache.last_refresh_at) : "Not yet"}
                 detail={cache?.last_invalidation_at ? `Last invalidation ${releaseDateLabel(cache.last_invalidation_at)}` : "No revision bumps recorded"}
+              />
+              <StatusFactRow
+                label="Last hydration"
+                value={cache?.last_hydration_at ? releaseDateLabel(cache.last_hydration_at) : "Not yet"}
+                detail={`${formatMetric(cache?.key_count)} keys currently resident`}
               />
               {topCacheFamilies.length ? (
                 topCacheFamilies.map((family) => (
@@ -18413,6 +18600,7 @@ function SettingsView({
   const [accentColorDay, setAccentColorDay] = useState(preferences?.accent_color_day || "#2563eb");
   const [accentColorNight, setAccentColorNight] = useState(preferences?.accent_color_night || "#6ea8ff");
   const [documentCacheSizeMb, setDocumentCacheSizeMb] = useState(preferences?.document_cache_size_mb || 1024);
+  const [valkeyMaxmemory, setValkeyMaxmemory] = useState(preferences?.valkey_maxmemory || "8gb");
   const [libraryAlternatingRows, setLibraryAlternatingRows] = useState(preferences?.library_alternating_rows ?? true);
   const [downloadNamingTemplate, setDownloadNamingTemplate] = useState(preferences?.download_naming_template || "$title ($year)");
   const [citationConvention, setCitationConvention] = useState(preferences?.citation_convention || CITATION_CONVENTION_APA_7);
@@ -18459,6 +18647,7 @@ function SettingsView({
       setAccentColorDay(preferences.accent_color_day);
       setAccentColorNight(preferences.accent_color_night);
       setDocumentCacheSizeMb(preferences.document_cache_size_mb);
+      setValkeyMaxmemory(preferences.valkey_maxmemory || "8gb");
       setLibraryAlternatingRows(preferences.library_alternating_rows);
       setDownloadNamingTemplate(preferences.download_naming_template);
       setCitationConvention(preferences.citation_convention || CITATION_CONVENTION_APA_7);
@@ -18620,6 +18809,7 @@ function SettingsView({
         accent_color_day: accentColorDay,
         accent_color_night: accentColorNight,
         document_cache_size_mb: documentCacheSizeMb,
+        valkey_maxmemory: valkeyMaxmemory,
         library_alternating_rows: libraryAlternatingRows,
         download_naming_template: downloadNamingTemplate,
         citation_convention: citationConvention,
@@ -18633,6 +18823,7 @@ function SettingsView({
       savePreferencesFeedback.showSuccess();
       queryClient.setQueryData(["preferences"], updatedPreferences);
       void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
     },
     onError: (error) => {
       savePreferencesFeedback.showError(actionFailureMessage("Could not save preferences", error));
@@ -18752,6 +18943,7 @@ function SettingsView({
         preferences.accent_color_day !== accentColorDay ||
         preferences.accent_color_night !== accentColorNight ||
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
+        preferences.valkey_maxmemory !== valkeyMaxmemory ||
         preferences.library_alternating_rows !== libraryAlternatingRows ||
         preferences.download_naming_template !== downloadNamingTemplate ||
         preferences.citation_convention !== citationConvention ||
@@ -19181,6 +19373,21 @@ function SettingsView({
             value={documentCacheSizeMb}
           />
           <p>(Default: 1024) Local storage before cache rules cause pruning. Current size: {currentDocumentCacheSizeLabel}</p>
+        </div>
+        <div className="preference-control">
+          <label htmlFor="valkey-maxmemory">
+            <span>Valkey Memory Limit</span>
+          </label>
+          <input
+            autoComplete="off"
+            data-tooltip="Set Valkey's maxmemory limit. Save All applies it to the running cache and stores it for future backend startup."
+            id="valkey-maxmemory"
+            onChange={(event) => setValkeyMaxmemory(event.target.value)}
+            placeholder="8gb"
+            type="text"
+            value={valkeyMaxmemory}
+          />
+          <p>(Default: 8gb) Use values such as 4096mb, 8gb, or 8589934592.</p>
         </div>
         <div className="preference-control">
           <label htmlFor="download-naming-template">
@@ -20260,6 +20467,13 @@ export default function App() {
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "documents" || query.queryKey[0] === "document" });
     },
   });
+  const hydrateCache = useMutation<CacheHydrateResult, Error>({
+    mutationFn: api.hydrateCache,
+    onSuccess: (result) => {
+      queryClient.setQueryData(["cache-status"], result.after);
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+    },
+  });
   const confirmReleaseReload = useCallback(() => {
     return appDialogs.confirm({
       cancelLabel: "Not Yet",
@@ -20801,6 +21015,7 @@ export default function App() {
       <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
+        cacheHydrating={hydrateCache.isPending}
         cacheRefreshing={refreshCache.isPending}
         cacheStatus={cacheStatus.data}
         completedImport={completedIngestionNotice}
@@ -20809,6 +21024,7 @@ export default function App() {
         onOpenQueue={() => void requestActiveViewChange("queue")}
         onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
+        onHydrateCache={() => hydrateCache.mutate()}
         onRefreshCache={() => refreshCache.mutate()}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}

@@ -9100,6 +9100,125 @@ pre {
   gap: 6px;
 }
 
+.valkey-resource-monitor {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 2px 0 4px;
+}
+
+.valkey-resource-monitor-head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.valkey-resource-monitor-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.valkey-resource-monitor-head strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.valkey-resource-monitor-head span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.valkey-resource-monitor-head em {
+  flex: 0 0 auto;
+  color: var(--blue);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 3px 8px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.valkey-resource-monitor.warning .valkey-resource-monitor-head em {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.valkey-resource-monitor.danger .valkey-resource-monitor-head em {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.valkey-resource-meter {
+  height: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.valkey-resource-meter span {
+  display: block;
+  width: var(--valkey-memory-used, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--teal), var(--blue));
+  transition: width 180ms ease;
+}
+
+.valkey-resource-monitor.warning .valkey-resource-meter span {
+  background: linear-gradient(90deg, var(--amber), var(--blue));
+}
+
+.valkey-resource-monitor.danger .valkey-resource-meter span {
+  background: linear-gradient(90deg, var(--danger), var(--amber));
+}
+
+.valkey-resource-stats {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.valkey-resource-stats > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.valkey-resource-stats span,
+.valkey-resource-stats small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.valkey-resource-stats strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-fact-row {
   min-width: 0;
   display: grid;
@@ -10861,6 +10980,7 @@ button.history-row,
   .container-version-row,
   .ingestion-history-row,
   .status-fact-row,
+  .valkey-resource-stats,
   .haproxy-stat-row,
   .usage-metric-grid {
     grid-template-columns: 1fr;
@@ -10910,6 +11030,11 @@ button.history-row,
   .ingestion-history-row > div:not(:first-child),
   .status-fact-row > span {
     text-align: left;
+  }
+
+  .valkey-resource-monitor-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .container-control-row .async-action-slot,

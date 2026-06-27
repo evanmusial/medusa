@@ -123,18 +123,26 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
     )
     from app.services.preferences import (
         DEFAULT_DOCUMENT_CACHE_SIZE_MB,
+        DEFAULT_VALKEY_MAXMEMORY,
         DOCUMENT_CACHE_SIZE_MB_KEY,
+        VALKEY_MAXMEMORY_KEY,
         get_app_preferences,
+        normalize_valkey_maxmemory,
         update_app_preferences,
     )
 
     Session = make_session()
     with Session() as db:
         assert get_app_preferences(db)["document_cache_size_mb"] == DEFAULT_DOCUMENT_CACHE_SIZE_MB
+        assert get_app_preferences(db)["valkey_maxmemory"] == DEFAULT_VALKEY_MAXMEMORY
+        assert normalize_valkey_maxmemory("8G") == "8gb"
+        assert normalize_valkey_maxmemory("4096 mb") == "4096mb"
+        assert normalize_valkey_maxmemory("nope", default=None) is None
 
         preferences = update_app_preferences(
             db,
             document_cache_size_mb=512,
+            valkey_maxmemory="12gb",
             analysis_models={
                 MODEL_METADATA: "gpt-5.4-mini",
                 MODEL_BIBLIOGRAPHY_CLEANUP: "gemini-3.1-flash-lite",
@@ -144,9 +152,13 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         )
 
         stored_cache = db.get(AppPreference, DOCUMENT_CACHE_SIZE_MB_KEY)
+        stored_valkey = db.get(AppPreference, VALKEY_MAXMEMORY_KEY)
         assert stored_cache is not None
+        assert stored_valkey is not None
         assert stored_cache.value == {"value": 512}
+        assert stored_valkey.value == {"value": "12gb"}
         assert preferences["document_cache_size_mb"] == 512
+        assert preferences["valkey_maxmemory"] == "12gb"
         assert preferences["analysis_models"][MODEL_RAW_TEXT_EXTRACTION] == "marker"
         assert preferences["analysis_models"][MODEL_METADATA] == "gpt-5.4-mini"
         assert preferences["analysis_models"][MODEL_SUMMARY] == "gpt-5.4"

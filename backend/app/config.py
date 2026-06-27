@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     cache_url: str = Field(default="valkey://valkey:6379/0", validation_alias="MEDUSA_CACHE_URL")
     cache_ttl_seconds: int = Field(default=3600, validation_alias="MEDUSA_CACHE_TTL_SECONDS")
     cache_max_payload_bytes: int = Field(default=2_097_152, validation_alias="MEDUSA_CACHE_MAX_PAYLOAD_BYTES")
-    valkey_maxmemory: str = Field(default="512mb", validation_alias="MEDUSA_VALKEY_MAXMEMORY")
+    valkey_maxmemory: str = Field(default="8gb", validation_alias="MEDUSA_VALKEY_MAXMEMORY")
 
     gcs_bucket: str | None = Field(default=None, validation_alias="GCS_BUCKET")
     gcs_prefix: str = Field(default="medusa", validation_alias="GCS_PREFIX")

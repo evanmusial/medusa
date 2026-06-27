@@ -400,7 +400,8 @@ Valkey is now the default optional response-cache service for selected hot,
 derived API payloads. It is not a replacement for Medusa's durable database.
 PostgreSQL remains authoritative, and durable `cache_revisions` rows are part
 of every cached key so old payloads become unreachable after relevant writes or
-manual Refresh Cache.
+manual Refresh Cache. Manual Hydrate Cache preloads current-revision payloads
+from live PostgreSQL data without changing the revision stamps.
 
 Current v1 cache families:
 
@@ -411,10 +412,15 @@ Current v1 cache families:
 - `/api/status/library-fun` as `status:library_fun`.
 - `/api/domains`, `/api/tags`, and `/api/projects` as `organization`.
 
-The profile menu and `/status` expose cache memory, mode, key count, hit/miss
-rate, per-family backend counters, manual refresh, hot-route p95 timings,
-active queue depth/oldest age, database relation footprints, and storage
-footprints. Valkey outages are cache misses/degraded status, not app failures.
+The profile menu and `/status` expose cache utilization, memory, mode, key
+count, hit/miss rate, per-family backend counters, manual refresh/hydration,
+hot-route p95 timings, active queue depth/oldest age, database relation
+footprints, and storage footprints. Status also includes a Valkey resource
+monitor for used memory versus limit, peak memory, RSS, keys, evictions,
+expiry, connected clients, and ops/sec. The default Valkey cap is 8 GB, and
+Settings can save and apply a different Valkey Memory Limit while preserving
+`allkeys-lru` pruning. Valkey outages are cache misses/degraded status, not
+app failures.
 
 Good Valkey candidates:
 

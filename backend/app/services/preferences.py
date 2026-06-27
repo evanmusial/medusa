@@ -31,6 +31,7 @@ IMPORT_WORKER_CONCURRENCY_KEY = "import_worker_concurrency"
 ACCENT_COLOR_DAY_KEY = "accent_color_day"
 ACCENT_COLOR_NIGHT_KEY = "accent_color_night"
 DOCUMENT_CACHE_SIZE_MB_KEY = "document_cache_size_mb"
+VALKEY_MAXMEMORY_KEY = "valkey_maxmemory"
 LIBRARY_ALTERNATING_ROWS_KEY = "library_alternating_rows"
 DOWNLOAD_NAMING_TEMPLATE_KEY = "download_naming_template"
 CITATION_CONVENTION_KEY = "citation_convention"
@@ -45,6 +46,7 @@ MIN_IMPORT_WORKER_CONCURRENCY = 1
 RECOMMENDED_IMPORT_WORKER_CONCURRENCY = 4
 IMPORT_WORKER_COST_WARNING_THRESHOLD = 4
 DEFAULT_DOCUMENT_CACHE_SIZE_MB = 1024
+DEFAULT_VALKEY_MAXMEMORY = "8gb"
 DEFAULT_DAY_ACCENT = "#2563eb"
 DEFAULT_NIGHT_ACCENT = "#6ea8ff"
 DEFAULT_DOWNLOAD_NAMING_TEMPLATE = "$title ($year)"
@@ -61,6 +63,7 @@ SAFE_PREFERENCE_KEYS = {
     ACCENT_COLOR_DAY_KEY,
     ACCENT_COLOR_NIGHT_KEY,
     DOCUMENT_CACHE_SIZE_MB_KEY,
+    VALKEY_MAXMEMORY_KEY,
     LIBRARY_ALTERNATING_ROWS_KEY,
     DOWNLOAD_NAMING_TEMPLATE_KEY,
     CITATION_CONVENTION_KEY,
@@ -72,6 +75,7 @@ SAFE_PREFERENCE_KEYS = {
 }
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+VALKEY_MAXMEMORY_RE = re.compile(r"^[1-9][0-9]*(?:b|kb|mb|gb|tb|k|m|g|t)?$")
 DOWNLOAD_TEMPLATE_TOKEN_RE = re.compile(r"\$(title|year|authors|author|pages)\b")
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 PRESET_ID_RE = re.compile(r"[^a-z0-9_-]+")
@@ -342,6 +346,25 @@ def clamp_document_cache_size_mb(value: Any, default: int = DEFAULT_DOCUMENT_CAC
     return max(0, parsed)
 
 
+def normalize_valkey_maxmemory(value: Any, default: str | None = DEFAULT_VALKEY_MAXMEMORY) -> str | None:
+    if value in (None, ""):
+        return default
+    text = str(value).strip().lower().replace(" ", "")
+    aliases = {
+        "k": "kb",
+        "m": "mb",
+        "g": "gb",
+        "t": "tb",
+    }
+    for suffix, replacement in aliases.items():
+        if text.endswith(suffix) and not text.endswith(("kb", "mb", "gb", "tb")):
+            text = f"{text[:-1]}{replacement}"
+            break
+    if not VALKEY_MAXMEMORY_RE.match(text):
+        return default
+    return text
+
+
 def normalize_hex_color(value: Any, default: str) -> str:
     if isinstance(value, str):
         candidate = value.strip()
@@ -557,6 +580,10 @@ def default_document_cache_size_mb() -> int:
     return clamp_document_cache_size_mb(get_settings().document_cache_size_mb)
 
 
+def default_valkey_maxmemory() -> str:
+    return normalize_valkey_maxmemory(get_settings().valkey_maxmemory, DEFAULT_VALKEY_MAXMEMORY) or DEFAULT_VALKEY_MAXMEMORY
+
+
 def _stored_preference_value(preference: AppPreference | None) -> Any:
     if not preference:
         return None
@@ -593,6 +620,13 @@ def get_import_worker_concurrency(db: Session) -> int:
         _get_preference_value(db, IMPORT_WORKER_CONCURRENCY_KEY),
         default_import_worker_concurrency(),
     )
+
+
+def get_valkey_maxmemory(db: Session) -> str:
+    return normalize_valkey_maxmemory(
+        _get_preference_value(db, VALKEY_MAXMEMORY_KEY),
+        default_valkey_maxmemory(),
+    ) or DEFAULT_VALKEY_MAXMEMORY
 
 
 def _analysis_model_preference_key(task_key: str) -> str:
@@ -841,6 +875,7 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "accent_color_day": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_DAY_KEY), DEFAULT_DAY_ACCENT),
         "accent_color_night": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_NIGHT_KEY), DEFAULT_NIGHT_ACCENT),
         "document_cache_size_mb": get_document_cache_size_mb(db),
+        "valkey_maxmemory": get_valkey_maxmemory(db),
         "library_alternating_rows": normalize_bool(_get_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY), True),
         "download_naming_template": get_download_naming_template(db),
         "citation_convention": get_citation_convention(db),
@@ -865,6 +900,7 @@ def update_app_preferences(
     accent_color_day: str | None = None,
     accent_color_night: str | None = None,
     document_cache_size_mb: int | None = None,
+    valkey_maxmemory: str | None = None,
     library_alternating_rows: bool | None = None,
     download_naming_template: str | None = None,
     citation_convention: str | None = None,
@@ -886,6 +922,11 @@ def update_app_preferences(
         _set_preference_value(db, ACCENT_COLOR_NIGHT_KEY, normalize_hex_color(accent_color_night, DEFAULT_NIGHT_ACCENT))
     if document_cache_size_mb is not None:
         _set_preference_value(db, DOCUMENT_CACHE_SIZE_MB_KEY, clamp_document_cache_size_mb(document_cache_size_mb))
+    if valkey_maxmemory is not None:
+        normalized_valkey_maxmemory = normalize_valkey_maxmemory(valkey_maxmemory, default=None)
+        if not normalized_valkey_maxmemory:
+            raise ValueError("Valkey memory limit must be a positive integer with optional b, kb, mb, gb, or tb units.")
+        _set_preference_value(db, VALKEY_MAXMEMORY_KEY, normalized_valkey_maxmemory)
     if library_alternating_rows is not None:
         _set_preference_value(db, LIBRARY_ALTERNATING_ROWS_KEY, bool(library_alternating_rows))
     if download_naming_template is not None:

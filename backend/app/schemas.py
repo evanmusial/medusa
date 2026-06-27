@@ -1338,6 +1338,7 @@ class CacheStatusOut(BaseModel):
     ops_per_second: float = 0.0
     latency_ms: float | None = None
     last_refresh_at: datetime | None = None
+    last_hydration_at: datetime | None = None
     last_invalidation_at: datetime | None = None
     families: list[CacheFamilyStatsOut] = Field(default_factory=list)
     request_metrics: list[CacheRequestMetricOut] = Field(default_factory=list)
@@ -1352,6 +1353,23 @@ class CacheRefreshOut(BaseModel):
     refreshed_at: datetime
     refreshed_families: list[str] = Field(default_factory=list)
     warmed_keys: int = 0
+    before: CacheStatusOut
+    after: CacheStatusOut
+
+
+class CacheHydrateOut(BaseModel):
+    status: str
+    message: str
+    hydrated_at: datetime
+    hydrated_keys: int = 0
+    base_keys: int = 0
+    document_count: int = 0
+    document_detail_keys: int = 0
+    list_page_keys: int = 0
+    saved_search_keys: int = 0
+    organization_keys: int = 0
+    skipped_payloads: int = 0
+    errored_payloads: int = 0
     before: CacheStatusOut
     after: CacheStatusOut
 
@@ -1660,6 +1678,7 @@ class AppPreferencesOut(BaseModel):
     accent_color_day: str
     accent_color_night: str
     document_cache_size_mb: int
+    valkey_maxmemory: str
     library_alternating_rows: bool
     download_naming_template: str
     citation_convention: str
@@ -1685,6 +1704,7 @@ class AppPreferencesPatch(BaseModel):
     accent_color_day: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     document_cache_size_mb: int | None = Field(default=None, ge=0)
+    valkey_maxmemory: str | None = Field(default=None, max_length=32)
     library_alternating_rows: bool | None = None
     download_naming_template: str | None = Field(default=None, max_length=240)
     citation_convention: str | None = Field(default=None, pattern=r"^apa_7$")

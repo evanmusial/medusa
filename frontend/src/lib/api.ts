@@ -9,6 +9,7 @@ import type {
   BackupEstimate,
   BackupRun,
   Bibliography,
+  CacheHydrateResult,
   CacheRefreshResult,
   CacheStatus,
   CitationCandidate,
@@ -140,6 +141,7 @@ export const api = {
     request<ReleaseStatus>(`/api/release/maintenance?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
   health: () => request<{ status: string; app: string }>(`/api/health?release_check=${Date.now()}`),
   cacheStatus: () => request<CacheStatus>("/api/cache/status"),
+  hydrateCache: () => request<CacheHydrateResult>("/api/cache/hydrate", { method: "POST" }),
   refreshCache: () => request<CacheRefreshResult>("/api/cache/refresh", { method: "POST" }),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
@@ -188,6 +190,7 @@ export const api = {
         | "accent_color_day"
         | "accent_color_night"
         | "document_cache_size_mb"
+        | "valkey_maxmemory"
         | "library_alternating_rows"
         | "download_naming_template"
         | "citation_convention"

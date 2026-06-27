@@ -82,6 +82,7 @@ from app.schemas import (
     BackupEstimateOut,
     BackupRunOut,
     BibliographyOut,
+    CacheHydrateOut,
     CacheRefreshOut,
     CacheStatusOut,
     CitationCandidatePatch,
@@ -303,6 +304,7 @@ from app.services.preferences import (
     get_analysis_models,
     get_app_preferences,
     get_download_naming_template,
+    get_valkey_maxmemory,
     import_processing_snapshot,
     import_processing_cloud_page_cap,
     render_download_filename,
@@ -406,6 +408,8 @@ IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
 )
 DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.04
 PDF_PREVIEW_RENDER_SCALE = 2.5
+CACHE_HYDRATE_LIST_PAGE_SIZE = 100
+CACHE_HYDRATE_MAX_DOCUMENTS = 10000
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
 IMPORT_ESTIMATE_CALIBRATION_MAX = 4.0
 IMPORT_ESTIMATE_INPUT_TOKENS_PER_PAGE = 650
@@ -488,6 +492,7 @@ def on_startup() -> None:
     init_db()
     with session_scope() as db:
         ensure_admin_user(db)
+        apply_valkey_maxmemory_preference(db)
 
 
 @app.get("/api/runtime-location", response_model=RuntimeLocationOut)
@@ -567,6 +572,11 @@ def http_error_for_slipstream(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def apply_valkey_maxmemory_preference(db: Session) -> None:
+    maxmemory = get_valkey_maxmemory(db)
+    get_cache_backend().configure_maxmemory(maxmemory)
+
+
 def set_cache_response_headers(response: Response | None, family: str, status: str) -> None:
     if response is None:
         return
@@ -606,6 +616,41 @@ def warm_cache_payload(
     key_parts: dict[str, Any],
     loader,
 ) -> bool:
+    return warm_cache_payload_status(
+        db,
+        family=family,
+        revision_families=revision_families,
+        key_parts=key_parts,
+        loader=loader,
+    ) == "write"
+
+
+def warm_cache_payload_status(
+    db: Session,
+    *,
+    family: str,
+    revision_families: list[str] | tuple[str, ...] | set[str],
+    key_parts: dict[str, Any],
+    loader,
+) -> str:
+    status, _ = warm_cache_payload_result(
+        db,
+        family=family,
+        revision_families=revision_families,
+        key_parts=key_parts,
+        loader=loader,
+    )
+    return status
+
+
+def warm_cache_payload_result(
+    db: Session,
+    *,
+    family: str,
+    revision_families: list[str] | tuple[str, ...] | set[str],
+    key_parts: dict[str, Any],
+    loader,
+) -> tuple[str, Any]:
     _, _, key, _ = get_cached_payload(
         db,
         family=family,
@@ -613,7 +658,7 @@ def warm_cache_payload(
         key_parts=key_parts,
     )
     result = loader()
-    return set_cached_payload(key, family, result) == "write"
+    return set_cached_payload(key, family, result), result
 
 
 def domain_out(
@@ -2509,6 +2554,222 @@ def refresh_cache(
     }
 
 
+@app.post("/api/cache/hydrate", response_model=CacheHydrateOut)
+def hydrate_cache(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    include_document_details: bool = True,
+    include_saved_searches: bool = True,
+    max_documents: Annotated[int, Query(ge=1, le=CACHE_HYDRATE_MAX_DOCUMENTS)] = CACHE_HYDRATE_MAX_DOCUMENTS,
+    page_size: Annotated[int, Query(ge=25, le=1000)] = CACHE_HYDRATE_LIST_PAGE_SIZE,
+) -> dict[str, Any]:
+    logger = logging.getLogger("medusa.cache")
+    before = cache_status_payload(db, request_metrics=route_performance_summary())
+    hydrated_at = utc_now()
+    counters = {
+        "hydrated_keys": 0,
+        "base_keys": 0,
+        "document_detail_keys": 0,
+        "list_page_keys": 0,
+        "saved_search_keys": 0,
+        "organization_keys": 0,
+        "skipped_payloads": 0,
+        "errored_payloads": 0,
+    }
+
+    if not before.get("enabled") or not before.get("reachable"):
+        after = cache_status_payload(db, request_metrics=route_performance_summary())
+        return {
+            "status": "skipped",
+            "message": before.get("message") or "Cache hydration skipped because the cache backend is unavailable.",
+            "hydrated_at": hydrated_at,
+            "document_count": 0,
+            **counters,
+            "before": before,
+            "after": after,
+        }
+
+    def record_write_status(status: str, bucket: str) -> None:
+        if status == "write":
+            counters["hydrated_keys"] += 1
+            counters[bucket] += 1
+        elif status == "bypass":
+            counters["skipped_payloads"] += 1
+        elif status == "error":
+            counters["errored_payloads"] += 1
+
+    def hydrate_payload(
+        *,
+        family: str,
+        revision_families: set[str],
+        key_parts: dict[str, Any],
+        loader,
+        bucket: str,
+    ) -> Any | None:
+        try:
+            status, result = warm_cache_payload_result(
+                db,
+                family=family,
+                revision_families=revision_families,
+                key_parts=key_parts,
+                loader=loader,
+            )
+            record_write_status(status, bucket)
+            return result
+        except Exception:
+            counters["errored_payloads"] += 1
+            logger.debug("Cache hydration failed for %s %s", family, key_parts, exc_info=True)
+            return None
+
+    def filter_value(filters: dict[str, Any] | None, key: str) -> str:
+        if not filters:
+            return ""
+        value = filters.get(key)
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return ""
+
+    def hydrate_document_list_pages(
+        *,
+        q: str = "",
+        filters: dict[str, Any] | None = None,
+        saved_search: bool = False,
+    ) -> None:
+        offset = 0
+        while True:
+            domain_id = filter_value(filters, "domain_id")
+            tag_id = filter_value(filters, "tag_id")
+            read_status = filter_value(filters, "read_status")
+            priority = filter_value(filters, "priority")
+            citation_status = filter_value(filters, "citation_status")
+            duplicate_status = filter_value(filters, "duplicate_status")
+            key_parts = {
+                "q": q or "",
+                "domain_id": domain_id,
+                "tag_id": tag_id,
+                "read_status": read_status,
+                "priority": priority,
+                "citation_status": citation_status,
+                "duplicate_status": duplicate_status,
+                "all": False,
+                "offset": offset,
+                "limit": page_size,
+            }
+
+            def load_page(offset: int = offset) -> DocumentListOut:
+                return document_list_rows_out(
+                    db,
+                    q=q,
+                    domain_id=domain_id,
+                    tag_id=tag_id,
+                    read_status=read_status,
+                    priority=priority,
+                    citation_status=citation_status,
+                    duplicate_status=duplicate_status,
+                    all_results=False,
+                    offset=offset,
+                    limit=page_size,
+                )
+
+            result = hydrate_payload(
+                family="documents:list",
+                revision_families={"library", "organization"},
+                key_parts=key_parts,
+                loader=load_page,
+                bucket="saved_search_keys" if saved_search else "list_page_keys",
+            )
+            if not result or not getattr(result, "has_more", False):
+                break
+            offset += page_size
+
+    for warmer in [
+        {
+            "family": "dashboard",
+            "revision_families": {"dashboard", "jobs", "library", "organization"},
+            "key_parts": {"endpoint": "dashboard"},
+            "loader": lambda: dashboard_out(db),
+            "bucket": "base_keys",
+        },
+        {
+            "family": "status:library_fun",
+            "revision_families": {"status", "library", "organization"},
+            "key_parts": {"endpoint": "library_fun_stats"},
+            "loader": lambda: library_fun_stats_out(db),
+            "bucket": "base_keys",
+        },
+        {
+            "family": "organization",
+            "revision_families": {"organization", "library"},
+            "key_parts": {"endpoint": "domains"},
+            "loader": lambda: domain_list_out(db),
+            "bucket": "organization_keys",
+        },
+        {
+            "family": "organization",
+            "revision_families": {"organization", "library"},
+            "key_parts": {"endpoint": "tags"},
+            "loader": lambda: tag_list_out(db),
+            "bucket": "organization_keys",
+        },
+        {
+            "family": "organization",
+            "revision_families": {"organization", "library"},
+            "key_parts": {"endpoint": "projects"},
+            "loader": lambda: project_list_out(db),
+            "bucket": "organization_keys",
+        },
+    ]:
+        hydrate_payload(**warmer)
+
+    hydrate_document_list_pages()
+    if include_saved_searches:
+        saved_searches = db.query(SavedSearch).filter(SavedSearch.deleted_at.is_(None)).order_by(SavedSearch.sort_order, SavedSearch.name).all()
+        for saved_search in saved_searches:
+            hydrate_document_list_pages(q=saved_search.query or "", filters=saved_search.filters or {}, saved_search=True)
+
+    documents = []
+    if include_document_details:
+        documents = (
+            filter_library_visible_documents(db.query(Document))
+            .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.versions))
+            .order_by(*document_title_order_columns(db))
+            .limit(max_documents)
+            .all()
+        )
+        for document in documents:
+            hydrate_payload(
+                family="documents:detail",
+                revision_families={"document_detail", "organization"},
+                key_parts={
+                    "document_id": document.id,
+                    "updated_at": document.updated_at.isoformat() if document.updated_at else "",
+                    "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
+                    "processing_status": document.processing_status,
+                },
+                loader=lambda document=document: document_detail_out(document, db),
+                bucket="document_detail_keys",
+            )
+
+    get_cache_backend().remember_hydration(hydrated_at)
+    after = cache_status_payload(db, request_metrics=route_performance_summary())
+    return {
+        "status": "complete",
+        "message": (
+            f"Hydrated {counters['hydrated_keys']} cache payloads from PostgreSQL"
+            f" for {len(documents)} document details."
+        ),
+        "hydrated_at": hydrated_at,
+        "document_count": len(documents),
+        **counters,
+        "before": before,
+        "after": after,
+    }
+
+
 @app.get("/api/preferences", response_model=AppPreferencesOut)
 def read_preferences(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
     return get_app_preferences(db)
@@ -2520,22 +2781,27 @@ def patch_preferences(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    preferences = update_app_preferences(
-        db,
-        import_worker_concurrency=payload.import_worker_concurrency,
-        accent_color_day=payload.accent_color_day,
-        accent_color_night=payload.accent_color_night,
-        document_cache_size_mb=payload.document_cache_size_mb,
-        library_alternating_rows=payload.library_alternating_rows,
-        download_naming_template=payload.download_naming_template,
-        citation_convention=payload.citation_convention,
-        gcs_bucket=payload.gcs_bucket,
-        analysis_models=payload.analysis_models,
-        import_processing_presets=payload.import_processing_presets,
-        default_import_processing_preset_id=payload.default_import_processing_preset_id,
-        second_pass_processing_enabled=payload.second_pass_processing_enabled,
-    )
+    try:
+        preferences = update_app_preferences(
+            db,
+            import_worker_concurrency=payload.import_worker_concurrency,
+            accent_color_day=payload.accent_color_day,
+            accent_color_night=payload.accent_color_night,
+            document_cache_size_mb=payload.document_cache_size_mb,
+            valkey_maxmemory=payload.valkey_maxmemory,
+            library_alternating_rows=payload.library_alternating_rows,
+            download_naming_template=payload.download_naming_template,
+            citation_convention=payload.citation_convention,
+            gcs_bucket=payload.gcs_bucket,
+            analysis_models=payload.analysis_models,
+            import_processing_presets=payload.import_processing_presets,
+            default_import_processing_preset_id=payload.default_import_processing_preset_id,
+            second_pass_processing_enabled=payload.second_pass_processing_enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
+    apply_valkey_maxmemory_preference(db)
     return preferences
 
 

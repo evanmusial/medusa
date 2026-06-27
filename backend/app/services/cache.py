@@ -32,6 +32,7 @@ CACHE_REVISION_FAMILIES = ("library", "document_detail", "dashboard", "status", 
 CACHE_GLOBAL_FAMILY = "global"
 CACHE_ALL_REVISION_FAMILIES = (CACHE_GLOBAL_FAMILY, *CACHE_REVISION_FAMILIES)
 LAST_REFRESH_KEY = "medusa:cache:last_refresh_at"
+LAST_HYDRATION_KEY = "medusa:cache:last_hydration_at"
 
 MODEL_CACHE_FAMILIES: dict[str, set[str]] = {
     "Annotation": {"library", "document_detail", "status"},
@@ -137,6 +138,15 @@ class CacheBackend:
     def last_refresh_at(self) -> datetime | None:
         return None
 
+    def remember_hydration(self, hydrated_at: datetime | None = None) -> None:
+        return None
+
+    def last_hydration_at(self) -> datetime | None:
+        return None
+
+    def configure_maxmemory(self, value: str) -> bool:
+        return False
+
     def status(self) -> dict[str, Any]:
         return {
             "backend": self.name,
@@ -227,6 +237,33 @@ class ValkeyCache(CacheBackend):
             return datetime.fromisoformat(text)
         except ValueError:
             return None
+
+    def remember_hydration(self, hydrated_at: datetime | None = None) -> None:
+        try:
+            self._redis().set(LAST_HYDRATION_KEY, _utc_iso(hydrated_at))
+        except Exception:
+            logger.debug("Valkey cache hydration timestamp write failed", exc_info=True)
+
+    def last_hydration_at(self) -> datetime | None:
+        try:
+            raw = self._redis().get(LAST_HYDRATION_KEY)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    def configure_maxmemory(self, value: str) -> bool:
+        try:
+            self._redis().config_set("maxmemory", value)
+        except Exception:
+            logger.debug("Valkey cache maxmemory update failed for %s", value, exc_info=True)
+            return False
+        return True
 
     def status(self) -> dict[str, Any]:
         started = perf_counter()
@@ -569,6 +606,7 @@ def queue_stats(db: Session) -> list[dict[str, Any]]:
 def cache_status_payload(db: Session, request_metrics: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     backend_status = get_cache_backend().status()
     last_refresh = get_cache_backend().last_refresh_at()
+    last_hydration = get_cache_backend().last_hydration_at()
     last_invalidation = last_cache_invalidation_at(db)
     payload = {
         "checked_at": utc_now(),
@@ -594,6 +632,7 @@ def cache_status_payload(db: Session, request_metrics: list[dict[str, Any]] | No
         "ops_per_second": backend_status.get("ops_per_second", 0.0),
         "latency_ms": backend_status.get("latency_ms"),
         "last_refresh_at": last_refresh,
+        "last_hydration_at": last_hydration,
         "last_invalidation_at": last_invalidation,
         "families": cache_family_stats(),
         "request_metrics": request_metrics or [],
