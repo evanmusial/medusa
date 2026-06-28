@@ -101,6 +101,7 @@ import {
   Upload,
   UploadCloud,
   Users,
+  Waypoints,
   Wrench,
   X,
 } from "lucide-react";
@@ -242,6 +243,10 @@ type ReleaseUpgradeLock = {
   stage: ReleaseUpgradeLockStage;
   startedAt: number;
   targetVersion?: string | null;
+};
+type LibraryPageTurnIntent = {
+  offset: number;
+  token: number;
 };
 
 type EscapeLayer = {
@@ -947,15 +952,6 @@ function recentDocumentFromDetail(document: DocumentDetail): RecentDocumentShort
 
 function pageCountMarker(document: LibraryDocumentRow) {
   return document.page_count > 0 ? `${document.page_count}p` : "?p";
-}
-
-function BookSearchIcon({ size = 15 }: { size?: number }) {
-  return (
-    <span className="book-search-icon" style={{ width: size, height: size }} aria-hidden="true">
-      <BookOpen size={size} />
-      <Search className="book-search-icon-lens" size={Math.max(8, Math.round(size * 0.56))} />
-    </span>
-  );
 }
 
 function recommendationAuthorLine(item: DocumentRecommendation) {
@@ -12750,7 +12746,7 @@ function DocumentPanelContent({
       onClick={() => setRecommendationsOpen((value) => !value)}
       type="button"
     >
-      <BookSearchIcon size={15} />
+      <Waypoints size={15} />
       Related
     </button>
   );
@@ -23984,6 +23980,7 @@ export default function App() {
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [libraryOffset, setLibraryOffset] = useState(0);
   const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(DEFAULT_LIBRARY_PAGE_SIZE);
+  const [libraryPageTurnIntent, setLibraryPageTurnIntent] = useState<LibraryPageTurnIntent | null>(null);
   const [libraryDocumentMode, setLibraryDocumentMode] = useState<DocumentRouteMode>(() => initialRoute.documentMode || "detail");
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
   const [libraryFocusDocumentId, setLibraryFocusDocumentId] = useState<string | null>(() => initialRoute.documentId || null);
@@ -24339,6 +24336,21 @@ export default function App() {
   const libraryRows = libraryDocumentList.data?.items ?? EMPTY_LIBRARY_ROWS;
   const libraryTotalDocumentCount = libraryDocumentList.data?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
   const libraryTotalPageCount = libraryDocumentList.data?.total_page_count ?? 0;
+  useEffect(() => {
+    const page = libraryDocumentList.data;
+    if (!page || !libraryPageTurnIntent || page.offset !== libraryPageTurnIntent.offset) return;
+    setLibraryPageTurnIntent(null);
+    if (selectedId && page.items.some((item) => item.id === selectedId)) return;
+    const topDocument = page.items[0];
+    if (!topDocument) {
+      setSelectedId(undefined);
+      return;
+    }
+    setSelectedId(topDocument.id);
+    setLibraryDocumentMode("detail");
+    setLibraryScrollTargetId(topDocument.id);
+    syncBrowserUrlForDocument(topDocument.id, "replace", "detail");
+  }, [libraryDocumentList.data, libraryPageTurnIntent, selectedId]);
   useEffect(() => {
     const page = libraryDocumentList.data;
     if (!page) return;
@@ -25024,15 +25036,19 @@ export default function App() {
             pageSize={libraryPageSize}
             hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
             onPreviousPage={() => {
+              const nextOffset = Math.max(0, (libraryDocumentList.data?.offset ?? libraryOffset) - libraryPageSize);
               setLibraryFocusDocumentId(null);
               setLibraryScrollTargetId(null);
-              setLibraryOffset((current) => Math.max(0, current - libraryPageSize));
+              setLibraryPageTurnIntent((current) => ({ offset: nextOffset, token: (current?.token ?? 0) + 1 }));
+              setLibraryOffset(nextOffset);
             }}
             onNextPage={() => {
               if (libraryDocumentList.data?.has_more) {
+                const nextOffset = (libraryDocumentList.data?.offset ?? libraryOffset) + libraryPageSize;
                 setLibraryFocusDocumentId(null);
                 setLibraryScrollTargetId(null);
-                setLibraryOffset((current) => current + libraryPageSize);
+                setLibraryPageTurnIntent((current) => ({ offset: nextOffset, token: (current?.token ?? 0) + 1 }));
+                setLibraryOffset(nextOffset);
               }
             }}
             onPageSizeChange={(pageSize) => {
