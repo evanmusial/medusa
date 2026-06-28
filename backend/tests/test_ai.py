@@ -60,7 +60,7 @@ def test_strip_standalone_summary_heading():
     from app.services.ai import strip_standalone_summary_heading, strip_summary_schema_trailer
 
     assert strip_standalone_summary_heading("Summary\n\nThis paper studies access control.") == (
-        "This paper studies access control."
+        "The analysis studies access control."
     )
     assert strip_standalone_summary_heading("## Overview:\n- Finding one\n- Finding two") == "- Finding one\n- Finding two"
     assert strip_standalone_summary_heading("Summary statistics are central to the method.") == (
@@ -73,12 +73,18 @@ confidence: 0.77 needs_review_reasons:
 Structural equations are partially corrupted in the extracted text.
 Figures are cited, but their visual content is unavailable."""
     assert strip_standalone_summary_heading(leaked_schema_fields) == (
-        "This paper evaluates a document parsing method."
+        "The analysis evaluates a document parsing method."
     )
     assert strip_summary_schema_trailer(leaked_schema_fields) == "This paper evaluates a document parsing method."
     assert strip_standalone_summary_heading(
         "This paper reports confidence intervals as part of the method."
-    ) == "This paper reports confidence intervals as part of the method."
+    ) == "The analysis reports confidence intervals as part of the method."
+    assert strip_standalone_summary_heading(
+        "In this article by Jane Smith, the argument links institutional trust to turnout."
+    ) == "The argument links institutional trust to turnout."
+    assert strip_standalone_summary_heading(
+        "This 2013 chapter of the book Example Volume examines how audit culture changes fieldwork."
+    ) == "The analysis examines how audit culture changes fieldwork."
 
 
 def test_summary_prompts_default_to_plain_technical_paragraphs():
@@ -94,8 +100,15 @@ def test_summary_prompts_default_to_plain_technical_paragraphs():
         assert "Avoid starting sentences with prepositions" in prompt
         assert "Do not begin with Summary, Overview" in prompt
         assert "a single-word opening" in prompt
-        assert "first paragraph should state the paper's broad facts and purpose" in prompt
-        assert "Subsequent paragraphs should summarize the main points" in prompt
+        assert "Open with the document's substantive claim, problem, method, finding, or conceptual contribution" in prompt
+        assert "Do not spend the opening naming authors, publication year, document type" in prompt
+        assert "Metadata already stores that context" in prompt
+        assert "original ideas or concepts introduced" in prompt
+        assert "interesting research questions raised" in prompt
+        assert "surprising or counterintuitive results" in prompt
+        assert "document's academic context" in prompt
+        assert "Toward the end, state the main takeaways" in prompt
+        assert "related topics worth pursuing for continued reading" in prompt
         assert "Do not use bold, italics, bullet points" in prompt
         assert "em dashes" in prompt
         assert "curly or fancy quotes" in prompt
@@ -407,7 +420,7 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
 
     assert metadata["title"] == "Paper"
     assert metadata["authors"][0]["email"] == "ada@example.edu"
-    assert metadata["rich_summary"] == "This paper evaluates a research method."
+    assert metadata["rich_summary"] == "The analysis evaluates a research method."
     assert metadata["apa_citation"] is None
     assert metadata["topics"] == ["topic"]
     assert metadata["_openai"]["models"][MODEL_METADATA] == "gpt-5.5"
@@ -579,7 +592,7 @@ def test_ai_metadata_extraction_can_use_legacy_combined_call(monkeypatch, tmp_pa
 
     assert metadata["_openai"]["combined_document_intelligence"] is True
     assert metadata["_openai"]["document_intelligence_route"] == "combined"
-    assert metadata["rich_summary"] == "This paper evaluates a legacy combined route."
+    assert metadata["rich_summary"] == "The analysis evaluates a legacy combined route."
     assert metadata["apa_citation"] == "Paper. (2026)."
     assert responses.calls == [("medusa_core_document_intelligence", "gpt-5.4-mini", "medusa-doc:abc123")]
     assert {record["task_key"] for record in usage_records} == {MODEL_CORE_DOCUMENT_INTELLIGENCE}

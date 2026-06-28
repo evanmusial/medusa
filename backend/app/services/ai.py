@@ -69,9 +69,14 @@ SUMMARY_STYLE_HINT = (
     "suitable for a master's-degree reader. Put key findings and concrete facts early in the summary, especially "
     "in the first paragraph when the supplied text supports them. Avoid starting "
     "sentences with prepositions. Do not begin with Summary, Overview, a single-word opening, or any standalone "
-    "heading. The first paragraph should state the paper's broad facts and purpose. Subsequent paragraphs should "
-    "summarize the main points, ideas, methods, findings, and concepts "
-    "introduced in the paper. Do not use bold, italics, bullet points, em dashes, curly or fancy quotes, or "
+    "heading. Open with the document's substantive claim, problem, method, finding, or conceptual contribution. "
+    "Do not spend the opening naming authors, publication year, document type, venue, book/source title, or "
+    "phrases such as In this article, In this paper, This article by, or This 2013 chapter. Metadata already "
+    "stores that context. Clearly cover the original ideas or concepts introduced, subject-matter areas explored, "
+    "interesting research questions raised, conclusions or novel insights, surprising or counterintuitive results "
+    "when present, and the document's academic context. Toward the end, state the main takeaways and identify "
+    "adjacent research areas, methods, debates, theories, or related topics worth pursuing for continued reading "
+    "about the document's themes. Do not use bold, italics, bullet points, em dashes, curly or fancy quotes, or "
     "decorative Markdown by default. Use plain ASCII punctuation. Return confidence and needs_review_reasons only "
     "through the structured response fields; do not include schema labels, review reasons, confidence scores, JSON "
     "keys, or metadata trailers inside the summary body."
@@ -476,6 +481,33 @@ _STANDALONE_SUMMARY_HEADING_RE = re.compile(
     r"\s*[:.\-–—]?\s*(?:\*\*)?$",
     re.IGNORECASE,
 )
+_SUMMARY_BIBLIOGRAPHIC_LEADIN_RE = re.compile(
+    r"^(?:in\s+)?(?:this|the)\s+"
+    r"(?:(?:18|19|20)\d{2}\s+)?"
+    r"(?:article|paper|chapter|book\s+chapter|document|study|essay|report|monograph|work)"
+    r"(?:\s+by\s+[^,.:;]{1,180})?"
+    r"(?:\s+(?:of|from|in)\s+(?:the\s+)?"
+    r"(?:book|volume|collection|journal|proceedings|conference\s+proceedings|edited\s+collection|monograph)"
+    r"\s+[^,.:;]{1,180})?"
+    r"\s*[,;:]\s*",
+    re.IGNORECASE,
+)
+_SUMMARY_BIBLIOGRAPHIC_VERB_RE = re.compile(
+    r"^(?:this|the)\s+"
+    r"(?:(?:18|19|20)\d{2}\s+)?"
+    r"(?:article|paper|chapter|book\s+chapter|document|study|essay|report|monograph|work)"
+    r"(?:\s+by\s+[^,.:;]{1,160})?"
+    r"(?:\s+(?:of|from|in)\s+(?:the\s+)?"
+    r"(?:book|volume|collection|journal|proceedings|conference\s+proceedings|edited\s+collection|monograph)"
+    r"\s+.+?)?"
+    r"\s+(?P<verb>"
+    r"argues?|examines?|explores?|analy[sz]es?|introduces?|develops?|presents?|proposes?|evaluates?|compares?|"
+    r"investigates?|situates?|traces?|finds?|concludes?|demonstrates?|shows?|describes?|models?|tests?|assesses?|"
+    r"identifies?|studies?|reports?|uses?|offers?|focuses?|frames?|reframes?|connects?|extends?|challenges?|"
+    r"critiques?|documents?|maps?|reviews?|synthesi[sz]es?|is"
+    r")\b",
+    re.IGNORECASE,
+)
 _SUMMARY_SCHEMA_TRAILER_LABEL_RE = re.compile(
     r"(?im)(?:^|\n)\s*(?:[-*]\s*)?(?:`{1,3}|\*\*)?"
     r"(confidence|needs_review_reasons)"
@@ -542,7 +574,25 @@ def strip_standalone_summary_heading(value: Any) -> str:
     first_line = lines[first_content_index].strip()
     if _STANDALONE_SUMMARY_HEADING_RE.match(first_line):
         text = "\n".join(lines[first_content_index + 1 :]).strip()
-    return strip_summary_schema_trailer(text)
+    return strip_summary_schema_trailer(_strip_leading_summary_bibliographic_framing(text))
+
+
+def _strip_leading_summary_bibliographic_framing(text: str) -> str:
+    cleaned = _SUMMARY_BIBLIOGRAPHIC_LEADIN_RE.sub("", text.strip(), count=1).lstrip()
+    if cleaned != text.strip():
+        return _capitalize_first_alpha(cleaned)
+
+    def _replace_bibliographic_subject(match: re.Match[str]) -> str:
+        return f"The analysis {match.group('verb').lower()}"
+
+    return _SUMMARY_BIBLIOGRAPHIC_VERB_RE.sub(_replace_bibliographic_subject, text.strip(), count=1)
+
+
+def _capitalize_first_alpha(text: str) -> str:
+    for index, character in enumerate(text):
+        if character.isalpha():
+            return f"{text[:index]}{character.upper()}{text[index + 1 :]}"
+    return text
 
 
 def strip_summary_schema_trailer(value: Any) -> str:
