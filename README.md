@@ -129,7 +129,7 @@ HAProxy's stats listener is internal-only. Utilities reads the authenticated bac
 
 HAProxy and the Vite API proxy keep five-minute client/server timeouts so synchronous plan-building requests can finish while the UI progress state remains visible. Tags > Optimize also skips the model planner on broad scopes and returns a deterministic local governance plan quickly enough for whole-library cleanup.
 
-When the internal frontend service has no healthy HAProxy backend server during maintenance or restart, HAProxy serves a branded Medusa waiting page for normal browser routes and refreshes it automatically. `/api/*` requests still fail while the app is unavailable, and the waiting page carries `X-Medusa-Restarting: true` so frontend readiness checks cannot mistake it for the real app shell.
+When the internal frontend service has no healthy HAProxy backend server during maintenance or restart, HAProxy serves a branded Medusa waiting page for normal browser routes and refreshes it automatically. `/api/*` requests still fail while the app is unavailable, and the waiting page carries `X-Medusa-Restarting: true` so frontend readiness checks cannot mistake it for the real app shell. HAProxy serves compact proxy-safe emblem derivatives from `deploy/haproxy/` for that fallback path because inline `http-request return file` assets must stay below HAProxy's response buffer limit.
 
 ## Credentials
 
