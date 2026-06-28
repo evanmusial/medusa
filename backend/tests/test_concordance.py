@@ -973,6 +973,83 @@ def test_citation_refresh_discovers_missing_doi_from_title(monkeypatch, tmp_path
         assert job.status == "complete"
 
 
+def test_citation_refresh_validates_pair_without_second_ai_call(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    calls: list[dict[str, object]] = []
+
+    class FakeAiService:
+        def generate_apa_citation_candidate(
+            self,
+            filename,
+            text,
+            metadata,
+            *,
+            model=None,
+            usage_context=None,
+            prompt_cache_key=None,
+            crossref_candidates=None,
+        ):
+            calls.append(
+                {
+                    "filename": filename,
+                    "model": model,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                    "text": text,
+                }
+            )
+            return {
+                "apa_citation": "APA Reference List:\nLovelace, A. (1843). Notes on the analytical engine.",
+                "apa_in_text_citation": "Ada Lovelace wrote it",
+                "citation_warnings": [],
+                "confidence": 0.76,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "crossref_lookup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(concordance_service, "discover_doi_from_title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Notes on the Analytical Engine",
+            original_filename="lovelace.pdf",
+            checksum_sha256="e" * 64,
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            publication_year=1843,
+            processing_status="ready",
+            search_text="Notes on the analytical engine by Ada Lovelace.",
+            metadata_evidence={},
+        )
+        run = ConcordanceRun(scope_type="documents", scope_data={}, capability_keys=["citation_refresh"], total_jobs=1)
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="citation_refresh",
+            target_version=CAPABILITY_BY_KEY["citation_refresh"].version,
+        )
+        db.add_all([document, run, job])
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert len(calls) == 1
+        assert calls[0]["capability_key"] == "citation_refresh"
+        assert document.apa_citation == "Lovelace, A. (1843). Notes on the analytical engine."
+        assert document.apa_in_text_citation == "(Lovelace, 1843)"
+        assert document.metadata_evidence["apa_validation_warnings"] == ["in_text_fallback"]
+        assert document.citation_status == "needs_review"
+        assert job.status == "complete"
+
+
 def test_concordance_estimate_marks_same_model_summary_noop(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

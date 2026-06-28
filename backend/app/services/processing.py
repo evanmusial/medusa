@@ -29,7 +29,7 @@ from app.services.analysis_models import (
     MODEL_TEXT_CHUNK_ENCODING,
 )
 from app.services.bibliography import extract_document_bibliography
-from app.services.citations import decode_html_entities, format_apa_citation, format_apa_in_text_citation, merge_citation_metadata
+from app.services.citations import merge_citation_metadata, validate_apa_citation_pair
 from app.services.composition import (
     elapsed_ms,
     record_import_erratum,
@@ -166,13 +166,15 @@ def apply_document_citations(
     in_text: str | None = None,
     model: str | None,
     source: str,
-) -> None:
-    document.apa_citation = decode_html_entities(reference_list) or format_apa_citation(metadata)
-    document.apa_in_text_citation = decode_html_entities(in_text) or format_apa_in_text_citation(metadata)
+) -> list[str]:
+    citation_pair = validate_apa_citation_pair(metadata, reference_list=reference_list, in_text=in_text)
+    document.apa_citation = citation_pair.reference_list
+    document.apa_in_text_citation = citation_pair.in_text
     document.apa_citation_model = model
     document.apa_in_text_citation_model = model
     document.apa_citation_source = source
     document.apa_in_text_citation_source = source
+    return citation_pair.validation_warnings
 
 
 def author_search_text(authors: list[dict[str, Any]] | None) -> str:
@@ -948,7 +950,7 @@ class DocumentProcessor:
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
         citation_model = model_preferences[MODEL_APA_CITATION]
         if crossref:
-            apply_document_citations(document, citation_metadata, model=citation_model, source="crossref")
+            citation_validation_warnings = apply_document_citations(document, citation_metadata, model=citation_model, source="crossref")
         else:
             apa_candidate = ai.generate_apa_citation_candidate(
                 document.original_filename,
@@ -969,7 +971,7 @@ class DocumentProcessor:
                 "needs_review_reasons": apa_candidate.get("needs_review_reasons") or [],
                 **(apa_candidate.get("_openai") or {}),
             }
-            apply_document_citations(
+            citation_validation_warnings = apply_document_citations(
                 document,
                 citation_metadata,
                 reference_list=apa_candidate.get("apa_citation"),
@@ -977,6 +979,10 @@ class DocumentProcessor:
                 model=(apa_candidate.get("_openai") or {}).get("model") or citation_model,
                 source="model",
             )
+        if citation_validation_warnings:
+            document.metadata_evidence["apa_validation_warnings"] = citation_validation_warnings
+        else:
+            document.metadata_evidence.pop("apa_validation_warnings", None)
         if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref):
             document.citation_status = "verified"
         else:

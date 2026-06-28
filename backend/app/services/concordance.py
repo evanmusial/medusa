@@ -1705,7 +1705,7 @@ class ConcordanceProcessor:
         model_preferences = get_analysis_models(db)
         citation_model = model_preferences[MODEL_APA_CITATION]
         if crossref:
-            apply_document_citations(document, metadata, model=citation_model, source="crossref")
+            citation_validation_warnings = apply_document_citations(document, metadata, model=citation_model, source="crossref")
         else:
             ai = get_ai_service()
             apa_candidate = ai.generate_apa_citation_candidate(
@@ -1723,7 +1723,7 @@ class ConcordanceProcessor:
                 **(apa_candidate.get("_openai") or {}),
             }
             document.metadata_evidence = evidence
-            apply_document_citations(
+            citation_validation_warnings = apply_document_citations(
                 document,
                 metadata,
                 reference_list=apa_candidate.get("apa_citation"),
@@ -1731,6 +1731,11 @@ class ConcordanceProcessor:
                 model=(apa_candidate.get("_openai") or {}).get("model") or citation_model,
                 source="model",
             )
+        if citation_validation_warnings:
+            evidence["apa_validation_warnings"] = citation_validation_warnings
+        else:
+            evidence.pop("apa_validation_warnings", None)
+        document.metadata_evidence = evidence
         verified = enough_metadata_for_verified_citation(metadata) and bool(document.doi or crossref)
         document.citation_status = "verified" if verified else "needs_review"
         if verified:
