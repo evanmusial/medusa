@@ -34,7 +34,7 @@ from app.services.analysis_models import (
     is_google_text_model,
 )
 from app.services.citations import decode_html_entities, merge_citation_metadata
-from app.services.bibliography import extract_document_bibliography
+from app.services.bibliography import _line_starts_reference_entry, extract_document_bibliography
 from app.services.composition import elapsed_ms, record_concordance_stage, record_import_erratum, stage_timer, sync_import_usage_composition
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.document_visibility import filter_library_visible_documents
@@ -79,6 +79,16 @@ BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
 BIBLIOGRAPHY_AUTHOR_INITIAL_RE = re.compile(r"\b[A-Z](?:\.-?[A-Z])?\.")
 BIBLIOGRAPHY_APA_INITIAL_RE = re.compile(r",\s*(?:[A-Z]\.\s*)+")
+BIBLIOGRAPHY_PERSON_NAME = (
+    r"(?:[A-Z]{1,3}\.?\s+)?[A-Z][a-zA-Z'`\u2019-]{2,}"
+    r"(?:\s+(?:[A-Z]\.?|[A-Z][a-zA-Z'`\u2019-]{2,})){0,3}"
+)
+BIBLIOGRAPHY_FULL_NAME_AUTHOR_RE = re.compile(
+    rf"^{BIBLIOGRAPHY_PERSON_NAME}"
+    rf"(?:(?:\s*,\s*(?:and|&)\s+|\s*,\s*|\s*;\s*|\s+(?:and|&)\s+){BIBLIOGRAPHY_PERSON_NAME}){{0,20}}"
+    r"[,.]\s+.+?\b(?:18|19|20)\d{2}[a-z]?\b",
+    re.IGNORECASE,
+)
 BIBLIOGRAPHY_ORG_AUTHOR_RE = re.compile(
     r"^[A-Z][A-Za-z0-9'`\u2019&/.-]{2,}"
     r"(?:\s+(?:[A-Z][A-Za-z0-9'`\u2019&/.-]+|of|the|and|for|in|on|&)){0,10},"
@@ -120,8 +130,10 @@ def _bibliography_line_starts_entry(line: str) -> bool:
     if (
         BIBLIOGRAPHY_AUTHOR_INITIAL_RE.search(leading)
         or BIBLIOGRAPHY_APA_INITIAL_RE.search(leading)
+        or BIBLIOGRAPHY_FULL_NAME_AUTHOR_RE.match(stripped)
         or BIBLIOGRAPHY_ORG_AUTHOR_RE.match(stripped)
         or BIBLIOGRAPHY_ORG_DOT_AUTHOR_RE.match(stripped)
+        or _line_starts_reference_entry(stripped)
     ):
         return True
     return bool(BIBLIOGRAPHY_YEAR_RE.search(stripped) and BIBLIOGRAPHY_ORG_AUTHOR_RE.match(stripped))

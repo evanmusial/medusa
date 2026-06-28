@@ -458,6 +458,18 @@ def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_toke
     assert _bibliography_entries_for_cleanup(dot_style_group_authors) == dot_style_group_authors.splitlines()
     assert _bibliography_entry_count(dot_style_group_authors) == 6
 
+    full_name_marker_output = "\n".join(
+        [
+            "William Eberle, Jeffrey Graves, and Lawrence Holder. Insider threat detection using a graph-based approach. Journal of Applied Security Research, 6(1):32-81, 2010.",
+            "Alex Memory, Henry G Goldberg, and E Ted. Context-aware insider threat detection. In Proceedings of the Ninth ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, pages 1005-1014, 2013.",
+            "Robert F Mills, Michael R Grimaila, and Gilbert L Peterson. Insider threat detection using real-time assessment of user stress and behavior. Journal of Wireless Mobile Networks, Ubiquitous Computing, and Dependable Applications, 2(1):81-101, 2011.",
+            "JE Orr. Ethnography and organizational culture. Journal of Organizational Change Management, 6(3):21-30, 1993.",
+            "William T Young, Dimitri Kazenu, Michael B Zosel, and Adam G Pennington. Insider threat detection and mitigation: A high-level strategic framework. In Proceedings of the 2014 IEEE Security and Privacy Workshops, pages 13-20, 2014.",
+        ]
+    )
+    assert _bibliography_entries_for_cleanup(full_name_marker_output) == full_name_marker_output.splitlines()
+    assert _bibliography_entry_count(full_name_marker_output) == 5
+
 
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
