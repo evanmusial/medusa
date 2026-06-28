@@ -104,6 +104,8 @@ PAGE_FURNITURE_RE = re.compile(
     r"Communications Surveys\s*&\s*Tutorials|"
     r"IEEE COMMUNICATIONS SURVEY\s*&\s*TUTORIALS|"
     r"ACM Transactions on .+Publication date|"
+    r"PART\s*\|\s*[IVXLC]+\b.*|"
+    r".+\s+Chapter\s*\|\s*\d+\s*$|"
     r"Computers\s*&\s*Security\s+\d+\s+\(\d{4}\)\s+\d+|"
     r"Computers\s+in\s+Human\s+Behavior\s+Reports\s+\d+\s+\(\d{4}\)\s+\d+|"
     r"Journal\s+of\s+.+\s+\d+\s+\(\d{4}\)\s+\d+|"
@@ -118,7 +120,7 @@ PAGE_FURNITURE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
+PAGE_NUMBER_RE = re.compile(r"^(?:\d{1,3}|1[0-7]\d{2})$")
 PDF_STANDALONE_REFERENCE_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*$")
 READABLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]{2,}")
 GARBLED_SYMBOL_RE = re.compile(r"[#@$%^&*=<>\\|~]{2,}|(?:[!?][!?#<>{}=])")

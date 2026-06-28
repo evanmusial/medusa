@@ -444,6 +444,63 @@ def test_extract_document_bibliography_ignores_page_furniture_and_author_bios(mo
     assert result["evidence"]["page_end"] == 20
 
 
+def test_extract_document_bibliography_ignores_book_chapter_running_headers(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Book Chapter References Paper",
+        original_filename="book-chapter-references.pdf",
+        checksum_sha256="8" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="References\nPlain fallback."))
+    pdf_path = tmp_path / "book-chapter-references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (12, "REFERENCES"),
+            (12, "[46] M. Khurram, H. Kumar, A. Chandak, V. Sarwade, N. Arora,"),
+            (12, "T. Quach, Enhancing connected car adoption: security and over the"),
+            (12, "air update framework, in: WF-IoT, 2016."),
+            (12, "[47] M. La Manna, L. Treccozzi, P. Perazzo, S. Saponara, G. Dini,"),
+            (12, "Performance evaluation of attribute-based encryption in automotive"),
+            (12, "embedded platform for secure software over-the-air update, Sensors"),
+            (12, "21 (2) (2021) 515."),
+            (12, "An Overview of Cyber Attacks and Defenses on Intelligent Connected Vehicles Chapter | 93"),
+            (12, "1493"),
+            (13, "PART | XV Cyber Security of Connected and Automated Vehicles"),
+            (13, "[48] M. Baza, M. Nabil, N. Lasla, K. Fidan, M. Mahmoud, M. Abdallah,"),
+            (13, "Blockchain-based firmware update scheme tailored for autonomous"),
+            (13, "vehicles, in: WCNC, IEEE, 2019, pp. 1-7."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+
+    assert result["bibliography"].splitlines() == [
+        (
+            "M. Khurram, H. Kumar, A. Chandak, V. Sarwade, N. Arora, T. Quach, "
+            "Enhancing connected car adoption: security and over the air update framework, in: WF-IoT, 2016."
+        ),
+        (
+            "M. La Manna, L. Treccozzi, P. Perazzo, S. Saponara, G. Dini, Performance evaluation "
+            "of attribute-based encryption in automotive embedded platform for secure software over-the-air update, "
+            "Sensors 21 (2) (2021) 515."
+        ),
+        (
+            "M. Baza, M. Nabil, N. Lasla, K. Fidan, M. Mahmoud, M. Abdallah, Blockchain-based "
+            "firmware update scheme tailored for autonomous vehicles, in: WCNC, IEEE, 2019, pp. 1-7."
+        ),
+    ]
+    assert "Chapter | 93" not in result["bibliography"]
+    assert "PART | XV" not in result["bibliography"]
+    assert result["evidence"]["entry_count_estimate"] == 3
+
+
 def test_extract_document_bibliography_prefers_real_heading_over_table_reference_labels(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service
