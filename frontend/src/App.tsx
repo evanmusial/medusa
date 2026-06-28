@@ -7062,13 +7062,15 @@ function LibraryView({
     totalDocumentCount === sortedDocuments.length && pageOffset === 0
       ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
       : `Browsing ${formatWholeNumber(visibleStart)}-${formatWholeNumber(visibleEnd)} of ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
-  const virtualStartIndex = Math.max(0, Math.floor(rowsScrollTop / libraryRowHeight) - LIBRARY_ROW_OVERSCAN);
+  const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
+  const effectiveRowsViewportHeight = rowsViewportHeight || rowsViewportRef.current?.clientHeight || libraryRowHeight * 12;
+  const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
+  const virtualStartIndex = Math.max(0, Math.floor(boundedRowsScrollTop / libraryRowHeight) - LIBRARY_ROW_OVERSCAN);
   const virtualEndIndex = Math.min(
     sortedDocuments.length,
-    Math.ceil((rowsScrollTop + rowsViewportHeight) / libraryRowHeight) + LIBRARY_ROW_OVERSCAN,
+    Math.ceil((boundedRowsScrollTop + effectiveRowsViewportHeight) / libraryRowHeight) + LIBRARY_ROW_OVERSCAN,
   );
   const virtualDocuments = sortedDocuments.slice(virtualStartIndex, virtualEndIndex);
-  const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
   const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
@@ -22906,8 +22908,16 @@ export default function App() {
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences, enabled: Boolean(me.data) });
   useEffect(() => {
     if (!preferences.data) return;
-    setLibraryPageSize(parseLibraryPageSize(String(preferences.data.library_page_size)));
-  }, [preferences.data?.library_page_size]);
+    const preferredPageSize = parseLibraryPageSize(String(preferences.data.library_page_size));
+    setLibraryPageSize((current) => {
+      if (current === preferredPageSize) return current;
+      if (selectedId && activeView === "library") {
+        setLibraryFocusDocumentId(selectedId);
+        setLibraryScrollTargetId(selectedId);
+      }
+      return preferredPageSize;
+    });
+  }, [activeView, preferences.data?.library_page_size, selectedId]);
   const ingestionHistory = useQuery({
     queryKey: ["ingestion-history"],
     queryFn: api.ingestionHistory,
@@ -22937,8 +22947,9 @@ export default function App() {
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data && needsTags) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data && needsSavedSearches) });
   useEffect(() => {
+    if (libraryFocusDocumentId) return;
     setLibraryOffset(0);
-  }, [documentQuery, filters, libraryPageSize]);
+  }, [documentQuery, filters, libraryFocusDocumentId, libraryPageSize]);
   const libraryDocumentList = useQuery({
     queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize, libraryFocusDocumentId],
     queryFn: () =>
@@ -23162,13 +23173,13 @@ export default function App() {
   useEffect(() => {
     const page = libraryDocumentList.data;
     if (!page) return;
-    if (page.offset !== libraryOffset) setLibraryOffset(page.offset);
-    if (!libraryFocusDocumentId || page.focus_document_id !== libraryFocusDocumentId) return;
-    const focusedItemIsVisible = page.items.some((item) => item.id === libraryFocusDocumentId);
-    if (focusedItemIsVisible) {
-      setLibraryFocusDocumentId(null);
+    if (page.offset !== libraryOffset) {
+      setLibraryOffset(page.offset);
       return;
     }
+    if (!libraryFocusDocumentId || page.focus_document_id !== libraryFocusDocumentId) return;
+    const focusedItemIsVisible = page.items.some((item) => item.id === libraryFocusDocumentId);
+    if (focusedItemIsVisible) return;
     if (page.focus_index === null || page.focus_index === undefined) {
       setLibraryFocusDocumentId(null);
       setLibraryScrollTargetId((current) => (current === libraryFocusDocumentId ? null : current));
@@ -23530,7 +23541,7 @@ export default function App() {
         if (!changed) return false;
       }
       setLibraryScrollTargetId(documentId);
-      if (!documentAlreadyInWindow) setLibraryFocusDocumentId(documentId);
+      setLibraryFocusDocumentId(documentAlreadyInWindow ? null : documentId);
       setSelectedId(documentId);
       setLibraryDocumentMode(documentMode);
       if (historyMode !== "none") syncBrowserUrlForDocument(documentId, historyMode, documentMode);
@@ -23882,6 +23893,7 @@ export default function App() {
             }}
             onScrollTargetHandled={(documentId) => {
               setLibraryScrollTargetId((current) => (current === documentId ? null : current));
+              setLibraryFocusDocumentId((current) => (current === documentId ? null : current));
             }}
           />
         ) : null}
