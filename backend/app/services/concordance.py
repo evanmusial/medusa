@@ -75,6 +75,8 @@ BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARA
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 300
 BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
+BIBLIOGRAPHY_AUTHOR_INITIAL_RE = re.compile(r"\b[A-Z](?:\.-?[A-Z])?\.")
+BIBLIOGRAPHY_APA_INITIAL_RE = re.compile(r",\s*(?:[A-Z]\.\s*)+")
 BIBLIOGRAPHY_AUTHOR_STOPWORDS = {
     "Accessed",
     "Available",
@@ -98,21 +100,49 @@ def _bibliography_entry_count(bibliography: str | None) -> int:
     return len([line for line in (bibliography or "").splitlines() if line.strip()])
 
 
+def _unique_bibliography_author_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for token in BIBLIOGRAPHY_AUTHOR_TOKEN_RE.findall(text):
+        cleaned = token.strip("'`\u2019-")
+        if cleaned in BIBLIOGRAPHY_AUTHOR_STOPWORDS:
+            continue
+        if cleaned.casefold() not in {existing.casefold() for existing in tokens}:
+            tokens.append(cleaned)
+    return tokens
+
+
+def _vancouver_author_tokens(prefix: str) -> list[str]:
+    tokens: list[str] = []
+    for segment in prefix.split(","):
+        segment = re.sub(r"^\s*\[?\d+\]?\s*", "", segment).strip()
+        if not segment:
+            continue
+        segment_tokens = _unique_bibliography_author_tokens(segment)
+        if not segment_tokens or not BIBLIOGRAPHY_AUTHOR_INITIAL_RE.search(segment):
+            break
+        for token in segment_tokens:
+            if token.casefold() not in {existing.casefold() for existing in tokens}:
+                tokens.append(token)
+    return tokens if len(tokens) >= 2 else []
+
+
 def _bibliography_author_tokens(entry: str) -> list[str]:
     plain = decode_html_entities(str(entry or "")).replace("*", "")
     year_match = BIBLIOGRAPHY_YEAR_RE.search(plain)
     if not year_match:
         return []
     prefix = plain[: year_match.start()]
+    vancouver_tokens = _vancouver_author_tokens(prefix)
+    if vancouver_tokens:
+        return vancouver_tokens
+    first_segment = prefix.split(",", 1)[0]
+    if BIBLIOGRAPHY_AUTHOR_INITIAL_RE.search(first_segment):
+        return []
     if "," not in prefix and " and " not in prefix.casefold():
         return []
-    tokens: list[str] = []
-    for token in BIBLIOGRAPHY_AUTHOR_TOKEN_RE.findall(prefix):
-        cleaned = token.strip("'`\u2019-")
-        if cleaned in BIBLIOGRAPHY_AUTHOR_STOPWORDS:
-            continue
-        if cleaned.casefold() not in {existing.casefold() for existing in tokens}:
-            tokens.append(cleaned)
+    if not BIBLIOGRAPHY_APA_INITIAL_RE.search(prefix) and " and " not in prefix.casefold():
+        return []
+    tokens = _unique_bibliography_author_tokens(prefix)
     return tokens if len(tokens) >= 2 else []
 
 

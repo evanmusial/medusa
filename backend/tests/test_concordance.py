@@ -365,6 +365,28 @@ def test_concordance_stage_status_uses_bounded_composition_statuses(monkeypatch,
     assert concordance_stage_status({"status": "a_future_detailed_evidence_label_that_should_not_become_db_state"}) == "complete"
 
 
+def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.concordance import _bibliography_cleanup_missing_author_sets
+
+    input_bibliography = "\n".join(
+        [
+            "J. Howden, L. Maglaras, M.A. Ferrag, The security aspects of automotive over-the-air updates, Int. J. Cyber Warf. Terror. (IJCWT) 10 (2) (2020) 64e81.",
+            "T. Chowdhury, E. Lesiuta, K. Rikley, C.-W. Lin, E. Kang, B. Kim, S. Shiraishi, M. Lawford, A. Wassyng, Safe and secure automotive over-the-air updates, in: SAFECOMP, Västerås, Sweden, September 19-21, 2018, Proceedings 37, Springer, 2018, pp. 172e187.",
+        ]
+    )
+    cleanup_bibliography = "\n".join(
+        [
+            "Howden, J., Maglaras, L., & Ferrag, M. A. (2020). The security aspects of automotive over-the-air updates. *International Journal of Cyber Warfare and Terrorism, 10*(2), 64-81.",
+            "Chowdhury, T., Lesiuta, E., Rikley, K., Lin, C.-W., Kang, E., Kim, B., Shiraishi, S., Lawford, M., & Wassyng, A. (2018). Safe and secure automotive over-the-air updates. In *SAFECOMP 2018* (pp. 172-187). Springer.",
+        ]
+    )
+
+    assert _bibliography_cleanup_missing_author_sets(input_bibliography, cleanup_bibliography) == []
+
+
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
