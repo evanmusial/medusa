@@ -297,6 +297,7 @@ type ConcordanceRunRequest = {
   backgroundLabel?: string;
   capability_keys?: string[];
   capabilityKey?: string;
+  createRun?: () => Promise<ConcordanceRun>;
   documentId?: string;
   force?: boolean;
   label?: string;
@@ -4642,6 +4643,13 @@ function bibliographyCleanupNotice(metadataEvidence: Record<string, unknown>): s
       characterCount && maxCharacters ? `${characterCount.toLocaleString()} characters exceeds the cleanup limit of ${maxCharacters.toLocaleString()}` : null;
     const limitDetail = entryDetail || characterDetail || "the extracted bibliography exceeds the cleanup limit";
     return `Cleanup skipped because ${limitDetail}. Deterministic APA sorting was applied instead.`;
+  }
+  if (status === "local_fallback") {
+    const model = typeof cleanup.model === "string" && cleanup.model.trim() ? cleanup.model.trim() : "the selected model";
+    return `Cleanup could not use ${model} because the provider is not configured. Deterministic APA sorting was applied instead.`;
+  }
+  if (status === "failed") {
+    return "Cleanup failed, so the complete extracted list was kept with deterministic APA sorting.";
   }
   return null;
 }
@@ -9119,6 +9127,7 @@ function DocumentPanelContent({
         backgroundLabel: "Refreshing bibliography",
         capability_keys: ["bibliography_extraction"],
         capabilityKey: "bibliography_extraction",
+        createRun: () => api.refreshDocumentBibliography(document.id),
         documentId: document.id,
         force: true,
         label: `Bibliography refresh: ${document.title}`,
@@ -23071,13 +23080,15 @@ export default function App() {
         ...current,
       ]);
       try {
-        const run = await api.createConcordanceRun({
-          label: request.label,
-          scope_type: request.scope_type,
-          scope_data: request.scope_data,
-          capability_keys: request.capability_keys,
-          force: request.force,
-        });
+        const run = request.createRun
+          ? await request.createRun()
+          : await api.createConcordanceRun({
+              label: request.label,
+              scope_type: request.scope_type,
+              scope_data: request.scope_data,
+              capability_keys: request.capability_keys,
+              force: request.force,
+            });
         setBackgroundJobs((current) =>
           current.map((job) =>
             job.id === id

@@ -343,6 +343,8 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${documentId}/versions/${versionId}/restore`, { method: "POST" }),
   refreshDocumentCitation: (id: string) =>
     request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
+  refreshDocumentBibliography: (id: string) =>
+    request<ConcordanceRun>(`/api/documents/${id}/bibliography-refresh`, { method: "POST" }),
   createAccessorySummary: (documentId: string, body: AccessorySummaryPayload) =>
     request<AccessorySummary>(`/api/documents/${documentId}/inquests`, { method: "POST", body: JSON.stringify(body) }),
   updateAccessorySummary: (id: string, body: Partial<AccessorySummaryPayload>) =>

@@ -4564,6 +4564,28 @@ def refresh_document_citation(
     return run
 
 
+@app.post("/api/documents/{document_id}/bibliography-refresh", response_model=ConcordanceRunOut)
+def refresh_document_bibliography(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ConcordanceRun:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    run = create_concordance_run(
+        db,
+        scope_type="documents",
+        scope_data={"document_ids": [document.id]},
+        capability_keys=["bibliography_extraction"],
+        force=True,
+        label=f"Bibliography refresh: {document.title}",
+    )
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 @app.post("/api/documents/{document_id}/accessory-summaries", response_model=AccessorySummaryOut)
 def queue_document_accessory_summary(
     document_id: str,

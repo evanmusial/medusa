@@ -882,6 +882,58 @@ def test_forced_tag_refresh_queues_even_when_same_model_current(monkeypatch, tmp
         assert run.scope_data["_force"] is True
 
 
+def test_forced_bibliography_estimate_includes_cleanup_model_without_broad_noop_breakage(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentCapability
+    from app.services.analysis_models import MODEL_BIBLIOGRAPHY_CLEANUP
+    from app.services.concordance import CAPABILITY_BY_KEY, estimate_concordance_run
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Already Extracted Bibliography",
+            original_filename="already-extracted-bibliography.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+            bibliography="Old stored bibliography.",
+            page_count=9,
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            DocumentCapability(
+                document_id=document.id,
+                capability_key="bibliography_extraction",
+                version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+                status="complete",
+            )
+        )
+        db.commit()
+
+        default_estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["bibliography_extraction"],
+        )
+        forced_estimate = estimate_concordance_run(
+            db,
+            scope_type="documents",
+            scope_data={"document_ids": [document.id]},
+            capability_keys=["bibliography_extraction"],
+            force=True,
+        )
+
+        assert default_estimate["planned_jobs"] == 0
+        assert default_estimate["items"][0]["status"] == "current_version"
+        assert forced_estimate["planned_jobs"] == 1
+        assert forced_estimate["items"][0]["status"] == "planned"
+        assert forced_estimate["items"][0]["requirements"][0]["task_key"] == MODEL_BIBLIOGRAPHY_CLEANUP
+        assert forced_estimate["items"][0]["cost_steps"][0]["task_key"] == MODEL_BIBLIOGRAPHY_CLEANUP
+
+
 def test_concordance_estimate_queues_current_capability_when_model_changed(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

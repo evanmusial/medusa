@@ -268,6 +268,7 @@ CONCORDANCE_TOKEN_PROFILES: dict[str, dict[str, int]] = {
     MODEL_METADATA: {"input_base": 1_000, "input_per_page": 1_300, "output_base": 1_200},
     MODEL_SUMMARY: {"input_base": 1_000, "input_per_page": 1_800, "output_base": 1_400},
     MODEL_APA_CITATION: {"input_base": 4_000, "input_per_page": 450, "output_base": 900},
+    MODEL_BIBLIOGRAPHY_CLEANUP: {"input_base": 2_000, "input_per_page": 900, "output_base": 1_000, "output_per_page": 500},
     MODEL_KEYWORDS_TOPICS: {"input_base": 900, "input_per_page": 1_000, "output_base": 850},
     MODEL_PAGE_TEXT_NORMALIZATION: {"input_base": 150, "input_per_page": 1_600, "output_base": 350, "output_per_page": 900},
     MODEL_FORMULA_CAPTURE: {"input_base": 1_000, "input_per_page": 1_800, "output_base": 800, "output_per_page": 250},
@@ -488,6 +489,8 @@ def concordance_model_requirements(
     db: Session,
     capability_key: str,
     document: Document | None = None,
+    *,
+    force: bool = False,
 ) -> list[ConcordanceModelRequirement]:
     model_preferences = get_analysis_models(db)
     if capability_key == "document_structure_cleanup":
@@ -565,6 +568,15 @@ def concordance_model_requirements(
                 field_key="apa_citation",
                 label="APA citation",
                 model=model_preferences.get(MODEL_APA_CITATION),
+            )
+        ]
+    if capability_key == "bibliography_extraction" and force:
+        return [
+            ConcordanceModelRequirement(
+                task_key=MODEL_BIBLIOGRAPHY_CLEANUP,
+                field_key="bibliography",
+                label="Bibliography Cleanup",
+                model=model_preferences.get(MODEL_BIBLIOGRAPHY_CLEANUP),
             )
         ]
     if capability_key == "formula_capture":
@@ -681,7 +693,7 @@ def _plan_concordance_item(
             "requirements": [_requirement_payload(requirement) for requirement in requirements],
             "cost_steps": [],
         }
-    requirements = concordance_model_requirements(db, capability.key, document)
+    requirements = concordance_model_requirements(db, capability.key, document, force=force)
     pending_requirements = (
         requirements
         if force

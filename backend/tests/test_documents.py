@@ -1241,6 +1241,46 @@ def test_refresh_document_citation_queues_citation_concordance(monkeypatch, tmp_
         assert jobs[0].capability_key == "citation_refresh"
 
 
+def test_refresh_document_bibliography_queues_forced_bibliography_concordance(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import refresh_document_bibliography
+    from app.models import ConcordanceJob, Document, DocumentCapability
+    from app.services.concordance import CAPABILITY_BY_KEY
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Bibliography Paper",
+            original_filename="bibliography.pdf",
+            checksum_sha256="8" * 64,
+            processing_status="ready",
+            bibliography="Old stored bibliography.",
+        )
+        db.add(document)
+        db.flush()
+        db.add(
+            DocumentCapability(
+                document_id=document.id,
+                capability_key="bibliography_extraction",
+                version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+                status="complete",
+            )
+        )
+        db.commit()
+
+        run = refresh_document_bibliography(document.id, object(), db)
+        jobs = db.query(ConcordanceJob).filter(ConcordanceJob.run_id == run.id).all()
+
+        assert run.capability_keys == ["bibliography_extraction"]
+        assert run.scope_type == "documents"
+        assert run.scope_data["_force"] is True
+        assert jobs
+        assert jobs[0].document_id == document.id
+        assert jobs[0].capability_key == "bibliography_extraction"
+
+
 def test_document_annotations_update_search_text_and_soft_delete(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
