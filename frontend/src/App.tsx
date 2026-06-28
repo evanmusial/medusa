@@ -10501,7 +10501,8 @@ function DocumentPanelContent({
             progress={tagRefreshProgress}
           >
             <button
-              className={asyncFeedbackClass("secondary-button compact", tagRefreshFeedback.feedback, tagRefreshBusy)}
+              aria-label={tagRefreshBusy ? "Refreshing tags" : "Refresh tags"}
+              className={asyncFeedbackClass("icon-button compact", tagRefreshFeedback.feedback, tagRefreshBusy)}
               data-disabled-reason={tagRefreshBusyReason}
               data-tooltip="Replace this document's current tags by rerunning Tag Suggestions through the import-style existing-first governance scorer."
               disabled={tagRefreshBusy}
@@ -10509,7 +10510,6 @@ function DocumentPanelContent({
               type="button"
             >
               <RefreshCw className={tagRefreshBusy ? "spin" : ""} size={14} />
-              {tagRefreshBusy ? "Refreshing" : "Refresh"}
             </button>
           </AsyncActionSlot>
         </div>
@@ -10630,7 +10630,8 @@ function DocumentPanelContent({
       ) : null}
       <div className="doi-actions">
         <button
-          className="secondary-button"
+          aria-label={copiedKey === "document-doi" ? "DOI copied" : "Copy DOI"}
+          className="icon-button"
           data-disabled-reason="this document does not have a DOI to copy."
           data-tooltip="Copy the stored DOI for this document to the clipboard."
           disabled={!document.doi}
@@ -10638,10 +10639,10 @@ function DocumentPanelContent({
           type="button"
         >
           {copiedKey === "document-doi" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-          {copiedKey === "document-doi" ? "Copied" : "Copy"}
         </button>
         <button
-          className="secondary-button"
+          aria-label="Edit DOI"
+          className="icon-button"
           data-disabled-reason={updateDoi.isPending ? "the DOI change is already saving." : "the DOI editor is already open."}
           data-tooltip="Open DOI editing so you can add, correct, or clear the document DOI."
           onClick={startDoiEdit}
@@ -10649,11 +10650,11 @@ function DocumentPanelContent({
           type="button"
         >
           <Edit3 size={15} />
-          Edit
         </button>
         <AsyncActionSlot busy={doiCheckBusy} feedback={doiRefreshFeedback.feedback} label="DOI refresh in progress" progress={citationProgress}>
           <button
-            className={asyncFeedbackClass("secondary-button", doiRefreshFeedback.feedback, doiCheckBusy)}
+            aria-label={doiCheckBusy ? "Refreshing DOI" : "Refresh DOI"}
+            className={asyncFeedbackClass("icon-button", doiRefreshFeedback.feedback, doiCheckBusy)}
             data-disabled-reason={citationBusyReason}
             data-tooltip="Queue a DOI and APA citation refresh for this document using the selected APA model fallback."
             onClick={checkDoi}
@@ -10661,12 +10662,12 @@ function DocumentPanelContent({
             type="button"
           >
             <RefreshCw className={doiCheckBusy ? "spin" : ""} size={15} />
-            {doiCheckBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, APA_CITATION_MODEL_KEY, "gpt-5.5")}</span>
         <button
-          className="secondary-button doi-no-doi-button"
+          aria-label={markNoDoi.isPending ? "Saving No DOI flag" : "Mark confirmed No DOI"}
+          className="icon-button doi-no-doi-button"
           data-disabled-reason={
             markNoDoi.isPending
               ? "the No DOI flag is already saving."
@@ -10682,7 +10683,6 @@ function DocumentPanelContent({
           type="button"
         >
           <Ban size={15} />
-          {markNoDoi.isPending ? "Saving" : "No DOI"}
         </button>
       </div>
       {!editingDoi && doiEditError ? <p className="form-error">{doiEditError}</p> : null}
@@ -10834,7 +10834,8 @@ function DocumentPanelContent({
       )}
       <div className="citation-actions">
         <button
-          className="secondary-button"
+          aria-label={copiedKey === "document-summary" ? "Summary copied" : "Copy summary"}
+          className="icon-button"
           data-disabled-reason="this document does not have a generated or edited summary to copy."
           data-tooltip="Copy this document summary to the clipboard."
           onClick={copySummary}
@@ -10842,10 +10843,10 @@ function DocumentPanelContent({
           type="button"
         >
           {copiedKey === "document-summary" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-          {copiedKey === "document-summary" ? "Copied" : "Copy"}
         </button>
         <button
-          className="secondary-button"
+          aria-label="Edit summary"
+          className="icon-button"
           data-disabled-reason={updateSummary.isPending ? "the summary edit is already saving." : "the summary editor is already open."}
           data-tooltip="Open the Markdown summary editor for this document."
           onClick={startSummaryEdit}
@@ -10853,7 +10854,6 @@ function DocumentPanelContent({
           type="button"
         >
           <Edit3 size={15} />
-          Edit
         </button>
         <AsyncActionSlot
           busy={summaryRefreshBusy}
@@ -10862,7 +10862,8 @@ function DocumentPanelContent({
           progress={summaryRefreshProgress}
         >
           <button
-            className={asyncFeedbackClass("secondary-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
+            aria-label={summaryRefreshBusy ? "Refreshing summary" : "Refresh summary"}
+            className={asyncFeedbackClass("icon-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
             data-disabled-reason={summaryRefreshBusyReason}
             data-tooltip="Queue a summary-only Concordance refresh using the selected Summary model."
             onClick={checkSummary}
@@ -10870,7 +10871,6 @@ function DocumentPanelContent({
             type="button"
           >
             <RefreshCw className={summaryRefreshBusy ? "spin" : ""} size={15} />
-            {summaryRefreshBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, SUMMARY_MODEL_KEY, "gpt-5.4")}</span>
@@ -10890,7 +10890,8 @@ function DocumentPanelContent({
       <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
       <div className="citation-actions">
         <button
-          className="secondary-button"
+          aria-label={copiedKey === "document-bibliography" ? "Bibliography copied" : "Copy bibliography"}
+          className="icon-button"
           data-disabled-reason="this document does not have an extracted bibliography to copy."
           data-tooltip="Copy this document's extracted source bibliography to the clipboard."
           onClick={() => document.bibliography && void copyToClipboard("document-bibliography", decodeHtmlEntities(document.bibliography))}
@@ -10898,7 +10899,6 @@ function DocumentPanelContent({
           type="button"
         >
           {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-          {copiedKey === "document-bibliography" ? "Copied" : "Copy"}
         </button>
         <AsyncActionSlot
           busy={bibliographyRefreshBusy}
@@ -10907,7 +10907,8 @@ function DocumentPanelContent({
           progress={bibliographyRefreshProgress}
         >
           <button
-            className={asyncFeedbackClass("secondary-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
+            aria-label={bibliographyRefreshBusy ? "Refreshing bibliography" : "Refresh bibliography"}
+            className={asyncFeedbackClass("icon-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
             data-disabled-reason={bibliographyRefreshBusyReason}
             data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as alphabetized APA-style sources, one per line, with the selected Bibliography Cleanup model."
             onClick={checkBibliography}
@@ -10915,7 +10916,6 @@ function DocumentPanelContent({
             type="button"
           >
             <RefreshCw className={bibliographyRefreshBusy ? "spin" : ""} size={15} />
-            {bibliographyRefreshBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
         <span className="citation-model-label">{analysisModelActionLabel(preferences, BIBLIOGRAPHY_CLEANUP_MODEL_KEY, "gpt-5-mini")}</span>
@@ -10976,7 +10976,8 @@ function DocumentPanelContent({
         )}
         <div className="citation-actions">
           <button
-            className="secondary-button"
+            aria-label={copiedKey === `citation-${kind}` ? `${title} copied` : `Copy ${title}`}
+            className="icon-button"
             data-disabled-reason={`this document does not have ${title} text to copy.`}
             data-tooltip={`Copy the ${title} text to the clipboard.`}
             onClick={() => copyCitation(kind)}
@@ -10984,10 +10985,10 @@ function DocumentPanelContent({
             type="button"
           >
             {copiedKey === `citation-${kind}` ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-            {copiedKey === `citation-${kind}` ? "Copied" : "Copy"}
           </button>
           <button
-            className="secondary-button"
+            aria-label={`Edit ${title}`}
+            className="icon-button"
             data-disabled-reason={updateCitation.isPending ? "a citation edit is already saving." : "this citation editor is already open."}
             data-tooltip={`Open the editor for the ${title} text.`}
             onClick={() => startCitationEdit(kind)}
@@ -10995,11 +10996,11 @@ function DocumentPanelContent({
             type="button"
           >
             <Edit3 size={15} />
-            Edit
           </button>
           <AsyncActionSlot busy={busy} feedback={feedback} label="Citation refresh in progress" progress={citationProgress}>
             <button
-              className={asyncFeedbackClass("secondary-button", feedback, busy)}
+              aria-label={busy ? `Refreshing ${title}` : `Refresh ${title}`}
+              className={asyncFeedbackClass("icon-button", feedback, busy)}
               data-disabled-reason={citationBusyReason}
               data-tooltip={`Queue an APA citation refresh for the ${title} text using DOI/Crossref evidence first and the selected APA model as fallback.`}
               onClick={() => checkCitation(kind)}
@@ -11007,7 +11008,6 @@ function DocumentPanelContent({
               type="button"
             >
               <RefreshCw className={busy ? "spin" : ""} size={15} />
-              {busy ? "Refreshing" : "Refresh"}
             </button>
           </AsyncActionSlot>
           <span className="citation-model-label">{citationProvenanceLabel(document, kind)}</span>
@@ -11385,7 +11385,8 @@ function DocumentPanelContent({
           <ChevronRight size={18} />
         </button>
         <button
-          className="secondary-button compact"
+          aria-label={copiedKey === "full-text" ? "Parsed text copied" : "Copy parsed text"}
+          className="icon-button compact"
           data-disabled-reason={pageTextBusy ? pageTextBusyReason : "this document does not have parsed text to copy."}
           data-tooltip="Copy all parsed document text to the clipboard."
           onClick={copyFullText}
@@ -11393,7 +11394,6 @@ function DocumentPanelContent({
           type="button"
         >
           {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
-          {copiedKey === "full-text" ? "Copied" : "Copy"}
         </button>
         {pageTextEditing && bottom ? (
           <>
@@ -11422,7 +11422,8 @@ function DocumentPanelContent({
           </>
         ) : !pageTextEditing ? (
           <button
-            className="secondary-button compact"
+            aria-label="Edit parsed page text"
+            className="icon-button compact"
             data-disabled-reason={pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
             data-tooltip="Open the parsed page text editor for the current page."
             disabled={!currentPage || pageTextBusy}
@@ -11430,7 +11431,6 @@ function DocumentPanelContent({
             type="button"
           >
             <Edit3 size={14} />
-            Edit
           </button>
         ) : null}
       </div>

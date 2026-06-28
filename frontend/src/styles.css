@@ -4437,6 +4437,12 @@ textarea {
   min-height: 34px;
 }
 
+.reader-actions .icon-button.compact {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+}
+
 .reader-actions-bottom {
   padding: 8px 10px;
   border-top: 1px solid var(--line);
@@ -4444,7 +4450,8 @@ textarea {
 }
 
 .reader-actions-bottom .primary-button,
-.reader-actions-bottom .secondary-button {
+.reader-actions-bottom .secondary-button,
+.reader-actions-bottom .icon-button.compact {
   min-height: 34px;
 }
 
@@ -5121,13 +5128,14 @@ textarea {
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
+  padding-right: 8px;
 }
 
 .detail-section-title-row h3 {
   margin: 0;
 }
 
-.detail-section-title-row .secondary-button {
+.detail-section-title-row :where(.secondary-button, .icon-button) {
   flex: 0 0 auto;
 }
 
@@ -5235,6 +5243,7 @@ textarea {
   align-items: center;
   flex-wrap: wrap;
   gap: 7px;
+  padding-right: 8px;
 }
 
 .doi-no-doi-button {
@@ -5301,7 +5310,7 @@ textarea {
 .citation-model-label {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .citation-editor {
