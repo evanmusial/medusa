@@ -13,6 +13,9 @@ REFERENCE_HEADING_INLINE_RE = re.compile(
     r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\s*[:\-\u2013\u2014]\s+",
     re.IGNORECASE,
 )
+EMBEDDED_REFERENCE_HEADING_RE = re.compile(
+    r"\b(?:References|Bibliography|Works\s+Cited|Literature\s+Cited)\b"
+)
 REFERENCE_COUNT_BOILERPLATE_RE = re.compile(
     r"^\s*references\s*:\s*this\s+document\s+contains\s+references\s+to\s+\d+\s+other\s+documents?\.?\s*$",
     re.IGNORECASE,
@@ -101,6 +104,10 @@ REFERENCE_UPPER_SINGLE_AUTHOR_RE = re.compile(r"^\s*[A-Z][A-Z'`.-]+,\s+(?:[A-Z]\
 INLINE_REFERENCE_START_CANDIDATE_RE = re.compile(
     rf"\s+(?={REFERENCE_AUTHOR_WORD}(?:\s+{REFERENCE_AUTHOR_WORD}){{0,4}},\s+[^.?!]{{0,220}}\b(?:18|19|20)\d{{2}}[a-z]?\b)"
 )
+INLINE_SURNAME_INITIALS_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?={REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.\s*){{1,6}}(?:,|\s+and\b|\s+&)[^\n]{{0,260}}?\b(?:18|19|20)\d{{2}}[a-z]?\b)",
+    re.IGNORECASE,
+)
 INLINE_ORGANIZATION_START_CANDIDATE_RE = re.compile(
     r"\s+(?=[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b)"
 )
@@ -127,6 +134,10 @@ ITALIC_FONT_RE = re.compile(r"(?:italic|oblique|kursiv)", re.IGNORECASE)
 AUTHOR_BIO_START_RE = re.compile(
     r"^[A-Z][A-Za-z'`.-]+(?:\s+[A-Z][A-Za-z'`.-]+){1,4}\s+"
     r"(?:is|was|received|obtained|currently|has\s+worked|joined)\b",
+)
+INLINE_AUTHOR_BIO_START_RE = re.compile(
+    r"\s+(?=[A-Z][A-Za-z'`.-]+(?:\s+(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`.-]+){1,4}\s+"
+    r"(?:is|was|received|obtained|currently|has\s+worked|joined)\b)"
 )
 PAGE_FURNITURE_RE = re.compile(
     r"^(?:"
@@ -227,6 +238,13 @@ def _line_starts_reference_marker(line: str, marker_style: str | None = None) ->
     return bool(style and (marker_style is None or style == marker_style))
 
 
+def _line_starts_structural_reference_marker(line: str) -> bool:
+    if not _line_starts_reference_marker(line):
+        return False
+    stripped = _strip_reference_entry_prefix(_strip_markdown(line).strip())
+    return not REFERENCE_CONTINUATION_PREFIX_RE.match(stripped)
+
+
 def _line_looks_like_method_reference_section(line: str) -> bool:
     plain = _strip_markdown(line).strip()
     return bool(REFERENCE_METHOD_SECTION_RE.match(plain))
@@ -257,6 +275,17 @@ def _line_stops_reference_section(line: str) -> bool:
     return bool(AUTHOR_BIO_START_RE.match(plain))
 
 
+def _trim_inline_reference_stop(line: str) -> tuple[str, bool]:
+    for match in INLINE_AUTHOR_BIO_START_RE.finditer(_strip_markdown(line)):
+        offset = match.start()
+        prefix = line[:offset].strip()
+        if not REFERENCE_YEAR_RE.search(prefix):
+            continue
+        if prefix.endswith((".", ".)", "〉", "}", "]")) or REFERENCE_URL_DOI_RE.search(prefix):
+            return prefix, True
+    return line, False
+
+
 def _line_is_page_furniture(line: str) -> bool:
     plain = _strip_markdown(line).strip()
     return bool(PAGE_FURNITURE_RE.match(plain) or PAGE_NUMBER_RE.match(plain))
@@ -264,6 +293,29 @@ def _line_is_page_furniture(line: str) -> bool:
 
 def _reference_section_inline_text(line: str) -> str:
     return REFERENCE_HEADING_INLINE_RE.sub("", line, count=1).strip()
+
+
+def _expand_embedded_reference_heading(line: str) -> list[str]:
+    text = line.strip()
+    if not text:
+        return []
+    for match in EMBEDDED_REFERENCE_HEADING_RE.finditer(text):
+        after = text[match.end() :].lstrip(" \t:-\u2013\u2014")
+        if not after or not _line_starts_reference_entry(after):
+            continue
+        before = text[: match.start()].strip()
+        expanded = [match.group(0), after]
+        if before:
+            expanded.insert(0, before)
+        return expanded
+    return [text]
+
+
+def _expand_embedded_reference_heading_rows(rows: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    expanded: list[tuple[int, str]] = []
+    for page_number, line in rows:
+        expanded.extend((page_number, expanded_line) for expanded_line in _expand_embedded_reference_heading(line))
+    return expanded
 
 
 def _reference_heading_indexes(lines: list[str]) -> list[int]:
@@ -311,6 +363,14 @@ def _collect_reference_lines(lines: list[str], heading_index: int) -> tuple[list
         if selected and _line_stops_reference_section(line):
             end = index
             break
+        if selected:
+            line, inline_stop = _trim_inline_reference_stop(line)
+            if line:
+                selected.append(line)
+            if inline_stop:
+                end = index + 1
+                break
+            continue
         selected.append(line)
     while selected and not selected[0]:
         selected.pop(0)
@@ -415,7 +475,7 @@ def _page_lines(document: Document) -> list[tuple[int, str]]:
 
 
 def _plain_bibliography_from_pages(document: Document) -> dict[str, Any]:
-    page_rows = _page_lines(document)
+    page_rows = _expand_embedded_reference_heading_rows(_page_lines(document))
     lines = [line for _, line in page_rows]
     selected, start, end = _extract_reference_lines(lines)
     unreadable_pages = _unreadable_text_pages(document)
@@ -529,7 +589,7 @@ def _pdf_markdown_lines(path: Path) -> list[tuple[int, str]]:
 
 def _formatted_bibliography_from_pdf(path: Path) -> dict[str, Any] | None:
     try:
-        page_rows = _pdf_markdown_lines(path)
+        page_rows = _expand_embedded_reference_heading_rows(_pdf_markdown_lines(path))
     except Exception:
         return None
     lines = [line for _, line in page_rows]
@@ -572,25 +632,27 @@ def _split_inline_reference_lines(line: str) -> list[str]:
     if _line_starts_reference_marker(line) and not REFERENCE_CITATION_KEY_ENTRY_MARKER_RE.match(
         _strip_markdown(line).strip()
     ):
-        return [line]
+        stripped = _strip_reference_entry_prefix(_strip_markdown(line).strip())
+        if not REFERENCE_CONTINUATION_PREFIX_RE.match(stripped):
+            return [line]
     split_offsets: list[int] = []
-    matches = sorted(
-        [
-            *INLINE_REFERENCE_START_CANDIDATE_RE.finditer(line),
-            *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line),
-            *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
-            *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
-            *INLINE_CITATION_KEY_START_CANDIDATE_RE.finditer(line),
-        ],
-        key=lambda item: item.start(),
-    )
-    for match in matches:
-        offset = match.start()
-        prefix = line[:offset].strip()
+    matches = [
+        *INLINE_REFERENCE_START_CANDIDATE_RE.finditer(line),
+        *INLINE_SURNAME_INITIALS_START_CANDIDATE_RE.finditer(line),
+        *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line),
+        *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
+        *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
+        *INLINE_CITATION_KEY_START_CANDIDATE_RE.finditer(line),
+    ]
+    candidate_offsets = sorted({match.start() for match in matches})
+    segment_start = 0
+    for offset in candidate_offsets:
+        prefix = line[segment_start:offset].strip()
         if not REFERENCE_YEAR_RE.search(prefix):
             continue
         if prefix.endswith((".", ".)", "〉", "}", "]")) or REFERENCE_URL_DOI_RE.search(prefix):
             split_offsets.append(offset)
+            segment_start = offset
     if not split_offsets:
         return [line]
     parts: list[str] = []
@@ -714,7 +776,7 @@ def _format_reference_lines(lines: list[str]) -> str:
             and not _line_starts_reference_section(cleaned)
         ):
             cleaned_lines.extend(_split_inline_reference_lines(cleaned))
-    marker_offsets = [index for index, line in enumerate(cleaned_lines) if _line_starts_reference_marker(line)]
+    marker_offsets = [index for index, line in enumerate(cleaned_lines) if _line_starts_structural_reference_marker(line)]
     marker_bounded = _should_use_marker_bounded_mode(cleaned_lines, marker_offsets)
     marker_style = _marker_bounded_style(cleaned_lines, marker_offsets) if marker_bounded else None
     for index, part in enumerate(cleaned_lines):

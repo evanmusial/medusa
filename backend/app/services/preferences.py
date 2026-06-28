@@ -201,8 +201,8 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "APA Citation",
         "default_enabled": True,
         "configurable": True,
-        "description": "Builds citation metadata from DOI and Crossref evidence first, then uses the selected APA model only for fallback judgment or uncertain candidate generation.",
-        "accomplishes": "Keeps verified citations evidence-backed and sends only uncertain citation work to a model-backed review path.",
+        "description": "Uses the selected APA model with DOI/Crossref evidence plus known title, author, year, and venue metadata to generate the APA reference-list and in-text pair, then validates or falls back deterministically.",
+        "accomplishes": "Keeps DOI-backed citation refresh fast while still checking that DOI evidence matches the document before verified citations are promoted.",
     },
     {
         "key": "keywords_topics",

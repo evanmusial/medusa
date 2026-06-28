@@ -649,6 +649,84 @@ def test_extract_document_bibliography_prefers_real_heading_over_table_reference
     assert not any(entry.startswith(("Anonymization tools", "Cross-border investigations", "2020.", "Machinery,")) for entry in entries)
 
 
+def test_extract_document_bibliography_handles_mid_page_two_column_references(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Mid Page Two Column References Paper",
+        original_filename="mid-page-two-column-references.pdf",
+        checksum_sha256="6" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="No standalone reference heading in fallback text."))
+    pdf_path = tmp_path / "mid-page-two-column-references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (6, "Table 3 Geographical location where the analysed studies were conducted."),
+            (6, "No. of studies"),
+            (6, "References"),
+            (
+                6,
+                "Australia Shedden et al. (2011), Ahmad et al. (2012), Ahmad et al. (2015), "
+                "Ahmad et al. (2020), Lakshmi et al. (2021)",
+            ),
+            (6, "Case study Evans et al. (2019), Ahmad et al. (2012), Line (2013), Baskerville et al. (2014)"),
+            (
+                14,
+                "Funding This research is funded by a PhD scholarship. Appendix A. Literature search queries "
+                "All databases were queried in September 2022. Source Search query The ACM Guide to Computing "
+                "Literature AllField:(security incident) References Ahmad, A., Hadgkiss, J., Ruighaver, A.B., "
+                "2012. Incident response teams - Challenges in supporting the organisational security function. "
+                "Comput. Secur. 31 (5), 643-",
+            ),
+            (
+                14,
+                "652. doi: 10.1016/j.cose.2012.04.001. Ahmad, A., Maynard, S.B., Shanks, G., 2015. "
+                "A case analysis of information systems and security incident responses. Int. J. Inf. Manag. "
+                "35 (6), 717-723. doi: 10.1016/j.ijinfomgt.2015.08.001. Baskerville, R., Spagnoletti, P., "
+                "Kim, J., 2014. Incident-centered information security: managing a strategic balance between "
+                "prevention and response. Inf. Manag. 51 (1), 138-151.",
+            ),
+            (
+                15,
+                "He, Y., Johnson, C., 2017. Challenges of information security incident learning: an industrial "
+                "case study in a Chinese healthcare organization. Inf. Health Soc. Care 42 (4), 393-408.",
+            ),
+            (
+                15,
+                "Line, M.B., Albrechtsen, E., Jaatun, M.G., 2016. Information security incident management: "
+                "planning for failure. Comput. Secur. 62, 188-201.",
+            ),
+            (
+                16,
+                "Zwetsloot, G.I.J.M., Kines, P., Ruotsala, R., Drupsteen, L., Merivirta, M.L., Bezemer, R.A., "
+                "2017. The importance of commitment, communication, culture and learning for the implementation "
+                "of the zero accident vision in 27 companies in Europe. Saf. Sci. 96, 22-32. Clare M. Patterson "
+                "is a research student in cyber security in the School of Computing.",
+            ),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["page_start"] == 14
+    assert result["evidence"]["page_end"] == 16
+    assert result["evidence"]["entry_count_estimate"] == 6
+    assert entries[0].startswith("Ahmad, A.")
+    assert entries[1].startswith("Ahmad, A., Maynard")
+    assert entries[2].startswith("Baskerville")
+    assert entries[-1].startswith("Zwetsloot")
+    assert "Geographical location" not in result["bibliography"]
+    assert "All databases were queried" not in result["bibliography"]
+    assert "Clare M. Patterson" not in result["bibliography"]
+
+
 def test_extract_document_bibliography_ignores_inline_references_word_before_real_heading(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service

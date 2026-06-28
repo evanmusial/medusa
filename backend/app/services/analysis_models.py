@@ -108,7 +108,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_APA_CITATION,
         label="APA Citation Matching",
         model_kind="gpt",
-        description="Generates or checks an evidence-bounded APA 7 citation candidate only when DOI/Crossref evidence cannot produce a verified deterministic citation.",
+        description="Generates or checks evidence-bounded APA 7 reference-list and in-text citations, using DOI/Crossref evidence plus known title and author metadata to confirm matches before validation.",
     ),
     AnalysisModelTask(
         key=MODEL_KEYWORDS_TOPICS,

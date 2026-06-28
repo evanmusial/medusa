@@ -707,6 +707,13 @@ def test_ai_apa_citation_candidate_uses_compact_text_only_context(monkeypatch, t
         "Title page paragraph.\n\nDOI: 10.1000/example\n\nReferences\nExample reference.",
         {"title": "Notes", "authors": [{"given": "Ada", "family": "Lovelace"}], "publication_year": 1843},
         model="gpt-5.5",
+        crossref_candidates=[
+            {
+                "DOI": "10.1000/example",
+                "title": ["Notes"],
+                "author": [{"given": "Ada", "family": "Lovelace"}],
+            }
+        ],
         usage_context=OpenAIUsageContext(document_id="doc-1", source="test", recorder=usage_records.append),
         prompt_cache_key="medusa-doc:abc123:apa",
     )
@@ -715,6 +722,8 @@ def test_ai_apa_citation_candidate_uses_compact_text_only_context(monkeypatch, t
     assert result["apa_in_text_citation"] == "(Lovelace, 1843)"
     assert responses.calls == [("medusa_apa_citation_candidate", "gpt-5.5", False)]
     assert "Known citation metadata" in responses.user_text
+    assert "Crossref or DOI candidate evidence" in responses.user_text
+    assert "10.1000/example" in responses.user_text
     assert "Document excerpts" in responses.user_text
     assert {record["task_key"] for record in usage_records} == {MODEL_APA_CITATION}
     assert usage_records[0]["input_file_bytes"] == 0

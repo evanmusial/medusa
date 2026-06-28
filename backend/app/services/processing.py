@@ -177,6 +177,53 @@ def apply_document_citations(
     return citation_pair.validation_warnings
 
 
+def apa_candidate_has_citation(apa_candidate: dict[str, Any] | None) -> bool:
+    return bool(str((apa_candidate or {}).get("apa_citation") or "").strip() or str((apa_candidate or {}).get("apa_in_text_citation") or "").strip())
+
+
+def apa_candidate_needs_review(apa_candidate: dict[str, Any] | None) -> bool:
+    if not apa_candidate_has_citation(apa_candidate):
+        return False
+    if (apa_candidate or {}).get("needs_review_reasons"):
+        return True
+    confidence = (apa_candidate or {}).get("confidence")
+    try:
+        return confidence is not None and float(confidence) < 0.55
+    except (TypeError, ValueError):
+        return False
+
+
+def apa_candidate_evidence(apa_candidate: dict[str, Any] | None) -> dict[str, Any]:
+    apa_candidate = apa_candidate or {}
+    return {
+        "confidence": apa_candidate.get("confidence"),
+        "citation_warnings": apa_candidate.get("citation_warnings") or [],
+        "needs_review_reasons": apa_candidate.get("needs_review_reasons") or [],
+        "returned_citation": apa_candidate_has_citation(apa_candidate),
+        **(apa_candidate.get("_openai") or {}),
+    }
+
+
+def apply_apa_candidate_or_metadata_citations(
+    document: Document,
+    metadata: dict[str, Any],
+    apa_candidate: dict[str, Any] | None,
+    *,
+    model: str | None,
+    fallback_source: str,
+) -> list[str]:
+    has_candidate = apa_candidate_has_citation(apa_candidate)
+    openai_model = ((apa_candidate or {}).get("_openai") or {}).get("model")
+    return apply_document_citations(
+        document,
+        metadata,
+        reference_list=(apa_candidate or {}).get("apa_citation") if has_candidate else None,
+        in_text=(apa_candidate or {}).get("apa_in_text_citation") if has_candidate else None,
+        model=openai_model or model,
+        source="model" if has_candidate else fallback_source,
+    )
+
+
 def author_search_text(authors: list[dict[str, Any]] | None) -> str:
     return " ".join(
         " ".join(str(author.get(key) or "") for key in ("given", "family", "affiliation", "email")).strip()
@@ -949,41 +996,33 @@ class DocumentProcessor:
 
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
         citation_model = model_preferences[MODEL_APA_CITATION]
-        if crossref:
-            citation_validation_warnings = apply_document_citations(document, citation_metadata, model=citation_model, source="crossref")
-        else:
-            apa_candidate = ai.generate_apa_citation_candidate(
-                document.original_filename,
-                document.search_text or "",
-                citation_metadata,
-                model=citation_model,
-                usage_context=OpenAIUsageContext(
-                    document_id=document.id,
-                    import_job_id=job.id,
-                    source="import",
-                    capability_key="citation_refresh",
-                ),
-                prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:apa",
-            )
-            document.metadata_evidence["ai_apa"] = {
-                "confidence": apa_candidate.get("confidence"),
-                "citation_warnings": apa_candidate.get("citation_warnings") or [],
-                "needs_review_reasons": apa_candidate.get("needs_review_reasons") or [],
-                **(apa_candidate.get("_openai") or {}),
-            }
-            citation_validation_warnings = apply_document_citations(
-                document,
-                citation_metadata,
-                reference_list=apa_candidate.get("apa_citation"),
-                in_text=apa_candidate.get("apa_in_text_citation"),
-                model=(apa_candidate.get("_openai") or {}).get("model") or citation_model,
-                source="model",
-            )
+        apa_candidate = ai.generate_apa_citation_candidate(
+            document.original_filename,
+            document.search_text or "",
+            citation_metadata,
+            model=citation_model,
+            crossref_candidates=[crossref] if crossref else None,
+            usage_context=OpenAIUsageContext(
+                document_id=document.id,
+                import_job_id=job.id,
+                source="import",
+                capability_key="citation_refresh",
+            ),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:apa",
+        )
+        document.metadata_evidence["ai_apa"] = apa_candidate_evidence(apa_candidate)
+        citation_validation_warnings = apply_apa_candidate_or_metadata_citations(
+            document,
+            citation_metadata,
+            apa_candidate,
+            model=citation_model,
+            fallback_source="crossref" if crossref else "model",
+        )
         if citation_validation_warnings:
             document.metadata_evidence["apa_validation_warnings"] = citation_validation_warnings
         else:
             document.metadata_evidence.pop("apa_validation_warnings", None)
-        if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref):
+        if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref) and not apa_candidate_needs_review(apa_candidate):
             document.citation_status = "verified"
         else:
             document.citation_status = "needs_review"

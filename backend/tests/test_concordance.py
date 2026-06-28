@@ -1796,7 +1796,47 @@ def test_concordance_citation_refresh_fills_missing_fields_from_stored_crossref(
     monkeypatch.setattr("app.services.concordance.crossref_lookup", lambda *_args, **_kwargs: None)
 
     from app.models import CitationCandidate, ConcordanceJob, ConcordanceRun, Document
+    from app.services import concordance as concordance_service
     from app.services.concordance import ConcordanceProcessor
+
+    calls: list[dict[str, object]] = []
+
+    class FakeAiService:
+        def generate_apa_citation_candidate(
+            self,
+            filename,
+            text,
+            metadata,
+            *,
+            model=None,
+            usage_context=None,
+            prompt_cache_key=None,
+            crossref_candidates=None,
+        ):
+            calls.append(
+                {
+                    "filename": filename,
+                    "metadata": metadata,
+                    "crossref_candidates": crossref_candidates,
+                    "model": model,
+                    "capability_key": usage_context.capability_key if usage_context else None,
+                    "prompt_cache_key": prompt_cache_key,
+                }
+            )
+            return {
+                "apa_citation": (
+                    "Axelrad, E. T., Sticha, P. J., & Brdiczka, O. (2013). "
+                    "A Bayesian network model for predicting insider threats. "
+                    "*2013 IEEE Security and Privacy Workshops*. https://doi.org/10.1109/spw.2013.35"
+                ),
+                "apa_in_text_citation": "(Axelrad et al., 2013)",
+                "citation_warnings": [],
+                "confidence": 0.92,
+                "needs_review_reasons": [],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
 
     Session = make_session()
     with Session() as db:
@@ -1847,6 +1887,12 @@ def test_concordance_citation_refresh_fills_missing_fields_from_stored_crossref(
         ConcordanceProcessor().process_job(db, job)
         db.refresh(document)
 
+        assert len(calls) == 1
+        assert calls[0]["capability_key"] == "citation_refresh"
+        assert calls[0]["crossref_candidates"]
+        assert (calls[0]["crossref_candidates"] or [])[0]["DOI"] == "10.1109/spw.2013.35"
+        assert calls[0]["metadata"]["title"] == "A Bayesian Network Model for Predicting Insider Threats"
+        assert calls[0]["metadata"]["authors"][0]["family"] == "Axelrad"
         assert document.publication_year == 2013
         assert document.doi == "10.1109/spw.2013.35"
         assert document.authors[0]["family"] == "Axelrad"
@@ -1859,6 +1905,81 @@ def test_concordance_citation_refresh_fills_missing_fields_from_stored_crossref(
         assert document.apa_in_text_citation_model == "gpt-5.5"
         db.refresh(stale_candidate)
         assert stale_candidate.status == "superseded"
+
+
+def test_concordance_citation_refresh_keeps_doi_conflicts_in_review(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import CitationCandidate, ConcordanceJob, ConcordanceRun, Document
+    from app.services import concordance as concordance_service
+    from app.services.concordance import ConcordanceProcessor
+
+    crossref = {
+        "DOI": "10.1000/wrong",
+        "URL": "https://doi.org/10.1000/wrong",
+        "title": ["Different work"],
+        "author": [{"given": "Wrong", "family": "Author"}],
+        "published": {"date-parts": [[2024]]},
+        "container-title": ["Wrong Journal"],
+    }
+
+    class FakeAiService:
+        def generate_apa_citation_candidate(
+            self,
+            filename,
+            text,
+            metadata,
+            *,
+            model=None,
+            usage_context=None,
+            prompt_cache_key=None,
+            crossref_candidates=None,
+        ):
+            return {
+                "apa_citation": "Lovelace, A. (1843). Notes on the analytical engine. https://doi.org/10.1000/wrong",
+                "apa_in_text_citation": "(Lovelace, 1843)",
+                "citation_warnings": ["DOI evidence title does not match the document title."],
+                "confidence": 0.88,
+                "needs_review_reasons": ["DOI evidence appears to identify a different work."],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "crossref_lookup", lambda *args, **kwargs: crossref)
+    monkeypatch.setattr(concordance_service, "discover_doi_from_title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Notes on the Analytical Engine",
+            original_filename="lovelace.pdf",
+            checksum_sha256="a" * 64,
+            doi="10.1000/wrong",
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            publication_year=1843,
+            processing_status="ready",
+            search_text="Notes on the analytical engine by Ada Lovelace.",
+            metadata_evidence={},
+        )
+        run = ConcordanceRun(scope_type="documents", scope_data={}, capability_keys=["citation_refresh"], total_jobs=1)
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="citation_refresh",
+            target_version=1,
+        )
+        db.add_all([document, run, job])
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert document.citation_status == "needs_review"
+        assert document.metadata_evidence["ai_apa"]["needs_review_reasons"] == ["DOI evidence appears to identify a different work."]
+        assert document.metadata_evidence["crossref"]["DOI"] == "10.1000/wrong"
+        assert "Lovelace, A." in (document.apa_citation or "")
+        assert db.query(CitationCandidate).filter(CitationCandidate.document_id == document.id).count() == 1
+        assert job.status == "complete"
 
 
 def test_concordance_summary_refresh_uses_summary_only_model(monkeypatch, tmp_path):

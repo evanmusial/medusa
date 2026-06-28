@@ -266,8 +266,11 @@ def _core_document_intelligence_prompt(existing_tags: list[str] | None = None) -
 
 APA_CITATION_JUDGMENT_PROMPT = (
     "Generate and check an APA 7 citation candidate from the supplied citation metadata, matching evidence, "
-    "and short document excerpts. Use only the supplied evidence. Prefer DOI-backed or publisher metadata when "
-    "present. Return apa_citation as the reference-list entry and apa_in_text_citation as the matching parenthetical "
+    "and short document excerpts. Use only the supplied evidence. When DOI or Crossref evidence is present, treat it "
+    "as the fastest route to the correct APA output only when its title, authors, year, or container agree with the "
+    "known document metadata and excerpts. If DOI evidence appears incomplete, stale, or for a different work, preserve "
+    "the best supported citation fields you can and explain the uncertainty in needs_review_reasons instead of blindly "
+    "citing the DOI. Return apa_citation as the reference-list entry and apa_in_text_citation as the matching parenthetical "
     "in-text citation in this single response. Do not add field labels, headings, bullets, or code fences inside either "
     "citation string. If the evidence is insufficient or internally conflicting, return null for uncertain citation "
     "fields and explain the uncertainty in citation_warnings. Do not invent authors, year, venue, DOI, volume, issue, "
