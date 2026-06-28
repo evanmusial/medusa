@@ -4,6 +4,7 @@ import type {
   CSSProperties,
   DragEvent,
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
@@ -28,8 +29,10 @@ import {
   Archive,
   AlertTriangle,
   ArrowDown,
+  ArrowLeft,
   ArrowRight,
   ArrowUpDown,
+  BadgeCheck,
   Ban,
   Bold,
   Bookmark,
@@ -7062,6 +7065,14 @@ function LibraryView({
     totalDocumentCount === sortedDocuments.length && pageOffset === 0
       ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
       : `Browsing ${formatWholeNumber(visibleStart)}-${formatWholeNumber(visibleEnd)} of ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
+  const resultCountLabel = selectedIds.length
+    ? `${formatWholeNumber(selectedIds.length)} selected of ${formatWholeNumber(totalDocumentCount)}`
+    : libraryCountLabel;
+  const effectivePageLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, pageLimit || pageSize || DEFAULT_LIBRARY_PAGE_SIZE);
+  const totalResultPages = totalDocumentCount > 0 ? Math.max(1, Math.ceil(totalDocumentCount / effectivePageLimit)) : 0;
+  const currentResultPage =
+    totalDocumentCount > 0 ? Math.min(totalResultPages, Math.floor(pageOffset / effectivePageLimit) + 1) : 0;
+  const pageCountLabel = `${formatWholeNumber(currentResultPage)} of ${formatWholeNumber(totalResultPages)}`;
   const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
   const effectiveRowsViewportHeight = rowsViewportHeight || rowsViewportRef.current?.clientHeight || libraryRowHeight * 12;
   const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
@@ -7076,6 +7087,19 @@ function LibraryView({
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const projectOptions = useMemo(() => sortedProjects.map(({ id, name }) => ({ id, name })), [sortedProjects]);
+  const visibleKeywordTags = useMemo(() => {
+    const counts = new Map<string, { id: string; name: string; count: number }>();
+    sortedDocuments.forEach((item) => {
+      item.tags.forEach((tag) => {
+        const current = counts.get(tag.id);
+        if (current) current.count += 1;
+        else counts.set(tag.id, { id: tag.id, name: tag.name, count: 1 });
+      });
+    });
+    return [...counts.values()]
+      .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
+      .slice(0, 24);
+  }, [sortedDocuments]);
   const selectedBulkDocument = useMemo(
     () => (selectedIds.length === 1 ? sortedDocuments.find((item) => item.id === selectedIds[0]) : undefined),
     [selectedIds, sortedDocuments],
@@ -7406,6 +7430,91 @@ function LibraryView({
             Clear
           </button>
         </div>
+        {selectedIds.length ? (
+          <>
+            <div className="pane-heading tags-heading selection-heading">
+              <CheckSquare size={17} />
+              Selection
+            </div>
+            <div className="filter-controls selection-bulk-panel">
+              <div className="filter-field">
+                <span>Read</span>
+                <LibrarySingleSelect
+                  emptyLabel="No read statuses"
+                  onChange={setBulkReadStatus}
+                  options={READ_STATUS_OPTIONS}
+                  placeholder="Read status"
+                  value={bulkReadStatus}
+                />
+              </div>
+              <div className="filter-field">
+                <span>Priority</span>
+                <LibrarySingleSelect
+                  emptyLabel="No priorities"
+                  onChange={setBulkPriority}
+                  options={PRIORITY_OPTIONS}
+                  placeholder="Priority"
+                  value={bulkPriority}
+                />
+              </div>
+              <div className="filter-field">
+                <span>Tags</span>
+                <BulkMultiSelect
+                  createFromSearchLabel="Add tag"
+                  emptyLabel="No tags"
+                  extraCount={bulkCustomTag.trim() ? 1 : 0}
+                  footer={
+                    <input
+                      className="bulk-custom-tag"
+                      data-tooltip="Type a new tag to include in the pending bulk tag update."
+                      placeholder="New tag"
+                      value={bulkCustomTag}
+                      onChange={(event) => setBulkCustomTag(event.target.value)}
+                    />
+                  }
+                  label="Tags"
+                  onCreateFromSearch={setBulkCustomTag}
+                  onChange={setBulkTagIds}
+                  options={tagOptions}
+                  searchPlaceholder="Type tag text"
+                  selectedIds={bulkTagIds}
+                />
+              </div>
+              <div className="filter-field">
+                <span>Domains</span>
+                <BulkMultiSelect
+                  emptyLabel="No domains"
+                  label="Domains"
+                  onChange={setBulkDomainIds}
+                  options={domainOptions}
+                  searchPlaceholder="Type domain name"
+                  selectedIds={bulkDomainIds}
+                />
+              </div>
+              <div className="filter-field">
+                <span>Projects</span>
+                <BulkMultiSelect
+                  emptyLabel="No projects"
+                  label="Projects"
+                  onChange={setBulkProjectIds}
+                  options={projectOptions}
+                  searchPlaceholder="Type project name"
+                  selectedIds={bulkProjectIds}
+                />
+              </div>
+              <button
+                className="primary-button"
+                data-disabled-reason={bulkUpdate.isPending ? "a bulk update is already saving." : "choose at least one bulk edit value first."}
+                data-tooltip="Apply the selected bulk read status, priority, tags, domains, and projects to the selected documents."
+                disabled={!hasBulkUpdate || bulkUpdate.isPending}
+                onClick={() => bulkUpdate.mutate()}
+              >
+                <CheckSquare size={15} />
+                Apply
+              </button>
+            </div>
+          </>
+        ) : null}
         <div className="pane-heading tags-heading">
           <Bookmark size={17} />
           Saved
@@ -7580,9 +7689,22 @@ function LibraryView({
           Keywords
         </div>
         <div className="tag-cloud">
-          {tags.slice(0, 24).map((tag) => (
-            <span key={tag.id}>{tag.name}</span>
-          ))}
+          {visibleKeywordTags.length ? (
+            visibleKeywordTags.map((tag) => (
+              <button
+                className={`tag-cloud-chip${filters.tag_id === tag.id ? " active" : ""}`}
+                data-tooltip={`Filter this Library result set to ${tag.name}.`}
+                key={tag.id}
+                onClick={() => setFilterValue("tag_id", filters.tag_id === tag.id ? "" : tag.id)}
+                type="button"
+              >
+                <span>{tag.name}</span>
+                <small>{formatWholeNumber(tag.count)}</small>
+              </button>
+            ))
+          ) : (
+            <span className="tag-cloud-empty">No keywords in this result set.</span>
+          )}
         </div>
       </aside>
       <ResizeHandle
@@ -7597,143 +7719,82 @@ function LibraryView({
       <section className="document-list">
         <div className="document-list-head">
           <div className="list-toolbar">
-          <label className="select-all-row">
-            <input
-              data-tooltip={allVisibleSelected ? "Clear the selection for every visible document." : "Select every visible document in the current Library result list."}
-              type="checkbox"
-              checked={allVisibleSelected}
-              onChange={() => {
-                if (allVisibleSelected) {
-                  setSelectedIds([]);
-                  return;
-                }
-                setSelectedIds(sortedDocuments.map((item) => item.id));
-                if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id, { updateUrl: false });
-              }}
-            />
-            <strong>{libraryCountLabel}</strong>
-          </label>
-          {selectedIds.length ? (
-            <div className="bulk-bar">
-              <span>{selectedIds.length} selected</span>
-              <LibrarySingleSelect
-                emptyLabel="No read statuses"
-                onChange={setBulkReadStatus}
-                options={READ_STATUS_OPTIONS}
-                placeholder="Read status"
-                value={bulkReadStatus}
-              />
-              <LibrarySingleSelect
-                emptyLabel="No priorities"
-                onChange={setBulkPriority}
-                options={PRIORITY_OPTIONS}
-                placeholder="Priority"
-                value={bulkPriority}
-              />
-              <BulkMultiSelect
-                createFromSearchLabel="Add tag"
-                emptyLabel="No tags"
-                extraCount={bulkCustomTag.trim() ? 1 : 0}
-                footer={
-                  <input
-                    className="bulk-custom-tag"
-                    data-tooltip="Type a new tag to include in the pending bulk tag update."
-                    placeholder="New tag"
-                    value={bulkCustomTag}
-                    onChange={(event) => setBulkCustomTag(event.target.value)}
-                  />
-                }
-                label="Tags"
-                onCreateFromSearch={setBulkCustomTag}
-                onChange={setBulkTagIds}
-                options={tagOptions}
-                searchPlaceholder="Type tag text"
-                selectedIds={bulkTagIds}
-              />
-              <BulkMultiSelect
-                emptyLabel="No domains"
-                label="Domain"
-                onChange={setBulkDomainIds}
-                options={domainOptions}
-                searchPlaceholder="Type domain name"
-                selectedIds={bulkDomainIds}
-              />
-              <BulkMultiSelect
-                emptyLabel="No projects"
-                label="Project"
-                onChange={setBulkProjectIds}
-                options={projectOptions}
-                searchPlaceholder="Type project name"
-                selectedIds={bulkProjectIds}
-              />
-              <button
-                className="primary-button"
-                data-disabled-reason={bulkUpdate.isPending ? "a bulk update is already saving." : "choose at least one bulk edit value first."}
-                data-tooltip="Apply the selected bulk read status, priority, tags, domain, and projects to the selected documents."
-                disabled={!hasBulkUpdate || bulkUpdate.isPending}
-                onClick={() => bulkUpdate.mutate()}
-              >
-                <CheckSquare size={15} />
-                Apply
-              </button>
-              <AsyncActionSlot busy={trashDocuments.isPending} feedback={trashFeedback.feedback} label="Trash move in progress">
-                <button
-                  className={asyncFeedbackClass("secondary-button danger", trashFeedback.feedback, trashDocuments.isPending)}
-                  data-disabled-reason={trashDocuments.isPending ? "a trash request is already running." : ""}
-                  data-tooltip="Move the selected Library documents to Trash. Originals, history, and stored assets are preserved."
-                  disabled={trashDocuments.isPending}
-                  onClick={trashSelectedDocuments}
-                  type="button"
-                >
-                  <Trash2 className={trashDocuments.isPending ? "spin" : ""} size={15} />
-                  Trash
-                </button>
-              </AsyncActionSlot>
-            </div>
-          ) : null}
-          <div className="library-page-controls">
-            <label className="library-page-size">
-              <span>Rows</span>
+            <label className="select-all-row">
               <input
-                data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
-                list="library-page-size-suggestions"
-                min={MIN_LIBRARY_PAGE_SIZE}
-                onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
-                type="number"
-                value={pageSize}
+                data-tooltip={allVisibleSelected ? "Clear the selection for every visible document." : "Select every visible document in the current Library result list."}
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={() => {
+                  if (allVisibleSelected) {
+                    setSelectedIds([]);
+                    return;
+                  }
+                  setSelectedIds(sortedDocuments.map((item) => item.id));
+                  if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id, { updateUrl: false });
+                }}
               />
-              <datalist id="library-page-size-suggestions">
-                {LIBRARY_PAGE_SIZE_SUGGESTIONS.map((option) => (
-                  <option key={String(option.value)} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </datalist>
+              <strong>{resultCountLabel}</strong>
             </label>
-            <button
-              className="secondary-button compact"
-              data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
-              data-tooltip="Load the previous Library result window."
-              disabled={pageOffset <= 0 || loading}
-              onClick={onPreviousPage}
-              type="button"
-            >
-              <ChevronLeft size={15} />
-              Previous
-            </button>
-            <span>{pageLimit ? `${formatWholeNumber(Math.floor(pageOffset / pageLimit) + 1)}` : "1"}</span>
-            <button
-              className="secondary-button compact"
-              data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
-              data-tooltip="Load the next Library result window."
-              disabled={!hasMoreDocuments || loading}
-              onClick={onNextPage}
-              type="button"
-            >
-              Next
-              <ChevronRight size={15} />
-            </button>
-          </div>
+            {selectedIds.length ? (
+              <div className="selection-trash-action">
+                <AsyncActionSlot busy={trashDocuments.isPending} feedback={trashFeedback.feedback} label="Trash move in progress">
+                  <button
+                    className={asyncFeedbackClass("secondary-button danger", trashFeedback.feedback, trashDocuments.isPending)}
+                    data-disabled-reason={trashDocuments.isPending ? "a trash request is already running." : ""}
+                    data-tooltip="Move the selected Library documents to Trash. Originals, history, and stored assets are preserved."
+                    disabled={trashDocuments.isPending}
+                    onClick={trashSelectedDocuments}
+                    type="button"
+                  >
+                    <Trash2 className={trashDocuments.isPending ? "spin" : ""} size={15} />
+                    Trash
+                  </button>
+                </AsyncActionSlot>
+              </div>
+            ) : null}
+            <div className="library-page-controls">
+              <label className="library-page-size">
+                <span>Rows</span>
+                <input
+                  data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
+                  list="library-page-size-suggestions"
+                  min={MIN_LIBRARY_PAGE_SIZE}
+                  onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
+                  type="number"
+                  value={pageSize}
+                />
+                <datalist id="library-page-size-suggestions">
+                  {LIBRARY_PAGE_SIZE_SUGGESTIONS.map((option) => (
+                    <option key={String(option.value)} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </datalist>
+              </label>
+              <button
+                aria-label="Previous Library result page"
+                className="icon-button compact library-page-arrow"
+                data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
+                data-tooltip="Load the previous Library result window."
+                disabled={pageOffset <= 0 || loading}
+                onClick={onPreviousPage}
+                type="button"
+              >
+                <ArrowLeft size={18} strokeWidth={3} />
+              </button>
+              <span className="library-page-count">{pageCountLabel}</span>
+              <button
+                aria-label="Next Library result page"
+                className="icon-button compact library-page-arrow"
+                data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
+                data-tooltip="Load the next Library result window."
+                disabled={!hasMoreDocuments || loading}
+                onClick={onNextPage}
+                type="button"
+              >
+                <ArrowRight size={18} strokeWidth={3} />
+              </button>
+            </div>
           </div>
           {hasResultChips ? (
             <div className="active-result-bar" aria-label="Active Library result filters">
@@ -8906,6 +8967,7 @@ function DocumentPanelContent({
   const titleEditInputRef = useRef<HTMLInputElement | null>(null);
   const doiEditInputRef = useRef<HTMLInputElement | null>(null);
   const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const bibliographyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pdfPreviewScrollRef = useRef<HTMLDivElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
@@ -8953,6 +9015,10 @@ function DocumentPanelContent({
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState(document.rich_summary || "");
   const [summaryEditError, setSummaryEditError] = useState<string | null>(null);
+  const [editingBibliography, setEditingBibliography] = useState(false);
+  const [bibliographyDraft, setBibliographyDraft] = useState(document.bibliography || "");
+  const [bibliographyEditError, setBibliographyEditError] = useState<string | null>(null);
+  const [bibliographyVerifiedEditConfirmed, setBibliographyVerifiedEditConfirmed] = useState(false);
   const [domainAssignOpen, setDomainAssignOpen] = useState(false);
   const [domainAssignSearch, setDomainAssignSearch] = useState("");
   const [domainEditError, setDomainEditError] = useState<string | null>(null);
@@ -9116,6 +9182,36 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setSummaryEditError(actionFailureMessage("Could not save summary", error)),
+  });
+  const updateBibliography = useMutation({
+    mutationFn: ({ value, confirmVerified }: { value: string; confirmVerified: boolean }) =>
+      api.updateDocument(document.id, {
+        bibliography: value.trim() || null,
+        confirm_verified_bibliography_edit: confirmVerified,
+      }),
+    onSuccess: (updatedDocument) => {
+      setEditingBibliography(false);
+      setBibliographyDraft(updatedDocument.bibliography || "");
+      setBibliographyEditError(null);
+      setBibliographyVerifiedEditConfirmed(false);
+      setDraft(draftFromDocument(updatedDocument));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+    },
+    onError: (error) => setBibliographyEditError(actionFailureMessage("Could not save bibliography", error)),
+  });
+  const verifyBibliography = useMutation({
+    mutationFn: () => api.verifyDocumentBibliography(document.id),
+    onSuccess: (updatedDocument) => {
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      setDraft(draftFromDocument(updatedDocument));
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
   const updatePageText = useMutation({
     mutationFn: ({ pageId, normalizedText }: { pageId: string; normalizedText: string }) =>
@@ -9300,13 +9396,13 @@ function DocumentPanelContent({
     },
   });
   const refreshBibliography = useMutation({
-    mutationFn: () =>
+    mutationFn: (confirmVerified: boolean) =>
       startConcordanceRun({
         backgroundDetail: document.title,
         backgroundLabel: "Refreshing bibliography",
         capability_keys: ["bibliography_extraction"],
         capabilityKey: "bibliography_extraction",
-        createRun: () => api.refreshDocumentBibliography(document.id),
+        createRun: () => api.refreshDocumentBibliography(document.id, { confirmVerified }),
         documentId: document.id,
         force: true,
         label: `Bibliography refresh: ${document.title}`,
@@ -9533,6 +9629,10 @@ function DocumentPanelContent({
     setEditingSummary(false);
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
+    setEditingBibliography(false);
+    setBibliographyDraft(document.bibliography || "");
+    setBibliographyEditError(null);
+    setBibliographyVerifiedEditConfirmed(false);
     setDomainAssignOpen(false);
     setDomainAssignSearch("");
     setDomainEditError(null);
@@ -9582,6 +9682,10 @@ function DocumentPanelContent({
   }, [document.rich_summary, editingSummary]);
 
   useEffect(() => {
+    if (!editingBibliography) setBibliographyDraft(document.bibliography || "");
+  }, [document.bibliography, editingBibliography]);
+
+  useEffect(() => {
     if (editingCitation) return;
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
   }, [document.apa_citation, document.apa_in_text_citation, editingCitation]);
@@ -9591,11 +9695,11 @@ function DocumentPanelContent({
   }, [accessorySummaryDefaultModel, document.id]);
 
   useEffect(() => {
-    if (!document.bibliography_generated_at) return;
+    if (!document.bibliography_generated_at && !document.bibliography_verified_at) return;
     setRelativeTimeNow(Date.now());
     const timer = window.setInterval(() => setRelativeTimeNow(Date.now()), 60000);
     return () => window.clearInterval(timer);
-  }, [document.bibliography_generated_at]);
+  }, [document.bibliography_generated_at, document.bibliography_verified_at]);
 
   useEffect(() => {
     if (!domainAssignOpen) return;
@@ -10670,6 +10774,7 @@ function DocumentPanelContent({
   useEscapeLayer(accessoryComposerOpen && !accessorySummaryBusy, () => setAccessoryComposerOpen(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingDoi && !updateDoi.isPending, () => setEditingDoi(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingSummary && !updateSummary.isPending, () => setEditingSummary(false), ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(editingBibliography && !updateBibliography.isPending, () => setEditingBibliography(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editing && !updateDocument.isPending, () => setEditing(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(pageTextEditing && !pageTextBusy, cancelPageTextEdit, ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(Boolean(editingCitation) && !updateCitation.isPending, cancelCitationEdit, ESCAPE_PRIORITY_EXPANDED);
