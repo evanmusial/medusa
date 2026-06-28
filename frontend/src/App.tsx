@@ -2147,7 +2147,7 @@ function HeaderWorkProgress({
         >
           <span className="header-work-main">
             <span className="header-work-icon">
-              {activeClass === "complete" ? <CheckCircle2 size={15} /> : <RefreshCw className={activeClass === "running" ? "spin" : ""} size={15} />}
+              {activeClass === "complete" ? <CheckCircle2 size={15} /> : <RefreshCw className="spin" size={15} />}
             </span>
             <span className="header-work-copy">
               <strong>{label}</strong>
