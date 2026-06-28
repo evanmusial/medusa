@@ -13,7 +13,7 @@ docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 Prometheus metrics are opt-in. When the server should expose the Medusa exporter to Prometheus, layer in `docker-compose.metrics.yml` after adding the metrics token settings to `.env`:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend metrics-exporter
+docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend haproxy metrics-exporter
 ```
 
 The server environment and override:
@@ -23,9 +23,9 @@ The server environment and override:
 - adds a dedicated-server IPv6 HAProxy bind through `MEDUSA_BIND_IPV6`, defaulting to loopback `::1`;
 - starts backend and worker with `MEDUSA_IMPORT_WORKER_CONCURRENCY=2` unless `.env` overrides it;
 - starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
-- optionally binds the Prometheus exporter through `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT` when `docker-compose.metrics.yml` is included.
+- optionally binds the Prometheus exporter through HAProxy TLS on `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT` when `docker-compose.metrics.yml` is included.
 
-Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. For the Dallas host, the planned public URL is `https://medusa.evan.engineer:3737`, the IPv4 bind IP is `23.227.185.85`, the IPv6 bind IP is `2604:4500:a:3fb::3737`, the CPU set is `2-7`, the document cache is `51200` MB, import worker concurrency is `2`, and the planned Prometheus exporter bind is `23.227.185.85:43737`. `MEDUSA_ALLOWED_HOSTS=*` intentionally leaves frontend Host checks open during the migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
+Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. For the Dallas host, the planned public URL is `https://medusa.evan.engineer:3737`, the IPv4 bind IP is `23.227.185.85`, the IPv6 bind IP is `2604:4500:a:3fb::3737`, the CPU set is `2-7`, the document cache is `51200` MB, import worker concurrency is `2`, and the planned Prometheus exporter URL is `https://medusa.evan.engineer:43737/metrics`. `MEDUSA_ALLOWED_HOSTS=*` intentionally leaves frontend Host checks open during the migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
 
 Before moving from the local machine, run:
 
@@ -102,10 +102,10 @@ MEDUSA_CERTBOT_EMAIL=admin@example.com deploy/server/medusa-certbot.sh issue
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-If Prometheus scraping should be enabled immediately, include the metrics overlay after creating `data/secrets/prometheus-token` and setting `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env`:
+If Prometheus scraping should be enabled immediately, include the metrics overlay after creating `data/secrets/prometheus-token` and setting `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env`. The metrics overlay also refreshes HAProxy so `https://medusa.evan.engineer:43737` uses the existing certificate:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend metrics-exporter
+docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend haproxy metrics-exporter
 ```
 
 10. Restore the full PostgreSQL backup from Utilities on the target.

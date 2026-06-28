@@ -2,13 +2,20 @@
 #
 # First enablement on a server should refresh backend plus the exporter so both
 # services read the same MEDUSA_METRICS_INTERNAL_TOKEN:
-#   docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend metrics-exporter
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend haproxy metrics-exporter
 #
 # The exporter joins Medusa's private Docker networks so it can read PostgreSQL,
 # Valkey, HAProxy stats, and the token-gated backend snapshot without exposing
-# those internal services on the host.
+# those internal services on the host. HAProxy publishes the public metrics port
+# and terminates TLS with the existing Medusa certificate.
 
 services:
+  haproxy:
+    ports:
+      - "${MEDUSA_METRICS_BIND_IP:-127.0.0.1}:${MEDUSA_METRICS_PORT:-43737}:${MEDUSA_METRICS_PORT:-43737}"
+    depends_on:
+      - metrics-exporter
+
   metrics-exporter:
     build:
       context: ./backend
@@ -36,8 +43,8 @@ services:
       MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
       MEDUSA_BUILD_HASH: ${MEDUSA_BUILD_HASH:-}
       MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
-    ports:
-      - "${MEDUSA_METRICS_BIND_IP:-127.0.0.1}:${MEDUSA_METRICS_PORT:-43737}:${MEDUSA_METRICS_PORT:-43737}"
+    expose:
+      - "${MEDUSA_METRICS_PORT:-43737}"
     volumes:
       - ./data:/app/data:ro
       # Optional Docker Engine metrics. Mount only if you accept that Docker

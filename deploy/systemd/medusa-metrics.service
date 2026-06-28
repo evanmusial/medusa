@@ -1,5 +1,5 @@
 [Unit]
-Description=Medusa Prometheus metrics exporter sidecar
+Description=Medusa Prometheus metrics exporter and TLS proxy
 Wants=network-online.target
 After=network-online.target docker.service medusa.service
 Requires=docker.service
@@ -8,8 +8,8 @@ Requires=docker.service
 Type=oneshot
 WorkingDirectory=/opt/medusa
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
-ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build metrics-exporter
-ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build metrics-exporter
+ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build haproxy metrics-exporter
+ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build haproxy metrics-exporter
 ExecStop=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml stop metrics-exporter
 RemainAfterExit=yes
 TimeoutStartSec=300
