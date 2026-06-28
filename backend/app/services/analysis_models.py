@@ -10,7 +10,8 @@ from app.config import get_settings
 DEFAULT_GPT_MODEL = "gpt-5.5"
 DEFAULT_SUMMARY_MODEL = "gpt-5.4"
 DEFAULT_KEYWORDS_TOPICS_MODEL = "gpt-5.4-mini"
-DEFAULT_BIBLIOGRAPHY_CLEANUP_MODEL = "gpt-5.4-nano"
+DEFAULT_BIBLIOGRAPHY_CLEANUP_MODEL = "gpt-5-mini"
+DEFAULT_BIBLIOGRAPHY_CLEANUP_FALLBACK_MODEL = "gpt-5.4-mini"
 DEFAULT_ACCESSORY_SUMMARIES_MODEL = "gpt-5.4"
 DEFAULT_FORMULA_CAPTURE_MODEL = "gpt-5.4"
 DEFAULT_PORTFOLIO_ASSESSMENT_MODEL = "gpt-5.4"
@@ -123,7 +124,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_BIBLIOGRAPHY_CLEANUP,
         label="Bibliography Cleanup",
         model_kind="gpt",
-        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default.",
+        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default; unsafe default cleanup retries once with GPT-5.4-mini.",
     ),
     AnalysisModelTask(
         key=MODEL_FORMULA_CAPTURE,

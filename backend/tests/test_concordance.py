@@ -133,13 +133,13 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         assert forced_job.status == "complete"
         db.refresh(capability)
         assert capability.evidence["status"] == "extracted"
-        assert capability.evidence["model_cleanup"]["model"] == "gpt-5.4-nano"
+        assert capability.evidence["model_cleanup"]["model"] == "gpt-5-mini"
         assert capability.evidence["model_cleanup"]["formatting"] == "alphabetized_apa_markdown_one_source_per_line"
         assert document.metadata_evidence["bibliography_extraction"]["status"] == "extracted"
         assert document.metadata_evidence["bibliography_extraction"]["generated_at"] == capability.evidence["generated_at"]
         assert datetime.fromisoformat(capability.evidence["generated_at"])
         assert len(cleanup_calls) == 1
-        assert cleanup_calls[0]["model"] == "gpt-5.4-nano"
+        assert cleanup_calls[0]["model"] == "gpt-5-mini"
         assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"
 
 
@@ -588,6 +588,97 @@ def test_forced_bibliography_refresh_rejects_incomplete_model_cleanup(monkeypatc
         assert cleanup["input_entry_count"] == 81
         assert cleanup["output_entry_count"] == 1
         assert document.metadata_evidence["bibliography_extraction"]["formatting"] != "apa_markdown_model_cleanup"
+
+
+def test_forced_bibliography_refresh_uses_fallback_after_unsafe_cleanup(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentPage
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    cleanup_calls = []
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+            cleanup_calls.append({"model": model, "prompt_cache_key": prompt_cache_key})
+            if model == "gpt-5-mini":
+                return {
+                    "bibliography": "\n".join(
+                        [
+                            "Anderson, R. (1993). Why cryptosystems fail.",
+                            "Neumann, P. G., & Parker, D. (1989). A Summary of Computer Misuse Techniques.",
+                        ]
+                    ),
+                    "confidence": 0.42,
+                    "notes": ["Complete but low-confidence cleanup."],
+                    "_openai": {"model": model, "configured": True},
+                }
+            return {
+                "bibliography": "\n".join(
+                    [
+                        "Anderson, R. (1993). Why cryptosystems fail.",
+                        "Neumann, P. G., & Parker, D. (1989). A Summary of Computer Misuse Techniques.",
+                    ]
+                ),
+                "confidence": 0.93,
+                "notes": [],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Fallback Cleanup Target",
+            original_filename="fallback-cleanup.pdf",
+            checksum_sha256="q" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                normalized_text=(
+                    "References\n"
+                    "[1] Neumann, P. G., and Parker, D. (1989). A Summary of Computer Misuse Techniques.\n"
+                    "[2] Anderson, R. (1993). Why cryptosystems fail."
+                ),
+            )
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        cleanup = document.metadata_evidence["bibliography_extraction"]["model_cleanup"]
+        assert job.status == "complete"
+        assert [call["model"] for call in cleanup_calls] == ["gpt-5-mini", "gpt-5.4-mini"]
+        assert cleanup_calls[1]["prompt_cache_key"].endswith(":fallback")
+        assert cleanup["status"] == "formatted"
+        assert cleanup["model"] == "gpt-5.4-mini"
+        assert cleanup["fallback"] is True
+        assert cleanup["fallback_for"] == "rejected_low_confidence"
+        assert [attempt["status"] for attempt in cleanup["attempts"]] == ["rejected_low_confidence", "formatted"]
+        assert "Parker, D." in document.bibliography
+        assert document.metadata_evidence["bibliography_extraction"]["formatting"] == "apa_markdown_model_cleanup"
 
 
 def test_forced_bibliography_refresh_rejects_cleanup_that_drops_coauthor(monkeypatch, tmp_path):

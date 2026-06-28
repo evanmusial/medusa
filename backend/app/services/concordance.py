@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services.ai import BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS, get_ai_service, sorted_bibliography_entries
 from app.services.analysis_models import (
+    DEFAULT_BIBLIOGRAPHY_CLEANUP_FALLBACK_MODEL,
     MODEL_APA_CITATION,
     MODEL_BIBLIOGRAPHY_CLEANUP,
     MODEL_FORMULA_CAPTURE,
@@ -73,6 +74,7 @@ from app.services.verifier import (
 
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 300
+BIBLIOGRAPHY_CLEANUP_LOW_CONFIDENCE_THRESHOLD = 0.55
 BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
 BIBLIOGRAPHY_AUTHOR_INITIAL_RE = re.compile(r"\b[A-Z](?:\.-?[A-Z])?\.")
@@ -199,6 +201,59 @@ def _bibliography_duplicate_cleanup_entries(cleanup_bibliography: str) -> list[s
             continue
         seen.add(normalized)
     return duplicates
+
+
+def _bibliography_cleanup_confidence(value: Any) -> float | None:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    if confidence < 0 or confidence > 1:
+        return None
+    return confidence
+
+
+def _evaluate_bibliography_cleanup(
+    *,
+    input_bibliography: str,
+    input_entry_count: int,
+    cleanup: dict[str, Any],
+) -> dict[str, Any]:
+    cleanup_bibliography = cleanup.get("bibliography") or ""
+    cleanup_entry_count = _bibliography_entry_count(cleanup_bibliography)
+    missing_author_sets = _bibliography_cleanup_missing_author_sets(input_bibliography, cleanup_bibliography)
+    duplicate_cleanup_entries = _bibliography_duplicate_cleanup_entries(cleanup_bibliography)
+    cleanup_has_extra_duplicates = bool(duplicate_cleanup_entries and cleanup_entry_count > input_entry_count)
+    configured = bool((cleanup.get("_openai") or {}).get("configured"))
+    confidence = _bibliography_cleanup_confidence(cleanup.get("confidence"))
+    status = "formatted" if configured else "local_fallback"
+    accepted = False
+    if (
+        cleanup_bibliography
+        and cleanup_entry_count >= input_entry_count
+        and not missing_author_sets
+        and not cleanup_has_extra_duplicates
+    ):
+        accepted = configured and (confidence is None or confidence >= BIBLIOGRAPHY_CLEANUP_LOW_CONFIDENCE_THRESHOLD)
+        if configured and not accepted:
+            status = "rejected_low_confidence"
+    elif cleanup_bibliography and missing_author_sets:
+        status = "rejected_author_loss"
+    elif cleanup_bibliography and cleanup_has_extra_duplicates:
+        status = "rejected_duplicate_cleanup"
+    elif cleanup_bibliography:
+        status = "rejected_incomplete"
+    else:
+        status = "rejected_empty"
+    return {
+        "accepted": accepted,
+        "status": status,
+        "bibliography": cleanup_bibliography,
+        "output_entry_count": cleanup_entry_count,
+        "missing_author_sets": missing_author_sets,
+        "duplicate_entries": duplicate_cleanup_entries,
+        "confidence": confidence,
+    }
 
 
 @dataclass(frozen=True)
@@ -1352,6 +1407,7 @@ class ConcordanceProcessor:
                 }
                 bibliography = sorted_bibliography
             cleanup_model = get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
+            cleanup_fallback_model = DEFAULT_BIBLIOGRAPHY_CLEANUP_FALLBACK_MODEL
             bibliography_entry_count = _bibliography_entry_count(bibliography)
             if (
                 len(bibliography) > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS
@@ -1367,55 +1423,80 @@ class ConcordanceProcessor:
                     "formatting": evidence.get("formatting") or "deterministic_extraction",
                 }
             else:
-                try:
-                    cleanup = get_ai_service().normalize_bibliography(
-                        document.original_filename or document.title or "document.pdf",
-                        bibliography,
-                        model=cleanup_model,
-                        usage_context=self._usage_context(document, job, "bibliography_extraction"),
-                        prompt_cache_key=f"medusa-bibliography:{document.id}",
-                    )
-                    cleanup_bibliography = cleanup.get("bibliography") or ""
-                    cleanup_entry_count = _bibliography_entry_count(cleanup_bibliography)
-                    missing_author_sets = _bibliography_cleanup_missing_author_sets(bibliography, cleanup_bibliography)
-                    duplicate_cleanup_entries = _bibliography_duplicate_cleanup_entries(cleanup_bibliography)
-                    cleanup_has_extra_duplicates = bool(
-                        duplicate_cleanup_entries and cleanup_entry_count > bibliography_entry_count
-                    )
-                    cleanup_status = "formatted" if (cleanup.get("_openai") or {}).get("configured") else "local_fallback"
-                    if (
-                        cleanup_bibliography
-                        and cleanup_entry_count >= bibliography_entry_count
-                        and not missing_author_sets
-                        and not cleanup_has_extra_duplicates
-                    ):
-                        bibliography = cleanup_bibliography
-                    elif cleanup_bibliography and missing_author_sets:
-                        cleanup_status = "rejected_author_loss"
-                    elif cleanup_bibliography and cleanup_has_extra_duplicates:
-                        cleanup_status = "rejected_duplicate_cleanup"
-                    elif cleanup_bibliography:
-                        cleanup_status = "rejected_incomplete"
-                    evidence["model_cleanup"] = {
-                        "status": cleanup_status,
-                        "model": (cleanup.get("_openai") or {}).get("model") or cleanup_model,
-                        "confidence": cleanup.get("confidence"),
-                        "notes": cleanup.get("notes") or [],
-                        "input_entry_count": bibliography_entry_count,
-                        "output_entry_count": cleanup_entry_count,
-                        **({"missing_author_sets": missing_author_sets[:5]} if missing_author_sets else {}),
-                        **({"duplicate_entries": duplicate_cleanup_entries[:5]} if cleanup_has_extra_duplicates else {}),
-                        "formatting": "alphabetized_apa_markdown_one_source_per_line",
-                    }
-                    if (cleanup.get("_openai") or {}).get("configured") and cleanup_status == "formatted":
-                        evidence["formatting"] = "apa_markdown_model_cleanup"
-                except Exception as exc:
-                    evidence["model_cleanup"] = {
-                        "status": "failed",
-                        "model": cleanup_model,
-                        "error": str(exc),
-                        "formatting": "local_fallback",
-                    }
+                cleanup_models = [cleanup_model]
+                if cleanup_fallback_model and cleanup_fallback_model != cleanup_model:
+                    cleanup_models.append(cleanup_fallback_model)
+                cleanup_attempts: list[dict[str, Any]] = []
+                accepted_cleanup = False
+                ai_service = get_ai_service()
+                for attempt_index, model in enumerate(cleanup_models):
+                    fallback_for = cleanup_attempts[-1]["status"] if attempt_index > 0 and cleanup_attempts else None
+                    try:
+                        cleanup = ai_service.normalize_bibliography(
+                            document.original_filename or document.title or "document.pdf",
+                            bibliography,
+                            model=model,
+                            usage_context=self._usage_context(document, job, "bibliography_extraction"),
+                            prompt_cache_key=f"medusa-bibliography:{document.id}" + (":fallback" if attempt_index else ""),
+                        )
+                        evaluation = _evaluate_bibliography_cleanup(
+                            input_bibliography=bibliography,
+                            input_entry_count=bibliography_entry_count,
+                            cleanup=cleanup,
+                        )
+                        attempt = {
+                            "status": evaluation["status"],
+                            "model": (cleanup.get("_openai") or {}).get("model") or model,
+                            "confidence": cleanup.get("confidence"),
+                            "notes": cleanup.get("notes") or [],
+                            "input_entry_count": bibliography_entry_count,
+                            "output_entry_count": evaluation["output_entry_count"],
+                            **({"fallback": True, "fallback_for": fallback_for} if attempt_index else {}),
+                            **(
+                                {"missing_author_sets": evaluation["missing_author_sets"][:5]}
+                                if evaluation["missing_author_sets"]
+                                else {}
+                            ),
+                            **(
+                                {"duplicate_entries": evaluation["duplicate_entries"][:5]}
+                                if evaluation["status"] == "rejected_duplicate_cleanup"
+                                else {}
+                            ),
+                        }
+                        cleanup_attempts.append(attempt)
+                        if evaluation["accepted"]:
+                            bibliography = evaluation["bibliography"]
+                            accepted_cleanup = True
+                            break
+                    except Exception as exc:
+                        cleanup_attempts.append(
+                            {
+                                "status": "failed",
+                                "model": model,
+                                "error": str(exc),
+                                "input_entry_count": bibliography_entry_count,
+                                "output_entry_count": 0,
+                                **({"fallback": True, "fallback_for": fallback_for} if attempt_index else {}),
+                            }
+                        )
+                final_attempt = cleanup_attempts[-1] if cleanup_attempts else {
+                    "status": "failed",
+                    "model": cleanup_model,
+                    "input_entry_count": bibliography_entry_count,
+                    "output_entry_count": 0,
+                }
+                evidence["model_cleanup"] = {
+                    **final_attempt,
+                    "fallback_model": cleanup_fallback_model,
+                    "attempts": cleanup_attempts,
+                    "formatting": (
+                        "local_fallback"
+                        if final_attempt.get("status") == "failed"
+                        else "alphabetized_apa_markdown_one_source_per_line"
+                    ),
+                }
+                if accepted_cleanup:
+                    evidence["formatting"] = "apa_markdown_model_cleanup"
         if bibliography:
             before = document_correction_snapshot(document)
             document.bibliography = bibliography

@@ -234,7 +234,7 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         tag_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_KEYWORDS_TOPICS)
         assert tag_task["selected_model"] == "gpt-5.4"
         bibliography_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_BIBLIOGRAPHY_CLEANUP)
-        assert bibliography_task["default_model"] == "gpt-5.4-nano"
+        assert bibliography_task["default_model"] == "gpt-5-mini"
         assert bibliography_task["selected_model"] == "gemini-3.1-flash-lite"
         formula_task = next(task for task in payload["analysis_model_tasks"] if task["key"] == MODEL_FORMULA_CAPTURE)
         assert formula_task["default_model"] == "gpt-5.4"
