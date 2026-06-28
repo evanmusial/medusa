@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -148,6 +149,156 @@ def format_apa_in_text_citation(metadata: dict[str, Any]) -> str:
     else:
         author_text = f"{authors[0]} et al."
     return f"({author_text}, {year})"
+
+
+@dataclass(frozen=True)
+class ApaCitationPair:
+    reference_list: str
+    in_text: str
+    validation_warnings: list[str]
+
+
+_LABEL_PREFIX_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:apa\s*)?(?:reference\s*list|reference|citation|apa\s*in[-\s]?text\s*citation|in[-\s]?text\s*citation)\s*:\s*",
+    re.IGNORECASE,
+)
+_LABEL_HEADING_RE = re.compile(
+    r"^\s*(?:apa\s*)?(?:reference\s*list|reference|citation|apa\s*in[-\s]?text\s*citation|in[-\s]?text\s*citation)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_citation_wrappers(value: Any) -> str:
+    text = decode_html_entities(value)
+    text = re.sub(r"^```(?:markdown|text)?\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s*```$", "", text).strip()
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if _LABEL_HEADING_RE.fullmatch(line):
+            continue
+        lines.append(_LABEL_PREFIX_RE.sub("", line).strip())
+    lines = [line for line in lines if line]
+    return re.sub(r"\s+", " ", " ".join(lines)).strip()
+
+
+def _metadata_year(metadata: dict[str, Any]) -> str:
+    return str(metadata.get("publication_year") or metadata.get("year") or "n.d.").strip() or "n.d."
+
+
+def _year_pattern(metadata: dict[str, Any]) -> str:
+    year = _metadata_year(metadata)
+    return r"(?:\d{4}|n\.d\.)" if year == "n.d." else re.escape(year)
+
+
+def _reference_year(reference_list: str) -> str:
+    match = re.search(r"\((\d{4}|n\.d\.)\)", reference_list or "")
+    return match.group(1) if match else ""
+
+
+def _in_text_year(in_text: str) -> str:
+    match = re.search(r",\s*(\d{4}|n\.d\.)\)", in_text or "")
+    return match.group(1) if match else ""
+
+
+def _title_anchor_words(metadata: dict[str, Any]) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9]+", str(metadata.get("title") or "").lower())
+    stop_words = {"a", "an", "and", "for", "in", "of", "on", "or", "the", "to", "with"}
+    return [word for word in words if len(word) > 2 and word not in stop_words][:4]
+
+
+def _first_author_family(metadata: dict[str, Any]) -> str:
+    authors = metadata.get("authors") or []
+    if not authors:
+        return ""
+    return normalize_author_name(authors[0])["family"].strip()
+
+
+def _reference_list_is_plausible(reference_list: str, metadata: dict[str, Any]) -> bool:
+    if not reference_list or len(reference_list) < 20:
+        return False
+    if reference_list.startswith("(") and reference_list.endswith(")") and len(reference_list) < 80:
+        return False
+    if not re.search(rf"\({_year_pattern(metadata)}\)", reference_list):
+        return False
+    lowered = reference_list.lower()
+    author_family = _first_author_family(metadata).lower()
+    title_words = _title_anchor_words(metadata)
+    if author_family and author_family not in lowered:
+        return False
+    if title_words and not any(word in lowered for word in title_words):
+        return False
+    return True
+
+
+def _normalize_parenthetical_in_text(value: Any) -> str:
+    text = _strip_citation_wrappers(value)
+    match = re.search(r"\([^()]+,\s*(?:\d{4}|n\.d\.)\)", text)
+    if match:
+        return match.group(0).strip()
+    if text and not text.startswith("(") and not text.endswith(")"):
+        text = f"({text})"
+    return text
+
+
+def _in_text_is_plausible(in_text: str, metadata: dict[str, Any]) -> bool:
+    if not re.fullmatch(r"\([^()]+,\s*(?:\d{4}|n\.d\.)\)", in_text or ""):
+        return False
+    year = _metadata_year(metadata)
+    if year != "n.d." and year not in in_text:
+        return False
+    author_family = _first_author_family(metadata)
+    if author_family and author_family not in in_text:
+        return False
+    if not author_family:
+        title_words = _title_anchor_words(metadata)
+        if title_words and not any(word in in_text.lower() for word in title_words):
+            return False
+    return True
+
+
+def _fallback_in_text_for_reference(metadata: dict[str, Any], reference_list: str) -> str:
+    reference_year = _reference_year(reference_list)
+    if reference_year and _metadata_year(metadata) == "n.d.":
+        metadata = {**metadata, "publication_year": reference_year}
+    return format_apa_in_text_citation(metadata)
+
+
+def _pair_years_conflict(reference_list: str, in_text: str) -> bool:
+    reference_year = _reference_year(reference_list)
+    parenthetical_year = _in_text_year(in_text)
+    return bool(reference_year and parenthetical_year and reference_year != parenthetical_year)
+
+
+def validate_apa_citation_pair(
+    metadata: dict[str, Any],
+    *,
+    reference_list: str | None = None,
+    in_text: str | None = None,
+) -> ApaCitationPair:
+    """Normalize and validate the paired APA reference-list and in-text values."""
+    fallback_reference = format_apa_citation(metadata)
+    normalized_reference = _strip_citation_wrappers(reference_list)
+    normalized_in_text = _normalize_parenthetical_in_text(in_text)
+    supplied_reference = bool(normalized_reference)
+    supplied_in_text = bool(normalized_in_text)
+    warnings: list[str] = []
+
+    if not _reference_list_is_plausible(normalized_reference, metadata):
+        normalized_reference = fallback_reference
+        if supplied_reference:
+            warnings.append("reference_list_fallback")
+    fallback_in_text = _fallback_in_text_for_reference(metadata, normalized_reference)
+    if not _in_text_is_plausible(normalized_in_text, metadata) or _pair_years_conflict(normalized_reference, normalized_in_text):
+        normalized_in_text = fallback_in_text
+        if supplied_in_text:
+            warnings.append("in_text_fallback")
+
+    return ApaCitationPair(
+        reference_list=normalized_reference,
+        in_text=normalized_in_text,
+        validation_warnings=warnings,
+    )
 
 
 def citation_key(metadata: dict[str, Any]) -> str:

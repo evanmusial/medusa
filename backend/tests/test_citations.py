@@ -5,6 +5,7 @@ from app.services.citations import (
     format_bibtex,
     format_ris,
     to_csl_json,
+    validate_apa_citation_pair,
 )
 
 
@@ -88,6 +89,62 @@ def test_format_apa_decodes_html_entities():
     assert "&quot;" not in citation
     assert "Information Management & Computer Security" in citation
     assert '"intentional"' in citation
+
+
+def test_validate_apa_citation_pair_strips_labels_and_accepts_pair():
+    metadata = {
+        "title": "Situated knowledges",
+        "authors": [{"given": "Donna", "family": "Haraway"}],
+        "publication_year": 1988,
+        "journal": "Feminist Studies",
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list="APA Reference List\nHaraway, D. (1988). Situated knowledges. *Feminist Studies*.",
+        in_text="APA In-Text Citation\n(Haraway, 1988)",
+    )
+
+    assert pair.reference_list == "Haraway, D. (1988). Situated knowledges. *Feminist Studies*."
+    assert pair.in_text == "(Haraway, 1988)"
+    assert pair.validation_warnings == []
+
+
+def test_validate_apa_citation_pair_falls_back_for_wrong_shape():
+    metadata = {
+        "title": "Situated knowledges",
+        "authors": [{"given": "Donna", "family": "Haraway"}],
+        "publication_year": 1988,
+        "journal": "Feminist Studies",
+        "doi": "10.2307/3178066",
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list="(Wrong, 2020)",
+        in_text="Wrong 2020",
+    )
+
+    assert pair.reference_list == format_apa_citation(metadata)
+    assert pair.in_text == "(Haraway, 1988)"
+    assert pair.validation_warnings == ["reference_list_fallback", "in_text_fallback"]
+
+
+def test_validate_apa_citation_pair_accepts_supplied_year_when_metadata_lacks_year():
+    metadata = {
+        "title": "Notes on the analytical engine",
+        "authors": [{"given": "Ada", "family": "Lovelace"}],
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list="Lovelace, A. (1843). Notes on the analytical engine.",
+        in_text="(Lovelace, 1843)",
+    )
+
+    assert pair.reference_list == "Lovelace, A. (1843). Notes on the analytical engine."
+    assert pair.in_text == "(Lovelace, 1843)"
+    assert pair.validation_warnings == []
 
 
 def test_exports_include_expected_identifiers():
