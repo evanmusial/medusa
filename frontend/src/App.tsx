@@ -2059,6 +2059,19 @@ function backgroundJobFromBackupRun(run: BackupRun): BackgroundJob {
   };
 }
 
+function backgroundJobFromAccessorySummaryCount(count: number, updatedAt: number): BackgroundJob | null {
+  if (count <= 0) return null;
+  return {
+    id: "accessory-summary-active",
+    label: count === 1 ? "Inquest" : `${formatMetric(count)} Inquests`,
+    detail: `${formatMetric(count)} active ${count === 1 ? "Inquest" : "Inquests"}`,
+    status: "running",
+    activeJobs: count,
+    totalJobs: count,
+    createdAt: updatedAt || Date.now(),
+  };
+}
+
 function backgroundProgress(job: BackgroundJob) {
   if (job.status === "complete" || job.status === "failed") return 100;
   if (job.progress !== undefined) return Math.max(0, Math.min(100, job.progress));
@@ -2066,6 +2079,16 @@ function backgroundProgress(job: BackgroundJob) {
   const total = job.totalJobs || 0;
   if (!total) return job.status === "running" ? 35 : 18;
   return Math.max(8, Math.min(96, Math.round((((job.completedJobs || 0) + (job.failedJobs || 0)) / total) * 100)));
+}
+
+function backgroundJobTotal(job: BackgroundJob) {
+  return Math.max(0, job.totalJobs || job.activeJobs || 1);
+}
+
+function backgroundJobFinished(job: BackgroundJob) {
+  const total = backgroundJobTotal(job);
+  if (isTerminalBackgroundStatus(job.status)) return total;
+  return Math.min(total, Math.max(0, (job.completedJobs || 0) + (job.failedJobs || 0)));
 }
 
 function backgroundStatusLabel(job: BackgroundJob) {
@@ -2078,6 +2101,30 @@ function backgroundStatusLabel(job: BackgroundJob) {
 
 function backgroundActiveJobCount(jobs: BackgroundJob[]) {
   return jobs.reduce((total, job) => total + Math.max(0, job.activeJobs ?? 1), 0);
+}
+
+function backgroundAggregateProgress(jobs: BackgroundJob[]) {
+  const total = jobs.reduce((sum, job) => sum + backgroundJobTotal(job), 0);
+  if (!total) return backgroundProgress(jobs[0]);
+  const finished = jobs.reduce((sum, job) => sum + backgroundJobFinished(job), 0);
+  return Math.max(8, Math.min(96, Math.round((finished / total) * 100)));
+}
+
+function backgroundAggregateDetail(jobs: BackgroundJob[]) {
+  const total = jobs.reduce((sum, job) => sum + backgroundJobTotal(job), 0);
+  const finished = jobs.reduce((sum, job) => sum + backgroundJobFinished(job), 0);
+  const failed = jobs.reduce((sum, job) => sum + (job.failedJobs || (job.status === "failed" ? backgroundJobTotal(job) : 0)), 0);
+  if (total > 1) {
+    return [
+      `${formatMetric(finished)} of ${formatMetric(total)} jobs finished`,
+      failed ? `${formatMetric(failed)} failed` : "",
+    ]
+      .filter(Boolean)
+      .join(" / ");
+  }
+  const running = jobs.filter((job) => job.status === "running").length;
+  const queued = jobs.filter((job) => job.status === "queued" || job.status === "starting").length;
+  return [`${formatMetric(running)} running`, `${formatMetric(queued)} queued`].join(" / ");
 }
 
 function aiFailureTaskLabel(notice: AIFailureNotice) {
@@ -2193,10 +2240,11 @@ function HeaderWorkProgress({
   } else {
     const job = activeJobs[0];
     const activeJobCount = backgroundActiveJobCount(activeJobs);
-    progress = backgroundProgress(job);
+    const aggregate = activeJobCount > 1 || activeJobs.length > 1;
+    progress = aggregate ? backgroundAggregateProgress(activeJobs) : backgroundProgress(job);
     label = activeJobCount > 1 ? `${formatMetric(activeJobCount)} background jobs` : job.label;
-    detail = job.detail || backgroundStatusLabel(job);
-    activeClass = job.status;
+    detail = aggregate ? backgroundAggregateDetail(activeJobs) : job.detail || backgroundStatusLabel(job);
+    activeClass = aggregate && activeJobs.some((item) => item.status === "running") ? "running" : job.status;
   }
 
   return (
@@ -18376,6 +18424,7 @@ function ActivityView({
   backupRuns,
   concordanceJobs,
   concordanceRuns,
+  dashboard,
   ingestionHistory,
   items,
   jobs,
@@ -18385,6 +18434,7 @@ function ActivityView({
   backupRuns: BackupRun[];
   concordanceJobs: ConcordanceJob[];
   concordanceRuns: ConcordanceRun[];
+  dashboard?: Dashboard;
   ingestionHistory: IngestionHistory[];
   items: CitationCandidate[];
   jobs: ImportJob[];
@@ -18526,7 +18576,11 @@ function ActivityView({
     return capActivityRows([...importJobRows, ...ingestionRows, ...concordanceJobRows, ...concordanceRunRows, ...backupRows, ...reviewRows]);
   }, [backupRuns, concordanceJobs, concordanceRuns, ingestionHistory, items, jobs, onOpenDocument, onOpenView]);
   const visibleRows = lane === "all" ? rows : rows.filter((row) => row.lane === lane);
-  const activeRows = rows.filter((row) => row.tone === "blue").length;
+  const activeRowsFromDashboard =
+    dashboard === undefined
+      ? null
+      : (dashboard.queued_jobs || 0) + backupRuns.filter(isActiveBackupRun).length;
+  const activeRows = activeRowsFromDashboard ?? rows.filter((row) => row.tone === "blue").length;
   const failedRows = rows.filter((row) => row.tone === "warn").length;
   const completedRows = rows.filter((row) => row.tone === "good").length;
 
@@ -24454,7 +24508,7 @@ export default function App() {
     enabled: Boolean(me.data),
     refetchInterval: (query) => {
       if (backupRunsHaveActiveWork(query.state.data as BackupRun[] | undefined)) return ACTIVE_WORK_REFETCH_INTERVAL_MS;
-      return activeView === "utilities" ? WORKSPACE_REFETCH_INTERVAL_MS : false;
+      return activeView === "utilities" || activeView === "activity" ? WORKSPACE_REFETCH_INTERVAL_MS : false;
     },
   });
   const openaiUsage = useQuery({
@@ -25014,14 +25068,12 @@ export default function App() {
                   status: run.total_jobs > 0 ? "queued" : "complete",
                   runId: run.id,
                   acceptedAt: Date.now(),
+                  activeJobs: run.total_jobs > 0 ? concordanceRunActiveJobCount(run) : 0,
                   completedJobs: run.completed_jobs,
                   failedJobs: run.failed_jobs,
                   totalJobs: run.total_jobs,
                   completedAt: run.total_jobs > 0 ? undefined : Date.now(),
-                  detail:
-                    run.total_jobs > 0
-                      ? `${run.total_jobs} ${run.total_jobs === 1 ? "job" : "jobs"} queued`
-                      : "Already current",
+                  detail: concordanceRunProgressDetail(run),
                 }
               : job,
           ),
@@ -25285,8 +25337,7 @@ export default function App() {
     tags: dashboard.data?.tags ?? tags.data?.length ?? 0,
     queue: (dashboard.data?.queue_import_jobs ?? 0) + (dashboard.data?.review_items ?? review.data?.length ?? 0),
     activity:
-      (dashboard.data?.active_import_jobs ?? 0) +
-      (dashboard.data?.active_concordance_jobs ?? 0) +
+      (dashboard.data?.queued_jobs ?? 0) +
       (backupRuns.data || []).filter(isActiveBackupRun).length +
       (dashboard.data?.review_items ?? review.data?.length ?? 0),
     health:
@@ -25311,13 +25362,20 @@ export default function App() {
             (concordanceJobs.data || []).filter((job) => job.run_id === run.id),
           ),
         )
-        .filter((job) => job.status === "queued" || job.status === "running")
-        .slice(0, 3);
+        .filter((job) => job.status === "queued" || job.status === "running");
   const activeBackupBackgroundJobs = (backupRuns.data || [])
     .map(backgroundJobFromBackupRun)
-    .filter((job) => job.status === "queued" || job.status === "running")
-    .slice(0, 3);
-  const visibleBackgroundJobs = [...activeBackupBackgroundJobs, ...backgroundJobs, ...activeServerBackgroundJobs].sort(
+    .filter((job) => job.status === "queued" || job.status === "running");
+  const activeAccessoryBackgroundJob = backgroundJobFromAccessorySummaryCount(
+    dashboard.data?.active_accessory_summary_jobs ?? 0,
+    dashboard.dataUpdatedAt,
+  );
+  const visibleBackgroundJobs = [
+    ...activeBackupBackgroundJobs,
+    ...backgroundJobs,
+    ...activeServerBackgroundJobs,
+    ...(activeAccessoryBackgroundJob ? [activeAccessoryBackgroundJob] : []),
+  ].sort(
     (left, right) =>
       Number(isTerminalBackgroundStatus(left.status)) - Number(isTerminalBackgroundStatus(right.status)) ||
       right.createdAt - left.createdAt,
@@ -25502,6 +25560,7 @@ export default function App() {
             backupRuns={backupRuns.data || []}
             concordanceJobs={concordanceJobs.data || []}
             concordanceRuns={concordanceRuns.data || []}
+            dashboard={dashboard.data}
             ingestionHistory={ingestionHistory.data || []}
             items={review.data || []}
             jobs={jobs.data || []}
