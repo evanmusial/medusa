@@ -7,6 +7,7 @@ import re
 import secrets
 import signal
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -71,8 +72,78 @@ CORE_TABLES = (
 )
 
 _LAST_COLLECTOR_SUCCESS: dict[str, float] = {}
-_COLLECTOR_SAMPLE_CACHE: dict[str, tuple[float, "MetricWriter"]] = {}
+_HEAVY_SNAPSHOT_KEY = "medusa:metrics:heavy_snapshot:v1"
+_HEAVY_SNAPSHOT_CACHE: dict[str, Any] | None = None
+_HEAVY_SNAPSHOT_LOCK = threading.Lock()
+_HEAVY_SNAPSHOT_REFRESH_STOP = threading.Event()
+_HEAVY_SNAPSHOT_REFRESH_THREAD: threading.Thread | None = None
 _SHUTDOWN = False
+
+_COUNT_SUFFIX_RENAMES = {
+    "accessory_summary_count": "accessory_summary_records",
+    "annotation_count": "annotations",
+    "attribute_definition_count": "attribute_definitions",
+    "backend_process_count": "backend_processes",
+    "backend_route_sample_count": "backend_route_samples",
+    "backend_route_slow_count": "backend_route_slow_requests",
+    "backend_thread_count": "backend_threads",
+    "backup_run_count": "backup_runs",
+    "concordance_job_count": "concordance_jobs",
+    "concordance_run_count": "concordance_runs",
+    "concordance_run_job_count": "concordance_run_jobs",
+    "database_maintenance_document_hash_missing_count": "database_maintenance_document_hash_missing_records",
+    "database_maintenance_hidden_project_item_count": "database_maintenance_hidden_project_items",
+    "database_maintenance_import_cache_count": "database_maintenance_import_cache_records",
+    "database_maintenance_orphan_import_job_count": "database_maintenance_orphan_import_jobs",
+    "database_maintenance_terminal_import_job_count": "database_maintenance_terminal_import_jobs",
+    "document_attribute_value_count": "document_attribute_values",
+    "document_capability_count": "document_capability_records",
+    "document_domain_link_count": "document_domain_links",
+    "document_page_record_count": "document_page_records",
+    "document_soft_deleted_count": "document_soft_deleted_records",
+    "document_tag_link_count": "document_tag_links",
+    "doi_stash_count": "doi_stashes",
+    "domain_count": "domains",
+    "exporter_metric_sample_count": "exporter_metric_samples",
+    "exporter_heavy_snapshot_sample_count": "exporter_heavy_snapshot_samples",
+    "figure_count": "figures",
+    "import_batch_count": "import_batches",
+    "import_batch_file_count": "import_batch_files",
+    "import_job_count": "import_jobs",
+    "import_job_stale_running_count": "import_job_stale_running_records",
+    "library_document_count": "library_documents",
+    "library_duplicate_flagged_count": "library_duplicate_flagged_records",
+    "library_duplicate_reference_count": "library_duplicate_references",
+    "library_missing_bibliography_count": "library_missing_bibliography_records",
+    "library_missing_search_text_count": "library_missing_search_text_records",
+    "library_missing_summary_count": "library_missing_summary_records",
+    "library_needs_review_citation_count": "library_needs_review_citations",
+    "library_page_count": "library_pages",
+    "library_verified_citation_count": "library_verified_citations",
+    "model_pricing_current_record_count": "model_pricing_current_records",
+    "note_count": "notes",
+    "note_reminder_due_count": "note_reminders_due",
+    "portfolio_assessment_finding_count": "portfolio_assessment_findings",
+    "portfolio_assessment_run_count": "portfolio_assessment_runs",
+    "portfolio_item_count": "portfolio_items",
+    "portfolio_material_count": "portfolio_materials",
+    "portfolio_suggestion_count": "portfolio_suggestions",
+    "portfolio_version_count": "portfolio_versions",
+    "project_bibliography_count": "project_bibliographies",
+    "project_count": "projects",
+    "project_item_count": "project_items",
+    "recommendation_count": "recommendations",
+    "saved_search_count": "saved_searches",
+    "slipstream_client_count": "slipstream_clients",
+    "slipstream_lease_count": "slipstream_leases",
+    "storage_footprint_file_count": "storage_footprint_files",
+    "tag_alias_count": "tag_aliases",
+    "tag_assessment_count": "tag_assessments",
+    "tag_count": "tags",
+    "tag_relationship_count": "tag_relationships",
+    "text_chunk_count": "text_chunks",
+    "valkey_key_count": "valkey_keys",
+}
 
 
 def _utc_now() -> datetime:
@@ -158,8 +229,11 @@ def _sql_in(values: Iterable[str]) -> str:
 
 
 def _metric_name(name: str) -> str:
+    renamed = _COUNT_SUFFIX_RENAMES.get(name)
+    if renamed:
+        return renamed
     if name.endswith("_count"):
-        return f"{name[:-len('_count')]}_items"
+        return f"{name[:-len('_count')]}_records"
     return name
 
 
@@ -945,10 +1019,136 @@ def collect_docker_metrics(writer: MetricWriter) -> None:
 Collector = Callable[[MetricWriter], None]
 
 
-def _collector_cache_ttl_seconds(collector_name: str) -> int:
-    if collector_name not in {"storage", "docker"}:
-        return 0
-    return max(0, int(get_settings().metrics_heavy_ttl_seconds or 0))
+def _metrics_valkey_client() -> Any | None:
+    settings = get_settings()
+    if (settings.cache_backend or "").strip().lower() != "valkey":
+        return None
+    try:
+        from redis import Redis
+
+        url = settings.cache_url
+        if url.startswith("valkey://"):
+            url = f"redis://{url[len('valkey://'):]}"
+        return Redis.from_url(url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=2.0, retry_on_timeout=False)
+    except Exception:
+        return None
+
+
+def _heavy_snapshot_ttl_seconds() -> int:
+    return max(15, int(get_settings().metrics_heavy_ttl_seconds or 900))
+
+
+def _heavy_snapshot_expiry_seconds() -> int:
+    ttl = _heavy_snapshot_ttl_seconds()
+    return max(300, ttl * 4)
+
+
+def _heavy_collectors() -> list[tuple[str, Collector]]:
+    return [
+        ("database", collect_database_metrics),
+        ("storage", collect_storage_metrics),
+        ("docker", collect_docker_metrics),
+    ]
+
+
+def _live_collectors() -> list[tuple[str, Collector]]:
+    return [
+        ("valkey", collect_valkey_metrics),
+        ("haproxy", collect_haproxy_metrics),
+        ("backend_snapshot", collect_backend_snapshot_metrics),
+    ]
+
+
+def _run_collector(writer: MetricWriter, collector_name: str, collector: Collector) -> dict[str, Any]:
+    collector_started = time.monotonic()
+    success = 0.0
+    try:
+        collector(writer)
+        success = 1.0
+        _LAST_COLLECTOR_SUCCESS[collector_name] = time.time()
+    except Exception:
+        logger.exception("Medusa metrics collector failed: %s", collector_name)
+    return {
+        "collector": collector_name,
+        "up": success,
+        "duration_seconds": time.monotonic() - collector_started,
+        "last_success_timestamp_seconds": _LAST_COLLECTOR_SUCCESS.get(collector_name),
+    }
+
+
+def _add_collector_result(writer: MetricWriter, result: dict[str, Any], *, cached: float) -> None:
+    labels = {"collector": result.get("collector", "unknown")}
+    writer.add("exporter_collector_up", result.get("up", 0), labels, help_text="Whether the exporter collector succeeded on its latest run.")
+    writer.add("exporter_collector_cached", cached, labels, help_text="Whether the exporter collector came from the Valkey-backed heavy snapshot.")
+    writer.add("exporter_collector_duration_seconds", result.get("duration_seconds"), labels, help_text="Exporter collector duration in seconds on its latest run.")
+    writer.add("exporter_collector_last_success_timestamp_seconds", result.get("last_success_timestamp_seconds"), labels, help_text="Unix timestamp for the collector's last successful run.")
+
+
+def _build_heavy_snapshot() -> dict[str, Any]:
+    writer = MetricWriter()
+    started = time.monotonic()
+    results = [_run_collector(writer, collector_name, collector) for collector_name, collector in _heavy_collectors()]
+    rendered = writer.render()
+    return {
+        "generated_at": time.time(),
+        "duration_seconds": time.monotonic() - started,
+        "sample_count": writer.sample_count,
+        "rendered": rendered,
+        "collectors": results,
+    }
+
+
+def _store_heavy_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    stored_payload = dict(payload)
+    stored_payload["stored_at"] = time.time()
+    stored_payload["storage"] = "memory"
+    client = _metrics_valkey_client()
+    if client is not None:
+        try:
+            valkey_payload = {**stored_payload, "storage": "valkey"}
+            client.set(_HEAVY_SNAPSHOT_KEY, json.dumps(valkey_payload), ex=_heavy_snapshot_expiry_seconds())
+            stored_payload = valkey_payload
+        except Exception:
+            logger.exception("Unable to store Medusa heavy metrics snapshot in Valkey")
+    global _HEAVY_SNAPSHOT_CACHE
+    with _HEAVY_SNAPSHOT_LOCK:
+        _HEAVY_SNAPSHOT_CACHE = stored_payload
+    return stored_payload
+
+
+def refresh_heavy_metrics_snapshot() -> dict[str, Any]:
+    return _store_heavy_snapshot(_build_heavy_snapshot())
+
+
+def _load_heavy_snapshot() -> tuple[dict[str, Any] | None, str]:
+    client = _metrics_valkey_client()
+    if client is not None:
+        try:
+            raw_payload = client.get(_HEAVY_SNAPSHOT_KEY)
+            if raw_payload:
+                payload = json.loads(raw_payload)
+                if isinstance(payload, dict):
+                    return payload, "valkey"
+        except Exception:
+            logger.exception("Unable to read Medusa heavy metrics snapshot from Valkey")
+    with _HEAVY_SNAPSHOT_LOCK:
+        if _HEAVY_SNAPSHOT_CACHE is not None:
+            return dict(_HEAVY_SNAPSHOT_CACHE), "memory"
+    return None, "missing"
+
+
+def _heavy_snapshot_refresh_loop() -> None:
+    while not _HEAVY_SNAPSHOT_REFRESH_STOP.wait(_heavy_snapshot_ttl_seconds()):
+        refresh_heavy_metrics_snapshot()
+
+
+def start_heavy_snapshot_refresh_thread() -> None:
+    global _HEAVY_SNAPSHOT_REFRESH_THREAD
+    if _HEAVY_SNAPSHOT_REFRESH_THREAD is not None and _HEAVY_SNAPSHOT_REFRESH_THREAD.is_alive():
+        return
+    _HEAVY_SNAPSHOT_REFRESH_STOP.clear()
+    _HEAVY_SNAPSHOT_REFRESH_THREAD = threading.Thread(target=_heavy_snapshot_refresh_loop, name="medusa-metrics-heavy-snapshot", daemon=True)
+    _HEAVY_SNAPSHOT_REFRESH_THREAD.start()
 
 
 def collect_metrics() -> str:
@@ -963,47 +1163,31 @@ def collect_metrics() -> str:
         },
         help_text="Medusa metrics exporter build and host identity.",
     )
-    collectors: list[tuple[str, Collector]] = [
-        ("database", collect_database_metrics),
-        ("storage", collect_storage_metrics),
-        ("valkey", collect_valkey_metrics),
-        ("haproxy", collect_haproxy_metrics),
-        ("backend_snapshot", collect_backend_snapshot_metrics),
-        ("docker", collect_docker_metrics),
-    ]
-    for collector_name, collector in collectors:
-        collector_started = time.monotonic()
-        success = 0.0
-        cached = 0.0
-        cache_ttl_seconds = _collector_cache_ttl_seconds(collector_name)
-        try:
-            now = time.time()
-            cached_entry = _COLLECTOR_SAMPLE_CACHE.get(collector_name)
-            if cache_ttl_seconds > 0 and cached_entry is not None and now - cached_entry[0] <= cache_ttl_seconds:
-                writer.extend(cached_entry[1])
-                writer.add("exporter_cached_snapshot_age_seconds", now - cached_entry[0], {"collector": collector_name}, help_text="Age of cached collector samples used by this scrape.")
-                cached = 1.0
-            else:
-                collector_writer = MetricWriter()
-                collector(collector_writer)
-                writer.extend(collector_writer)
-                if cache_ttl_seconds > 0:
-                    _COLLECTOR_SAMPLE_CACHE[collector_name] = (now, collector_writer)
-            success = 1.0
-            if not cached:
-                _LAST_COLLECTOR_SUCCESS[collector_name] = now
-        except Exception:
-            logger.exception("Medusa metrics collector failed: %s", collector_name)
-        finally:
-            labels = {"collector": collector_name}
-            writer.add("exporter_collector_up", success, labels, help_text="Whether the exporter collector succeeded on this scrape.")
-            writer.add("exporter_collector_cached", cached, labels, help_text="Whether the exporter collector used cached samples for this scrape.")
-            writer.add("exporter_collector_duration_seconds", time.monotonic() - collector_started, labels, help_text="Exporter collector scrape duration in seconds.")
-            writer.add("exporter_collector_last_success_timestamp_seconds", _LAST_COLLECTOR_SUCCESS.get(collector_name), labels, help_text="Unix timestamp for the collector's last successful scrape.")
+    for collector_name, collector in _live_collectors():
+        _add_collector_result(writer, _run_collector(writer, collector_name, collector), cached=0.0)
+
+    snapshot_payload, snapshot_source = _load_heavy_snapshot()
+    snapshot_rendered = ""
+    snapshot_sample_count = 0
+    if snapshot_payload and isinstance(snapshot_payload.get("rendered"), str):
+        snapshot_rendered = snapshot_payload["rendered"]
+        snapshot_sample_count = int(snapshot_payload.get("sample_count") or 0)
+        writer.add("exporter_heavy_snapshot_up", 1, {"source": snapshot_source}, help_text="Whether the Valkey-backed heavy metrics snapshot is available.")
+        writer.add("exporter_heavy_snapshot_age_seconds", max(0.0, time.time() - float(snapshot_payload.get("generated_at") or 0)), help_text="Age of the Valkey-backed heavy metrics snapshot in seconds.")
+        writer.add("exporter_heavy_snapshot_duration_seconds", snapshot_payload.get("duration_seconds"), help_text="Time spent generating the latest heavy metrics snapshot.")
+        writer.add("exporter_heavy_snapshot_sample_count", snapshot_sample_count, help_text="Number of samples in the latest heavy metrics snapshot.")
+        for result in snapshot_payload.get("collectors") or []:
+            if isinstance(result, dict):
+                _add_collector_result(writer, result, cached=1.0)
+    else:
+        writer.add("exporter_heavy_snapshot_up", 0, {"source": snapshot_source}, help_text="Whether the Valkey-backed heavy metrics snapshot is available.")
+        for collector_name, _ in _heavy_collectors():
+            _add_collector_result(writer, {"collector": collector_name, "up": 0}, cached=0.0)
+
     writer.add("exporter_scrape_duration_seconds", time.monotonic() - started, help_text="Total exporter scrape duration in seconds.")
     writer.add("exporter_scrape_timestamp_seconds", time.time(), help_text="Unix timestamp for this exporter scrape.")
-    writer.add("exporter_metric_sample_count", writer.sample_count + 1, help_text="Number of Prometheus metric samples rendered by this scrape.")
-    return writer.render()
+    writer.add("exporter_metric_sample_count", writer.sample_count + snapshot_sample_count + 1, help_text="Number of Prometheus metric samples rendered by this scrape.")
+    return writer.render() + snapshot_rendered
 
 
 def _read_token_file(path: str | None) -> str | None:
@@ -1093,6 +1277,7 @@ def _install_signal_handlers(server: ThreadingHTTPServer) -> None:
     def stop(_: int, __: Any) -> None:
         global _SHUTDOWN
         _SHUTDOWN = True
+        _HEAVY_SNAPSHOT_REFRESH_STOP.set()
         server.shutdown()
 
     signal.signal(signal.SIGTERM, stop)
@@ -1105,6 +1290,12 @@ def main() -> None:
     address = (settings.metrics_bind_host, int(settings.metrics_port))
     server = ThreadingHTTPServer(address, MetricsHandler)
     _install_signal_handlers(server)
+    logger.info("Seeding Medusa heavy metrics snapshot")
+    try:
+        refresh_heavy_metrics_snapshot()
+    except Exception:
+        logger.exception("Initial Medusa heavy metrics snapshot failed")
+    start_heavy_snapshot_refresh_thread()
     logger.info("Starting Medusa metrics exporter on %s:%s", address[0], address[1])
     server.serve_forever(poll_interval=0.5)
 

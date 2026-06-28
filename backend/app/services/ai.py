@@ -27,6 +27,7 @@ from app.services.analysis_models import (
     MODEL_KEYWORDS_TOPICS,
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
+    MODEL_RECON_INQUIRY,
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
     default_analysis_models,
@@ -371,6 +372,60 @@ ACCESSORY_SUMMARY_PROMPT = (
     "Prefer specific evidence, methods, findings, caveats, and terminology from the document. If the document does "
     "not support part of the request, say so plainly instead of inventing details. Return a short optional title "
     "when one is natural."
+)
+
+RECON_ANSWER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title": {"type": ["string", "null"]},
+        "answer": {"type": "string"},
+        "confidence": {"type": "number"},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "answer", "confidence", "limitations"],
+}
+
+RECON_ANSWER_PROMPT = (
+    "Answer a Medusa Recon inquiry using only the supplied corpus evidence. Do not use outside knowledge. "
+    "Every substantive claim must be supported by one or more supplied evidence items. Cite evidence using the "
+    "provided bracket labels such as [R1] or [R2]. If the retrieved evidence is thin, say that clearly and suggest "
+    "a broader sweep instead of filling gaps. For source-finding requests, prioritize which documents are useful "
+    "and why. For answer requests, synthesize across evidence while preserving uncertainty, disagreements, and "
+    "scope limits. Keep the answer concise, technical, and useful for research writing."
+)
+
+PORTFOLIO_ASSESSMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "category": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "evidence_labels": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["category", "severity", "title", "body", "evidence_labels"],
+            },
+        },
+        "confidence": {"type": "number"},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "findings", "confidence", "limitations"],
+}
+
+PORTFOLIO_ASSESSMENT_PROMPT = (
+    "Review the supplied Portfolio version against its materials and Library evidence. Use only supplied evidence. "
+    "Create actionable findings about focus, completeness, quality, support, missing sources, and alignment with "
+    "rubrics or prompts. Cite evidence labels in each finding. Do not invent assignment requirements, paper claims, "
+    "or source support. Use severity info, warning, or critical."
 )
 
 
@@ -1378,6 +1433,77 @@ class AiService:
             "used_pdf_file": used_pdf_file,
             "pdf_file_bytes": input_file_bytes,
         }
+        return result
+
+    def generate_recon_answer(
+        self,
+        question: str,
+        evidence_items: list[dict[str, Any]],
+        *,
+        instructions: str | None = None,
+        mode: str = "quick_answer",
+        model: str | None = None,
+        usage_context: OpenAIUsageContext | None = None,
+    ) -> dict[str, Any]:
+        selected_model = model or default_analysis_models()[MODEL_RECON_INQUIRY]
+        if not self._can_call_text_model(selected_model):
+            raise RuntimeError("AI Recon synthesis is not configured for the selected model.")
+        evidence_text = json.dumps(evidence_items, ensure_ascii=False)
+        request_text = (
+            f"Mode: {mode}\n"
+            f"Question:\n{question.strip()}\n\n"
+            f"Additional instructions:\n{(instructions or '').strip() or 'None'}\n\n"
+            f"Evidence JSON:\n{evidence_text}"
+        )
+        result = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_recon_answer",
+            schema=RECON_ANSWER_SCHEMA,
+            prompt=RECON_ANSWER_PROMPT,
+            input_content=[{"type": "input_text", "text": request_text}],
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_RECON_INQUIRY,
+            input_text_characters=len(request_text),
+            input_file_bytes=0,
+            used_pdf_file=False,
+        )
+        result["_openai"] = {"model": selected_model}
+        return result
+
+    def generate_portfolio_assessment(
+        self,
+        portfolio_title: str,
+        version_text: str,
+        material_items: list[dict[str, Any]],
+        library_evidence: list[dict[str, Any]],
+        *,
+        model: str,
+        usage_context: OpenAIUsageContext | None = None,
+    ) -> dict[str, Any]:
+        if not self._can_call_text_model(model):
+            raise RuntimeError("AI Portfolio assessment is not configured for the selected model.")
+        payload = {
+            "portfolio_title": portfolio_title,
+            "version_text": version_text[:60_000],
+            "materials": material_items,
+            "library_evidence": library_evidence,
+        }
+        request_text = json.dumps(payload, ensure_ascii=False)
+        result = self._responses_json(
+            model=model,
+            schema_name="medusa_portfolio_assessment",
+            schema=PORTFOLIO_ASSESSMENT_SCHEMA,
+            prompt=PORTFOLIO_ASSESSMENT_PROMPT,
+            input_content=[{"type": "input_text", "text": request_text}],
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key="portfolio_assessment",
+            input_text_characters=len(request_text),
+            input_file_bytes=0,
+            used_pdf_file=False,
+        )
+        result["_openai"] = {"model": model}
         return result
 
     def _responses_json(

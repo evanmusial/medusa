@@ -366,6 +366,97 @@ class SavedSearch(Base, TimestampMixin, SoftDeleteMixin):
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
+class ReconInquiry(Base, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "recon_inquiries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str | None] = mapped_column(Text)
+    scope_type: Mapped[str] = mapped_column(String(40), default="library", nullable=False, index=True)
+    scope: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    default_mode: Mapped[str] = mapped_column(String(40), default="quick_answer", nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="draft", nullable=False, index=True)
+    inquiry_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    runs: Mapped[list["ReconRun"]] = relationship(
+        back_populates="inquiry",
+        cascade="all, delete-orphan",
+        order_by="ReconRun.created_at.desc()",
+    )
+
+
+class ReconRun(Base, TimestampMixin):
+    __tablename__ = "recon_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    inquiry_id: Mapped[str] = mapped_column(String(36), ForeignKey("recon_inquiries.id", ondelete="CASCADE"), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(40), default="quick_answer", nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False, index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    resolved_document_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    estimated_input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    answer_summary: Mapped[str | None] = mapped_column(Text)
+    scope_snapshot: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    run_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    inquiry: Mapped[ReconInquiry] = relationship(back_populates="runs")
+    evidence: Mapped[list["ReconEvidence"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="ReconEvidence.rank, ReconEvidence.created_at",
+    )
+    answers: Mapped[list["ReconAnswerVersion"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="ReconAnswerVersion.created_at.desc()",
+    )
+
+
+class ReconEvidence(Base, TimestampMixin):
+    __tablename__ = "recon_evidence"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("recon_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    text_chunk_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("text_chunks.id", ondelete="SET NULL"), index=True)
+    page_start: Mapped[int | None] = mapped_column(Integer)
+    page_end: Mapped[int | None] = mapped_column(Integer)
+    evidence_kind: Mapped[str] = mapped_column(String(40), default="chunk", nullable=False, index=True)
+    rank: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    score: Mapped[float | None] = mapped_column(Numeric(8, 4))
+    document_title: Mapped[str | None] = mapped_column(String(600))
+    snippet: Mapped[str] = mapped_column(Text, nullable=False)
+    citation_text: Mapped[str | None] = mapped_column(Text)
+    relevance_label: Mapped[str] = mapped_column(String(40), default="candidate", nullable=False, index=True)
+    evidence_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    run: Mapped[ReconRun] = relationship(back_populates="evidence")
+    document: Mapped["Document | None"] = relationship()
+    text_chunk: Mapped["TextChunk | None"] = relationship()
+
+
+class ReconAnswerVersion(Base, TimestampMixin):
+    __tablename__ = "recon_answer_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("recon_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    limitations: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    answer_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    run: Mapped[ReconRun] = relationship(back_populates="answers")
+
+
 class Document(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "documents"
 

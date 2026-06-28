@@ -190,6 +190,8 @@ def test_portfolio_suggestions_and_assessment_use_library_context(monkeypatch, t
 
     assert suggestions.suggestion_count == 1
     assert suggestions.suggestions[0].library_document_id == library.id
+    assert suggestions.suggestions[0].evidence["basis"] == "recon_retrieval"
     assert assessment.model_ids == ["mock-assessor"]
     assert assessment.status == "complete"
+    assert assessment.assessment_metadata["library_evidence_count"] == 1
     assert any(finding.category in {"materials", "rubric", "resources"} for finding in assessment.findings)

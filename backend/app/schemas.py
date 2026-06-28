@@ -344,6 +344,132 @@ class SavedSearchOut(ApiModel):
     created_at: datetime
 
 
+class ReconInquiryCreate(BaseModel):
+    title: str | None = None
+    question: str = Field(min_length=1)
+    instructions: str | None = None
+    scope_type: str = "library"
+    scope: dict[str, Any] = Field(default_factory=dict)
+    default_mode: str = "quick_answer"
+    model: str | None = None
+
+
+class ReconInquiryPatch(BaseModel):
+    title: str | None = None
+    question: str | None = None
+    instructions: str | None = None
+    scope_type: str | None = None
+    scope: dict[str, Any] | None = None
+    default_mode: str | None = None
+    model: str | None = None
+    status: str | None = None
+
+
+class ReconRunCreate(BaseModel):
+    mode: str | None = None
+    model: str | None = None
+
+
+class ReconEstimateOut(BaseModel):
+    mode: str
+    scope_type: str
+    resolved_document_count: int
+    estimated_evidence_count: int
+    estimated_input_tokens: int
+    estimated_cost_usd: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ReconEvidenceOut(ApiModel):
+    id: str
+    run_id: str
+    document_id: str | None = None
+    text_chunk_id: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    evidence_kind: str
+    rank: int
+    score: float | None = None
+    document_title: str | None = None
+    snippet: str
+    citation_text: str | None = None
+    relevance_label: str
+    evidence_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("document_title", "snippet", "citation_text", mode="before")
+    @classmethod
+    def decode_evidence_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class ReconAnswerVersionOut(ApiModel):
+    id: str
+    run_id: str
+    answer: str
+    confidence: float | None = None
+    limitations: list[str] = Field(default_factory=list)
+    answer_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def decode_answer_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class ReconRunOut(ApiModel):
+    id: str
+    inquiry_id: str
+    mode: str
+    model: str
+    status: str
+    progress: int
+    resolved_document_count: int
+    evidence_count: int
+    estimated_input_tokens: int
+    estimated_cost_usd: float | None = None
+    answer_summary: str | None = None
+    scope_snapshot: dict[str, Any] = Field(default_factory=dict)
+    run_metadata: dict[str, Any] = Field(default_factory=dict)
+    last_error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    evidence: list[ReconEvidenceOut] = Field(default_factory=list)
+    answers: list[ReconAnswerVersionOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("answer_summary", "last_error", mode="before")
+    @classmethod
+    def decode_run_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class ReconInquiryOut(ApiModel):
+    id: str
+    title: str
+    question: str
+    instructions: str | None = None
+    scope_type: str
+    scope: dict[str, Any] = Field(default_factory=dict)
+    default_mode: str
+    model: str
+    status: str
+    inquiry_metadata: dict[str, Any] = Field(default_factory=dict)
+    runs: list[ReconRunOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("title", "question", "instructions", mode="before")
+    @classmethod
+    def decode_inquiry_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: str | None = None

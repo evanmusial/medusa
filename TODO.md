@@ -68,8 +68,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: `document_structure_cleanup`, `bibliography_extraction`, `formula_capture`, `visual_asset_extraction`, `visual_asset_context`, `structured_tables`, and `ocr_fallback` are versioned Concordance capabilities; old documents can be upgraded without re-upload; jobs are durable, resumable, idempotent, and visible through events/progress; manual page text is skipped or turned into reviewable candidates unless explicit replacement is requested.
   - Partial: the listed capabilities exist and route to current cleanup, bibliography, manual formula capture, visual extraction, visual context, structured-table evidence, and OCR eligibility audit handlers. Concordance now estimates scoped run cost before queuing, reports planned/same-model no-op/current/already-queued work, skips model-backed fields when document evidence or usage history already matches the selected model, exposes document-level Formula Capture from the preview/Reader action row, renders captured LaTeX formulas inside parsed document text read mode, and lets forced Bibliography Refresh clear stale machine-extracted bibliography output when the current extractor cannot support it. Remaining work is real OCR execution, first-class structured-table persistence, stronger idempotency tests for visual/table runs, dedicated formula review/display beyond rendered parsed text/evidence, and broader progress/evidence UI for each capability.
 
-- [ ] Design and implement Recon for corpus-grounded research inquiries.
+- [ ] Deepen Recon for corpus-grounded research inquiries.
   - Acceptance: add a Recon workspace between Projects and Tags; inquiries store scope, question/instructions, selected model, run mode, run history, answers, evidence, usage, and cost; scopes support whole library, domains, projects, saved searches/views, and eventually selected documents; the Start Research action uses Medusa's durable async progress convention with cost/time preview; Quick Answer uses retrieval over the selected corpus, Broad Sweep inspects every scoped document at least lightly, and Exhaustive is an explicit deep mode rather than the default; answers cite exact document/page/chunk evidence and can be re-run when the question, model, scope, or corpus changes. Planning notes live in `docs/RECON.md`.
+  - Partial: Recon V1 now has durable inquiry/run/evidence/answer tables, `/recon`, Library/domain/project/saved-search scopes, manual estimates/runs/cancel, Source Finder, Quick Answer, retrieval-backed Broad Sweep/Exhaustive warnings, optional pgvector ranking, a `recon_inquiry` model task, Portfolio Find Resources integration, Portfolio Assessment evidence injection, and focused tests. Remaining work is worker-backed Broad Sweep/Exhaustive map-reduce with resumability/cancellation, selected-document and passage-seeded entry points, negative relevance persistence for full coverage questions, stale-run detection, Notes/Projects promotion, and richer active-work/corpus-health surfaces.
 
 - [ ] Evaluate alternate core document-intelligence providers and cheaper GPT models.
   - Acceptance: representative already-processed papers are compared side by side across the current routed GPT baseline, cheaper GPT options, Gemini, and Claude for metadata, summary, APA fallback, and tag suggestions; quality gaps, failure modes, latency, and recorded cost are documented before changing defaults.
@@ -104,8 +105,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 - [ ] Add richer HTML import rendering and asset capture.
   - Acceptance: HTML imports can optionally preserve local/remote images, useful CSS layout cues, tables, and source URLs in the generated PDF mezzanine and extraction evidence without weakening the current text-first, no-credential fallback.
 
-- [ ] Add semantic search and embedding refresh as a fuller Concordance capability.
+- [ ] Deepen semantic search and embedding refresh.
   - Acceptance: embeddings are generated or refreshed for chunks/assets when configured, and search can combine lexical and semantic matches.
+  - Partial: Recon retrieval now blends lexical scoring with optional pgvector chunk similarity when a query embedding can be generated, and Concordance `search_index` v4 fills missing text chunk embeddings for older imports. Remaining work is broader semantic search UI, asset/figure embeddings, stale/outdated embedding detection, Corpus Health coverage reporting, and local embedding model evaluation.
 
 - [ ] Evaluate local text chunk encoding before replacing OpenAI embeddings.
   - Acceptance: BGE-M3 or a comparable local embedding model is benchmarked against the current OpenAI embedding path on Medusa search queries; vector dimensions, runtime footprint, indexing speed, retrieval quality, and Concordance reindex behavior are documented before changing the default.
@@ -122,9 +124,11 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Add external search-backed Portfolio resource suggestions.
   - Acceptance: Find Resources combines local Library semantic/search matches with bounded external scholarly/web evidence, stores source/provider/evidence metadata in `PortfolioSuggestion`, and clearly separates Library-held, queued/imported, and external-only suggestions.
+  - Partial: local Library suggestions now reuse Recon retrieval and store retrieved evidence snippets/page metadata on `PortfolioSuggestion`; external scholarly/web paths remain future work.
 
 - [ ] Add richer Portfolio Assessment prompts and multi-model comparison.
   - Acceptance: Portfolio Assessment can run one selected model or multiple enabled models against the current version plus material snapshot; findings cite rubric/reference/prompt evidence, score quality/focus/completeness consistently, record usage/cost provenance, and show model agreement/disagreement without overwriting prior runs.
+  - Partial: Portfolio Assessment now includes material snapshots and selected Library evidence in a model-backed assessment call with local baseline fallback. Remaining work is multi-model comparison, richer scoring rubrics, visible agreement/disagreement, and deeper finding citations in the UI.
 
 - [ ] Add Portfolio export/restore and backup coverage.
   - Acceptance: metadata exports include Portfolio items, versions, edges, materials, suggestions, assessment runs/findings, source URIs, and hidden document references; restore preserves lineage and parks restored Portfolio processing jobs safely like import/Concordance jobs.

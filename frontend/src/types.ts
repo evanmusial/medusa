@@ -969,6 +969,112 @@ export type SavedSearch = {
   created_at: string;
 };
 
+export type ReconEvidence = {
+  id: string;
+  run_id: string;
+  document_id?: string | null;
+  text_chunk_id?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  evidence_kind: string;
+  rank: number;
+  score?: number | null;
+  document_title?: string | null;
+  snippet: string;
+  citation_text?: string | null;
+  relevance_label: string;
+  evidence_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReconAnswerVersion = {
+  id: string;
+  run_id: string;
+  answer: string;
+  confidence?: number | null;
+  limitations: string[];
+  answer_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReconRun = {
+  id: string;
+  inquiry_id: string;
+  mode: string;
+  model: string;
+  status: string;
+  progress: number;
+  resolved_document_count: number;
+  evidence_count: number;
+  estimated_input_tokens: number;
+  estimated_cost_usd?: number | null;
+  answer_summary?: string | null;
+  scope_snapshot: Record<string, unknown>;
+  run_metadata: Record<string, unknown>;
+  last_error?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  cancelled_at?: string | null;
+  evidence: ReconEvidence[];
+  answers: ReconAnswerVersion[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReconInquiry = {
+  id: string;
+  title: string;
+  question: string;
+  instructions?: string | null;
+  scope_type: string;
+  scope: Record<string, unknown>;
+  default_mode: string;
+  model: string;
+  status: string;
+  inquiry_metadata: Record<string, unknown>;
+  runs: ReconRun[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReconInquiryPayload = {
+  title?: string | null;
+  question: string;
+  instructions?: string | null;
+  scope_type?: string;
+  scope?: Record<string, unknown>;
+  default_mode?: string;
+  model?: string | null;
+};
+
+export type ReconInquiryPatch = Partial<{
+  title: string | null;
+  question: string;
+  instructions: string | null;
+  scope_type: string;
+  scope: Record<string, unknown>;
+  default_mode: string;
+  model: string;
+  status: string;
+}>;
+
+export type ReconEstimate = {
+  mode: string;
+  scope_type: string;
+  resolved_document_count: number;
+  estimated_evidence_count: number;
+  estimated_input_tokens: number;
+  estimated_cost_usd?: number | null;
+  warnings: string[];
+};
+
+export type ReconRunPayload = {
+  mode?: string | null;
+  model?: string | null;
+};
+
 export type AttributeDefinition = {
   id: string;
   name: string;

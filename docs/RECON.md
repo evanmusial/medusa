@@ -1,10 +1,10 @@
 # Recon Planning Notes
 
-Last updated: 2026-06-21
+Last updated: 2026-06-28
 
-Recon is a proposed Medusa workspace for asking specific research questions against the user's own corpus. It should behave like a small product inside Medusa: inquiries can be created, run, viewed later, edited, and re-processed when the corpus, model choice, or instructions change.
+Recon is Medusa's workspace for asking specific research questions against the user's own corpus. It behaves like a small product inside Medusa: inquiries can be created, run, viewed later, edited, and re-processed when the corpus, model choice, or instructions change.
 
-This document is intentionally a planning artifact, not an implementation spec. Revisit it when the library/search/Concordance foundations are more mature.
+This document remains the planning and roadmap home for Recon. The 2026-06-28 V1 implements durable inquiries/runs/evidence/answers, a `/recon` workspace, manual estimates/runs, Source Finder and Quick Answer semantics, retrieval-backed Broad Sweep/Exhaustive warnings, Portfolio Find Resources integration, Portfolio Assessment evidence injection, and a Concordance `search_index` v4 path for retroactively filling missing chunk embeddings. Worker-backed deep Broad Sweep/Exhaustive map-reduce runs remain planned.
 
 ## Product Shape
 
@@ -12,10 +12,10 @@ Recon belongs in the top navigation between Projects and Tags.
 
 The core object is a Recon inquiry. An inquiry contains a scope, a model choice, free-form question/instructions, run settings, current answer, evidence, and run history. The user should be able to return to an inquiry later, inspect prior runs, modify the question or scope, and run it again.
 
-Supported scopes should mirror Medusa's research organization:
+Supported V1 scopes mirror Medusa's research organization:
 
 - Whole library.
-- One or more domains.
+- One domain.
 - One project.
 - A saved search or saved view.
 - Selected documents, if the calling surface supplies them later.
@@ -120,16 +120,23 @@ Answers should not mutate documents. Recon may create notes or follow-up tasks l
 - Should completed Recon runs contribute to document or library search, or remain searchable only inside Recon?
 - Should stale runs be flagged when scoped documents are edited, deleted, reprocessed, or newly added to the saved scope?
 
-## Deferred Implementation Notes
+## Implementation Notes
 
-When the app is ready, start with a narrow implementation:
+Implemented V1:
 
-1. Add the Recon top-level route and quiet cockpit surface.
-2. Add durable inquiry/run/evidence tables and migrations.
-3. Implement Quick Answer over current embeddings plus lexical fallback.
-4. Record usage/cost and show run progress.
-5. Add evidence/citation display.
-6. Add Broad Sweep after Quick Answer is trustworthy.
-7. Add Exhaustive only after cost previews, cancellation, and resume behavior are solid.
+1. Recon top-level route and quiet cockpit surface.
+2. Durable inquiry/run/evidence/answer tables and migration.
+3. Retrieval service with lexical metadata/chunk scoring, optional pgvector blending, Library/domain/project/saved-search scopes, source diversity caps, and local fallback answers.
+4. Estimate/run/cancel/read APIs.
+5. Evidence and answer display in the workspace.
+6. Portfolio resource suggestions through Recon retrieval.
+7. Portfolio assessment prompts with material and Library evidence.
+8. Concordance `search_index` v4 semantic-index refresh for missing chunk embeddings.
 
-This staged path gives Medusa a useful research-question feature early while avoiding the expensive trap of pretending that whole-library full-text prompting is the default answer.
+Remaining staged path:
+
+1. Make Broad Sweep inspect every scoped document and persist positive and negative judgments.
+2. Make Exhaustive a resumable worker-backed map-reduce run with cancellation/resume.
+3. Add selected-document and passage-seeded Recon entry points from Library/Reader/Inquests.
+4. Add stale-run detection when scoped documents change.
+5. Add promotion paths into Notes, Projects, and Portfolio without mutating documents by default.

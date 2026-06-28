@@ -70,6 +70,12 @@ import type {
   ProjectItem,
   RecommendationFamily,
   RecommendationView,
+  ReconEstimate,
+  ReconInquiry,
+  ReconInquiryPatch,
+  ReconInquiryPayload,
+  ReconRun,
+  ReconRunPayload,
   ReleaseStatus,
   RuntimeLocation,
   SavedSearch,
@@ -264,6 +270,17 @@ export const api = {
   updateSavedSearch: (id: string, body: Partial<SavedSearch>) =>
     request<SavedSearch>(`/api/saved-searches/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteSavedSearch: (id: string) => request<{ status: string }>(`/api/saved-searches/${id}`, { method: "DELETE" }),
+  reconInquiries: () => request<ReconInquiry[]>("/api/recon/inquiries"),
+  createReconInquiry: (body: ReconInquiryPayload) =>
+    request<ReconInquiry>("/api/recon/inquiries", { method: "POST", body: JSON.stringify(body) }),
+  updateReconInquiry: (id: string, body: ReconInquiryPatch) =>
+    request<ReconInquiry>(`/api/recon/inquiries/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  estimateReconRun: (id: string, body: ReconRunPayload = {}) =>
+    request<ReconEstimate>(`/api/recon/inquiries/${id}/estimate`, { method: "POST", body: JSON.stringify(body) }),
+  startReconRun: (id: string, body: ReconRunPayload = {}) =>
+    request<ReconRun>(`/api/recon/inquiries/${id}/runs`, { method: "POST", body: JSON.stringify(body) }),
+  reconRun: (id: string) => request<ReconRun>(`/api/recon/runs/${id}`),
+  cancelReconRun: (id: string) => request<ReconRun>(`/api/recon/runs/${id}/cancel`, { method: "POST" }),
   projects: () => request<Project[]>("/api/projects"),
   createProject: (name: string, description?: string) =>
     request<Project>("/api/projects", { method: "POST", body: JSON.stringify({ name, description }) }),

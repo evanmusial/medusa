@@ -15,6 +15,7 @@ DEFAULT_BIBLIOGRAPHY_CLEANUP_FALLBACK_MODEL = "gpt-5.4-mini"
 DEFAULT_ACCESSORY_SUMMARIES_MODEL = "gpt-5.4"
 DEFAULT_FORMULA_CAPTURE_MODEL = "gpt-5.4"
 DEFAULT_PORTFOLIO_ASSESSMENT_MODEL = "gpt-5.4"
+DEFAULT_RECON_INQUIRY_MODEL = DEFAULT_ACCESSORY_SUMMARIES_MODEL
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_RAW_TEXT_EXTRACTOR = "marker"
 
@@ -29,6 +30,7 @@ MODEL_BIBLIOGRAPHY_CLEANUP = "bibliography_cleanup"
 MODEL_ACCESSORY_SUMMARIES = "accessory_summaries"
 MODEL_FORMULA_CAPTURE = "formula_capture"
 MODEL_PORTFOLIO_ASSESSMENT = "portfolio_assessment"
+MODEL_RECON_INQUIRY = "recon_inquiry"
 MODEL_CORE_DOCUMENT_INTELLIGENCE = "core_document_intelligence"
 
 GPT_MODEL_OPTIONS = (
@@ -150,6 +152,12 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         model_kind="gpt",
         description="Reviews uploaded Portfolio versions against attached rubrics, references, prompts, and Library context for focus, completeness, quality, and resource gaps.",
     ),
+    AnalysisModelTask(
+        key=MODEL_RECON_INQUIRY,
+        label="Recon",
+        model_kind="gpt",
+        description="Synthesizes corpus-grounded Recon inquiries from retrieved Library evidence. Source Finder can work locally; answer synthesis uses this model when configured.",
+    ),
 )
 
 TASK_BY_KEY = {task.key: task for task in ANALYSIS_MODEL_TASKS}
@@ -189,6 +197,8 @@ def default_model_for_task(task_key: str) -> str:
         return DEFAULT_FORMULA_CAPTURE_MODEL
     if task_key == MODEL_PORTFOLIO_ASSESSMENT:
         return DEFAULT_PORTFOLIO_ASSESSMENT_MODEL
+    if task_key == MODEL_RECON_INQUIRY:
+        return DEFAULT_RECON_INQUIRY_MODEL
     return normalize_model_id(settings.openai_model, DEFAULT_GPT_MODEL)
 
 
