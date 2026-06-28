@@ -241,6 +241,29 @@ def test_analysis_model_and_cache_preferences_are_persisted(monkeypatch, tmp_pat
         assert formula_task["selected_model"] == "gpt-5.4"
 
 
+def test_legacy_bibliography_cleanup_default_rolls_forward(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import AppPreference
+    from app.services.analysis_models import MODEL_BIBLIOGRAPHY_CLEANUP
+    from app.services.preferences import get_app_preferences, update_app_preferences
+
+    Session = make_session()
+    with Session() as db:
+        db.add(AppPreference(key="analysis_model_bibliography_cleanup", value={"value": "gpt-5.4-nano"}))
+        db.commit()
+
+        preferences = get_app_preferences(db)
+        task = next(task for task in preferences["analysis_model_tasks"] if task["key"] == MODEL_BIBLIOGRAPHY_CLEANUP)
+        assert preferences["analysis_models"][MODEL_BIBLIOGRAPHY_CLEANUP] == "gpt-5-mini"
+        assert task["default_model"] == "gpt-5-mini"
+        assert task["selected_model"] == "gpt-5-mini"
+
+        updated = update_app_preferences(db, analysis_models={MODEL_BIBLIOGRAPHY_CLEANUP: "gemini-3.1-flash-lite"})
+        assert updated["analysis_models"][MODEL_BIBLIOGRAPHY_CLEANUP] == "gemini-3.1-flash-lite"
+
+
 def test_import_processing_presets_and_steps_are_persisted(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.models import AppPreference, utc_now
 from app.services.analysis_models import (
     ANALYSIS_MODEL_TASKS,
+    MODEL_BIBLIOGRAPHY_CLEANUP,
     default_analysis_models,
     default_model_for_task,
     model_options,
@@ -69,6 +70,9 @@ IMPORT_PROCESSING_BALANCED_ID = "balanced"
 IMPORT_PROCESSING_STRICT_LOCAL_ID = "strict_local"
 IMPORT_PROCESSING_DEEP_REVIEW_ID = "deep_review"
 DEFAULT_IMPORT_PROCESSING_PRESET_ID = IMPORT_PROCESSING_BALANCED_ID
+LEGACY_ANALYSIS_MODEL_DEFAULTS = {
+    MODEL_BIBLIOGRAPHY_CLEANUP: {"gpt-5.4-nano"},
+}
 
 SAFE_PREFERENCE_KEYS = {
     IMPORT_WORKER_CONCURRENCY_KEY,
@@ -676,12 +680,20 @@ def _analysis_model_preference_key(task_key: str) -> str:
     return f"{ANALYSIS_MODEL_KEY_PREFIX}{task_key}"
 
 
+def _normalized_analysis_model_preference(task_key: str, value: Any) -> str:
+    default_model = default_model_for_task(task_key)
+    normalized = normalize_model_id(value, default_model)
+    if value is not None and normalized in LEGACY_ANALYSIS_MODEL_DEFAULTS.get(task_key, set()):
+        return default_model
+    return normalized
+
+
 def get_analysis_models(db: Session) -> dict[str, str]:
     models = default_analysis_models()
     for task in ANALYSIS_MODEL_TASKS:
-        models[task.key] = normalize_model_id(
+        models[task.key] = _normalized_analysis_model_preference(
+            task.key,
             _get_preference_value(db, _analysis_model_preference_key(task.key)),
-            default_model_for_task(task.key),
         )
     return models
 
@@ -1009,7 +1021,7 @@ def update_app_preferences(
             _set_preference_value(
                 db,
                 _analysis_model_preference_key(task.key),
-                normalize_model_id(analysis_models.get(task.key), default_model_for_task(task.key)),
+                _normalized_analysis_model_preference(task.key, analysis_models.get(task.key)),
             )
     if import_processing_presets is not None:
         normalized_presets = normalize_import_processing_presets(import_processing_presets)
