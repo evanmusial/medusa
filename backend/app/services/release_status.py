@@ -14,6 +14,7 @@ from app.services.maintenance import DEFAULT_IDLE_GRACE_SECONDS, maintenance_rea
 
 
 STATUS_SCHEMA_VERSION = 1
+RELEASE_RELOAD_PROMPT_PHASES = {"requested", "fetching", "applying", "building", "restarting", "verifying", "reload_ready"}
 
 
 def _now() -> datetime:
@@ -127,6 +128,10 @@ def _versions_match(left: ReleaseVersionOut | None, right: ReleaseVersionOut | N
 
 def _request_summary() -> tuple[datetime | None, str | None]:
     payload = _read_json(_release_request_path())
+    return _request_summary_from_payload(payload)
+
+
+def _request_summary_from_payload(payload: dict[str, Any] | None) -> tuple[datetime | None, str | None]:
     if not payload:
         return None, None
     request_id = payload.get("request_id")
@@ -140,6 +145,8 @@ def release_status(client_version: str | None = None, db: Session | None = None)
     request_exists = request_path.exists()
     maintenance_request_exists = _maintenance_request_path().exists()
     requested_at, request_id = _request_summary()
+    if requested_at is None and request_id is None:
+        requested_at, request_id = _request_summary_from_payload(payload)
 
     runtime = _runtime_version()
     status_running = _version_from_payload(payload.get("running") if payload else None) if payload else None
@@ -203,12 +210,14 @@ def release_status(client_version: str | None = None, db: Session | None = None)
         maintenance_phase = "requested"
 
     normalized_client_version = (client_version or "").strip()
+    release_reload_prompt_active = bool(request_exists or requested_at or request_id or phase in RELEASE_RELOAD_PROMPT_PHASES)
     browser_reload_recommended = bool(
         normalized_client_version
         and not update_available
         and running.version
         and normalized_client_version != running.version
         and running.source != "runtime-default"
+        and release_reload_prompt_active
     )
     if browser_reload_recommended and not update_available and phase == "current":
         message = "A newer Medusa build is already running. Reload the browser to use it."

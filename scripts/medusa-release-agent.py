@@ -864,7 +864,6 @@ def apply(args: argparse.Namespace) -> int:
         run_command(compose_up_command(args, pull_always=args.pull_always), cwd=repo, env=env)
         write_phase(args, "verifying", "Waiting for Medusa health after upgrade.")
         wait_for_health(repo, args.health_timeout_seconds)
-        request_path.unlink(missing_ok=True)
         payload = build_status(args, fetch=False, phase="complete", message=f"Medusa upgraded to {target['version']}.")
         payload["running"] = target
         payload["available"] = target
@@ -886,6 +885,7 @@ def apply(args: argparse.Namespace) -> int:
         )
         payload["maintenance"] = maintenance
         atomic_write_json(status_file_path(args), payload)
+        request_path.unlink(missing_ok=True)
         return 0
     except Exception as exc:
         payload = read_json(status_file_path(args)) or {}

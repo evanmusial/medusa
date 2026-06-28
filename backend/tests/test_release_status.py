@@ -63,7 +63,7 @@ def test_release_status_detects_upgrade_and_writes_request(monkeypatch, tmp_path
     reset_settings_cache()
 
 
-def test_release_status_recommends_browser_reload_when_server_is_newer(monkeypatch, tmp_path):
+def test_release_status_recommends_browser_reload_for_completed_release_request(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
     reset_settings_cache()
 
@@ -73,8 +73,10 @@ def test_release_status_recommends_browser_reload_when_server_is_newer(monkeypat
         tmp_path / "data" / "deploy" / "release-status.json",
         {
             "checked_at": "2026-06-25T12:00:00+00:00",
-            "phase": "current",
-            "message": "Medusa is current.",
+            "phase": "complete",
+            "message": "Medusa upgraded to 20260625 (bbbbbbbbbbbb).",
+            "request_id": "release-request-1",
+            "requested_at": "2026-06-25T11:59:00+00:00",
             "update_available": False,
             "apply_available": False,
             "dirty": False,
@@ -98,7 +100,55 @@ def test_release_status_recommends_browser_reload_when_server_is_newer(monkeypat
     status = release_status(client_version="20260624 (aaaaaaaaaaaa)")
     assert status.update_available is False
     assert status.browser_reload_recommended is True
-    assert status.phase == "reload_ready"
+    assert status.phase == "complete"
+    assert status.request_id == "release-request-1"
+
+    reset_settings_cache()
+
+
+def test_release_status_suppresses_browser_reload_for_settled_maintenance_refresh(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    reset_settings_cache()
+
+    from app.services.release_status import release_status
+
+    write_status(
+        tmp_path / "data" / "deploy" / "release-status.json",
+        {
+            "checked_at": "2026-06-25T12:00:00+00:00",
+            "phase": "complete",
+            "message": "Medusa maintenance completed for 20260625 (bbbbbbbbbbbb).",
+            "update_available": False,
+            "apply_available": False,
+            "dirty": False,
+            "running": {
+                "version": "20260625 (bbbbbbbbbbbb)",
+                "git_sha": "b" * 40,
+                "git_sha_short": "bbbbbbbbbbbb",
+                "branch": "main",
+                "source": "git-local",
+            },
+            "available": {
+                "version": "20260625 (bbbbbbbbbbbb)",
+                "git_sha": "b" * 40,
+                "git_sha_short": "bbbbbbbbbbbb",
+                "branch": "main",
+                "source": "git-local",
+            },
+            "maintenance": {
+                "phase": "complete",
+                "message": "Maintenance completed; database backup was not required for this refresh.",
+                "update_classification": "runtime_refresh",
+                "backup_required": False,
+                "backup_status": "not_required",
+            },
+        },
+    )
+
+    status = release_status(client_version="20260624 (aaaaaaaaaaaa)")
+    assert status.update_available is False
+    assert status.browser_reload_recommended is False
+    assert status.phase == "complete"
 
     reset_settings_cache()
 
