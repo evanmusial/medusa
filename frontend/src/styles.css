@@ -1508,12 +1508,17 @@ textarea {
   cursor: pointer;
   font-weight: 400;
   filter: drop-shadow(0 0 4px color-mix(in srgb, var(--ink) 9.6%, transparent));
+  transition:
+    color 0.14s ease,
+    filter 0.14s ease;
 }
 
 .workspace-nav-item.active,
-.workspace-nav-item:hover {
+.workspace-nav-item:hover,
+.workspace-nav-item:focus-visible {
   color: var(--ink);
   background: transparent;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 64%, transparent));
 }
 
 .workspace-nav-item.active::after,
