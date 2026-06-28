@@ -814,7 +814,7 @@ def collect_backend_snapshot_metrics(writer: MetricWriter) -> None:
     writer.add("backend_memory_bytes", container.get("memory_limit_bytes"), {"kind": "cgroup_limit"}, help_text="Backend memory usage by kind in bytes.")
     writer.add("backend_memory_bytes", container.get("memory_peak_bytes"), {"kind": "cgroup_peak"}, help_text="Backend memory usage by kind in bytes.")
     writer.add("backend_memory_bytes", container.get("process_rss_bytes"), {"kind": "process_rss"}, help_text="Backend memory usage by kind in bytes.")
-    writer.add("backend_cpu_usage_seconds", container.get("cpu_usage_seconds"), help_text="Backend cgroup CPU usage seconds.", metric_type="counter")
+    writer.add("backend_cpu_usage_seconds_total", container.get("cpu_usage_seconds"), help_text="Backend cgroup CPU usage seconds.", metric_type="counter")
     writer.add("backend_cpu_limit_cores", container.get("cpu_limit_cores"), help_text="Backend cgroup CPU limit in cores.")
     writer.add("backend_process_count", container.get("process_count"), help_text="Backend container process count.")
     writer.add("backend_thread_count", container.get("thread_count"), help_text="Backend process thread count.")
@@ -837,8 +837,8 @@ def collect_backend_snapshot_metrics(writer: MetricWriter) -> None:
             continue
         labels = {"route": route.get("route", "unknown")}
         writer.add("backend_route_sample_count", route.get("count"), labels, help_text="Backend route timing sample count.")
-        writer.add("backend_route_duration_seconds", (route.get("average_ms") or 0) / 1000.0, {**labels, "quantile": "avg"}, help_text="Backend route duration summary in seconds.")
-        writer.add("backend_route_duration_seconds", (route.get("p95_ms") or 0) / 1000.0, {**labels, "quantile": "p95"}, help_text="Backend route duration summary in seconds.")
+        writer.add("backend_route_average_duration_seconds", (route.get("average_ms") or 0) / 1000.0, labels, help_text="Backend route average duration in seconds.")
+        writer.add("backend_route_p95_duration_seconds", (route.get("p95_ms") or 0) / 1000.0, labels, help_text="Backend route p95 duration in seconds.")
         writer.add("backend_route_slow_count", route.get("slow_count"), labels, help_text="Backend route slow request count.")
         writer.add("backend_route_last_status", route.get("last_status"), labels, help_text="Backend route latest HTTP status code.")
 
@@ -926,7 +926,7 @@ def collect_docker_metrics(writer: MetricWriter) -> None:
                 cpu_usage = cpu_stats.get("cpu_usage") if isinstance(cpu_stats.get("cpu_usage"), dict) else {}
                 writer.add("docker_container_memory_bytes", memory_stats.get("usage"), {**labels, "kind": "usage"}, help_text="Docker container memory by kind in bytes.")
                 writer.add("docker_container_memory_bytes", memory_stats.get("limit"), {**labels, "kind": "limit"}, help_text="Docker container memory by kind in bytes.")
-                writer.add("docker_container_cpu_seconds", (cpu_usage.get("total_usage") or 0) / 1_000_000_000, labels, help_text="Docker container CPU usage seconds.", metric_type="counter")
+                writer.add("docker_container_cpu_seconds_total", (cpu_usage.get("total_usage") or 0) / 1_000_000_000, labels, help_text="Docker container CPU usage seconds.", metric_type="counter")
                 writer.add("docker_container_block_io_bytes_total", _docker_block_io_bytes(stats, "read"), {**labels, "direction": "read"}, help_text="Docker container block I/O bytes.", metric_type="counter")
                 writer.add("docker_container_block_io_bytes_total", _docker_block_io_bytes(stats, "write"), {**labels, "direction": "write"}, help_text="Docker container block I/O bytes.", metric_type="counter")
                 networks = stats.get("networks") if isinstance(stats.get("networks"), dict) else {}

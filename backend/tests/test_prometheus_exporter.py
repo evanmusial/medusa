@@ -66,6 +66,42 @@ def test_backend_snapshot_collector_reports_down_without_internal_token(monkeypa
     assert 'medusa_backend_snapshot_up{reason="token_not_configured"} 0' in writer.render()
 
 
+def test_backend_snapshot_metrics_are_promtool_friendly(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_METRICS_INTERNAL_TOKEN", "secret")
+
+    from app.config import get_settings
+    from app.tools import prometheus_exporter
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "checked_at": "2026-06-28T18:00:00+00:00",
+                "container": {"cpu_usage_seconds": 9},
+                "cache": {
+                    "request_metrics": [
+                        {"route": "/api/health", "count": 2, "average_ms": 120, "p95_ms": 250, "slow_count": 0, "last_status": 200}
+                    ]
+                },
+            }
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(prometheus_exporter.httpx, "get", lambda *args, **kwargs: FakeResponse())
+    writer = prometheus_exporter.MetricWriter()
+
+    prometheus_exporter.collect_backend_snapshot_metrics(writer)
+    rendered = writer.render()
+
+    assert "medusa_backend_cpu_usage_seconds_total 9" in rendered
+    assert 'medusa_backend_route_average_duration_seconds{route="/api/health"} 0.12' in rendered
+    assert 'medusa_backend_route_p95_duration_seconds{route="/api/health"} 0.25' in rendered
+    assert "quantile=" not in rendered
+
+
 def test_database_collector_handles_empty_schema(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
