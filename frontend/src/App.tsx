@@ -8013,7 +8013,7 @@ type AnnotationEditDraft = {
 
 type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
-type CitationRefreshTarget = CitationKind | "doi";
+type CitationRefreshTarget = "citation" | "doi";
 const ANNOTATION_KIND_OPTIONS = [
   { id: "note", label: "Note" },
   { id: "highlight", label: "Highlight" },
@@ -9083,8 +9083,7 @@ function DocumentPanelContent({
   const queryClient = useQueryClient();
   const runConcordanceFeedback = useAsyncActionFeedback();
   const doiRefreshFeedback = useAsyncActionFeedback();
-  const referenceCitationFeedback = useAsyncActionFeedback();
-  const inTextCitationFeedback = useAsyncActionFeedback();
+  const citationRefreshFeedback = useAsyncActionFeedback();
   const summaryRefreshFeedback = useAsyncActionFeedback();
   const bibliographyRefreshFeedback = useAsyncActionFeedback();
   const formulaCaptureFeedback = useAsyncActionFeedback();
@@ -9364,19 +9363,18 @@ function DocumentPanelContent({
     mutationFn: (target: CitationRefreshTarget) =>
       startConcordanceRun({
         backgroundDetail: document.title,
-        backgroundLabel: target === "doi" ? "Refreshing DOI" : "Refreshing APA citation",
+        backgroundLabel: target === "doi" ? "Refreshing DOI" : "Refreshing APA citations",
         capability_keys: ["citation_refresh"],
         capabilityKey: "citation_refresh",
         documentId: document.id,
         force: true,
-        label: `${target === "doi" ? "DOI" : "Citation"} refresh: ${document.title}`,
+        label: `${target === "doi" ? "DOI" : "APA citation"} refresh: ${document.title}`,
         scope_data: { document_ids: [document.id] },
         scope_type: "documents",
       }),
     onSuccess: (run, target) => {
       setCitationRefreshTarget(target);
-      const feedback =
-        target === "doi" ? doiRefreshFeedback : target === "reference" ? referenceCitationFeedback : inTextCitationFeedback;
+      const feedback = target === "doi" ? doiRefreshFeedback : citationRefreshFeedback;
       if (run.total_jobs > 0) setCitationRunId(rememberTrackedRun(run));
       else feedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -9387,7 +9385,7 @@ function DocumentPanelContent({
     onError: (error, target) => {
       setCitationRunId(null);
       setCitationRefreshTarget(null);
-      const feedback = target === "doi" ? doiRefreshFeedback : target === "in-text" ? inTextCitationFeedback : referenceCitationFeedback;
+      const feedback = target === "doi" ? doiRefreshFeedback : citationRefreshFeedback;
       feedback.showError(actionFailureMessage(target === "doi" ? "Could not start DOI refresh" : "Could not start citation refresh", error));
     },
   });
@@ -9999,9 +9997,9 @@ function DocumentPanelContent({
       ? "a scrub edit is already running."
       : "";
   const citationBusyReason = refreshCitation.isPending
-    ? "a citation refresh request is already starting."
+    ? "an APA citation refresh request is already starting."
     : citationRefreshActive || (citationRunId && !citationRunServerIdle)
-      ? "a DOI or citation refresh is already queued or running for this document."
+      ? "a DOI or APA citation refresh is already queued or running for this document."
       : "";
   const summaryRefreshBusyReason = refreshSummary.isPending
     ? "a summary refresh request is already starting."
@@ -10123,12 +10121,7 @@ function DocumentPanelContent({
 
   useEffect(() => {
     const failedJob = trackedCitationJobs.find((job) => job.status === "failed");
-    const feedback =
-      citationRefreshTarget === "doi"
-        ? doiRefreshFeedback
-        : citationRefreshTarget === "in-text"
-          ? inTextCitationFeedback
-          : referenceCitationFeedback;
+    const feedback = citationRefreshTarget === "doi" ? doiRefreshFeedback : citationRefreshFeedback;
     if (!citationRunId) return;
     if (trackedCitationJobs.length === 0) {
       if ((!trackedCitationRun || isActiveConcordanceStatus(trackedCitationRun.status)) && !citationRunServerIdle) return;
@@ -10166,14 +10159,13 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["review"] });
     refreshActiveDocumentDetail(queryClient, document.id);
   }, [
+    citationRefreshFeedback,
     citationRefreshTarget,
     citationRunId,
     citationRunServerIdle,
     document.id,
     doiRefreshFeedback,
-    inTextCitationFeedback,
     queryClient,
-    referenceCitationFeedback,
     trackedCitationJobs,
     trackedCitationRun,
   ]);
@@ -10574,11 +10566,11 @@ function DocumentPanelContent({
     updateCitation.mutate({ kind, value: citationDrafts[kind] || "" });
   };
 
-  const citationFeedbackFor = (kind: CitationKind) => (kind === "reference" ? referenceCitationFeedback.feedback : inTextCitationFeedback.feedback);
-  const citationButtonBusy = (kind: CitationKind) => citationBusy && citationRefreshTarget === kind;
-  const checkCitation = (kind: CitationKind) => {
-    setCitationRefreshTarget(kind);
-    refreshCitation.mutate(kind);
+  const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
+  const citationButtonBusy = (_kind: CitationKind) => citationBusy && citationRefreshTarget !== "doi";
+  const checkCitation = () => {
+    setCitationRefreshTarget("citation");
+    refreshCitation.mutate("citation");
   };
   const doiCheckBusy = citationBusy && citationRefreshTarget === "doi";
   const checkDoi = () => {
@@ -11446,11 +11438,11 @@ function DocumentPanelContent({
           </button>
           <AsyncActionSlot busy={busy} feedback={feedback} label="Citation refresh in progress" progress={citationProgress}>
             <button
-              aria-label={busy ? `Refreshing ${title}` : `Refresh ${title}`}
+              aria-label={busy ? "Refreshing APA Reference List and APA In-Text Citation" : "Refresh APA Reference List and APA In-Text Citation"}
               className={asyncFeedbackClass("icon-button", feedback, busy)}
               data-disabled-reason={citationBusyReason}
-              data-tooltip={`Queue an APA citation refresh for the ${title} text using DOI/Crossref evidence first and the selected APA model as fallback.`}
-              onClick={() => checkCitation(kind)}
+              data-tooltip="Queue one APA citation refresh that regenerates and validates both the Reference List and In-Text Citation using DOI/Crossref evidence first and the selected APA model as fallback."
+              onClick={checkCitation}
               disabled={citationBusy}
               type="button"
             >
