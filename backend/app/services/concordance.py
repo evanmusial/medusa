@@ -77,6 +77,7 @@ BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
 BIBLIOGRAPHY_AUTHOR_INITIAL_RE = re.compile(r"\b[A-Z](?:\.-?[A-Z])?\.")
 BIBLIOGRAPHY_APA_INITIAL_RE = re.compile(r",\s*(?:[A-Z]\.\s*)+")
+BIBLIOGRAPHY_ORG_AUTHOR_RE = re.compile(r"^[A-Z][A-Za-z0-9'`\u2019.-]{2,},")
 BIBLIOGRAPHY_AUTHOR_STOPWORDS = {
     "Accessed",
     "Available",
@@ -97,7 +98,34 @@ class CapabilityDefinition:
 
 
 def _bibliography_entry_count(bibliography: str | None) -> int:
-    return len([line for line in (bibliography or "").splitlines() if line.strip()])
+    return len(_bibliography_entries_for_cleanup(bibliography))
+
+
+def _bibliography_line_starts_entry(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("("):
+        return False
+    leading = stripped[:120]
+    if (
+        BIBLIOGRAPHY_AUTHOR_INITIAL_RE.search(leading)
+        or BIBLIOGRAPHY_APA_INITIAL_RE.search(leading)
+        or BIBLIOGRAPHY_ORG_AUTHOR_RE.match(stripped)
+    ):
+        return True
+    return bool(BIBLIOGRAPHY_YEAR_RE.search(stripped) and BIBLIOGRAPHY_ORG_AUTHOR_RE.match(stripped))
+
+
+def _bibliography_entries_for_cleanup(bibliography: str | None) -> list[str]:
+    entries: list[str] = []
+    for raw_line in (bibliography or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        if entries and not _bibliography_line_starts_entry(line):
+            entries[-1] = f"{entries[-1].rstrip()} {line}"
+        else:
+            entries.append(line)
+    return entries
 
 
 def _unique_bibliography_author_tokens(text: str) -> list[str]:
@@ -1316,7 +1344,7 @@ class ConcordanceProcessor:
                     "checked_at": utc_now().isoformat(),
                 }
                 bibliography = document.bibliography or ""
-            sorted_bibliography = "\n".join(sorted_bibliography_entries(bibliography.splitlines())).strip()
+            sorted_bibliography = "\n".join(sorted_bibliography_entries(_bibliography_entries_for_cleanup(bibliography))).strip()
             if sorted_bibliography:
                 evidence["deterministic_sort"] = {
                     "status": "applied" if sorted_bibliography != bibliography.strip() else "already_sorted",
