@@ -1518,7 +1518,7 @@ textarea {
 .workspace-nav-item:focus-visible {
   color: var(--ink);
   background: transparent;
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 64%, transparent));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 60%, transparent));
 }
 
 .workspace-nav-item.active::after,
