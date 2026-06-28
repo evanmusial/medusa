@@ -1487,7 +1487,7 @@ textarea {
   text-decoration: none;
   cursor: pointer;
   font-weight: 400;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--ink) 9.6%, transparent));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--ink) 4.8%, transparent));
   transition:
     color 0.14s ease,
     filter 0.14s ease;
@@ -1498,7 +1498,7 @@ textarea {
 .workspace-nav-item:focus-visible {
   color: var(--ink);
   background: transparent;
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 60%, transparent));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 30%, transparent));
 }
 
 .workspace-nav-item.active::after,
