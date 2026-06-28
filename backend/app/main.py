@@ -4228,6 +4228,7 @@ def document_list_rows_out(
     citation_status: str | None = None,
     duplicate_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
+    focus_document_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 50,
 ) -> DocumentListOut:
@@ -4252,6 +4253,15 @@ def document_list_rows_out(
     latest_updated = query.order_by(None).with_entities(func.max(Document.updated_at)).scalar()
     order_columns = [search_rank.desc()] if search_rank is not None else []
     order_columns.extend(document_title_order_columns(db))
+    focus_index: int | None = None
+    if focus_document_id:
+        ordered_ids = [row[0] for row in query.order_by(None).order_by(*order_columns).with_entities(Document.id).all()]
+        try:
+            focus_index = ordered_ids.index(focus_document_id)
+        except ValueError:
+            focus_index = None
+        if focus_index is not None and not all_results and not (offset <= focus_index < offset + limit):
+            offset = (focus_index // limit) * limit
     if all_results:
         offset = 0
         documents = query.order_by(None).order_by(*order_columns).all()
@@ -4268,6 +4278,8 @@ def document_list_rows_out(
         limit=limit,
         has_more=False if all_results else offset + len(documents) < total_count,
         revision=":".join(revision_parts),
+        focus_document_id=focus_document_id,
+        focus_index=focus_index,
     )
 
 
@@ -4284,6 +4296,7 @@ def list_document_rows(
     citation_status: str | None = None,
     duplicate_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
+    focus_document_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 50,
 ) -> DocumentListOut:
@@ -4296,6 +4309,7 @@ def list_document_rows(
         "citation_status": citation_status or "",
         "duplicate_status": duplicate_status or "",
         "all": bool(all_results),
+        "focus_document_id": focus_document_id or "",
         "offset": int(offset),
         "limit": int(limit),
     }
@@ -4315,6 +4329,7 @@ def list_document_rows(
             citation_status=citation_status,
             duplicate_status=duplicate_status,
             all_results=all_results,
+            focus_document_id=focus_document_id,
             offset=offset,
             limit=limit,
         ),

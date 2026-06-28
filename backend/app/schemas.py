@@ -559,6 +559,8 @@ class DocumentListOut(BaseModel):
     limit: int
     has_more: bool
     revision: str
+    focus_document_id: str | None = None
+    focus_index: int | None = None
 
 
 class DocumentDetail(DocumentSummary):

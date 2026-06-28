@@ -292,12 +292,17 @@ export const api = {
     const suffix = params.toString();
     return request<DocumentSummary[]>(`/api/documents${suffix ? `?${suffix}` : ""}`);
   },
-  documentList: (query: string, filters: DocumentFilters = {}, options: { all?: boolean; offset?: number; limit?: number } = {}) => {
+  documentList: (
+    query: string,
+    filters: DocumentFilters = {},
+    options: { all?: boolean; focusDocumentId?: string | null; offset?: number; limit?: number } = {},
+  ) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
     Object.entries(filters).forEach(([key, value]) => {
       if (value) params.set(key, value);
     });
+    if (options.focusDocumentId) params.set("focus_document_id", options.focusDocumentId);
     if (options.all) {
       params.set("all", "true");
     } else {

@@ -1154,6 +1154,8 @@ export type DocumentListResponse = {
   limit: number;
   has_more: boolean;
   revision: string;
+  focus_document_id?: string | null;
+  focus_index?: number | null;
 };
 
 export type DocumentDetail = DocumentSummary & {

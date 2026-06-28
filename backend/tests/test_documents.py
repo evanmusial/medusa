@@ -575,6 +575,9 @@ def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
         first_page = list_document_rows(object(), db, limit=40)
         second_page = list_document_rows(object(), db, offset=40, limit=40)
         all_page = list_document_rows(object(), db, offset=40, limit=40, all_results=True)
+        focused_document_id = db.query(Document.id).filter(Document.title == "Document 087").scalar()
+        focused_page = list_document_rows(object(), db, limit=40, focus_document_id=focused_document_id)
+        missing_focus_page = list_document_rows(object(), db, limit=40, focus_document_id="missing-document")
 
     assert len(documents) == 125
     assert len(default_page.items) == 50
@@ -595,6 +598,13 @@ def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
     assert all_page.offset == 0
     assert all_page.limit == 125
     assert all_page.has_more is False
+    assert focused_page.focus_document_id == focused_document_id
+    assert focused_page.focus_index == 87
+    assert focused_page.offset == 80
+    assert [document.title for document in focused_page.items][:2] == ["Document 080", "Document 081"]
+    assert any(document.id == focused_document_id for document in focused_page.items)
+    assert missing_focus_page.focus_index is None
+    assert missing_focus_page.offset == 0
 
 
 def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):
