@@ -178,6 +178,16 @@ def test_inquest_inline_timeout_requeues_for_worker(monkeypatch, tmp_path):
         assert calls["count"] == 2
 
 
+def test_source_finding_intent_keeps_internal_source_questions_on_ai_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.accessory_summaries import _is_source_finder_prompt
+
+    assert _is_source_finder_prompt("Find me more sources and papers like this one.")
+    assert not _is_source_finder_prompt("List the data sources used in this paper.")
+
+
 def test_source_finding_inquest_uses_related_recommendations_without_ai(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

@@ -49,6 +49,40 @@ SOURCE_FINDER_OBJECT_TERMS = {
     "study",
     "studies",
 }
+SOURCE_FINDER_SCHOLARLY_OBJECT_TERMS = {
+    "article",
+    "articles",
+    "citation",
+    "citations",
+    "literature",
+    "paper",
+    "papers",
+    "reading",
+    "reference",
+    "references",
+}
+SOURCE_FINDER_CONTEXT_TERMS = {
+    "adjacent",
+    "continued",
+    "current",
+    "external",
+    "latest",
+    "like",
+    "more",
+    "newer",
+    "recent",
+    "related",
+    "similar",
+}
+SOURCE_FINDER_INTERNAL_SOURCE_PHRASES = {
+    "bibliography in this",
+    "cited in this",
+    "data sources",
+    "referenced in this",
+    "references in this",
+    "sources used",
+    "used in this",
+}
 SOURCE_FINDER_PHRASES = {
     "more sources",
     "more papers",
@@ -126,7 +160,16 @@ def _is_source_finder_prompt(prompt: str) -> bool:
     if any(phrase in text for phrase in SOURCE_FINDER_PHRASES):
         return True
     terms = set(text.split())
-    return bool(terms & SOURCE_FINDER_ACTION_TERMS and terms & SOURCE_FINDER_OBJECT_TERMS)
+    if not terms & SOURCE_FINDER_ACTION_TERMS:
+        return False
+    if any(phrase in text for phrase in SOURCE_FINDER_INTERNAL_SOURCE_PHRASES) and not terms & SOURCE_FINDER_CONTEXT_TERMS:
+        return False
+    if terms & SOURCE_FINDER_SCHOLARLY_OBJECT_TERMS:
+        return True
+    return bool(
+        terms & {"source", "sources", "study", "studies"}
+        and (terms & SOURCE_FINDER_CONTEXT_TERMS or ("find" in terms and "about" in terms))
+    )
 
 
 def _source_finder_needs_refresh(prompt: str) -> bool:
