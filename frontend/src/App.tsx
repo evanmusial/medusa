@@ -421,6 +421,8 @@ const MEDUSA_FRONTEND_NODE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_NODE_V
 const MEDUSA_FRONTEND_VITE_VERSION = import.meta.env.VITE_MEDUSA_FRONTEND_VITE_VERSION || "unknown";
 const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Metadata-Enhanced Document Understanding, Search, and Analysis";
+const MEDUSA_EMBLEM_DAY_SRC = "/medusa-emblem.png";
+const MEDUSA_EMBLEM_NIGHT_SRC = "/medusa-emblem-night.png";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
 const LIVE_IMPORT_JOB_STATUSES = new Set(["queued", "running"]);
 const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
@@ -4823,6 +4825,15 @@ function ResizeHandle({
   );
 }
 
+function MedusaEmblemImage({ className }: { className: string }) {
+  return (
+    <>
+      <img className={`${className} medusa-emblem-day`} src={MEDUSA_EMBLEM_DAY_SRC} alt="" aria-hidden="true" />
+      <img className={`${className} medusa-emblem-night`} src={MEDUSA_EMBLEM_NIGHT_SRC} alt="" aria-hidden="true" />
+    </>
+  );
+}
+
 function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; stacked?: boolean }) {
   return (
     <ViewportTooltip
@@ -4831,7 +4842,7 @@ function BrandLockup({ compact = false, stacked = false }: { compact?: boolean; 
       text={MEDUSA_EXPANSION}
     >
       <span className={`brand-mark${compact ? " compact" : ""}`}>
-        <img className="brand-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
+        <MedusaEmblemImage className="brand-emblem" />
       </span>
       <span className="brand-wordmark">
         <strong className="brand-name">{MEDUSA_APP_NAME}</strong>
@@ -5022,7 +5033,7 @@ function StartupLoadingScreen({ startupHealthPending }: { startupHealthPending: 
   return (
     <div className="loading-screen">
       <section aria-live="polite" className="loading-panel">
-        <img className="loading-emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true" />
+        <MedusaEmblemImage className="loading-emblem" />
         <div className="loading-copy">
           <span>{copy.eyebrow}</span>
           <h1>{copy.title}</h1>

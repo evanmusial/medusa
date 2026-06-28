@@ -123,11 +123,8 @@ button :where(span, strong, b, small, em),
 .loading-emblem {
   width: 70px;
   height: 70px;
+  display: block;
   object-fit: contain;
-}
-
-:root[data-theme="night"] .loading-emblem {
-  filter: invert(1);
 }
 
 .loading-copy {
@@ -224,14 +221,22 @@ button :where(span, strong, b, small, em),
 }
 
 .brand-emblem {
-  width: 112%;
-  height: 112%;
+  width: 100%;
+  height: 100%;
   display: block;
   object-fit: contain;
 }
 
-:root[data-theme="night"] .brand-emblem {
-  filter: invert(1);
+.medusa-emblem-night {
+  display: none;
+}
+
+:root[data-theme="night"] .medusa-emblem-day {
+  display: none;
+}
+
+:root[data-theme="night"] .medusa-emblem-night {
+  display: block;
 }
 
 .brand-wordmark {

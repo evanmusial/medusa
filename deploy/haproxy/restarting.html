@@ -60,12 +60,6 @@
         object-fit: contain;
       }
 
-      @media (prefers-color-scheme: dark) {
-        .emblem {
-          filter: invert(1);
-        }
-      }
-
       .copy {
         display: grid;
         gap: 6px;
@@ -122,7 +116,10 @@
   </head>
   <body>
     <main aria-live="polite">
-      <img class="emblem" src="/medusa-emblem.svg" alt="" aria-hidden="true">
+      <picture>
+        <source srcset="/medusa-emblem-night.png" media="(prefers-color-scheme: dark)">
+        <img class="emblem" src="/medusa-emblem.png" alt="" aria-hidden="true">
+      </picture>
       <div class="copy">
         <div class="eyebrow">Medusa maintenance</div>
         <h1>Waiting for Medusa</h1>
