@@ -369,7 +369,12 @@ def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_toke
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
-    from app.services.concordance import _bibliography_cleanup_missing_author_sets, _bibliography_entries_for_cleanup, _bibliography_entry_count
+    from app.services.concordance import (
+        _bibliography_author_tokens,
+        _bibliography_cleanup_missing_author_sets,
+        _bibliography_entries_for_cleanup,
+        _bibliography_entry_count,
+    )
 
     input_bibliography = "\n".join(
         [
@@ -385,6 +390,25 @@ def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_toke
     )
 
     assert _bibliography_cleanup_missing_author_sets(input_bibliography, cleanup_bibliography) == []
+    assert (
+        _bibliography_author_tokens(
+            "M. Corporation, Common vulnerabilities and exposures (cve) (2024). URL https://cve.mitre.org/"
+        )
+        == []
+    )
+    assert _bibliography_author_tokens("M. Corporation, Mitre att&ck (2024). URL https://attack.mitre.org/") == []
+    assert _bibliography_author_tokens(input_bibliography.splitlines()[0]) == ["Howden", "Maglaras", "Ferrag"]
+    assert _bibliography_author_tokens(input_bibliography.splitlines()[1]) == [
+        "Chowdhury",
+        "Lesiuta",
+        "Rikley",
+        "Lin",
+        "Kang",
+        "Kim",
+        "Shiraishi",
+        "Lawford",
+        "Wassyng",
+    ]
 
     split_continuation = "\n".join(
         [

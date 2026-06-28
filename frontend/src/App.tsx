@@ -1713,6 +1713,10 @@ function isActiveConcordanceStatus(status: string) {
   return status === "queued" || status === "running";
 }
 
+function concordanceRunFailed(run: ConcordanceRun) {
+  return run.status === "failed" || run.status === "complete_with_errors" || run.failed_jobs > 0;
+}
+
 function isActiveAccessorySummaryStatus(status: string) {
   return status === "queued" || status === "running";
 }
@@ -2734,6 +2738,13 @@ function patchCachedDocumentSummaries(
     if (Array.isArray(current)) return current.map((item) => (item.id === patch.id ? { ...item, ...patch } : item));
     return { ...current, items: current.items.map((item) => (item.id === patch.id ? { ...item, ...patch } : item)) };
   });
+}
+
+function refreshActiveDocumentDetail(queryClient: QueryClient, documentId?: string | null) {
+  if (!documentId) return;
+  void queryClient.invalidateQueries({ queryKey: ["documents"] });
+  void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
+  void queryClient.refetchQueries({ queryKey: ["document", documentId], type: "active" });
 }
 
 function showLibraryPriorityPill(value?: string | null) {
@@ -4615,6 +4626,51 @@ function evidenceNumber(value: unknown): number | null {
   return null;
 }
 
+const LEGACY_BIBLIOGRAPHY_AUTHOR_LOSS_TOKENS = new Set([
+  "acm",
+  "association",
+  "bank",
+  "center",
+  "common",
+  "conference",
+  "corporation",
+  "education",
+  "enumeration",
+  "evaluation",
+  "ieee",
+  "journal",
+  "mitre",
+  "privacy",
+  "proceedings",
+  "project",
+  "scopus",
+  "security",
+  "springer",
+  "vulnerabilities",
+  "weakness",
+  "world",
+]);
+
+function cleanupMissingAuthorSets(cleanup: Record<string, unknown>): string[][] {
+  const rawSets = cleanup.missing_author_sets;
+  if (!Array.isArray(rawSets)) return [];
+  return rawSets
+    .map((rawSet) => {
+      if (!Array.isArray(rawSet)) return [];
+      return rawSet
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim());
+    })
+    .filter((set) => set.length > 0);
+}
+
+function looksLikeLegacyBibliographyAuthorLoss(tokens: string[]): boolean {
+  const lowered = tokens.map((token) => token.toLocaleLowerCase());
+  const legacyTokenCount = lowered.filter((token) => LEGACY_BIBLIOGRAPHY_AUTHOR_LOSS_TOKENS.has(token)).length;
+  if (lowered.includes("corporation") && (lowered.includes("common") || lowered.includes("mitre"))) return true;
+  return tokens.length > 2 && legacyTokenCount > 0;
+}
+
 function bibliographyCleanupNotice(metadataEvidence: Record<string, unknown>): string | null {
   const bibliographyEvidence = metadataEvidence.bibliography_extraction;
   if (!isRecord(bibliographyEvidence)) return null;
@@ -4628,6 +4684,8 @@ function bibliographyCleanupNotice(metadataEvidence: Record<string, unknown>): s
     return `Cleanup kept the complete extracted list${countDetail}. Deterministic APA sorting was applied instead.`;
   }
   if (status === "rejected_author_loss") {
+    const missingSets = cleanupMissingAuthorSets(cleanup);
+    if (missingSets.length > 0 && missingSets.every(looksLikeLegacyBibliographyAuthorLoss)) return null;
     return "Cleanup kept the complete extracted list because the model dropped visible author names. Deterministic APA sorting was applied instead.";
   }
   if (status === "rejected_duplicate_cleanup") {
@@ -7009,7 +7067,16 @@ function LibraryView({
     const resizeObserver = new ResizeObserver(updateSize);
     resizeObserver.observe(element);
     return () => resizeObserver.disconnect();
-  }, []);
+  }, [readerOpen]);
+  useEffect(() => {
+    if (readerOpen) return;
+    const element = rowsViewportRef.current;
+    if (!element) return;
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const targetScrollTop = Math.min(rowsScrollTop, maxScrollTop);
+    if (targetScrollTop !== rowsScrollTop) setRowsScrollTop(targetScrollTop);
+    if (Math.abs(element.scrollTop - targetScrollTop) > 1) element.scrollTop = targetScrollTop;
+  }, [libraryRowHeight, readerOpen, rowsScrollTop, sortedDocuments.length]);
   const hasBulkUpdate = selectedBulkDocument
     ? Boolean(
         bulkReadStatus ||
@@ -9551,6 +9618,10 @@ function DocumentPanelContent({
     () => (documentConcordanceRunId ? citationJobs.filter((job) => job.run_id === documentConcordanceRunId && job.document_id === document.id) : []),
     [citationJobs, document.id, documentConcordanceRunId],
   );
+  const trackedDocumentConcordanceRun = useMemo(
+    () => (documentConcordanceRunId ? concordanceRuns.find((run) => run.id === documentConcordanceRunId) : undefined),
+    [concordanceRuns, documentConcordanceRunId],
+  );
   const trackedCitationJobs = useMemo(
     () =>
       citationRunId
@@ -9560,12 +9631,20 @@ function DocumentPanelContent({
         : [],
     [citationJobs, citationRunId, document.id],
   );
+  const trackedCitationRun = useMemo(
+    () => (citationRunId ? concordanceRuns.find((run) => run.id === citationRunId) : undefined),
+    [citationRunId, concordanceRuns],
+  );
   const trackedSummaryJobs = useMemo(
     () =>
       summaryRunId
         ? citationJobs.filter((job) => job.run_id === summaryRunId && job.document_id === document.id && job.capability_key === "summary_refresh")
         : [],
     [citationJobs, document.id, summaryRunId],
+  );
+  const trackedSummaryRun = useMemo(
+    () => (summaryRunId ? concordanceRuns.find((run) => run.id === summaryRunId) : undefined),
+    [concordanceRuns, summaryRunId],
   );
   const trackedBibliographyJobs = useMemo(
     () =>
@@ -9587,12 +9666,20 @@ function DocumentPanelContent({
         : [],
     [citationJobs, document.id, formulaCaptureRunId],
   );
+  const trackedFormulaCaptureRun = useMemo(
+    () => (formulaCaptureRunId ? concordanceRuns.find((run) => run.id === formulaCaptureRunId) : undefined),
+    [concordanceRuns, formulaCaptureRunId],
+  );
   const trackedTagRefreshJobs = useMemo(
     () =>
       tagRefreshRunId
         ? citationJobs.filter((job) => job.run_id === tagRefreshRunId && job.document_id === document.id && job.capability_key === "tag_refresh")
         : [],
     [citationJobs, document.id, tagRefreshRunId],
+  );
+  const trackedTagRefreshRun = useMemo(
+    () => (tagRefreshRunId ? concordanceRuns.find((run) => run.id === tagRefreshRunId) : undefined),
+    [concordanceRuns, tagRefreshRunId],
   );
   const documentConcordanceBusy =
     runConcordance.isPending ||
@@ -9735,7 +9822,21 @@ function DocumentPanelContent({
   }, [currentPage?.page_number]);
 
   useEffect(() => {
-    if (!documentConcordanceRunId || trackedDocumentConcordanceJobs.length === 0) return;
+    if (!documentConcordanceRunId) return;
+    if (trackedDocumentConcordanceJobs.length === 0) {
+      if (!trackedDocumentConcordanceRun || isActiveConcordanceStatus(trackedDocumentConcordanceRun.status)) return;
+      if (concordanceRunFailed(trackedDocumentConcordanceRun)) {
+        runConcordanceFeedback.showError(
+          actionFailureMessage("Document Concordance failed", runFailureMessage(trackedDocumentConcordanceRun, []) || "Concordance run failed"),
+        );
+      } else {
+        runConcordanceFeedback.showSuccess();
+      }
+      setDocumentConcordanceRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+      return;
+    }
     if (trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedDocumentConcordanceJobs.find((job) => job.status === "failed");
     if (failedJob) {
@@ -9747,8 +9848,7 @@ function DocumentPanelContent({
     }
     setDocumentConcordanceRunId(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    refreshActiveDocumentDetail(queryClient, document.id);
   }, [
     document.id,
     documentConcordanceRunId,
@@ -9756,11 +9856,10 @@ function DocumentPanelContent({
     runConcordanceFeedback.showError,
     runConcordanceFeedback.showSuccess,
     trackedDocumentConcordanceJobs,
+    trackedDocumentConcordanceRun,
   ]);
 
   useEffect(() => {
-    if (!citationRunId || trackedCitationJobs.length === 0) return;
-    if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedCitationJobs.find((job) => job.status === "failed");
     const feedback =
       citationRefreshTarget === "doi"
@@ -9768,6 +9867,27 @@ function DocumentPanelContent({
         : citationRefreshTarget === "in-text"
           ? inTextCitationFeedback
           : referenceCitationFeedback;
+    if (!citationRunId) return;
+    if (trackedCitationJobs.length === 0) {
+      if (!trackedCitationRun || isActiveConcordanceStatus(trackedCitationRun.status)) return;
+      if (concordanceRunFailed(trackedCitationRun)) {
+        feedback.showError(
+          actionFailureMessage(
+            citationRefreshTarget === "doi" ? "DOI refresh failed" : "Citation refresh failed",
+            runFailureMessage(trackedCitationRun, []) || "Concordance run failed",
+          ),
+        );
+      } else {
+        feedback.showSuccess();
+      }
+      setCitationRunId(null);
+      setCitationRefreshTarget(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["review"] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+      return;
+    }
+    if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     if (failedJob) {
       feedback.showError(
         actionFailureMessage(
@@ -9782,8 +9902,7 @@ function DocumentPanelContent({
     setCitationRefreshTarget(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     void queryClient.invalidateQueries({ queryKey: ["review"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    refreshActiveDocumentDetail(queryClient, document.id);
   }, [
     citationRefreshTarget,
     citationRunId,
@@ -9793,10 +9912,26 @@ function DocumentPanelContent({
     queryClient,
     referenceCitationFeedback,
     trackedCitationJobs,
+    trackedCitationRun,
   ]);
 
   useEffect(() => {
-    if (!summaryRunId || trackedSummaryJobs.length === 0) return;
+    if (!summaryRunId) return;
+    if (trackedSummaryJobs.length === 0) {
+      if (!trackedSummaryRun || isActiveConcordanceStatus(trackedSummaryRun.status)) return;
+      if (concordanceRunFailed(trackedSummaryRun)) {
+        summaryRefreshFeedback.showError(
+          actionFailureMessage("Summary refresh failed", runFailureMessage(trackedSummaryRun, []) || "Concordance run failed"),
+        );
+      } else {
+        summaryRefreshFeedback.showSuccess();
+      }
+      setSummaryRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+      void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+      return;
+    }
     if (trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedSummaryJobs.find((job) => job.status === "failed");
     if (failedJob) {
@@ -9808,28 +9943,25 @@ function DocumentPanelContent({
     }
     setSummaryRunId(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
-  }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs]);
+  }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs, trackedSummaryRun]);
 
   useEffect(() => {
     if (!bibliographyRunId) return;
     if (trackedBibliographyJobs.length === 0) {
-      if (!trackedBibliographyRun) {
-        setBibliographyRunId(null);
-        return;
-      }
+      if (!trackedBibliographyRun) return;
       if (isActiveConcordanceStatus(trackedBibliographyRun.status)) return;
-      if (trackedBibliographyRun.status === "failed" || trackedBibliographyRun.failed_jobs > 0) {
-        bibliographyRefreshFeedback.showError("Bibliography refresh failed.");
+      if (concordanceRunFailed(trackedBibliographyRun)) {
+        bibliographyRefreshFeedback.showError(
+          actionFailureMessage("Bibliography refresh failed", runFailureMessage(trackedBibliographyRun, []) || "Concordance run failed"),
+        );
       } else {
         bibliographyRefreshFeedback.showSuccess();
       }
       setBibliographyRunId(null);
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      refreshActiveDocumentDetail(queryClient, document.id);
       void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
       return;
     }
@@ -9844,13 +9976,28 @@ function DocumentPanelContent({
     }
     setBibliographyRunId(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
   }, [bibliographyRefreshFeedback, bibliographyRunId, document.id, queryClient, trackedBibliographyJobs, trackedBibliographyRun]);
 
   useEffect(() => {
-    if (!formulaCaptureRunId || trackedFormulaCaptureJobs.length === 0) return;
+    if (!formulaCaptureRunId) return;
+    if (trackedFormulaCaptureJobs.length === 0) {
+      if (!trackedFormulaCaptureRun || isActiveConcordanceStatus(trackedFormulaCaptureRun.status)) return;
+      if (concordanceRunFailed(trackedFormulaCaptureRun)) {
+        formulaCaptureFeedback.showError(
+          actionFailureMessage("Formula capture failed", runFailureMessage(trackedFormulaCaptureRun, []) || "Concordance run failed"),
+        );
+      } else {
+        formulaCaptureFeedback.showSuccess();
+      }
+      setFormulaCaptureRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+      return;
+    }
     if (trackedFormulaCaptureJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedFormulaCaptureJobs.find((job) => job.status === "failed");
     if (failedJob) {
@@ -9862,14 +10009,29 @@ function DocumentPanelContent({
     }
     setFormulaCaptureRunId(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
-  }, [document.id, formulaCaptureFeedback, formulaCaptureRunId, queryClient, trackedFormulaCaptureJobs]);
+  }, [document.id, formulaCaptureFeedback, formulaCaptureRunId, queryClient, trackedFormulaCaptureJobs, trackedFormulaCaptureRun]);
 
   useEffect(() => {
-    if (!tagRefreshRunId || trackedTagRefreshJobs.length === 0) return;
+    if (!tagRefreshRunId) return;
+    if (trackedTagRefreshJobs.length === 0) {
+      if (!trackedTagRefreshRun || isActiveConcordanceStatus(trackedTagRefreshRun.status)) return;
+      if (concordanceRunFailed(trackedTagRefreshRun)) {
+        tagRefreshFeedback.showError(
+          actionFailureMessage("Tag refresh failed", runFailureMessage(trackedTagRefreshRun, []) || "Concordance run failed"),
+        );
+      } else {
+        tagRefreshFeedback.showSuccess();
+      }
+      setTagRefreshRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+      return;
+    }
     if (trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
     const failedJob = trackedTagRefreshJobs.find((job) => job.status === "failed");
     if (failedJob) {
@@ -9881,11 +10043,10 @@ function DocumentPanelContent({
     }
     setTagRefreshRunId(null);
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
-    void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+    refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["tags"] });
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
-  }, [document.id, queryClient, tagRefreshFeedback, tagRefreshRunId, trackedTagRefreshJobs]);
+  }, [document.id, queryClient, tagRefreshFeedback, tagRefreshRunId, trackedTagRefreshJobs, trackedTagRefreshRun]);
 
   useEffect(() => {
     if (!trackedAccessorySummaryId || !trackedAccessorySummary) return;
@@ -9902,11 +10063,12 @@ function DocumentPanelContent({
     setAccessoryTitle("");
     setAccessoryPrompt("");
     setTrackedAccessorySummaryId(null);
-    void queryClient.invalidateQueries({ queryKey: ["documents"] });
+    refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
   }, [
     accessorySummaryFeedback.showError,
     accessorySummaryFeedback.showSuccess,
+    document.id,
     queryClient,
     trackedAccessorySummary,
     trackedAccessorySummaryId,
@@ -22511,6 +22673,7 @@ export default function App() {
   const [viewTitleSubjects, setViewTitleSubjects] = useState<Partial<Record<View, string>>>({});
   const settingsSaveHandlerRef = useRef<SettingsSaveHandler | null>(null);
   const releaseReloadScheduledRef = useRef(false);
+  const refreshedBackgroundDocumentJobsRef = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
   const appDialogController = useAppDialogController();
   const appDialogs = useMemo<AppDialogController>(
@@ -23261,6 +23424,25 @@ export default function App() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const refreshed = refreshedBackgroundDocumentJobsRef.current;
+    for (const job of backgroundJobs) {
+      if (!job.documentId || !job.completedAt || !isTerminalBackgroundStatus(job.status)) continue;
+      const refreshKey = `${job.id}:${job.completedAt}`;
+      if (refreshed.has(refreshKey)) continue;
+      refreshed.add(refreshKey);
+      refreshActiveDocumentDetail(queryClient, job.documentId);
+      if (job.capabilityKey === "bibliography_extraction" || job.capabilityKey === "formula_capture") {
+        void queryClient.invalidateQueries({ queryKey: ["document-composition", job.documentId] });
+      }
+      if (refreshed.size > 100) {
+        const recentKeys = [...refreshed].slice(-50);
+        refreshed.clear();
+        recentKeys.forEach((key) => refreshed.add(key));
+      }
+    }
+  }, [backgroundJobs, queryClient]);
 
   useEffect(() => {
     const handleCommandPaletteShortcut = (event: KeyboardEvent) => {
