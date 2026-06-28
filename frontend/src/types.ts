@@ -957,6 +957,7 @@ export type DocumentFilters = {
   priority?: string;
   citation_status?: string;
   duplicate_status?: string;
+  health_status?: string;
 };
 
 export type SavedSearch = {

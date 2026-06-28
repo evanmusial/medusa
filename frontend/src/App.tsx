@@ -644,6 +644,15 @@ const DUPLICATE_STATUS_OPTIONS: SelectMenuOption[] = [
   { id: "duplicates", name: "Has duplicates" },
   { id: "unique", name: "No exact duplicates" },
 ];
+const HEALTH_STATUS_OPTIONS: SelectMenuOption[] = [
+  { id: "doi_gap", name: "DOI evidence gaps" },
+  { id: "citation_review", name: "Citation review" },
+  { id: "missing_summary", name: "Missing summaries" },
+  { id: "identity_gap", name: "Identity metadata" },
+  { id: "unfiled_domains", name: "Unfiled domains" },
+  { id: "untagged", name: "Untagged documents" },
+  { id: "no_project_use", name: "No project use" },
+];
 type BudgetMetricMode = "tokens_cost" | "tokens" | "cost";
 type BudgetGroupMode = "model" | "task" | "document" | "day" | "hour";
 type BudgetChartSegment = {
@@ -1196,6 +1205,26 @@ function dashboardHasActiveWork(dashboard?: Dashboard | null) {
 
 function backupRunsHaveActiveWork(runs?: BackupRun[] | null) {
   return Boolean(runs?.some((run) => run.status === "queued" || run.status === "running"));
+}
+
+function backupRunReviewGroup(run: BackupRun) {
+  return run.kind === "restore" || run.reason === "pre_restore" || run.phase === "safety_backup" ? "restore" : "backup";
+}
+
+function backupRunReviewTime(run: BackupRun) {
+  const parsed = new Date(run.completed_at || run.updated_at || run.started_at || run.created_at).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function failedBackupRunsNeedingReview(runs?: BackupRun[] | null) {
+  const latestByGroup = new Map<string, BackupRun>();
+  [...(runs || [])]
+    .sort((left, right) => backupRunReviewTime(right) - backupRunReviewTime(left))
+    .forEach((run) => {
+      const group = backupRunReviewGroup(run);
+      if (!latestByGroup.has(group)) latestByGroup.set(group, run);
+    });
+  return Array.from(latestByGroup.values()).filter((run) => run.status === "failed");
 }
 
 function backgroundJobsHaveActiveWork(jobs: BackgroundJob[]) {
@@ -2673,7 +2702,7 @@ function hasDelimitedListInput(value: string) {
 }
 
 function emptyFilters(): DocumentFilters {
-  return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "", duplicate_status: "" };
+  return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "", duplicate_status: "", health_status: "" };
 }
 
 const EMPTY_DOCUMENT_FILTERS = emptyFilters();
@@ -2814,6 +2843,10 @@ function showLibraryStatusPill(value: string | null | undefined, normalValue: st
   return Boolean(value && value !== normalValue);
 }
 
+function healthStatusLabel(value?: string | null) {
+  return HEALTH_STATUS_OPTIONS.find((option) => option.id === value)?.name || (value ? value.replaceAll("_", " ") : "Health review");
+}
+
 function savedSearchSummary(savedSearch: SavedSearch, lookup: { domains: Map<string, string>; tags: Map<string, string> }) {
   const filters = savedSearch.filters || {};
   const pieces = [
@@ -2824,6 +2857,7 @@ function savedSearchSummary(savedSearch: SavedSearch, lookup: { domains: Map<str
     filters.priority ? `Priority: ${priorityLabel(String(filters.priority))}` : "",
     filters.citation_status ? `Citation: ${String(filters.citation_status).replaceAll("_", " ")}` : "",
     filters.duplicate_status ? `Duplicates: ${String(filters.duplicate_status).replaceAll("_", " ")}` : "",
+    filters.health_status ? `Health: ${healthStatusLabel(String(filters.health_status))}` : "",
   ].filter(Boolean);
   return pieces.length ? pieces.join(" / ") : "All library documents";
 }
@@ -7262,6 +7296,13 @@ function LibraryView({
           key: "duplicate",
           label: `Duplicates: ${filters.duplicate_status.replaceAll("_", " ")}`,
           onClear: () => setFilterValue("duplicate_status", ""),
+        }
+      : null,
+    filters.health_status
+      ? {
+          key: "health",
+          label: `Health: ${healthStatusLabel(filters.health_status)}`,
+          onClear: () => setFilterValue("health_status", ""),
         }
       : null,
   ].filter((chip): chip is { key: string; label: string; onClear: () => void } => Boolean(chip));
@@ -16974,6 +17015,32 @@ function activityConcordanceTone(status: string): ActivityRow["tone"] {
   return "neutral";
 }
 
+function includeFailedRows<T>(items: T[], limit: number, key: (item: T) => string, isFailed: (item: T) => boolean) {
+  const selected = items.slice(0, limit);
+  const selectedIds = new Set(selected.map(key));
+  items.forEach((item) => {
+    const id = key(item);
+    if (isFailed(item) && !selectedIds.has(id)) {
+      selected.push(item);
+      selectedIds.add(id);
+    }
+  });
+  return selected;
+}
+
+function capActivityRows(rows: ActivityRow[], limit = 120) {
+  const sortedRows = [...rows].sort((left, right) => right.time - left.time);
+  const cappedRows = sortedRows.slice(0, limit);
+  const cappedIds = new Set(cappedRows.map((row) => row.id));
+  sortedRows.forEach((row) => {
+    if (row.tone === "warn" && !cappedIds.has(row.id)) {
+      cappedRows.push(row);
+      cappedIds.add(row.id);
+    }
+  });
+  return cappedRows.sort((left, right) => right.time - left.time);
+}
+
 function ActivityView({
   backupRuns,
   concordanceJobs,
@@ -17022,7 +17089,7 @@ function ActivityView({
         tone: row.active ? "blue" : row.failed_files ? "warn" : "good",
       };
     });
-    const importJobRows = orderedImportJobs(jobs).slice(0, 40).map<ActivityRow>((job) => ({
+    const importJobRows = includeFailedRows(orderedImportJobs(jobs), 40, (job) => job.id, (job) => job.status === "failed").map<ActivityRow>((job) => ({
       actionLabel: job.document_id ? "Open Document" : "Open Queue",
       detail: [
         job.current_step?.replaceAll("_", " "),
@@ -17044,7 +17111,7 @@ function ActivityView({
       title: importJobLabel(job),
       tone: activityImportStatusTone(job.status),
     }));
-    const concordanceRunRows = concordanceRuns.slice(0, 24).map<ActivityRow>((run) => ({
+    const concordanceRunRows = includeFailedRows(concordanceRuns, 24, (run) => run.id, (run) => run.status === "failed").map<ActivityRow>((run) => ({
       actionLabel: "Open Settings",
       detail: [
         `${formatMetric(run.completed_jobs)} of ${formatMetric(run.total_jobs)} jobs`,
@@ -17065,27 +17132,29 @@ function ActivityView({
       title: run.label || `${scopeLabel(run.scope_type)} Concordance`,
       tone: activityConcordanceTone(run.status),
     }));
-    const concordanceJobRows = concordanceJobs
-      .filter((job) => job.status !== "complete")
-      .slice(0, 32)
-      .map<ActivityRow>((job) => ({
-        actionLabel: "Open Document",
-        detail: [`${job.capability_key.replaceAll("_", " ")}`, `v${job.target_version}`, job.assigned_client_name || job.assigned_worker_kind || ""]
-          .filter(Boolean)
-          .join(" / "),
-        icon: RefreshCw,
-        id: `concordance-job-${job.id}`,
-        lane: "concordance",
-        meta: job.last_error || `${job.attempts} ${job.attempts === 1 ? "attempt" : "attempts"}`,
-        onOpen: () => onOpenDocument(job.document_id),
-        progress: job.status === "running" ? 55 : job.status === "queued" ? 15 : null,
-        status: job.status.replaceAll("_", " "),
-        time: activityTimestamp(job.updated_at || job.created_at),
-        timestamp: job.updated_at || job.created_at,
-        title: "Concordance job",
-        tone: activityConcordanceTone(job.status),
-      }));
-    const backupRows = backupRuns.slice(0, 32).map<ActivityRow>((run) => ({
+    const concordanceJobRows = includeFailedRows(
+      concordanceJobs.filter((job) => job.status !== "complete"),
+      32,
+      (job) => job.id,
+      (job) => job.status === "failed",
+    ).map<ActivityRow>((job) => ({
+      actionLabel: "Open Document",
+      detail: [`${job.capability_key.replaceAll("_", " ")}`, `v${job.target_version}`, job.assigned_client_name || job.assigned_worker_kind || ""]
+        .filter(Boolean)
+        .join(" / "),
+      icon: RefreshCw,
+      id: `concordance-job-${job.id}`,
+      lane: "concordance",
+      meta: job.last_error || `${job.attempts} ${job.attempts === 1 ? "attempt" : "attempts"}`,
+      onOpen: () => onOpenDocument(job.document_id),
+      progress: job.status === "running" ? 55 : job.status === "queued" ? 15 : null,
+      status: job.status.replaceAll("_", " "),
+      time: activityTimestamp(job.updated_at || job.created_at),
+      timestamp: job.updated_at || job.created_at,
+      title: "Concordance job",
+      tone: activityConcordanceTone(job.status),
+    }));
+    const backupRows = includeFailedRows(backupRuns, 32, (run) => run.id, (run) => run.status === "failed").map<ActivityRow>((run) => ({
       actionLabel: "Open Utilities",
       detail: [
         backupPhaseLabel(run.phase),
@@ -17123,9 +17192,7 @@ function ActivityView({
       title: citationCandidateTitle(item),
       tone: "warn",
     }));
-    return [...importJobRows, ...ingestionRows, ...concordanceJobRows, ...concordanceRunRows, ...backupRows, ...reviewRows]
-      .sort((left, right) => right.time - left.time)
-      .slice(0, 120);
+    return capActivityRows([...importJobRows, ...ingestionRows, ...concordanceJobRows, ...concordanceRunRows, ...backupRows, ...reviewRows]);
   }, [backupRuns, concordanceJobs, concordanceRuns, ingestionHistory, items, jobs, onOpenDocument, onOpenView]);
   const visibleRows = lane === "all" ? rows : rows.filter((row) => row.lane === lane);
   const activeRows = rows.filter((row) => row.tone === "blue").length;
@@ -17257,7 +17324,7 @@ function CorpusHealthView({
   const duplicateCandidates = readyDocuments.filter((document) => document.duplicate_count > 0);
   const failedImportJobs = jobs.filter((job) => job.status === "failed");
   const failedConcordanceJobs = concordanceJobs.filter((job) => job.status === "failed");
-  const failedBackupRuns = backupRuns.filter((run) => run.status === "failed");
+  const failedBackupRuns = failedBackupRunsNeedingReview(backupRuns);
   const activeRepairWork = jobs.filter((job) => job.status === "queued" || job.status === "running").length + concordanceJobs.filter((job) => job.status === "queued" || job.status === "running").length;
   const issueCards: CorpusHealthIssue[] = [
     {
@@ -17265,7 +17332,7 @@ function CorpusHealthView({
       detail: "Ready documents without DOI evidence or a confirmed No DOI decision.",
       documents: documentsMissingDoi,
       id: "doi",
-      onAction: () => onOpenLibraryFilter(""),
+      onAction: () => onOpenLibraryFilter("", { health_status: "doi_gap" }),
       severity: documentsMissingDoi.length ? "warn" : "good",
       title: "DOI evidence gaps",
       total: documentsMissingDoi.length,
@@ -17275,7 +17342,7 @@ function CorpusHealthView({
       detail: "Citation state is not verified, so APA output may still need review.",
       documents: citationNeedsReview,
       id: "citation",
-      onAction: () => onOpenLibraryFilter("", { citation_status: "needs_review" }),
+      onAction: () => onOpenLibraryFilter("", { health_status: "citation_review" }),
       severity: citationNeedsReview.length ? "warn" : "good",
       title: "Citation review",
       total: citationNeedsReview.length,
@@ -17285,7 +17352,7 @@ function CorpusHealthView({
       detail: "Documents with no generated summary text.",
       documents: missingSummary,
       id: "summary",
-      onAction: () => onOpenView("settings"),
+      onAction: () => onOpenLibraryFilter("", { health_status: "missing_summary" }),
       severity: missingSummary.length ? "blue" : "good",
       title: "Missing summaries",
       total: missingSummary.length,
@@ -17295,37 +17362,37 @@ function CorpusHealthView({
       detail: "Documents missing authors or publication year.",
       documents: missingAuthorsOrYear,
       id: "identity",
-      onAction: () => onOpenLibraryFilter(""),
+      onAction: () => onOpenLibraryFilter("", { health_status: "identity_gap" }),
       severity: missingAuthorsOrYear.length ? "blue" : "good",
       title: "Identity metadata",
       total: missingAuthorsOrYear.length,
     },
     {
-      actionLabel: "Open Domains",
+      actionLabel: "Review unfiled docs",
       detail: "Ready documents not filed into any domain.",
       documents: unfiledDomains,
       id: "domains",
-      onAction: () => onOpenView("domains"),
+      onAction: () => onOpenLibraryFilter("", { health_status: "unfiled_domains" }),
       severity: unfiledDomains.length ? "blue" : "good",
       title: "Unfiled domains",
       total: unfiledDomains.length,
     },
     {
-      actionLabel: "Open Tags",
+      actionLabel: "Review untagged docs",
       detail: "Ready documents without any tags.",
       documents: untagged,
       id: "tags",
-      onAction: () => onOpenView("tags"),
+      onAction: () => onOpenLibraryFilter("", { health_status: "untagged" }),
       severity: untagged.length ? "blue" : "good",
       title: "Untagged documents",
       total: untagged.length,
     },
     {
-      actionLabel: "Open Projects",
+      actionLabel: "Review unused docs",
       detail: "Ready documents not attached to a project run sheet.",
       documents: notInProjects,
       id: "projects",
-      onAction: () => onOpenView("projects"),
+      onAction: () => onOpenLibraryFilter("", { health_status: "no_project_use" }),
       severity: notInProjects.length ? "neutral" : "good",
       title: "No project use",
       total: notInProjects.length,

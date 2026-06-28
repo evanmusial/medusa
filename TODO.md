@@ -144,7 +144,7 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Add a Corpus Health dashboard.
   - Acceptance: Corpus Health summarizes documents missing DOI/source links, verified citation, authors/year/pages, summary, tags, domains, projects, OCR, figures/tables, embeddings, or current capability versions; it groups failed, partial, stale, and low-confidence processing states by cause; it surfaces tag/domain/project hygiene issues; each issue opens the relevant filtered Library, Queue, Tags, Settings, or Concordance action; broad repair actions provide scope, time, and cost previews before queuing work.
-  - Partial: `/health` now summarizes DOI evidence gaps, citation review, missing summaries, missing author/year identity, unfiled domains, untagged documents, project use, duplicate candidates, and failed import/Concordance/backup work from existing document/job APIs, with sampled document shortcuts and repair entry points. Remaining work is first-class capability freshness, OCR/figure/table/embedding coverage, saved health views, richer failure grouping, and scoped repair queues with cost/time previews.
+  - Partial: `/health` now summarizes DOI evidence gaps, citation review, missing summaries, missing author/year identity, unfiled domains, untagged documents, project use, duplicate candidates, failed import/Concordance work, and latest unresolved backup/restore failures from existing document/job APIs, with sampled document shortcuts and document-backed issue cards that open Library using a visible `Health` result filter. Remaining work is first-class capability freshness, OCR/figure/table/embedding coverage, saved health views, richer failure grouping, and scoped repair queues with cost/time previews.
 
 ## Reader And Annotation Experience
 

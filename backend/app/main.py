@@ -1009,6 +1009,38 @@ def document_no_doi(document: Document) -> bool:
     return no_doi_flag_from_evidence(document.metadata_evidence, document.doi)
 
 
+def document_has_author_identity(document: Document) -> bool:
+    return any(" ".join(str(author.get(key) or "").strip() for key in ["given", "family"]).strip() for author in (document.authors or []))
+
+
+def document_matches_health_status(document: Document, health_status: str) -> bool:
+    if health_status == "doi_gap":
+        return not document.doi and not document_no_doi(document)
+    if health_status == "identity_gap":
+        return not document_has_author_identity(document) or not document.publication_year
+    return False
+
+
+def apply_document_health_filter(query, health_status: str | None):
+    health_status = (health_status or "").strip()
+    if not health_status:
+        return query
+    if health_status == "citation_review":
+        return query.filter(Document.citation_status != "verified")
+    if health_status == "missing_summary":
+        return query.filter(or_(Document.rich_summary.is_(None), func.trim(Document.rich_summary) == ""))
+    if health_status == "unfiled_domains":
+        return query.filter(~Document.domains.any())
+    if health_status == "untagged":
+        return query.filter(~Document.tags.any())
+    if health_status == "no_project_use":
+        return query.filter(~Document.id.in_(select(ProjectItem.document_id)))
+    if health_status in {"doi_gap", "identity_gap"}:
+        document_ids = [document.id for document in query.all() if document_matches_health_status(document, health_status)]
+        return query.filter(Document.id.in_(document_ids))
+    return query
+
+
 def document_summary_out(
     document: Document,
     duplicate_count: int = 0,
@@ -2588,6 +2620,7 @@ def refresh_cache(
                 "priority": "",
                 "citation_status": "",
                 "duplicate_status": "",
+                "health_status": "",
                 "all": False,
                 "offset": 0,
                 "limit": 50,
@@ -2707,6 +2740,7 @@ def hydrate_cache(
             priority = filter_value(filters, "priority")
             citation_status = filter_value(filters, "citation_status")
             duplicate_status = filter_value(filters, "duplicate_status")
+            health_status = filter_value(filters, "health_status")
             key_parts = {
                 "q": q or "",
                 "domain_id": domain_id,
@@ -2715,6 +2749,7 @@ def hydrate_cache(
                 "priority": priority,
                 "citation_status": citation_status,
                 "duplicate_status": duplicate_status,
+                "health_status": health_status,
                 "all": False,
                 "offset": offset,
                 "limit": page_size,
@@ -2730,6 +2765,7 @@ def hydrate_cache(
                     priority=priority,
                     citation_status=citation_status,
                     duplicate_status=duplicate_status,
+                    health_status=health_status,
                     all_results=False,
                     offset=offset,
                     limit=page_size,
@@ -4179,6 +4215,7 @@ def list_documents(
     priority: str | None = None,
     citation_status: str | None = None,
     duplicate_status: str | None = None,
+    health_status: str | None = None,
     include_duplicate_summary: bool = True,
     include_projects: bool = True,
     limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
@@ -4199,6 +4236,7 @@ def list_documents(
             query = query.filter(Document.duplicate_count > 0)
         elif duplicate_status == "unique":
             query = query.filter(Document.duplicate_count == 0)
+    query = apply_document_health_filter(query, health_status)
     order_columns = [search_rank.desc()] if search_rank is not None else []
     order_columns.extend(document_title_order_columns(db))
     query = query.order_by(None).order_by(*order_columns)
@@ -4227,6 +4265,7 @@ def document_list_rows_out(
     priority: str | None = None,
     citation_status: str | None = None,
     duplicate_status: str | None = None,
+    health_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
     focus_document_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -4247,6 +4286,7 @@ def document_list_rows_out(
         query = query.filter(Document.duplicate_count > 0)
     elif duplicate_status == "unique":
         query = query.filter(Document.duplicate_count == 0)
+    query = apply_document_health_filter(query, health_status)
 
     total_count = int(query.order_by(None).count())
     total_page_count = int(query.order_by(None).with_entities(func.coalesce(func.sum(Document.page_count), 0)).scalar() or 0)
@@ -4295,6 +4335,7 @@ def list_document_rows(
     priority: str | None = None,
     citation_status: str | None = None,
     duplicate_status: str | None = None,
+    health_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
     focus_document_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -4308,6 +4349,7 @@ def list_document_rows(
         "priority": priority or "",
         "citation_status": citation_status or "",
         "duplicate_status": duplicate_status or "",
+        "health_status": health_status or "",
         "all": bool(all_results),
         "focus_document_id": focus_document_id or "",
         "offset": int(offset),
@@ -4328,6 +4370,7 @@ def list_document_rows(
             priority=priority,
             citation_status=citation_status,
             duplicate_status=duplicate_status,
+            health_status=health_status,
             all_results=all_results,
             focus_document_id=focus_document_id,
             offset=offset,

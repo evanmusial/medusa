@@ -465,6 +465,69 @@ def test_list_documents_marks_and_filters_checksum_duplicates(monkeypatch, tmp_p
         assert [document.title for document in unique_documents] == ["Unique"]
 
 
+def test_list_documents_filters_health_status_scopes(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import document_list_rows_out, list_documents
+    from app.models import Document, Domain, Project, ProjectItem, Tag
+
+    Session = make_session()
+
+    def make_document(index: int, title: str, **overrides):
+        values = {
+            "title": title,
+            "authors": [{"given": "Ada", "family": "Lovelace"}],
+            "publication_year": 1843,
+            "doi": f"10.1000/{index}",
+            "rich_summary": "Summary present.",
+            "citation_status": "verified",
+            "original_filename": f"health-{index}.pdf",
+            "checksum_sha256": f"{index:064x}",
+            "processing_status": "ready",
+        }
+        values.update(overrides)
+        return Document(**values)
+
+    with Session() as db:
+        domain = Domain(name="Research")
+        tag = Tag(name="evidence")
+        project = Project(name="Run sheet")
+        documents = [
+            make_document(1, "Complete"),
+            make_document(2, "DOI gap", doi=None),
+            make_document(3, "Confirmed no DOI", doi=None, metadata_evidence={"no_doi": {"status": "confirmed"}}),
+            make_document(4, "Citation review", citation_status="rejected"),
+            make_document(5, "Missing summary", rich_summary=" "),
+            make_document(6, "Identity gap", authors=[], publication_year=None),
+            make_document(7, "Unfiled domains"),
+            make_document(8, "Untagged"),
+            make_document(9, "No project use"),
+        ]
+        for document in documents:
+            if document.title != "Unfiled domains":
+                document.domains.append(domain)
+            if document.title != "Untagged":
+                document.tags.append(tag)
+        db.add_all([domain, tag, project, *documents])
+        db.flush()
+        for document in documents:
+            if document.title != "No project use":
+                db.add(ProjectItem(project_id=project.id, document_id=document.id))
+        db.commit()
+
+        assert [document.title for document in list_documents(object(), db, health_status="doi_gap")] == ["DOI gap"]
+        assert [document.title for document in list_documents(object(), db, health_status="citation_review")] == ["Citation review"]
+        assert [document.title for document in list_documents(object(), db, health_status="missing_summary")] == ["Missing summary"]
+        assert [document.title for document in list_documents(object(), db, health_status="identity_gap")] == ["Identity gap"]
+        assert [document.title for document in list_documents(object(), db, health_status="unfiled_domains")] == ["Unfiled domains"]
+        assert [document.title for document in list_documents(object(), db, health_status="untagged")] == ["Untagged"]
+
+        no_project_rows = document_list_rows_out(db, health_status="no_project_use")
+        assert no_project_rows.total_count == 1
+        assert [document.title for document in no_project_rows.items] == ["No project use"]
+
+
 def test_get_document_uses_persisted_duplicate_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
