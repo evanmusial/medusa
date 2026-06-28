@@ -571,6 +571,14 @@ class DocumentDetail(DocumentSummary):
     abstract: str | None = None
     bibliography: str | None = None
     bibliography_generated_at: datetime | None = None
+    doi_verified_at: datetime | None = None
+    doi_verified_by: str | None = None
+    apa_citation_verified_at: datetime | None = None
+    apa_citation_verified_by: str | None = None
+    apa_in_text_citation_verified_at: datetime | None = None
+    apa_in_text_citation_verified_by: str | None = None
+    bibliography_verified_at: datetime | None = None
+    bibliography_verified_by: str | None = None
     metadata_evidence: dict[str, Any]
     gcs_uri: str | None = None
     storage_status: str
@@ -982,6 +990,10 @@ class DocumentPatch(BaseModel):
     abstract: str | None = None
     rich_summary: str | None = None
     bibliography: str | None = None
+    confirm_verified_doi_edit: bool | None = None
+    confirm_verified_apa_citation_edit: bool | None = None
+    confirm_verified_apa_in_text_citation_edit: bool | None = None
+    confirm_verified_bibliography_edit: bool | None = None
     apa_citation: str | None = None
     apa_in_text_citation: str | None = None
     citation_status: str | None = None

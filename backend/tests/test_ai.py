@@ -116,10 +116,12 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
     class FakeResponses:
         def __init__(self):
             self.system_prompt = ""
+            self.user_text = ""
 
         def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
             del model, text, timeout, prompt_cache_key, prompt_cache_retention
             self.system_prompt = input[0]["content"]
+            self.user_text = input[1]["content"][0]["text"]
             return SimpleNamespace(
                 id="resp_bibliography_cleanup",
                 output_text=json.dumps(
@@ -148,6 +150,7 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
     )
 
     assert "Sort the returned references in APA reference-list order" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "selected reference/source style" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "Surname, Initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "first author surname" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "Do not sort by author initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
@@ -158,6 +161,7 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
         "Brown, B. (2023). *Beta analysis*. Journal.",
         "Zed, Z. (2024). *Zeta systems*. Journal.",
     ]
+    assert "Selected reference/source style: APA 7 (apa_7)" in responses.user_text
     assert responses.system_prompt == BIBLIOGRAPHY_CLEANUP_PROMPT
 
 

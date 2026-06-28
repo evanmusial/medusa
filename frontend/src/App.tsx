@@ -8014,6 +8014,7 @@ type AnnotationEditDraft = {
 type ReaderMode = "pdf" | "text" | "compare";
 type CitationKind = "reference" | "in-text";
 type CitationRefreshTarget = "citation" | "doi";
+type DocumentVerificationField = "doi" | "apa_citation" | "apa_in_text_citation" | "bibliography";
 const ANNOTATION_KIND_OPTIONS = [
   { id: "note", label: "Note" },
   { id: "highlight", label: "Highlight" },
@@ -9037,6 +9038,7 @@ function DocumentPanelContent({
   const [editingDoi, setEditingDoi] = useState(false);
   const [doiDraft, setDoiDraft] = useState(document.doi || "");
   const [doiEditError, setDoiEditError] = useState<string | null>(null);
+  const [doiVerifiedEditConfirmed, setDoiVerifiedEditConfirmed] = useState(false);
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState(document.rich_summary || "");
   const [summaryEditError, setSummaryEditError] = useState<string | null>(null);
@@ -9073,6 +9075,10 @@ function DocumentPanelContent({
   const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
     reference: document.apa_citation || "",
     "in-text": document.apa_in_text_citation || "",
+  });
+  const [citationVerifiedEditConfirmed, setCitationVerifiedEditConfirmed] = useState<Record<CitationKind, boolean>>({
+    reference: false,
+    "in-text": false,
   });
   const [citationEditError, setCitationEditError] = useState<string | null>(null);
   const [selectedHistoryVersionId, setSelectedHistoryVersionId] = useState<string | null>(null);
@@ -9157,11 +9163,18 @@ function DocumentPanelContent({
     onError: (error) => setDomainEditError(actionFailureMessage("Could not update domains", error)),
   });
   const updateDoi = useMutation({
-    mutationFn: (value: string) => api.updateDocument(document.id, { doi: value.trim() || null }),
+    mutationFn: ({ value, confirmVerified }: { value: string; confirmVerified: boolean }) =>
+      api.updateDocument(document.id, {
+        doi: value.trim() || null,
+        confirm_verified_doi_edit: confirmVerified,
+        confirm_verified_apa_citation_edit: confirmVerified,
+        confirm_verified_apa_in_text_citation_edit: confirmVerified,
+      }),
     onSuccess: (updatedDocument) => {
       setEditingDoi(false);
       setDoiDraft(updatedDocument.doi || "");
       setDoiEditError(null);
+      setDoiVerifiedEditConfirmed(false);
       setDraft(draftFromDocument(updatedDocument));
       queryClient.setQueryData(["document", document.id], updatedDocument);
       patchCachedDocumentSummaries(queryClient, { id: updatedDocument.id, doi: updatedDocument.doi, no_doi: updatedDocument.no_doi });
@@ -9172,7 +9185,13 @@ function DocumentPanelContent({
     onError: (error) => setDoiEditError(actionFailureMessage("Could not save DOI", error)),
   });
   const markNoDoi = useMutation({
-    mutationFn: () => api.updateDocument(document.id, { no_doi: true }),
+    mutationFn: (confirmVerified: boolean) =>
+      api.updateDocument(document.id, {
+        no_doi: true,
+        confirm_verified_doi_edit: confirmVerified,
+        confirm_verified_apa_citation_edit: confirmVerified,
+        confirm_verified_apa_in_text_citation_edit: confirmVerified,
+      }),
     onSuccess: (updatedDocument) => {
       setEditingDoi(false);
       setDoiDraft(updatedDocument.doi || "");
@@ -9232,9 +9251,30 @@ function DocumentPanelContent({
     onSuccess: (updatedDocument) => {
       queryClient.setQueryData(["document", document.id], updatedDocument);
       setDraft(draftFromDocument(updatedDocument));
+      setBibliographyEditError(null);
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setBibliographyEditError(actionFailureMessage("Could not verify bibliography", error)),
+  });
+  const verifyDocumentField = useMutation({
+    mutationFn: (field: DocumentVerificationField) => api.verifyDocumentField(document.id, field),
+    onSuccess: (updatedDocument) => {
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      setDraft(draftFromDocument(updatedDocument));
+      setDoiEditError(null);
+      setCitationEditError(null);
+      setBibliographyEditError(null);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error, field) => {
+      const message = actionFailureMessage("Could not verify field", error);
+      if (field === "doi") setDoiEditError(message);
+      else if (field === "bibliography") setBibliographyEditError(message);
+      else setCitationEditError(message);
     },
   });
   const updatePageText = useMutation({
@@ -9360,19 +9400,20 @@ function DocumentPanelContent({
     },
   });
   const refreshCitation = useMutation({
-    mutationFn: (target: CitationRefreshTarget) =>
+    mutationFn: ({ target, confirmVerified }: { target: CitationRefreshTarget; confirmVerified: boolean }) =>
       startConcordanceRun({
         backgroundDetail: document.title,
         backgroundLabel: target === "doi" ? "Refreshing DOI" : "Refreshing APA citations",
         capability_keys: ["citation_refresh"],
         capabilityKey: "citation_refresh",
+        createRun: () => api.refreshDocumentCitation(document.id, { confirmVerified }),
         documentId: document.id,
         force: true,
         label: `${target === "doi" ? "DOI" : "APA citation"} refresh: ${document.title}`,
         scope_data: { document_ids: [document.id] },
         scope_type: "documents",
       }),
-    onSuccess: (run, target) => {
+    onSuccess: (run, { target }) => {
       setCitationRefreshTarget(target);
       const feedback = target === "doi" ? doiRefreshFeedback : citationRefreshFeedback;
       if (run.total_jobs > 0) setCitationRunId(rememberTrackedRun(run));
@@ -9382,7 +9423,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["review"] });
     },
-    onError: (error, target) => {
+    onError: (error, { target }) => {
       setCitationRunId(null);
       setCitationRefreshTarget(null);
       const feedback = target === "doi" ? doiRefreshFeedback : citationRefreshFeedback;
@@ -9494,11 +9535,20 @@ function DocumentPanelContent({
     },
   });
   const updateCitation = useMutation({
-    mutationFn: ({ kind, value }: { kind: CitationKind; value: string }) =>
-      api.updateDocument(document.id, kind === "reference" ? { apa_citation: value.trim() || null } : { apa_in_text_citation: value.trim() || null }),
-    onSuccess: () => {
+    mutationFn: ({ kind, value, confirmVerified }: { kind: CitationKind; value: string; confirmVerified: boolean }) =>
+      api.updateDocument(
+        document.id,
+        kind === "reference"
+          ? { apa_citation: value.trim() || null, confirm_verified_apa_citation_edit: confirmVerified }
+          : { apa_in_text_citation: value.trim() || null, confirm_verified_apa_in_text_citation_edit: confirmVerified },
+      ),
+    onSuccess: (updatedDocument) => {
       setEditingCitation(null);
+      setCitationDrafts({ reference: updatedDocument.apa_citation || "", "in-text": updatedDocument.apa_in_text_citation || "" });
+      setCitationVerifiedEditConfirmed({ reference: false, "in-text": false });
       setCitationEditError(null);
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      setDraft(draftFromDocument(updatedDocument));
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -9638,6 +9688,7 @@ function DocumentPanelContent({
     setEditingDoi(false);
     setDoiDraft(document.doi || "");
     setDoiEditError(null);
+    setDoiVerifiedEditConfirmed(false);
     setEditingSummary(false);
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
@@ -9679,6 +9730,7 @@ function DocumentPanelContent({
     setTagRefreshRunId(null);
     setEditingCitation(null);
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
+    setCitationVerifiedEditConfirmed({ reference: false, "in-text": false });
     setCitationEditError(null);
     setSelectedHistoryVersionId(null);
     setHistoryExpanded(false);
@@ -9700,6 +9752,7 @@ function DocumentPanelContent({
   useEffect(() => {
     if (editingCitation) return;
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
+    setCitationVerifiedEditConfirmed({ reference: false, "in-text": false });
   }, [document.apa_citation, document.apa_in_text_citation, editingCitation]);
 
   useEffect(() => {
@@ -9707,11 +9760,24 @@ function DocumentPanelContent({
   }, [accessorySummaryDefaultModel, document.id]);
 
   useEffect(() => {
-    if (!document.bibliography_generated_at && !document.bibliography_verified_at) return;
+    if (
+      !document.bibliography_generated_at &&
+      !document.doi_verified_at &&
+      !document.apa_citation_verified_at &&
+      !document.apa_in_text_citation_verified_at &&
+      !document.bibliography_verified_at
+    )
+      return;
     setRelativeTimeNow(Date.now());
     const timer = window.setInterval(() => setRelativeTimeNow(Date.now()), 60000);
     return () => window.clearInterval(timer);
-  }, [document.bibliography_generated_at, document.bibliography_verified_at]);
+  }, [
+    document.apa_citation_verified_at,
+    document.apa_in_text_citation_verified_at,
+    document.bibliography_generated_at,
+    document.bibliography_verified_at,
+    document.doi_verified_at,
+  ]);
 
   useEffect(() => {
     if (!domainAssignOpen) return;
@@ -10550,47 +10616,136 @@ function DocumentPanelContent({
     restoreHistoryVersion.mutate(selectedHistoryVersion.id);
   };
 
-  const startCitationEdit = (kind: CitationKind) => {
+  const verificationLabelForField = (field: DocumentVerificationField) => {
+    if (field === "doi") return "DOI";
+    if (field === "apa_citation") return "APA Reference List";
+    if (field === "apa_in_text_citation") return "APA In-Text Citation";
+    return "Bibliography";
+  };
+  const verificationValueForField = (field: DocumentVerificationField) => {
+    if (field === "doi") return document.doi || "";
+    if (field === "apa_citation") return document.apa_citation || "";
+    if (field === "apa_in_text_citation") return document.apa_in_text_citation || "";
+    return document.bibliography || "";
+  };
+  const verificationTimestampForField = (field: DocumentVerificationField) => {
+    if (field === "doi") return document.doi_verified_at || null;
+    if (field === "apa_citation") return document.apa_citation_verified_at || null;
+    if (field === "apa_in_text_citation") return document.apa_in_text_citation_verified_at || null;
+    return document.bibliography_verified_at || null;
+  };
+  const verificationUserForField = (field: DocumentVerificationField) => {
+    if (field === "doi") return document.doi_verified_by || null;
+    if (field === "apa_citation") return document.apa_citation_verified_by || null;
+    if (field === "apa_in_text_citation") return document.apa_in_text_citation_verified_by || null;
+    return document.bibliography_verified_by || null;
+  };
+  const isFieldVerified = (field: DocumentVerificationField) => Boolean(verificationTimestampForField(field));
+  const verifiedFieldListLabel = (fields: DocumentVerificationField[]) => {
+    const labels = fields.map(verificationLabelForField);
+    if (labels.length <= 1) return labels[0] || "verified field";
+    return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+  };
+  const confirmVerifiedFieldAction = async (
+    fields: DocumentVerificationField[],
+    options: { confirmLabel: string; title: string; message: string },
+  ) => {
+    const verifiedFields = fields.filter(isFieldVerified);
+    if (!verifiedFields.length) return true;
+    const labels = verifiedFieldListLabel(verifiedFields);
+    return dialogs.confirm({
+      cancelLabel: "Cancel",
+      confirmLabel: options.confirmLabel,
+      eyebrow: "Verified data",
+      message: `${labels} ${verifiedFields.length === 1 ? "has" : "have"} been manually marked as verified. ${options.message}`,
+      title: options.title,
+      tone: "warning",
+    });
+  };
+  const citationVerificationField = (kind: CitationKind): DocumentVerificationField =>
+    kind === "reference" ? "apa_citation" : "apa_in_text_citation";
+
+  const startCitationEdit = async (kind: CitationKind) => {
+    const verifiedField = citationVerificationField(kind);
+    const ok = await confirmVerifiedFieldAction([verifiedField], {
+      confirmLabel: "Edit Citation",
+      message: "Saving changes will remove the verified status until you verify it again.",
+      title: "Edit verified citation?",
+    });
+    if (!ok) return;
     setCitationDrafts((current) => ({ ...current, [kind]: citationText(document, kind) }));
+    setCitationVerifiedEditConfirmed((current) => ({ ...current, [kind]: isFieldVerified(verifiedField) }));
     setCitationEditError(null);
     setEditingCitation(kind);
   };
 
   const cancelCitationEdit = () => {
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
+    setCitationVerifiedEditConfirmed({ reference: false, "in-text": false });
     setCitationEditError(null);
     setEditingCitation(null);
   };
 
   const saveCitationEdit = (kind: CitationKind) => {
-    updateCitation.mutate({ kind, value: citationDrafts[kind] || "" });
+    updateCitation.mutate({ kind, value: citationDrafts[kind] || "", confirmVerified: citationVerifiedEditConfirmed[kind] });
   };
 
   const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
   const citationButtonBusy = (_kind: CitationKind) => citationBusy && citationRefreshTarget !== "doi";
-  const checkCitation = () => {
+  const checkCitation = async () => {
+    const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
+      confirmLabel: "Refresh APA",
+      message: "Refreshing can replace DOI and APA citation data. Verified status will be removed until you verify affected fields again.",
+      title: "Refresh verified DOI or APA data?",
+    });
+    if (!ok) return;
     setCitationRefreshTarget("citation");
-    refreshCitation.mutate("citation");
+    refreshCitation.mutate({ target: "citation", confirmVerified: true });
   };
   const doiCheckBusy = citationBusy && citationRefreshTarget === "doi";
-  const checkDoi = () => {
+  const checkDoi = async () => {
+    const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
+      confirmLabel: "Refresh DOI",
+      message: "Refreshing can replace DOI and APA citation data. Verified status will be removed until you verify affected fields again.",
+      title: "Refresh verified DOI or APA data?",
+    });
+    if (!ok) return;
     setCitationRefreshTarget("doi");
-    refreshCitation.mutate("doi");
+    refreshCitation.mutate({ target: "doi", confirmVerified: true });
   };
-  const startDoiEdit = () => {
+  const startDoiEdit = async () => {
+    const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
+      confirmLabel: "Edit DOI",
+      message: "Saving DOI changes can update APA citation text. Verified status will be removed until you verify affected fields again.",
+      title: "Edit verified DOI or APA data?",
+    });
+    if (!ok) return;
     setDoiDraft(document.doi || "");
     setDoiEditError(null);
+    setDoiVerifiedEditConfirmed(["doi", "apa_citation", "apa_in_text_citation"].some((field) => isFieldVerified(field as DocumentVerificationField)));
     setEditingDoi(true);
     window.requestAnimationFrame(() => doiEditInputRef.current?.focus());
   };
   const cancelDoiEdit = () => {
     setDoiDraft(document.doi || "");
     setDoiEditError(null);
+    setDoiVerifiedEditConfirmed(false);
     setEditingDoi(false);
   };
   const saveDoiEdit = () => {
-    updateDoi.mutate(doiDraft);
+    updateDoi.mutate({ value: doiDraft, confirmVerified: doiVerifiedEditConfirmed });
   };
+  const markDocumentNoDoi = async () => {
+    if (markNoDoi.isPending || updateDoi.isPending || document.no_doi) return;
+    const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
+      confirmLabel: "Mark No DOI",
+      message: "Marking No DOI clears the stored DOI and can update APA citation text. Verified status will be removed until you verify affected fields again.",
+      title: "Edit verified DOI or APA data?",
+    });
+    if (!ok) return;
+    markNoDoi.mutate(true);
+  };
+  const bibliographyIsVerified = Boolean(document.bibliography_verified_at);
   const copySummary = () => {
     if (document.rich_summary) void copyToClipboard("document-summary", decodeHtmlEntities(document.rich_summary));
   };
@@ -10611,8 +10766,101 @@ function DocumentPanelContent({
   const checkSummary = () => {
     refreshSummary.mutate();
   };
-  const checkBibliography = () => {
-    refreshBibliography.mutate();
+  const startBibliographyEdit = async () => {
+    if (editingBibliography || updateBibliography.isPending) return;
+    let confirmed = false;
+    if (bibliographyIsVerified) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Edit Bibliography",
+        eyebrow: "Verified bibliography",
+        message:
+          "This bibliography has been manually marked as verified. Saving changes will remove the verified status until you verify it again.",
+        title: "Edit verified bibliography?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmed = true;
+    }
+    setBibliographyDraft(document.bibliography || "");
+    setBibliographyEditError(null);
+    setBibliographyVerifiedEditConfirmed(confirmed);
+    setEditingBibliography(true);
+    window.requestAnimationFrame(() => bibliographyTextareaRef.current?.focus());
+  };
+  const cancelBibliographyEdit = () => {
+    setBibliographyDraft(document.bibliography || "");
+    setBibliographyEditError(null);
+    setBibliographyVerifiedEditConfirmed(false);
+    setEditingBibliography(false);
+  };
+  const saveBibliographyEdit = () => {
+    updateBibliography.mutate({
+      value: bibliographyDraft,
+      confirmVerified: bibliographyIsVerified && bibliographyVerifiedEditConfirmed,
+    });
+  };
+  const replaceBibliographySelection = (replacement: string, nextSelectionStart: number, nextSelectionEnd: number) => {
+    const textarea = bibliographyTextareaRef.current;
+    const start = textarea?.selectionStart ?? bibliographyDraft.length;
+    const end = textarea?.selectionEnd ?? bibliographyDraft.length;
+    const nextValue = `${bibliographyDraft.slice(0, start)}${replacement}${bibliographyDraft.slice(end)}`;
+    setBibliographyDraft(nextValue);
+    window.requestAnimationFrame(() => {
+      bibliographyTextareaRef.current?.focus();
+      bibliographyTextareaRef.current?.setSelectionRange(start + nextSelectionStart, start + nextSelectionEnd);
+    });
+  };
+  const applyBibliographyInlineFormat = (prefix: string, suffix: string, placeholder: string) => {
+    if (updateBibliography.isPending) return;
+    const textarea = bibliographyTextareaRef.current;
+    const start = textarea?.selectionStart ?? bibliographyDraft.length;
+    const end = textarea?.selectionEnd ?? bibliographyDraft.length;
+    const selected = bibliographyDraft.slice(start, end) || placeholder;
+    replaceBibliographySelection(`${prefix}${selected}${suffix}`, prefix.length, prefix.length + selected.length);
+  };
+  const clearBibliographyFormatting = () => {
+    if (updateBibliography.isPending) return;
+    const textarea = bibliographyTextareaRef.current;
+    const start = textarea?.selectionStart ?? 0;
+    const end = textarea?.selectionEnd ?? 0;
+    if (start !== end) {
+      const cleaned = stripMarkdownFormatting(bibliographyDraft.slice(start, end));
+      replaceBibliographySelection(cleaned, 0, cleaned.length);
+      return;
+    }
+    setBibliographyDraft(stripMarkdownFormatting(bibliographyDraft));
+    window.requestAnimationFrame(() => bibliographyTextareaRef.current?.focus());
+  };
+  const handleBibliographyEditorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key !== "b" && key !== "i") return;
+    event.preventDefault();
+    const marker = key === "b" ? "**" : "*";
+    applyBibliographyInlineFormat(marker, marker, key === "b" ? "bold text" : "italic text");
+  };
+  const markBibliographyVerified = () => {
+    if (!document.bibliography || verifyBibliography.isPending) return;
+    setBibliographyEditError(null);
+    verifyBibliography.mutate();
+  };
+  const checkBibliography = async () => {
+    let confirmVerified = false;
+    if (bibliographyIsVerified) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Refresh Bibliography",
+        eyebrow: "Verified bibliography",
+        message:
+          "This bibliography has been manually marked as verified. Refreshing it will remove the verified status and replace the source list if Concordance finds updated evidence.",
+        title: "Refresh verified bibliography?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmVerified = true;
+    }
+    refreshBibliography.mutate(confirmVerified);
   };
   const checkTags = async () => {
     const ok = await dialogs.confirm({
@@ -10791,7 +11039,7 @@ function DocumentPanelContent({
     updateAccessorySummary.mutate({ id: summary.id, title });
   };
 
-  const saveCorrection = () => {
+  const saveCorrection = async () => {
     const nextAttributes: Record<string, unknown> = {};
     const draftAttributeNames = new Set(draft.attributes.map((attribute) => attribute.key.trim()).filter(Boolean));
     document.attributes.forEach((attribute) => {
@@ -10802,18 +11050,51 @@ function DocumentPanelContent({
       if (key) nextAttributes[key] = attribute.value;
     });
     const year = Number(draft.publication_year);
+    const nextDoi = draft.doi.trim() || null;
+    const currentDoi = document.doi?.trim() || null;
+    const doiChanged = nextDoi !== currentDoi;
+    const nextPublicationYear = Number.isFinite(year) && draft.publication_year.trim() ? year : null;
+    const currentPublicationYear = document.publication_year ?? null;
+    const citationMetadataChanged =
+      (draft.title.trim() || document.title) !== document.title ||
+      draft.authors !== authorsToText(document) ||
+      nextPublicationYear !== currentPublicationYear ||
+      (draft.journal.trim() || null) !== (document.journal || null) ||
+      (draft.publisher.trim() || null) !== (document.publisher || null) ||
+      doiChanged ||
+      (draft.source_url.trim() || null) !== (document.source_url || null);
+    const nextBibliography = draft.bibliography.trim() || null;
+    const currentBibliography = document.bibliography?.trim() || null;
+    const bibliographyChanged = nextBibliography !== currentBibliography;
+    const fieldsNeedingConfirmation: DocumentVerificationField[] = [];
+    if (doiChanged && isFieldVerified("doi")) fieldsNeedingConfirmation.push("doi");
+    if (citationMetadataChanged && isFieldVerified("apa_citation")) fieldsNeedingConfirmation.push("apa_citation");
+    if (citationMetadataChanged && isFieldVerified("apa_in_text_citation")) fieldsNeedingConfirmation.push("apa_in_text_citation");
+    if (bibliographyChanged && isFieldVerified("bibliography")) fieldsNeedingConfirmation.push("bibliography");
+    if (fieldsNeedingConfirmation.length) {
+      const ok = await confirmVerifiedFieldAction(fieldsNeedingConfirmation, {
+        confirmLabel: "Edit Verified Fields",
+        message: "Saving changes will remove verified status from changed or regenerated fields until you verify them again.",
+        title: "Edit verified document data?",
+      });
+      if (!ok) return;
+    }
     updateDocument.mutate({
       title: draft.title.trim() || document.title,
       subtitle: draft.subtitle.trim() || null,
       authors: parseAuthorText(draft.authors),
-      publication_year: Number.isFinite(year) && draft.publication_year.trim() ? year : null,
+      publication_year: nextPublicationYear,
       journal: draft.journal.trim() || null,
       publisher: draft.publisher.trim() || null,
-      doi: draft.doi.trim() || null,
+      doi: nextDoi,
       source_url: draft.source_url.trim() || null,
       abstract: draft.abstract.trim() || null,
       rich_summary: draft.rich_summary.trim() || null,
-      bibliography: draft.bibliography.trim() || null,
+      bibliography: nextBibliography,
+      confirm_verified_doi_edit: fieldsNeedingConfirmation.includes("doi"),
+      confirm_verified_apa_citation_edit: fieldsNeedingConfirmation.includes("apa_citation"),
+      confirm_verified_apa_in_text_citation_edit: fieldsNeedingConfirmation.includes("apa_in_text_citation"),
+      confirm_verified_bibliography_edit: fieldsNeedingConfirmation.includes("bibliography"),
       priority: draft.priority,
       read_status: draft.read_status,
       citation_status: draft.citation_status,
@@ -10843,6 +11124,51 @@ function DocumentPanelContent({
   };
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
   const bibliographyGeneratedLabel = relativeTimeLabel(document.bibliography_generated_at, relativeTimeNow);
+  const bibliographyVerifiedLabel = relativeTimeLabel(document.bibliography_verified_at, relativeTimeNow);
+  const bibliographyVerifiedBy = document.bibliography_verified_by || "Medusa user";
+  const bibliographyVerifiedTooltip = document.bibliography_verified_at
+    ? `Verified by ${bibliographyVerifiedBy}${bibliographyVerifiedLabel ? ` ${bibliographyVerifiedLabel}` : ""}.`
+    : "";
+  const fieldVerificationTooltip = (field: DocumentVerificationField) => {
+    const verifiedAt = verificationTimestampForField(field);
+    if (!verifiedAt) return `${verificationLabelForField(field)} has not been manually verified.`;
+    const relative = relativeTimeLabel(verifiedAt, relativeTimeNow);
+    return `Verified by ${verificationUserForField(field) || "Medusa user"}${relative ? ` ${relative}` : ""}.`;
+  };
+  const markFieldVerified = (field: DocumentVerificationField) => {
+    if (!verificationValueForField(field) || verifyDocumentField.isPending) return;
+    if (field === "doi") setDoiEditError(null);
+    else if (field === "bibliography") setBibliographyEditError(null);
+    else setCitationEditError(null);
+    verifyDocumentField.mutate(field);
+  };
+  const renderVerificationControl = (field: DocumentVerificationField) => {
+    const verified = isFieldVerified(field);
+    const label = verificationLabelForField(field);
+    if (verified) {
+      return (
+        <span className="verified-field-badge" data-tooltip={fieldVerificationTooltip(field)}>
+          <BadgeCheck size={15} />
+          Verified
+        </span>
+      );
+    }
+    return (
+      <button
+        className="secondary-button compact field-verify-button"
+        data-disabled-reason={
+          verifyDocumentField.isPending ? "the verification is already saving." : `this document does not have ${label} text to verify.`
+        }
+        data-tooltip={`Mark this document's ${label} field as manually verified.`}
+        disabled={!verificationValueForField(field) || verifyDocumentField.isPending}
+        onClick={() => markFieldVerified(field)}
+        type="button"
+      >
+        <BadgeCheck size={14} />
+        Verify
+      </button>
+    );
+  };
   const bibliographyCleanupMessage = bibliographyCleanupNotice(document.metadata_evidence);
   const renderDomainsSection = () => (
     <section className="detail-section detail-domains-section">
@@ -11009,7 +11335,10 @@ function DocumentPanelContent({
   };
   const renderDoiSection = () => (
     <section className="detail-section doi-section">
-      <h3>DOI</h3>
+      <div className="detail-section-title-row verified-field-title-row">
+        <h3>DOI</h3>
+        {renderVerificationControl("doi")}
+      </div>
       <div className="doi-value">
         {document.doi ? <code>{document.doi}</code> : <span>{document.no_doi ? "No DOI flagged." : "No DOI recorded."}</span>}
       </div>
@@ -11078,7 +11407,7 @@ function DocumentPanelContent({
           className="icon-button"
           data-disabled-reason={updateDoi.isPending ? "the DOI change is already saving." : "the DOI editor is already open."}
           data-tooltip="Open DOI editing so you can add, correct, or clear the document DOI."
-          onClick={startDoiEdit}
+          onClick={() => void startDoiEdit()}
           disabled={updateDoi.isPending || editingDoi}
           type="button"
         >
@@ -11090,7 +11419,7 @@ function DocumentPanelContent({
             className={asyncFeedbackClass("icon-button", doiRefreshFeedback.feedback, doiCheckBusy)}
             data-disabled-reason={citationBusyReason}
             data-tooltip="Queue a DOI and APA citation refresh for this document using the selected APA model fallback."
-            onClick={checkDoi}
+            onClick={() => void checkDoi()}
             disabled={citationBusy}
             type="button"
           >
@@ -11112,7 +11441,7 @@ function DocumentPanelContent({
           }
           data-tooltip={document.doi ? "Clear the stored DOI and flag this document as confirmed to have no DOI." : "Flag this document as confirmed to have no DOI without storing a placeholder value."}
           disabled={markNoDoi.isPending || updateDoi.isPending || document.no_doi}
-          onClick={() => markNoDoi.mutate()}
+          onClick={() => void markDocumentNoDoi()}
           type="button"
         >
           <Ban size={15} />
@@ -11314,10 +11643,34 @@ function DocumentPanelContent({
     const bibliographyItemCount = bibliographyEntriesFromText(document.bibliography).length;
     return (
       <section className="detail-section bibliography-section">
-        <h3>
-          Bibliography
-          {bibliographyItemCount > 0 ? <span className="detail-section-title-count">({bibliographyItemCount})</span> : null}
-        </h3>
+        <div className="detail-section-title-row bibliography-title-row">
+          <h3>
+            Bibliography
+            {bibliographyItemCount > 0 ? <span className="detail-section-title-count">({bibliographyItemCount})</span> : null}
+          </h3>
+          {bibliographyIsVerified ? (
+            <span className="bibliography-verified-badge" data-tooltip={bibliographyVerifiedTooltip || "This bibliography was manually verified."}>
+              <BadgeCheck size={15} />
+              Verified
+            </span>
+          ) : (
+            <button
+              className="secondary-button compact bibliography-verify-button"
+              data-disabled-reason={
+                verifyBibliography.isPending
+                  ? "the bibliography verification is already saving."
+                  : "this document does not have an extracted bibliography to verify."
+              }
+              data-tooltip="Mark this document's Bibliography field as manually verified."
+              disabled={!document.bibliography || verifyBibliography.isPending}
+              onClick={markBibliographyVerified}
+              type="button"
+            >
+              <BadgeCheck size={14} />
+              Verify
+            </button>
+          )}
+        </div>
         {bibliographyGeneratedLabel ? <p className="section-kicker">Generated {bibliographyGeneratedLabel}</p> : null}
         {bibliographyCleanupMessage ? (
           <p className="bibliography-refresh-note">
@@ -11325,7 +11678,89 @@ function DocumentPanelContent({
             <span>{bibliographyCleanupMessage}</span>
           </p>
         ) : null}
-        <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
+        {editingBibliography ? (
+          <form
+            className="summary-editor bibliography-editor"
+            data-escape-layer="expanded"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveBibliographyEdit();
+            }}
+          >
+            <div className="summary-editor-toolbar" aria-label="Bibliography formatting tools">
+              <button
+                className="icon-button compact"
+                data-disabled-reason="the bibliography edit is already saving."
+                data-tooltip="Wrap the selected bibliography text in Markdown bold markers."
+                disabled={updateBibliography.isPending}
+                onClick={() => applyBibliographyInlineFormat("**", "**", "bold text")}
+                type="button"
+              >
+                <Bold size={14} />
+              </button>
+              <button
+                className="icon-button compact"
+                data-disabled-reason="the bibliography edit is already saving."
+                data-tooltip="Wrap the selected bibliography text in Markdown italic markers."
+                disabled={updateBibliography.isPending}
+                onClick={() => applyBibliographyInlineFormat("*", "*", "italic text")}
+                type="button"
+              >
+                <Italic size={14} />
+              </button>
+              <button
+                className="icon-button compact"
+                data-disabled-reason="the bibliography edit is already saving."
+                data-tooltip="Remove common Markdown formatting markers from the bibliography draft."
+                disabled={updateBibliography.isPending}
+                onClick={clearBibliographyFormatting}
+                type="button"
+              >
+                <RemoveFormatting size={14} />
+              </button>
+            </div>
+            <textarea
+              aria-label="Bibliography Markdown"
+              data-disabled-reason="the bibliography edit is already saving."
+              data-tooltip="Edit the Markdown bibliography that appears in the document detail pane and contributes to search."
+              disabled={updateBibliography.isPending}
+              onChange={(event) => {
+                setBibliographyDraft(event.target.value);
+                if (bibliographyEditError) setBibliographyEditError(null);
+              }}
+              onKeyDown={handleBibliographyEditorKeyDown}
+              ref={bibliographyTextareaRef}
+              value={bibliographyDraft}
+            />
+            <div className="summary-editor-actions">
+              <button
+                className="primary-button compact"
+                data-disabled-reason="the bibliography edit is already saving."
+                data-tooltip="Save this edited bibliography to the document and refresh search."
+                disabled={updateBibliography.isPending}
+                type="submit"
+              >
+                <Save size={14} />
+                Save
+              </button>
+              <button
+                className="secondary-button compact"
+                data-disabled-reason="the bibliography edit is already saving."
+                data-tooltip="Discard the bibliography draft and close bibliography editing."
+                disabled={updateBibliography.isPending}
+                onClick={cancelBibliographyEdit}
+                type="button"
+              >
+                <X size={14} />
+                Cancel
+              </button>
+            </div>
+            {bibliographyEditError ? <p className="form-error">{bibliographyEditError}</p> : null}
+          </form>
+        ) : (
+          <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
+        )}
+        {!editingBibliography && bibliographyEditError ? <p className="form-error">{bibliographyEditError}</p> : null}
         <div className="citation-actions">
           <button
             aria-label={copiedKey === "document-bibliography" ? "Bibliography copied" : "Copy bibliography"}
@@ -11337,6 +11772,19 @@ function DocumentPanelContent({
             type="button"
           >
             {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+          </button>
+          <button
+            aria-label="Edit bibliography"
+            className="icon-button"
+            data-disabled-reason={
+              updateBibliography.isPending ? "the bibliography edit is already saving." : "the bibliography editor is already open."
+            }
+            data-tooltip="Open the Markdown bibliography editor for this document."
+            disabled={updateBibliography.isPending || editingBibliography}
+            onClick={() => void startBibliographyEdit()}
+            type="button"
+          >
+            <Edit3 size={15} />
           </button>
           <AsyncActionSlot
             busy={bibliographyRefreshBusy}
@@ -11368,7 +11816,10 @@ function DocumentPanelContent({
     const feedback = citationFeedbackFor(kind);
     return (
       <section className="detail-section citation-section">
-        <h3>{title}</h3>
+        <div className="detail-section-title-row verified-field-title-row">
+          <h3>{title}</h3>
+          {renderVerificationControl(citationVerificationField(kind))}
+        </div>
         {isEditing ? (
           <form
             className="citation-editor"
@@ -11430,7 +11881,7 @@ function DocumentPanelContent({
             className="icon-button"
             data-disabled-reason={updateCitation.isPending ? "a citation edit is already saving." : "this citation editor is already open."}
             data-tooltip={`Open the editor for the ${title} text.`}
-            onClick={() => startCitationEdit(kind)}
+            onClick={() => void startCitationEdit(kind)}
             disabled={updateCitation.isPending || isEditing}
             type="button"
           >
@@ -11442,7 +11893,7 @@ function DocumentPanelContent({
               className={asyncFeedbackClass("icon-button", feedback, busy)}
               data-disabled-reason={citationBusyReason}
               data-tooltip="Queue one APA citation refresh that regenerates and validates both the Reference List and In-Text Citation using DOI/Crossref evidence first and the selected APA model as fallback."
-              onClick={checkCitation}
+              onClick={() => void checkCitation()}
               disabled={citationBusy}
               type="button"
             >
@@ -12468,7 +12919,7 @@ function DocumentPanelContent({
           data-escape-layer="expanded"
           onSubmit={(event) => {
             event.preventDefault();
-            saveCorrection();
+            void saveCorrection();
           }}
         >
           <label>

@@ -56,7 +56,7 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
     cleanup_calls = []
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             cleanup_calls.append(
                 {
                     "filename": filename,
@@ -278,7 +278,7 @@ def test_forced_bibliography_refresh_cleans_preserved_existing_when_extraction_r
     cleanup_calls = []
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             cleanup_calls.append(bibliography)
             return {
                 "bibliography": bibliography,
@@ -482,7 +482,7 @@ def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeyp
     cleanup_calls = []
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             cleanup_calls.append(bibliography)
             raise AssertionError("large bibliography should not be sent to model cleanup")
 
@@ -544,7 +544,7 @@ def test_forced_bibliography_refresh_cleans_large_lists_within_cap(monkeypatch, 
     cleanup_calls = []
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             cleanup_calls.append(bibliography)
             return {
                 "bibliography": bibliography,
@@ -606,7 +606,7 @@ def test_forced_bibliography_refresh_rejects_incomplete_model_cleanup(monkeypatc
     from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             return {
                 "bibliography": "Adams, A. (2024). Only one source survived.",
                 "confidence": 0.41,
@@ -673,7 +673,7 @@ def test_forced_bibliography_refresh_uses_fallback_after_unsafe_cleanup(monkeypa
     cleanup_calls = []
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             cleanup_calls.append({"model": model, "prompt_cache_key": prompt_cache_key})
             if model == "gpt-5-mini":
                 return {
@@ -762,7 +762,7 @@ def test_forced_bibliography_refresh_rejects_cleanup_that_drops_coauthor(monkeyp
     from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             return {
                 "bibliography": "\n".join(
                     [
@@ -835,7 +835,7 @@ def test_forced_bibliography_refresh_rejects_cleanup_that_adds_duplicate(monkeyp
     from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
 
     class FakeAiService:
-        def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
             return {
                 "bibliography": "\n".join(
                     [

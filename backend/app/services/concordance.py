@@ -48,7 +48,7 @@ from app.services.history import (
 )
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.openai_usage import estimated_cost_usd_for_model_tokens
-from app.services.preferences import get_analysis_model, get_analysis_models
+from app.services.preferences import get_analysis_model, get_analysis_models, get_citation_convention
 from app.services.preferences import import_processing_cloud_page_cap, import_processing_snapshot
 from app.services.processing import (
     apply_document_citations,
@@ -1470,6 +1470,8 @@ class ConcordanceProcessor:
                 bibliography = sorted_bibliography
             cleanup_model = get_analysis_model(db, MODEL_BIBLIOGRAPHY_CLEANUP)
             cleanup_fallback_model = DEFAULT_BIBLIOGRAPHY_CLEANUP_FALLBACK_MODEL
+            reference_style = get_citation_convention(db)
+            evidence["reference_style"] = reference_style
             bibliography_entry_count = _bibliography_entry_count(bibliography)
             if (
                 len(bibliography) > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS
@@ -1498,6 +1500,7 @@ class ConcordanceProcessor:
                             document.original_filename or document.title or "document.pdf",
                             bibliography,
                             model=model,
+                            reference_style=reference_style,
                             usage_context=self._usage_context(document, job, "bibliography_extraction"),
                             prompt_cache_key=f"medusa-bibliography:{document.id}" + (":fallback" if attempt_index else ""),
                         )
