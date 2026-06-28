@@ -3808,11 +3808,12 @@ textarea {
   isolation: isolate;
   z-index: 20;
   margin-top: -18px;
-  margin-bottom: 10px;
+  margin-bottom: 18px;
   padding-top: 18px;
   padding-bottom: 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
   background: var(--panel);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 42%, transparent);
+  box-shadow: none;
 }
 
 .detail-sticky-zone::before {
@@ -3970,7 +3971,8 @@ textarea {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 12px;
+  margin-top: 8px;
+  padding-top: 4px;
 }
 
 .reader-tabs button {
