@@ -79,7 +79,15 @@ BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
 BIBLIOGRAPHY_AUTHOR_INITIAL_RE = re.compile(r"\b[A-Z](?:\.-?[A-Z])?\.")
 BIBLIOGRAPHY_APA_INITIAL_RE = re.compile(r",\s*(?:[A-Z]\.\s*)+")
-BIBLIOGRAPHY_ORG_AUTHOR_RE = re.compile(r"^[A-Z][A-Za-z0-9'`\u2019.-]{2,},")
+BIBLIOGRAPHY_ORG_AUTHOR_RE = re.compile(
+    r"^[A-Z][A-Za-z0-9'`\u2019&/.-]{2,}"
+    r"(?:\s+(?:[A-Z][A-Za-z0-9'`\u2019&/.-]+|of|the|and|for|in|on|&)){0,10},"
+)
+BIBLIOGRAPHY_ORG_DOT_AUTHOR_RE = re.compile(
+    r"^(?:[A-Z][A-Z0-9&/.-]{1,}|"
+    r"[A-Z][A-Za-z0-9'`\u2019&/.-]+"
+    r"(?:\s+(?:[A-Z][A-Za-z0-9'`\u2019&/.-]+|of|the|and|for|in|on|&)){0,10})\.\s+"
+)
 BIBLIOGRAPHY_AUTHOR_STOPWORDS = {
     "Accessed",
     "Available",
@@ -107,11 +115,13 @@ def _bibliography_line_starts_entry(line: str) -> bool:
     stripped = line.strip()
     if not stripped or stripped.startswith("("):
         return False
+    stripped = re.sub(r"[*_`]+", "", stripped)
     leading = stripped[:120]
     if (
         BIBLIOGRAPHY_AUTHOR_INITIAL_RE.search(leading)
         or BIBLIOGRAPHY_APA_INITIAL_RE.search(leading)
         or BIBLIOGRAPHY_ORG_AUTHOR_RE.match(stripped)
+        or BIBLIOGRAPHY_ORG_DOT_AUTHOR_RE.match(stripped)
     ):
         return True
     return bool(BIBLIOGRAPHY_YEAR_RE.search(stripped) and BIBLIOGRAPHY_ORG_AUTHOR_RE.match(stripped))
@@ -156,6 +166,41 @@ def _vancouver_author_tokens(prefix: str) -> list[str]:
     return tokens if len(tokens) >= 2 else []
 
 
+def _surname_author_tokens(prefix: str) -> list[str]:
+    tokens: list[str] = []
+    normalized = re.sub(r"\s+", " ", prefix.replace("&", " and ")).strip(" .")
+    if not normalized:
+        return []
+    segments = re.split(r"\s*;\s*|\s+\band\b\s+", normalized, flags=re.IGNORECASE)
+    for segment in segments:
+        segment = segment.strip(" ,.")
+        segment = re.sub(r"^(?:and\s+)+", "", segment, flags=re.IGNORECASE).strip(" ,.")
+        if not segment:
+            continue
+        segment = re.sub(r"\bet\s+al\.?.*$", "", segment, flags=re.IGNORECASE).strip(" ,.")
+        if not segment:
+            continue
+        if "," in segment:
+            surname = segment.split(",", 1)[0]
+        else:
+            surname = segment.split()[0]
+        surname = surname.strip("'`\u2019- ")
+        if not surname or "." in surname or surname in BIBLIOGRAPHY_AUTHOR_STOPWORDS:
+            continue
+        if surname.casefold() not in {existing.casefold() for existing in tokens}:
+            tokens.append(surname)
+    return tokens if len(tokens) >= 2 else []
+
+
+def _author_prefix_sentence_end(prefix: str) -> re.Match[str] | None:
+    for match in re.finditer(r"\.\s+", prefix):
+        before = prefix[: match.start() + 1]
+        if re.search(r"(?:^|[\s,])(?:[A-Z]|[A-Z]\.-[A-Z])\.$", before):
+            continue
+        return match
+    return None
+
+
 def _bibliography_author_tokens(entry: str) -> list[str]:
     plain = decode_html_entities(str(entry or "")).replace("*", "")
     year_match = BIBLIOGRAPHY_YEAR_RE.search(plain)
@@ -165,15 +210,20 @@ def _bibliography_author_tokens(entry: str) -> list[str]:
     vancouver_tokens = _vancouver_author_tokens(prefix)
     if vancouver_tokens:
         return vancouver_tokens
-    first_segment = prefix.split(",", 1)[0]
-    if BIBLIOGRAPHY_AUTHOR_INITIAL_RE.search(first_segment):
+    author_prefix = prefix
+    quote_indexes = [index for index in (prefix.find("“"), prefix.find('"')) if index >= 0]
+    quote_stop = min(quote_indexes) if quote_indexes else None
+    author_stop = _author_prefix_sentence_end(prefix)
+    if author_stop and not any(mark in prefix[: author_stop.start()] for mark in (",", ";", "&")):
         return []
-    if "," not in prefix and " and " not in prefix.casefold():
-        return []
-    if not BIBLIOGRAPHY_APA_INITIAL_RE.search(prefix) and " and " not in prefix.casefold():
-        return []
-    tokens = _unique_bibliography_author_tokens(prefix)
-    return tokens if len(tokens) >= 2 else []
+    if quote_stop is not None and any(mark in prefix[:quote_stop] for mark in (",", ";", "&")):
+        author_prefix = prefix[:quote_stop]
+    if author_stop and any(mark in prefix[: author_stop.start()] for mark in (",", ";", "&")):
+        author_prefix = prefix[: author_stop.start()]
+    surname_tokens = _surname_author_tokens(author_prefix)
+    if surname_tokens:
+        return surname_tokens
+    return []
 
 
 def _bibliography_cleanup_missing_author_sets(input_bibliography: str, cleanup_bibliography: str) -> list[list[str]]:

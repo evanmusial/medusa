@@ -23,10 +23,19 @@ REFERENCE_METHOD_SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 STOP_HEADING_RE = re.compile(r"^\s*(?:appendix|appendices|acknowledg(?:e)?ments?|notes?|about\s+the\s+authors?)\b", re.IGNORECASE)
-REFERENCE_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)")
+REFERENCE_CITATION_KEY_ENTRY_MARKER_RE = re.compile(
+    r"^\s*\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\](?:\s+|(?=[A-Z])|$)"
+)
+REFERENCE_ENTRY_MARKER_RE = re.compile(
+    r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)"
+)
 REFERENCE_BRACKETED_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\])(?:\s+|(?=[A-Z])|$)")
 REFERENCE_NUMBERED_ENTRY_MARKER_RE = re.compile(r"^\s*\d{1,3}[.)]?(?:\s+|(?=[A-Z])|$)")
-REFERENCE_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)")
+REFERENCE_ENTRY_PREFIX_RE = re.compile(
+    r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|"
+    r"\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\]|"
+    r"\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)"
+)
 REFERENCE_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*]|\u2013|\u2014|\u2022|\u2023|\u2043|\u25e6)\s+")
 REFERENCE_AUTHOR_WORD = r"[A-Z][A-Za-z\u00c0-\u024f'`\u2019.-]+"
 REFERENCE_ORGANIZATION_NAME = rf"{REFERENCE_AUTHOR_WORD}(?:\s+(?:{REFERENCE_AUTHOR_WORD}|of|the|and|for|in|on|&)){{0,10}}"
@@ -78,6 +87,9 @@ INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE = re.compile(
     rf"\s+(?=(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
     r"\((?:18|19|20)\d{2}[a-z]?\)\.?\s+)"
 )
+INLINE_CITATION_KEY_START_CANDIDATE_RE = re.compile(
+    r"\s+(?=\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\](?:\s+|(?=[A-Z])|$))"
+)
 REFERENCE_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b")
 REFERENCE_URL_DOI_RE = re.compile(r"(?:https?://|doi:|10\.\d{4,9}/)", re.IGNORECASE)
 NON_REFERENCE_SECTION_TITLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]*")
@@ -104,6 +116,8 @@ PAGE_FURNITURE_RE = re.compile(
     r"Communications Surveys\s*&\s*Tutorials|"
     r"IEEE COMMUNICATIONS SURVEY\s*&\s*TUTORIALS|"
     r"ACM Transactions on .+Publication date|"
+    r"CMU/SEI-\d{4}-[A-Z]{2}-\d{3}\s+\|\s+SOFTWARE ENGINEERING INSTITUTE\s+\|\s+CARNEGIE MELLON UNIVERSITY|"
+    r"Distribution Statement A:\s+Approved for Public Release; Distribution is Unlimited|"
     r"PART\s*\|\s*[IVXLC]+\b.*|"
     r".+\s+Chapter\s*\|\s*\d+\s*$|"
     r"Computers\s*&\s*Security\s+\d+\s+\(\d{4}\)\s+\d+|"
@@ -169,6 +183,8 @@ def _reference_marker_style(line: str) -> str | None:
     plain = _strip_markdown(_strip_reference_list_marker(line)).strip()
     if REFERENCE_BRACKETED_ENTRY_MARKER_RE.match(plain):
         return "bracketed"
+    if REFERENCE_CITATION_KEY_ENTRY_MARKER_RE.match(plain):
+        return "citation_key"
     if REFERENCE_NUMBERED_ENTRY_MARKER_RE.match(plain):
         return "numbered"
     return None
@@ -202,6 +218,8 @@ def _line_starts_reference_section(line: str) -> bool:
 
 def _line_stops_reference_section(line: str) -> bool:
     plain = _strip_markdown(line).strip()
+    if plain.lower() in {"table 1", "report documentation page"}:
+        return True
     if bool(STOP_HEADING_RE.match(plain)) and len(plain.split()) <= 8:
         return True
     return bool(AUTHOR_BIO_START_RE.match(plain))
@@ -505,7 +523,9 @@ def _clean_reference_line(raw_line: str) -> str:
 
 
 def _split_inline_reference_lines(line: str) -> list[str]:
-    if _line_starts_reference_marker(line):
+    if _line_starts_reference_marker(line) and not REFERENCE_CITATION_KEY_ENTRY_MARKER_RE.match(
+        _strip_markdown(line).strip()
+    ):
         return [line]
     split_offsets: list[int] = []
     matches = sorted(
@@ -514,6 +534,7 @@ def _split_inline_reference_lines(line: str) -> list[str]:
             *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line),
             *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
             *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
+            *INLINE_CITATION_KEY_START_CANDIDATE_RE.finditer(line),
         ],
         key=lambda item: item.start(),
     )
@@ -550,11 +571,17 @@ def _reference_entry_has_terminal_evidence(parts: list[str]) -> bool:
     if not parts:
         return False
     text = _strip_markdown(" ".join(part.strip() for part in parts if part.strip())).strip()
-    if not REFERENCE_YEAR_RE.search(text):
+    text_without_prefix = _strip_reference_entry_prefix(text).strip()
+    if not text_without_prefix:
         return False
-    if text.endswith((",", ";", ":")):
+    if not REFERENCE_YEAR_RE.search(text_without_prefix):
         return False
-    return bool(REFERENCE_URL_DOI_RE.search(text) or re.search(r"[.!?\]\)\u3009\u232a\u27e9\u300b]$", text))
+    if text_without_prefix.endswith((",", ";", ":")):
+        return False
+    return bool(
+        REFERENCE_URL_DOI_RE.search(text_without_prefix)
+        or re.search(r"[.!?\]\)\u3009\u232a\u27e9\u300b]$", text_without_prefix)
+    )
 
 
 def _reference_parts_have_signal(parts: list[str]) -> bool:

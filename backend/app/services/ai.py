@@ -277,7 +277,8 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "order: first author surname, then group author when there is no personal author, then title when there is no "
     "author, ignoring leading A, An, or The. Do not sort by author initials or by the raw extracted line prefix. "
     "For repeated first authors, use APA-style secondary sorting by the remaining authors and year when evident. "
-    "Remove leading source prefixes such as numbers, bracketed numbers, bullets, and list markers. Start each entry "
+    "Remove leading source prefixes such as numbers, bracketed numbers, bracketed author/year source keys "
+    "like [Ariani 2013] or [Hanley et al.2011a], bullets, and list markers. Start each entry "
     "with the visible author or group author when present; when no author is visible, start with the title. Use "
     "Markdown italics where APA requires italics, such as book, "
     "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Preserve DOI "
@@ -424,7 +425,10 @@ _SUMMARY_SCHEMA_TRAILER_LABEL_RE = re.compile(
     r"(?:`{1,3}|\*\*)?\s*:",
 )
 _SUMMARY_CONFIDENCE_VALUE_RE = re.compile(r"(?i)\bconfidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\b")
-_BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(r"^\s*(?:[-*]|\d+[.)]|\[\d+\])\s+")
+_BIBLIOGRAPHY_MODEL_ENTRY_PREFIX_RE = re.compile(
+    r"^\s*(?:[-*]|\d+[.)]|\[\d+\]|"
+    r"\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\])\s+"
+)
 _BIBLIOGRAPHY_INITIALS_FIRST_AUTHOR_RE = re.compile(
     r"^\s*(?P<initials>(?:[A-Z]\.(?:-[A-Z]\.)?\s*){1,5})(?P<surname>[^\W\d_][^\s,.;:()]*)"
 )

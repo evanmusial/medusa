@@ -501,6 +501,87 @@ def test_extract_document_bibliography_ignores_book_chapter_running_headers(monk
     assert result["evidence"]["entry_count_estimate"] == 3
 
 
+def test_extract_document_bibliography_splits_bracketed_author_year_keys(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Citation Key Bibliography Paper",
+        original_filename="citation-key-bibliography.pdf",
+        checksum_sha256="9" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="Bibliography\nPlain fallback."))
+    pdf_path = tmp_path / "citation-key-bibliography.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (169, "CMU/SEI-2015-TR-010 | SOFTWARE ENGINEERING INSTITUTE | CARNEGIE MELLON UNIVERSITY"),
+            (169, "152"),
+            (169, "Distribution Statement A: Approved for Public Release; Distribution is Unlimited"),
+            (169, "Bibliography"),
+            (169, "[Ariani 2013]"),
+            (
+                169,
+                "Ariani, Dorothea Wahyu. “The Relationship Between Employee Engagement, Organizational",
+            ),
+            (169, "Citizenship Behavior, and Counterproductive Work Behavior.” *International Journal of Business*"),
+            (169, "*Administration 4,* 2 (2013)."),
+            (169, "[Boudreaux 2009]"),
+            (169, "Boudreaux, Chris. *Online Database of Social Media Policies.*"),
+            (169, "http://socialmediagovernance.com/policies/ (2012)."),
+            (169, "[Caralli et al. 2010]"),
+            (169, "Caralli, Richard A.; Allen, Julia H; & White David W. *CERT Resilience Management Model: A*"),
+            (169, "*Maturity Model for Managing Operational Resilience*. Addison-Wesley Professional, 2010."),
+            (170, "CMU/SEI-2015-TR-010 | SOFTWARE ENGINEERING INSTITUTE | CARNEGIE MELLON UNIVERSITY"),
+            (170, "153"),
+            (170, "Distribution Statement A: Approved for Public Release; Distribution is Unlimited"),
+            (170, "[Hanley et al.2011a]"),
+            (170, "Hanley, Michael; Dean, Tyler; Schroeder, Will; Houy, Matt; Trzeciak, Randall F.; &"),
+            (170, "Montelibano, Joji. *An Analysis of Technical Observations in Insider Theft of Intellectual Property*"),
+            (170, "*Cases* (CMU/SEI-2011-TN-006). Software Engineering Institute, Carnegie Mellon University,"),
+            (170, "2011. http://www.sei.cmu.edu/library/abstracts/reports/11tn006.cfm"),
+            (173, "[Zetter 2008]"),
+            (173, "Zetter, Kim. Palin E-Mail Hacker Says It Was Easy. Wired, September 18, 2008."),
+            (173, "http://www.wired.com/2008/09/palin-e-mail-ha/"),
+            (174, "CMU/SEI-2015-TR-010 | SOFTWARE ENGINEERING INSTITUTE | CARNEGIE MELLON UNIVERSITY 157"),
+            (174, "Distribution Statement A: Approved for Public Release; Distribution is Unlimited"),
+            (175, "Table 1"),
+            (175, "REPORT DOCUMENTATION PAGE"),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["page_start"] == 169
+    assert result["evidence"]["entry_count_estimate"] == 5
+    assert entries == [
+        (
+            "Ariani, Dorothea Wahyu. “The Relationship Between Employee Engagement, Organizational "
+            "Citizenship Behavior, and Counterproductive Work Behavior.” *International Journal of Business* "
+            "*Administration 4,* 2 (2013)."
+        ),
+        "Boudreaux, Chris. *Online Database of Social Media Policies.* http://socialmediagovernance.com/policies/ (2012).",
+        (
+            "Caralli, Richard A.; Allen, Julia H; & White David W. *CERT Resilience Management Model: A* "
+            "*Maturity Model for Managing Operational Resilience*. Addison-Wesley Professional, 2010."
+        ),
+        (
+            "Hanley, Michael; Dean, Tyler; Schroeder, Will; Houy, Matt; Trzeciak, Randall F.; & "
+            "Montelibano, Joji. *An Analysis of Technical Observations in Insider Theft of Intellectual Property* "
+            "*Cases* (CMU/SEI-2011-TN-006). Software Engineering Institute, Carnegie Mellon University, "
+            "2011. http://www.sei.cmu.edu/library/abstracts/reports/11tn006.cfm"
+        ),
+        "Zetter, Kim. Palin E-Mail Hacker Says It Was Easy. Wired, September 18, 2008. http://www.wired.com/2008/09/palin-e-mail-ha/",
+    ]
+    assert not any(entry.startswith("[") for entry in entries)
+    assert not any("Distribution Statement" in entry or "REPORT DOCUMENTATION PAGE" in entry for entry in entries)
+
+
 def test_extract_document_bibliography_prefers_real_heading_over_table_reference_labels(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service

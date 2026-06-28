@@ -409,6 +409,29 @@ def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_toke
         "Lawford",
         "Wassyng",
     ]
+    assert _bibliography_author_tokens(
+        "Ariani, Dorothea Wahyu. “The Relationship Between Employee Engagement, Organizational Citizenship Behavior, and Counterproductive Work Behavior.” International Journal of Business Administration 4, 2 (2013)."
+    ) == []
+    assert _bibliography_author_tokens(
+        "Hurlburt, G.; Voas, J.; & Miller, K. W. “Mobile-App Addiction: Threat to Security?” IT Professional 13, 6 (January-February 2011): 9-11."
+    ) == ["Hurlburt", "Voas", "Miller"]
+    assert _bibliography_author_tokens(
+        "Neumann, P. G., and Parker, D. (1989). A Summary of Computer Misuse Techniques."
+    ) == ["Neumann", "Parker"]
+
+    full_name_input = "\n".join(
+        [
+            "Hurlburt, G.; Voas, J.; & Miller, K. W. “Mobile-App Addiction: Threat to Security?” IT Professional 13, 6 (January-February 2011): 9-11.",
+            "Mell, Peter & Grance, Timothy. The NIST Definition of Cloud Computing (SP 800-145, Draft). National Institute of Standards and Technology, 2011.",
+        ]
+    )
+    full_name_cleanup = "\n".join(
+        [
+            "Hurlburt, G., Voas, J., & Miller, K. W. (2011). Mobile-app addiction: Threat to security? *IT Professional, 13*(6), 9-11.",
+            "Mell, P., & Grance, T. (2011). *The NIST definition of cloud computing* (SP 800-145, Draft). National Institute of Standards and Technology.",
+        ]
+    )
+    assert _bibliography_cleanup_missing_author_sets(full_name_input, full_name_cleanup) == []
 
     split_continuation = "\n".join(
         [
@@ -421,6 +444,19 @@ def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_toke
     assert _bibliography_entry_count(split_continuation) == 2
     assert entries[0].endswith("Sota, (Accessed 5 September 2023).")
     assert _bibliography_entry_count("(Accessed 5 September 2023).\n" + split_continuation) == 2
+
+    dot_style_group_authors = "\n".join(
+        [
+            "CISCO. Supplier Information: Diversity Business Practices. http://example.test/cisco (2015).",
+            "Cloud Security Alliance. Top Threats to Cloud Computing, Version 1.0. https://example.test/csa.pdf (2010).",
+            "Department of Homeland Security. National Cyber Security Awareness Month. http://example.test/dhs (2011).",
+            "U.S. Equal Employment Opportunity Commission. EEOC Enforcement Guidance 915.002. Consideration of Arrest and Conviction Records in Employment Decisions Under Title VII of the Civil Rights Act of 1964, 2012. http://example.test/eeoc",
+            "National Institute of Standards and Technology*. Risk Management Framework (RMF) Overview.* National Institute of Standards and Technology, Computer Security Division, Computer Security Resource Center, 2012. http://example.test/nist",
+            "Software Engineering Institute, CERT Insider Threat Team. *Insider Threat Science of* *Cybersecurity* (CMU/SEI-2013-TN-022). Software Engineering Institute, Carnegie Mellon University, 2014. http://example.test/sei",
+        ]
+    )
+    assert _bibliography_entries_for_cleanup(dot_style_group_authors) == dot_style_group_authors.splitlines()
+    assert _bibliography_entry_count(dot_style_group_authors) == 6
 
 
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):

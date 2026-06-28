@@ -126,6 +126,7 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
                     {
                         "references": [
                             "Zed, Z. (2024). *Zeta systems*. Journal.",
+                            "[Ariani 2013] Ariani, D. W. (2013). *Employee engagement*. Journal.",
                             "[2] Adams, A. (2022). *Alpha methods*. Press.",
                             "Brown, B. (2023). *Beta analysis*. Journal.",
                         ]
@@ -150,8 +151,10 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
     assert "Surname, Initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "first author surname" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "Do not sort by author initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "bracketed author/year source keys" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert result["bibliography"].splitlines() == [
         "Adams, A. (2022). *Alpha methods*. Press.",
+        "Ariani, D. W. (2013). *Employee engagement*. Journal.",
         "Brown, B. (2023). *Beta analysis*. Journal.",
         "Zed, Z. (2024). *Zeta systems*. Journal.",
     ]
@@ -208,6 +211,10 @@ def test_bibliography_cleanup_strips_missing_page_placeholders():
     from app.services.ai import BIBLIOGRAPHY_CLEANUP_PROMPT, normalize_model_bibliography_entry
 
     assert "Omit missing fields instead of writing placeholders" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert (
+        normalize_model_bibliography_entry("[Ariani 2013] Ariani, D. W. (2013). Employee engagement. Journal.")
+        == "Ariani, D. W. (2013). Employee engagement. Journal."
+    )
     assert normalize_model_bibliography_entry(
         "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference (pp. n/a). ACM Press."
     ) == "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference. ACM Press."
