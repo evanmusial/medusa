@@ -296,6 +296,14 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "the supplied text is incomplete, keep the available source wording in the closest sensible APA order. Do not "
     "return bullets, numbering, blank lines, headings, explanations, or multiple sources in one reference string."
 )
+BIBLIOGRAPHY_AUTHOR_REPAIR_PROMPT = (
+    BIBLIOGRAPHY_CLEANUP_PROMPT
+    + "\n\nRepair mode: a previous cleanup attempt was rejected because it dropped visible author names. "
+    "Use the original extracted bibliography as the authority for completeness. The rejected cleanup may be useful "
+    "for formatting, but every visible author token group listed in the repair input must remain represented in "
+    "the repaired output. Prefer keeping the original source wording over dropping an author, coauthor, or group "
+    "author. Return the complete bibliography again, not only the repaired entries."
+)
 BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS = 120_000
 
 BIBLIOGRAPHY_CLEANUP_SCHEMA: dict[str, Any] = {
@@ -1232,6 +1240,82 @@ class AiService:
             schema_name="medusa_bibliography_cleanup",
             schema=BIBLIOGRAPHY_CLEANUP_SCHEMA,
             prompt=BIBLIOGRAPHY_CLEANUP_PROMPT,
+            input_content=[{"type": "input_text", "text": input_text}],
+            timeout=self.settings.openai_request_timeout_seconds,
+            usage_context=usage_context,
+            task_key=MODEL_BIBLIOGRAPHY_CLEANUP,
+            input_text_characters=len(input_text),
+            input_file_bytes=0,
+            used_pdf_file=False,
+            prompt_cache_key=prompt_cache_key,
+        )
+        bibliography_text = "\n".join(sorted_bibliography_entries(result.get("references") or [])).strip() or fallback
+        return {
+            "bibliography": bibliography_text,
+            "confidence": result.get("confidence"),
+            "notes": result.get("notes") or [],
+            "_openai": {
+                "model": selected_model,
+                "configured": True,
+                "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+                "input_characters": len(input_text),
+            },
+        }
+
+    def repair_bibliography_cleanup(
+        self,
+        filename: str,
+        bibliography: str,
+        *,
+        rejected_bibliography: str,
+        missing_author_sets: list[list[str]] | None = None,
+        model: str | None = None,
+        reference_style: str = "apa_7",
+        usage_context: OpenAIUsageContext | None = None,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, Any]:
+        fallback = "\n".join(sorted_bibliography_entries(bibliography.splitlines())).strip()
+        if not fallback:
+            return {
+                "bibliography": "",
+                "confidence": 1.0,
+                "notes": ["No bibliography text was supplied for repair."],
+                "_openai": {"model": model or default_analysis_models()[MODEL_BIBLIOGRAPHY_CLEANUP], "configured": False},
+            }
+        selected_model = model or default_analysis_models()[MODEL_BIBLIOGRAPHY_CLEANUP]
+        if not self._can_call_text_model(selected_model):
+            return {
+                "bibliography": fallback,
+                "confidence": 0.45,
+                "notes": ["AI bibliography cleanup repair is not configured for the selected model."],
+                "_openai": {"model": selected_model, "configured": False},
+            }
+        clipped_bibliography = fallback[:BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS]
+        remaining_characters = max(0, BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS - len(clipped_bibliography))
+        clipped_rejected = (rejected_bibliography or "")[:remaining_characters]
+        reference_style_label = "APA 7" if reference_style == "apa_7" else reference_style.replace("_", " ").upper()
+        missing_author_text = "\n".join(
+            f"- {', '.join(token for token in author_set if token)}"
+            for author_set in (missing_author_sets or [])
+            if author_set
+        )
+        if not missing_author_text:
+            missing_author_text = "- No specific author token groups were supplied."
+        input_text = (
+            f"Filename: {filename}\n\n"
+            f"Selected reference/source style: {reference_style_label} ({reference_style}).\n\n"
+            "Visible author token groups that disappeared from the rejected cleanup:\n"
+            f"{missing_author_text}\n\n"
+            "Original extracted bibliography to preserve and repair:\n"
+            f"{clipped_bibliography}\n\n"
+            "Rejected cleanup output for formatting context only:\n"
+            f"{clipped_rejected}"
+        )
+        result = self._responses_json(
+            model=selected_model,
+            schema_name="medusa_bibliography_author_repair",
+            schema=BIBLIOGRAPHY_CLEANUP_SCHEMA,
+            prompt=BIBLIOGRAPHY_AUTHOR_REPAIR_PROMPT,
             input_content=[{"type": "input_text", "text": input_text}],
             timeout=self.settings.openai_request_timeout_seconds,
             usage_context=usage_context,

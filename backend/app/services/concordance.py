@@ -374,6 +374,33 @@ def _evaluate_bibliography_cleanup(
     }
 
 
+def _bibliography_cleanup_attempt_record(
+    *,
+    evaluation: dict[str, Any],
+    cleanup: dict[str, Any],
+    model: str,
+    input_entry_count: int,
+    fallback_for: str | None = None,
+    repair: bool = False,
+    repair_for: str | None = None,
+) -> dict[str, Any]:
+    attempt = {
+        "status": evaluation["status"],
+        "model": (cleanup.get("_openai") or {}).get("model") or model,
+        "confidence": cleanup.get("confidence"),
+        "notes": cleanup.get("notes") or [],
+        "input_entry_count": input_entry_count,
+        "output_entry_count": evaluation["output_entry_count"],
+        **({"fallback": True, "fallback_for": fallback_for} if fallback_for else {}),
+        **({"repair": True, "repair_for": repair_for or "rejected_author_loss"} if repair else {}),
+    }
+    if evaluation["missing_author_sets"]:
+        attempt["missing_author_sets"] = evaluation["missing_author_sets"][:5]
+    if evaluation["status"] == "rejected_duplicate_cleanup":
+        attempt["duplicate_entries"] = evaluation["duplicate_entries"][:5]
+    return attempt
+
+
 @dataclass(frozen=True)
 class ConcordanceModelRequirement:
     task_key: str
@@ -1627,30 +1654,65 @@ class ConcordanceProcessor:
                             input_entry_count=bibliography_entry_count,
                             cleanup=cleanup,
                         )
-                        attempt = {
-                            "status": evaluation["status"],
-                            "model": (cleanup.get("_openai") or {}).get("model") or model,
-                            "confidence": cleanup.get("confidence"),
-                            "notes": cleanup.get("notes") or [],
-                            "input_entry_count": bibliography_entry_count,
-                            "output_entry_count": evaluation["output_entry_count"],
-                            **({"fallback": True, "fallback_for": fallback_for} if attempt_index else {}),
-                            **(
-                                {"missing_author_sets": evaluation["missing_author_sets"][:5]}
-                                if evaluation["missing_author_sets"]
-                                else {}
-                            ),
-                            **(
-                                {"duplicate_entries": evaluation["duplicate_entries"][:5]}
-                                if evaluation["status"] == "rejected_duplicate_cleanup"
-                                else {}
-                            ),
-                        }
+                        attempt = _bibliography_cleanup_attempt_record(
+                            evaluation=evaluation,
+                            cleanup=cleanup,
+                            model=model,
+                            input_entry_count=bibliography_entry_count,
+                            fallback_for=fallback_for if attempt_index else None,
+                        )
                         cleanup_attempts.append(attempt)
                         if evaluation["accepted"]:
                             bibliography = evaluation["bibliography"]
                             accepted_cleanup = True
                             break
+                        repair_bibliography_cleanup = getattr(ai_service, "repair_bibliography_cleanup", None)
+                        if evaluation["status"] == "rejected_author_loss" and callable(repair_bibliography_cleanup):
+                            try:
+                                repair_cleanup = repair_bibliography_cleanup(
+                                    document.original_filename or document.title or "document.pdf",
+                                    bibliography,
+                                    rejected_bibliography=evaluation["bibliography"],
+                                    missing_author_sets=evaluation["missing_author_sets"],
+                                    model=model,
+                                    reference_style=reference_style,
+                                    usage_context=self._usage_context(document, job, "bibliography_extraction"),
+                                    prompt_cache_key=f"medusa-bibliography:{document.id}"
+                                    + (":fallback" if attempt_index else "")
+                                    + ":repair",
+                                )
+                                repair_evaluation = _evaluate_bibliography_cleanup(
+                                    input_bibliography=bibliography,
+                                    input_entry_count=bibliography_entry_count,
+                                    cleanup=repair_cleanup,
+                                )
+                                repair_attempt = _bibliography_cleanup_attempt_record(
+                                    evaluation=repair_evaluation,
+                                    cleanup=repair_cleanup,
+                                    model=model,
+                                    input_entry_count=bibliography_entry_count,
+                                    fallback_for=fallback_for if attempt_index else None,
+                                    repair=True,
+                                    repair_for=evaluation["status"],
+                                )
+                                cleanup_attempts.append(repair_attempt)
+                                if repair_evaluation["accepted"]:
+                                    bibliography = repair_evaluation["bibliography"]
+                                    accepted_cleanup = True
+                                    break
+                            except Exception as exc:
+                                cleanup_attempts.append(
+                                    {
+                                        "status": "failed",
+                                        "model": model,
+                                        "error": str(exc),
+                                        "input_entry_count": bibliography_entry_count,
+                                        "output_entry_count": 0,
+                                        "repair": True,
+                                        "repair_for": evaluation["status"],
+                                        **({"fallback": True, "fallback_for": fallback_for} if fallback_for else {}),
+                                    }
+                                )
                     except Exception as exc:
                         cleanup_attempts.append(
                             {

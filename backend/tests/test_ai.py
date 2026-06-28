@@ -178,6 +178,64 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
     assert responses.system_prompt == BIBLIOGRAPHY_CLEANUP_PROMPT
 
 
+def test_bibliography_author_loss_repair_includes_missing_author_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import BIBLIOGRAPHY_AUTHOR_REPAIR_PROMPT, AiService
+
+    class FakeResponses:
+        def __init__(self):
+            self.system_prompt = ""
+            self.user_text = ""
+
+        def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
+            del model, text, timeout, prompt_cache_key, prompt_cache_retention
+            self.system_prompt = input[0]["content"]
+            self.user_text = input[1]["content"][0]["text"]
+            return SimpleNamespace(
+                id="resp_bibliography_author_repair",
+                output_text=json.dumps(
+                    {
+                        "references": [
+                            "Anderson, R. (1993). Why cryptosystems fail.",
+                            "Neumann, P. G., & Parker, D. (1989). A summary of computer misuse techniques.",
+                        ],
+                        "confidence": 0.91,
+                        "notes": ["Restored the missing coauthor from the extracted source."],
+                    }
+                ),
+                usage=SimpleNamespace(input_tokens=28, output_tokens=18, total_tokens=46),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service.repair_bibliography_cleanup(
+        "references.pdf",
+        "Neumann, P. G., and Parker, D. (1989). A Summary of Computer Misuse Techniques.\n"
+        "Anderson, R. (1993). Why cryptosystems fail.",
+        rejected_bibliography=(
+            "Anderson, R. (1993). Why cryptosystems fail.\n"
+            "Neumann, P. G. (1989). A Summary of Computer Misuse Techniques."
+        ),
+        missing_author_sets=[["Neumann", "Parker"]],
+        model="gpt-5.4-nano",
+    )
+
+    assert "Repair mode" in BIBLIOGRAPHY_AUTHOR_REPAIR_PROMPT
+    assert "dropped visible author names" in BIBLIOGRAPHY_AUTHOR_REPAIR_PROMPT
+    assert "Visible author token groups" in responses.user_text
+    assert "- Neumann, Parker" in responses.user_text
+    assert "Rejected cleanup output for formatting context only" in responses.user_text
+    assert responses.system_prompt == BIBLIOGRAPHY_AUTHOR_REPAIR_PROMPT
+    assert "Parker, D." in result["bibliography"]
+
+
 def test_bibliography_sort_fallback_uses_surname_for_initials_first_entries():
     from app.services.ai import sorted_bibliography_entries
 

@@ -825,6 +825,120 @@ def test_forced_bibliography_refresh_uses_fallback_after_unsafe_cleanup(monkeypa
         assert document.metadata_evidence["bibliography_extraction"]["formatting"] == "apa_markdown_model_cleanup"
 
 
+def test_forced_bibliography_refresh_repairs_author_loss_before_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentPage
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    cleanup_calls = []
+
+    class FakeAiService:
+        def normalize_bibliography(self, filename, bibliography, *, model=None, reference_style="apa_7", usage_context=None, prompt_cache_key=None):
+            cleanup_calls.append({"kind": "cleanup", "model": model, "prompt_cache_key": prompt_cache_key})
+            return {
+                "bibliography": "\n".join(
+                    [
+                        "Anderson, R. (1993). Why cryptosystems fail.",
+                        "Neumann, P. G. (1989). A Summary of Computer Misuse Techniques.",
+                    ]
+                ),
+                "confidence": 0.82,
+                "notes": ["The initial cleanup dropped a coauthor."],
+                "_openai": {"model": model, "configured": True},
+            }
+
+        def repair_bibliography_cleanup(
+            self,
+            filename,
+            bibliography,
+            *,
+            rejected_bibliography,
+            missing_author_sets=None,
+            model=None,
+            reference_style="apa_7",
+            usage_context=None,
+            prompt_cache_key=None,
+        ):
+            cleanup_calls.append(
+                {
+                    "kind": "repair",
+                    "model": model,
+                    "prompt_cache_key": prompt_cache_key,
+                    "missing_author_sets": missing_author_sets,
+                    "rejected_bibliography": rejected_bibliography,
+                }
+            )
+            return {
+                "bibliography": "\n".join(
+                    [
+                        "Anderson, R. (1993). Why cryptosystems fail.",
+                        "Neumann, P. G., & Parker, D. (1989). A Summary of Computer Misuse Techniques.",
+                    ]
+                ),
+                "confidence": 0.91,
+                "notes": ["Restored Parker from the extracted source."],
+                "_openai": {"model": model, "configured": True},
+            }
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Author Repair Cleanup Target",
+            original_filename="author-repair-cleanup.pdf",
+            checksum_sha256="s" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                normalized_text=(
+                    "References\n"
+                    "[1] Neumann, P. G., and Parker, D. (1989). A Summary of Computer Misuse Techniques.\n"
+                    "[2] Anderson, R. (1993). Why cryptosystems fail."
+                ),
+            )
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        cleanup = document.metadata_evidence["bibliography_extraction"]["model_cleanup"]
+        assert job.status == "complete"
+        assert [call["kind"] for call in cleanup_calls] == ["cleanup", "repair"]
+        assert cleanup_calls[0]["model"] == "gpt-5-mini"
+        assert cleanup_calls[1]["model"] == "gpt-5-mini"
+        assert cleanup_calls[1]["prompt_cache_key"].endswith(":repair")
+        assert cleanup_calls[1]["missing_author_sets"] == [["Neumann", "Parker"]]
+        assert cleanup["status"] == "formatted"
+        assert cleanup["repair"] is True
+        assert cleanup["repair_for"] == "rejected_author_loss"
+        assert [attempt["status"] for attempt in cleanup["attempts"]] == ["rejected_author_loss", "formatted"]
+        assert "Parker, D." in document.bibliography
+        assert document.metadata_evidence["bibliography_extraction"]["formatting"] == "apa_markdown_model_cleanup"
+
+
 def test_forced_bibliography_refresh_rejects_cleanup_that_drops_coauthor(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

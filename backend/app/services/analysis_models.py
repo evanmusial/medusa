@@ -126,7 +126,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_BIBLIOGRAPHY_CLEANUP,
         label="Bibliography Cleanup",
         model_kind="gpt",
-        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default; unsafe default cleanup retries once with GPT-5.4-mini.",
+        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default; author-loss cleanup gets a targeted repair retry before any GPT-5.4-mini safety retry.",
     ),
     AnalysisModelTask(
         key=MODEL_FORMULA_CAPTURE,
