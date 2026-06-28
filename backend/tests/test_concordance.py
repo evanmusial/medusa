@@ -267,7 +267,7 @@ def test_forced_bibliography_refresh_preserves_user_text_when_not_found(monkeypa
         assert not document.versions
 
 
-def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresses(monkeypatch, tmp_path):
+def test_forced_bibliography_refresh_cleans_preserved_existing_when_extraction_regresses(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
@@ -275,9 +275,17 @@ def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresse
     from app.services import concordance as concordance_service
     from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
 
+    cleanup_calls = []
+
     class FakeAiService:
         def normalize_bibliography(self, filename, bibliography, *, model=None, usage_context=None, prompt_cache_key=None):
-            raise AssertionError("regressed extraction should not be sent to model cleanup")
+            cleanup_calls.append(bibliography)
+            return {
+                "bibliography": bibliography,
+                "confidence": 0.88,
+                "notes": [],
+                "_openai": {"model": model, "configured": True},
+            }
 
     monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FakeAiService())
     monkeypatch.setattr(
@@ -333,13 +341,16 @@ def test_forced_bibliography_refresh_preserves_existing_when_extraction_regresse
         assert evidence["existing_entry_count"] == 4
         assert evidence["extracted_entry_count"] == 2
         assert evidence["existing_bibliography_preserved"] is True
+        assert evidence["model_cleanup_input_source"] == "existing_bibliography_preserved"
+        assert evidence["model_cleanup"]["status"] == "formatted"
         capability = db.query(DocumentCapability).filter_by(document_id=document.id, capability_key="bibliography_extraction").one()
         assert capability.evidence["status"] == "rejected_regression_existing_bibliography"
+        assert cleanup_calls == [existing_bibliography]
         assert DocumentCompositionRecord.__table__.c.status.type.length >= len("rejected_regression_existing_bibliography")
         composition = db.query(DocumentCompositionRecord).filter_by(document_id=document.id, record_kind="concordance").one()
         assert composition.status == "warning"
         assert composition.record_metadata["status"] == "rejected_regression_existing_bibliography"
-        assert not document.versions
+        assert document.versions
 
 
 def test_concordance_stage_status_uses_bounded_composition_statuses(monkeypatch, tmp_path):

@@ -1282,12 +1282,10 @@ class ConcordanceProcessor:
                     "existing_entry_count": existing_entry_count,
                     "extracted_entry_count": extracted_entry_count,
                     "existing_bibliography_preserved": True,
+                    "model_cleanup_input_source": "existing_bibliography_preserved",
                     "checked_at": utc_now().isoformat(),
                 }
-                metadata_evidence = dict(document.metadata_evidence or {})
-                metadata_evidence["bibliography_extraction"] = evidence
-                document.metadata_evidence = metadata_evidence
-                return {**evidence, "characters": len(document.bibliography or "")}
+                bibliography = document.bibliography or ""
             sorted_bibliography = "\n".join(sorted_bibliography_entries(bibliography.splitlines())).strip()
             if sorted_bibliography:
                 evidence["deterministic_sort"] = {
