@@ -1,0 +1,54 @@
+# Optional Prometheus text exporter sidecar.
+#
+# First enablement on a server should refresh backend plus the exporter so both
+# services read the same MEDUSA_METRICS_INTERNAL_TOKEN:
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend metrics-exporter
+#
+# The exporter joins Medusa's private Docker networks so it can read PostgreSQL,
+# Valkey, HAProxy stats, and the token-gated backend snapshot without exposing
+# those internal services on the host.
+
+services:
+  metrics-exporter:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    networks:
+      - default
+      - cache
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://medusa:medusa@db:5432/medusa
+      MEDUSA_DATA_DIR: /app/data
+      MEDUSA_LOCAL_STORAGE_DIR: /app/data/originals
+      MEDUSA_CACHE_BACKEND: ${MEDUSA_CACHE_BACKEND:-valkey}
+      MEDUSA_CACHE_URL: ${MEDUSA_CACHE_URL:-valkey://valkey:6379/0}
+      MEDUSA_HAPROXY_STATS_URL: ${MEDUSA_HAPROXY_STATS_URL:-http://haproxy:8404/stats;csv}
+      MEDUSA_METRICS_BIND_HOST: 0.0.0.0
+      MEDUSA_METRICS_PORT: ${MEDUSA_METRICS_PORT:-43737}
+      MEDUSA_METRICS_REQUIRE_AUTH: ${MEDUSA_METRICS_REQUIRE_AUTH:-true}
+      MEDUSA_METRICS_BEARER_TOKEN_FILE: ${MEDUSA_METRICS_BEARER_TOKEN_FILE:-/app/data/secrets/prometheus-token}
+      MEDUSA_METRICS_INTERNAL_SNAPSHOT_URL: ${MEDUSA_METRICS_INTERNAL_SNAPSHOT_URL:-http://backend:8000/api/internal/metrics/snapshot}
+      MEDUSA_METRICS_HEAVY_TTL_SECONDS: ${MEDUSA_METRICS_HEAVY_TTL_SECONDS:-900}
+      MEDUSA_BUILD_VERSION: ${MEDUSA_BUILD_VERSION:-}
+      MEDUSA_BUILD_DATE: ${MEDUSA_BUILD_DATE:-}
+      MEDUSA_BUILD_HASH: ${MEDUSA_BUILD_HASH:-}
+      MEDUSA_GIT_SHA: ${MEDUSA_GIT_SHA:-}
+    ports:
+      - "${MEDUSA_METRICS_BIND_IP:-127.0.0.1}:${MEDUSA_METRICS_PORT:-43737}:${MEDUSA_METRICS_PORT:-43737}"
+    volumes:
+      - ./data:/app/data:ro
+      # Optional Docker Engine metrics. Mount only if you accept that Docker
+      # socket access grants broad host Docker control, even for read-only
+      # exporter queries.
+      # - ${MEDUSA_METRICS_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:${MEDUSA_METRICS_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+      valkey:
+        condition: service_started
+    command: python -m app.tools.prometheus_exporter

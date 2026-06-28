@@ -46,6 +46,21 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = Field(default=3600, validation_alias="MEDUSA_CACHE_TTL_SECONDS")
     cache_max_payload_bytes: int = Field(default=2_097_152, validation_alias="MEDUSA_CACHE_MAX_PAYLOAD_BYTES")
     valkey_maxmemory: str = Field(default="8gb", validation_alias="MEDUSA_VALKEY_MAXMEMORY")
+    metrics_internal_token: str | None = Field(default=None, validation_alias="MEDUSA_METRICS_INTERNAL_TOKEN")
+    metrics_internal_snapshot_url: str = Field(
+        default="http://backend:8000/api/internal/metrics/snapshot",
+        validation_alias="MEDUSA_METRICS_INTERNAL_SNAPSHOT_URL",
+    )
+    metrics_bind_host: str = Field(default="0.0.0.0", validation_alias="MEDUSA_METRICS_BIND_HOST")
+    metrics_port: int = Field(default=43737, validation_alias="MEDUSA_METRICS_PORT")
+    metrics_require_auth: bool = Field(default=True, validation_alias="MEDUSA_METRICS_REQUIRE_AUTH")
+    metrics_bearer_token: str | None = Field(default=None, validation_alias="MEDUSA_METRICS_BEARER_TOKEN")
+    metrics_bearer_token_file: str | None = Field(
+        default="/app/data/secrets/prometheus-token",
+        validation_alias="MEDUSA_METRICS_BEARER_TOKEN_FILE",
+    )
+    metrics_heavy_ttl_seconds: int = Field(default=900, validation_alias="MEDUSA_METRICS_HEAVY_TTL_SECONDS")
+    metrics_docker_socket_path: str | None = Field(default=None, validation_alias="MEDUSA_METRICS_DOCKER_SOCKET_PATH")
 
     gcs_bucket: str | None = Field(default=None, validation_alias="GCS_BUCKET")
     gcs_prefix: str = Field(default="medusa", validation_alias="GCS_PREFIX")

@@ -10,6 +10,12 @@ The default `docker-compose.yml` remains the local-development shape. Dedicated 
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
+Prometheus metrics are opt-in. When the server should expose the Medusa exporter to Prometheus, layer in `docker-compose.metrics.yml` after adding the metrics token settings to `.env`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend metrics-exporter
+```
+
 The server environment and override:
 
 - pins all Medusa services to `MEDUSA_CPUSET`, defaulting to logical CPUs `0-5`;
@@ -17,8 +23,9 @@ The server environment and override:
 - adds a dedicated-server IPv6 HAProxy bind through `MEDUSA_BIND_IPV6`, defaulting to loopback `::1`;
 - starts backend and worker with `MEDUSA_IMPORT_WORKER_CONCURRENCY=2` unless `.env` overrides it;
 - starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
+- optionally binds the Prometheus exporter through `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT` when `docker-compose.metrics.yml` is included.
 
-Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. For the Dallas host, the planned public URL is `https://medusa.evan.engineer:3737`, the IPv4 bind IP is `23.227.185.85`, the IPv6 bind IP is `2604:4500:a:3fb::3737`, the CPU set is `2-7`, the document cache is `51200` MB, and import worker concurrency is `2`. `MEDUSA_ALLOWED_HOSTS=*` intentionally leaves frontend Host checks open during the migration window.
+Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. For the Dallas host, the planned public URL is `https://medusa.evan.engineer:3737`, the IPv4 bind IP is `23.227.185.85`, the IPv6 bind IP is `2604:4500:a:3fb::3737`, the CPU set is `2-7`, the document cache is `51200` MB, import worker concurrency is `2`, and the planned Prometheus exporter bind is `23.227.185.85:43737`. `MEDUSA_ALLOWED_HOSTS=*` intentionally leaves frontend Host checks open during the migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
 
 Before moving from the local machine, run:
 
@@ -95,6 +102,12 @@ MEDUSA_CERTBOT_EMAIL=admin@example.com deploy/server/medusa-certbot.sh issue
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
+If Prometheus scraping should be enabled immediately, include the metrics overlay after creating `data/secrets/prometheus-token` and setting `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend metrics-exporter
+```
+
 10. Restore the full PostgreSQL backup from Utilities on the target.
 11. Confirm health:
 
@@ -155,7 +168,7 @@ Scheduled maintenance defaults to Tuesdays and Fridays in the `03:00-06:00 Ameri
 
 A typical server setup is a timer for `check`, a path or short timer for `apply` when `data/deploy/release-request.json` appears, a Tuesday/Friday timer for `auto-maintenance`, and path units for the on-demand check and maintenance request files.
 
-Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, `medusa-release-check.timer` periodically refreshes the release status file, `medusa-release-check.path` handles app-requested checks, `medusa-release-apply.path` watches for authenticated upgrade requests, and `medusa-maintenance.timer` plus `medusa-maintenance.path` run the idle-gated maintenance lane. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and run them as the checkout owner so Git SSH credentials and Docker group membership are available.
+Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, optional `medusa-metrics.service` owns the metrics sidecar overlay, `medusa-release-check.timer` periodically refreshes the release status file, `medusa-release-check.path` handles app-requested checks, `medusa-release-apply.path` watches for authenticated upgrade requests, and `medusa-maintenance.timer` plus `medusa-maintenance.path` run the idle-gated maintenance lane. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and run them as the checkout owner so Git SSH credentials and Docker group membership are available.
 
 ```ini
 ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
@@ -172,6 +185,12 @@ sudo systemctl enable --now medusa-release-check.path
 sudo systemctl enable --now medusa-release-apply.path
 sudo systemctl enable --now medusa-maintenance.timer
 sudo systemctl enable --now medusa-maintenance.path
+```
+
+When Prometheus scraping is enabled, also enable the optional sidecar unit:
+
+```bash
+sudo systemctl enable --now medusa-metrics.service
 ```
 
 For a checkout at `~/git/medusa`, replace `/opt/medusa` with the absolute home path before enabling. If Docker is installed from Snap, keep `/snap/bin` in the unit `PATH` or point `ExecStart` directly at the Snap `docker` binary.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Medusa Prometheus metrics exporter sidecar
+Wants=network-online.target
+After=network-online.target docker.service medusa.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/medusa
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build metrics-exporter
+ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build metrics-exporter
+ExecStop=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml stop metrics-exporter
+RemainAfterExit=yes
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import re
+import secrets
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -504,6 +505,39 @@ def on_startup() -> None:
 @app.get("/api/runtime-location", response_model=RuntimeLocationOut)
 def runtime_location(browser_host: str | None = Query(default=None, max_length=255)) -> dict[str, str | None]:
     return runtime_location_payload(browser_host, SERVER_IPV4)
+
+
+def _metrics_snapshot_token(request: Request) -> str:
+    auth_header = (request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return (request.headers.get("x-medusa-metrics-token") or "").strip()
+
+
+def _require_metrics_snapshot_access(request: Request) -> None:
+    expected = (settings.metrics_internal_token or "").strip()
+    if not expected:
+        raise HTTPException(status_code=404, detail="Metrics snapshot endpoint is disabled")
+    provided = _metrics_snapshot_token(request)
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Metrics snapshot access denied")
+
+
+@app.get("/api/internal/metrics/snapshot")
+def internal_metrics_snapshot(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    _require_metrics_snapshot_access(request)
+    return jsonable_encoder(
+        {
+            "checked_at": utc_now(),
+            "cache": cache_status_payload(db, request_metrics=route_performance_summary(limit=24)),
+            "container": container_footprint_status(),
+            "database_maintenance": database_maintenance_status_out(db),
+            "release": release_status(db=db),
+        }
+    )
 
 
 def parse_json_form(value: str | None, default: Any) -> Any:
