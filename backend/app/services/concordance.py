@@ -76,6 +76,10 @@ BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARA
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 300
 BIBLIOGRAPHY_CLEANUP_LOW_CONFIDENCE_THRESHOLD = 0.55
 BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
+BIBLIOGRAPHY_DOI_SIGNAL_RE = re.compile(r"(?:https?://(?:dx\.)?doi\.org/|\bdoi\.org/|\b10\.\d{4,9}/)", re.IGNORECASE)
+BIBLIOGRAPHY_REFERENCE_SIGNAL_RE = re.compile(
+    r"(?:^|\n|[.;]\s+)[A-Z][A-Za-z'`\u2019-]{2,}[^.;\n]{0,160}\b(?:18|19|20)\d{2}[a-z]?\b"
+)
 BIBLIOGRAPHY_AUTHOR_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z'`\u2019-]{2,}\b")
 BIBLIOGRAPHY_AUTHOR_INITIAL_RE = re.compile(r"\b[A-Z](?:\.-?[A-Z])?\.")
 BIBLIOGRAPHY_APA_INITIAL_RE = re.compile(r",\s*(?:[A-Z]\.\s*)+")
@@ -119,6 +123,57 @@ class CapabilityDefinition:
 
 def _bibliography_entry_count(bibliography: str | None) -> int:
     return len(_bibliography_entries_for_cleanup(bibliography))
+
+
+def _bibliography_reference_signal_count(bibliography: str | None) -> int:
+    text = decode_html_entities(str(bibliography or ""))
+    if not text.strip():
+        return 0
+    return max(
+        _bibliography_entry_count(text),
+        len(BIBLIOGRAPHY_DOI_SIGNAL_RE.findall(text)),
+        len(BIBLIOGRAPHY_REFERENCE_SIGNAL_RE.findall(text)),
+    )
+
+
+def _bibliography_regression_check(existing: str | None, extracted: str | None) -> dict[str, Any]:
+    existing_text = str(existing or "").strip()
+    extracted_text = str(extracted or "").strip()
+    existing_entry_count = _bibliography_entry_count(existing_text)
+    extracted_entry_count = _bibliography_entry_count(extracted_text)
+    existing_signal_count = _bibliography_reference_signal_count(existing_text)
+    extracted_signal_count = _bibliography_reference_signal_count(extracted_text)
+    existing_characters = len(existing_text)
+    extracted_characters = len(extracted_text)
+    regressed = False
+    reason: str | None = None
+    if (
+        existing_entry_count >= 3
+        and extracted_entry_count < existing_entry_count
+        and extracted_characters < int(existing_characters * 0.95)
+    ):
+        regressed = True
+        reason = "fewer_parsed_entries"
+    elif existing_signal_count >= 40 and extracted_signal_count < int(existing_signal_count * 0.75):
+        regressed = True
+        reason = "fewer_reference_signals"
+    elif (
+        existing_characters >= 12000
+        and extracted_characters < int(existing_characters * 0.45)
+        and extracted_signal_count < 80
+    ):
+        regressed = True
+        reason = "short_large_existing_bibliography"
+    return {
+        "regressed": regressed,
+        "reason": reason,
+        "existing_entry_count": existing_entry_count,
+        "extracted_entry_count": extracted_entry_count,
+        "existing_signal_count": existing_signal_count,
+        "extracted_signal_count": extracted_signal_count,
+        "existing_characters": existing_characters,
+        "extracted_characters": extracted_characters,
+    }
 
 
 def _bibliography_line_starts_entry(line: str) -> bool:
@@ -1447,15 +1502,19 @@ class ConcordanceProcessor:
         bibliography = result.get("bibliography")
         evidence = result.get("evidence") or {}
         if bibliography and run_force:
-            existing_entry_count = _bibliography_entry_count(document.bibliography)
-            extracted_entry_count = _bibliography_entry_count(bibliography)
-            if existing_entry_count >= 3 and extracted_entry_count < existing_entry_count:
+            regression_check = _bibliography_regression_check(document.bibliography, bibliography)
+            if regression_check["regressed"]:
                 evidence = {
                     **evidence,
                     "extraction_status": evidence.get("status"),
                     "status": "rejected_regression_existing_bibliography",
-                    "existing_entry_count": existing_entry_count,
-                    "extracted_entry_count": extracted_entry_count,
+                    "regression_reason": regression_check["reason"],
+                    "existing_entry_count": regression_check["existing_entry_count"],
+                    "extracted_entry_count": regression_check["extracted_entry_count"],
+                    "existing_signal_count": regression_check["existing_signal_count"],
+                    "extracted_signal_count": regression_check["extracted_signal_count"],
+                    "existing_characters": regression_check["existing_characters"],
+                    "extracted_characters": regression_check["extracted_characters"],
                     "existing_bibliography_preserved": True,
                     "model_cleanup_input_source": "existing_bibliography_preserved",
                     "checked_at": utc_now().isoformat(),

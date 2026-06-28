@@ -353,6 +353,78 @@ def test_forced_bibliography_refresh_cleans_preserved_existing_when_extraction_r
         assert document.versions
 
 
+def test_bibliography_regression_check_rejects_short_large_candidate(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.concordance import _bibliography_regression_check
+
+    existing_entries = [
+        f"Author{index}, A. (20{index % 20:02d}). Existing source {index}. Journal. https://doi.org/10.5555/{index:04d}"
+        for index in range(1, 96)
+    ]
+    existing_bibliography = " ".join(existing_entries)
+    extracted_bibliography = "\n".join(existing_entries[:24])
+
+    check = _bibliography_regression_check(existing_bibliography, extracted_bibliography)
+
+    assert check["regressed"] is True
+    assert check["reason"] == "fewer_reference_signals"
+    assert check["existing_signal_count"] >= 90
+    assert check["extracted_signal_count"] < check["existing_signal_count"] * 0.75
+
+
+def test_bibliography_regression_check_allows_large_improving_extraction(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.concordance import _bibliography_regression_check
+
+    body_noise = "Conclusion " + ("FinTech cybersecurity body text. " * 420)
+    existing_bibliography = "\n".join(
+        [
+            "References",
+            body_noise,
+            "Zed, Z. (2024). Existing tail source. Journal. https://doi.org/10.5555/9999",
+        ]
+    )
+    extracted_bibliography = "\n".join(
+        f"Author{index}, A. (20{index % 20:02d}). Fresh source {index}. Journal. https://doi.org/10.5555/{index:04d}"
+        for index in range(1, 135)
+    )
+
+    check = _bibliography_regression_check(existing_bibliography, extracted_bibliography)
+
+    assert check["regressed"] is False
+    assert check["existing_characters"] >= 12000
+    assert check["extracted_signal_count"] >= 130
+
+
+def test_bibliography_regression_check_allows_richer_candidate_with_fewer_lines(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services.concordance import _bibliography_regression_check
+
+    existing_bibliography = "\n".join(
+        f"Author{index}, A. (20{index % 20:02d}). Short source {index}."
+        for index in range(1, 33)
+    )
+    extracted_bibliography = "\n".join(
+        (
+            f"Author{index}, A. (20{index % 20:02d}). Richer source {index}. "
+            "Journal of Complete References, 12(3), 44-59. https://example.test/reference"
+        )
+        for index in range(1, 25)
+    )
+
+    check = _bibliography_regression_check(existing_bibliography, extracted_bibliography)
+
+    assert check["regressed"] is False
+    assert check["extracted_entry_count"] < check["existing_entry_count"]
+    assert check["extracted_characters"] > check["existing_characters"]
+
+
 def test_concordance_stage_status_uses_bounded_composition_statuses(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
