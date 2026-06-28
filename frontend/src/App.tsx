@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ChangeEvent,
+  ClipboardEvent as ReactClipboardEvent,
   CSSProperties,
   DragEvent,
   FormEvent,
@@ -4612,6 +4613,15 @@ function richClipboardHtml(body: string) {
   return body ? `<div>${body}</div>` : "";
 }
 
+function markdownToEditableHtml(content?: string | null) {
+  const source = decodeHtmlEntities(content || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!source) return "";
+  return source
+    .split("\n")
+    .map((line) => `<div>${line ? inlineMarkdownToClipboardHtml(line) : "<br>"}</div>`)
+    .join("");
+}
+
 function markdownClipboardText(content?: string | null) {
   return stripMarkdownFormatting(decodeHtmlEntities(content || "")).trim();
 }
@@ -4641,6 +4651,263 @@ function stripMarkdownFormatting(value: string) {
         .replace(/`([^`]+)`/g, "$1"),
     )
     .join("\n");
+}
+
+const EDITABLE_BLOCK_TAGS = new Set(["address", "article", "aside", "blockquote", "div", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "li", "main", "ol", "p", "pre", "section", "ul"]);
+
+function isStyledBold(element: HTMLElement) {
+  const weight = element.style.fontWeight;
+  return weight === "bold" || Number(weight) >= 600;
+}
+
+function isStyledItalic(element: HTMLElement) {
+  return element.style.fontStyle === "italic";
+}
+
+function wrapMarkdownInline(marker: "*" | "**" | "`", content: string) {
+  if (!content.trim()) return content;
+  const leading = content.match(/^\s*/)?.[0] || "";
+  const trailing = content.match(/\s*$/)?.[0] || "";
+  const inner = content.slice(leading.length, content.length - trailing.length);
+  if (!inner) return content;
+  return `${leading}${marker}${inner}${marker}${trailing}`;
+}
+
+function editableNodeToMarkdown(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return (node.textContent || "").replace(/\u00a0/g, " ");
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+  const element = node as HTMLElement;
+  const tagName = element.tagName.toLowerCase();
+  if (tagName === "br") return "\n";
+
+  let content = Array.from(element.childNodes)
+    .map((child) => editableNodeToMarkdown(child))
+    .join("");
+
+  if (tagName === "code") content = wrapMarkdownInline("`", content.replace(/`/g, "'"));
+  if (tagName === "strong" || tagName === "b" || isStyledBold(element)) content = wrapMarkdownInline("**", content);
+  if (tagName === "em" || tagName === "i" || isStyledItalic(element)) content = wrapMarkdownInline("*", content);
+  if (tagName === "u") content = content.trim() ? `<u>${content}</u>` : content;
+
+  return content;
+}
+
+function editableHtmlToMarkdown(html: string) {
+  const container = window.document.createElement("div");
+  container.innerHTML = html;
+  const lines: string[] = [];
+  let inlineBuffer = "";
+
+  const pushTextLines = (text: string) => {
+    const parts = text.replace(/\u00a0/g, " ").split("\n");
+    parts.forEach((part, index) => {
+      if (index === 0) {
+        inlineBuffer += part;
+        return;
+      }
+      lines.push(inlineBuffer);
+      inlineBuffer = part;
+    });
+  };
+
+  const flushInline = () => {
+    if (!inlineBuffer) return;
+    lines.push(inlineBuffer);
+    inlineBuffer = "";
+  };
+
+  Array.from(container.childNodes).forEach((node) => {
+    if (node.nodeType === Node.ELEMENT_NODE && EDITABLE_BLOCK_TAGS.has((node as HTMLElement).tagName.toLowerCase())) {
+      flushInline();
+      const blockText = editableNodeToMarkdown(node).replace(/\n+$/g, "");
+      blockText.split("\n").forEach((line) => lines.push(line));
+      return;
+    }
+    pushTextLines(editableNodeToMarkdown(node));
+  });
+  flushInline();
+
+  return lines.join("\n");
+}
+
+function selectionIsInside(element: HTMLElement | null) {
+  if (!element) return false;
+  const selection = window.getSelection();
+  const node = selection?.anchorNode;
+  return Boolean(node && element.contains(node));
+}
+
+function MarkdownRichEditor({
+  ariaLabel,
+  autoFocus = false,
+  className = "",
+  disabled = false,
+  onChange,
+  placeholder,
+  toolbarLabel,
+  value,
+}: {
+  ariaLabel: string;
+  autoFocus?: boolean;
+  className?: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  toolbarLabel: string;
+  value: string;
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const lastLocalValueRef = useRef(value);
+  const [formatState, setFormatState] = useState({ bold: false, italic: false });
+  const isEmpty = !value.trim();
+
+  const refreshFormatState = useCallback(() => {
+    if (!selectionIsInside(editorRef.current)) {
+      setFormatState({ bold: false, italic: false });
+      return;
+    }
+    setFormatState({
+      bold: window.document.queryCommandState("bold"),
+      italic: window.document.queryCommandState("italic"),
+    });
+  }, []);
+
+  const syncFromEditor = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const nextValue = editableHtmlToMarkdown(editor.innerHTML);
+    lastLocalValueRef.current = nextValue;
+    onChange(nextValue);
+    refreshFormatState();
+  }, [onChange, refreshFormatState]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (window.document.activeElement === editor && value === lastLocalValueRef.current) return;
+    const nextHtml = markdownToEditableHtml(value);
+    if (editor.innerHTML !== nextHtml) editor.innerHTML = nextHtml;
+    lastLocalValueRef.current = value;
+  }, [value]);
+
+  useEffect(() => {
+    if (!autoFocus || disabled) return;
+    window.requestAnimationFrame(() => editorRef.current?.focus());
+  }, [autoFocus, disabled]);
+
+  useEffect(() => {
+    const handleSelectionChange = () => refreshFormatState();
+    window.document.addEventListener("selectionchange", handleSelectionChange);
+    return () => window.document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [refreshFormatState]);
+
+  const runEditorCommand = useCallback(
+    (command: "bold" | "italic" | "removeFormat") => {
+      if (disabled) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      if (command === "removeFormat") {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || !selectionIsInside(editor)) {
+          const nextValue = stripMarkdownFormatting(value);
+          lastLocalValueRef.current = nextValue;
+          editor.innerHTML = markdownToEditableHtml(nextValue);
+          onChange(nextValue);
+          window.requestAnimationFrame(() => {
+            editor.focus();
+            refreshFormatState();
+          });
+          return;
+        }
+      }
+      window.document.execCommand(command, false);
+      window.requestAnimationFrame(syncFromEditor);
+    },
+    [disabled, onChange, refreshFormatState, syncFromEditor, value],
+  );
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key !== "b" && key !== "i") return;
+    event.preventDefault();
+    runEditorCommand(key === "b" ? "bold" : "italic");
+  };
+
+  const handlePaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    event.preventDefault();
+    const html = event.clipboardData.getData("text/html");
+    const text = event.clipboardData.getData("text/plain");
+    const markdown = html ? editableHtmlToMarkdown(html) : text;
+    window.document.execCommand("insertHTML", false, markdownToEditableHtml(markdown));
+    window.requestAnimationFrame(syncFromEditor);
+  };
+
+  return (
+    <div className={`markdown-rich-editor ${className}`}>
+      <div className="summary-editor-toolbar markdown-rich-editor-toolbar" aria-label={toolbarLabel}>
+        <button
+          aria-label="Bold"
+          aria-pressed={formatState.bold}
+          className={`icon-button compact ${formatState.bold ? "selected" : ""}`}
+          data-disabled-reason="the editor is already saving."
+          data-tooltip="Bold"
+          disabled={disabled}
+          onClick={() => runEditorCommand("bold")}
+          onMouseDown={(event) => event.preventDefault()}
+          type="button"
+        >
+          <Bold size={14} />
+        </button>
+        <button
+          aria-label="Italic"
+          aria-pressed={formatState.italic}
+          className={`icon-button compact ${formatState.italic ? "selected" : ""}`}
+          data-disabled-reason="the editor is already saving."
+          data-tooltip="Italic"
+          disabled={disabled}
+          onClick={() => runEditorCommand("italic")}
+          onMouseDown={(event) => event.preventDefault()}
+          type="button"
+        >
+          <Italic size={14} />
+        </button>
+        <button
+          aria-label="Remove formatting"
+          className="icon-button compact"
+          data-disabled-reason="the editor is already saving."
+          data-tooltip="Remove formatting"
+          disabled={disabled}
+          onClick={() => runEditorCommand("removeFormat")}
+          onMouseDown={(event) => event.preventDefault()}
+          type="button"
+        >
+          <RemoveFormatting size={14} />
+        </button>
+      </div>
+      <div
+        aria-disabled={disabled}
+        aria-label={ariaLabel}
+        aria-multiline="true"
+        className={`markdown-rich-editor-surface ${isEmpty ? "is-empty" : ""}`}
+        contentEditable={!disabled}
+        data-placeholder={placeholder}
+        onBlur={syncFromEditor}
+        onInput={syncFromEditor}
+        onKeyDown={handleKeyDown}
+        onKeyUp={refreshFormatState}
+        onMouseUp={refreshFormatState}
+        onPaste={handlePaste}
+        ref={editorRef}
+        role="textbox"
+        suppressContentEditableWarning
+        tabIndex={disabled ? -1 : 0}
+      />
+    </div>
+  );
 }
 
 type MarkdownTableAlignment = "left" | "center" | "right";
@@ -9355,8 +9622,6 @@ function DocumentPanelContent({
   const titleEditInputRef = useRef<HTMLInputElement | null>(null);
   const doiEditInputRef = useRef<HTMLInputElement | null>(null);
   const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const bibliographyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const citationTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pdfPreviewScrollRef = useRef<HTMLDivElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
@@ -11043,7 +11308,6 @@ function DocumentPanelContent({
     setCitationVerifiedEditConfirmed((current) => ({ ...current, [kind]: isFieldVerified(verifiedField) }));
     setCitationEditError(null);
     setEditingCitation(kind);
-    window.requestAnimationFrame(() => citationTextareaRef.current?.focus());
   };
 
   const cancelCitationEdit = () => {
@@ -11055,50 +11319,6 @@ function DocumentPanelContent({
 
   const saveCitationEdit = (kind: CitationKind) => {
     updateCitation.mutate({ kind, value: citationDrafts[kind] || "", confirmVerified: citationVerifiedEditConfirmed[kind] });
-  };
-
-  const replaceCitationSelection = (kind: CitationKind, replacement: string, nextSelectionStart: number, nextSelectionEnd: number) => {
-    const textarea = citationTextareaRef.current;
-    const currentDraft = citationDrafts[kind] || "";
-    const start = textarea?.selectionStart ?? currentDraft.length;
-    const end = textarea?.selectionEnd ?? currentDraft.length;
-    const nextValue = `${currentDraft.slice(0, start)}${replacement}${currentDraft.slice(end)}`;
-    setCitationDrafts((current) => ({ ...current, [kind]: nextValue }));
-    window.requestAnimationFrame(() => {
-      citationTextareaRef.current?.focus();
-      citationTextareaRef.current?.setSelectionRange(start + nextSelectionStart, start + nextSelectionEnd);
-    });
-  };
-  const applyCitationInlineFormat = (kind: CitationKind, prefix: string, suffix: string, placeholder: string) => {
-    if (updateCitation.isPending) return;
-    const textarea = citationTextareaRef.current;
-    const currentDraft = citationDrafts[kind] || "";
-    const start = textarea?.selectionStart ?? currentDraft.length;
-    const end = textarea?.selectionEnd ?? currentDraft.length;
-    const selected = currentDraft.slice(start, end) || placeholder;
-    replaceCitationSelection(kind, `${prefix}${selected}${suffix}`, prefix.length, prefix.length + selected.length);
-  };
-  const clearCitationFormatting = (kind: CitationKind) => {
-    if (updateCitation.isPending) return;
-    const textarea = citationTextareaRef.current;
-    const currentDraft = citationDrafts[kind] || "";
-    const start = textarea?.selectionStart ?? 0;
-    const end = textarea?.selectionEnd ?? 0;
-    if (start !== end) {
-      const cleaned = stripMarkdownFormatting(currentDraft.slice(start, end));
-      replaceCitationSelection(kind, cleaned, 0, cleaned.length);
-      return;
-    }
-    setCitationDrafts((current) => ({ ...current, [kind]: stripMarkdownFormatting(currentDraft) }));
-    window.requestAnimationFrame(() => citationTextareaRef.current?.focus());
-  };
-  const handleCitationEditorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>, kind: CitationKind) => {
-    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-    const key = event.key.toLowerCase();
-    if (key !== "b" && key !== "i") return;
-    event.preventDefault();
-    const marker = key === "b" ? "**" : "*";
-    applyCitationInlineFormat(kind, marker, marker, key === "b" ? "bold text" : "italic text");
   };
 
   const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
@@ -11197,7 +11417,6 @@ function DocumentPanelContent({
     setBibliographyEditError(null);
     setBibliographyVerifiedEditConfirmed(confirmed);
     setEditingBibliography(true);
-    window.requestAnimationFrame(() => bibliographyTextareaRef.current?.focus());
   };
   const cancelBibliographyEdit = () => {
     setBibliographyDraft(document.bibliography || "");
@@ -11210,46 +11429,6 @@ function DocumentPanelContent({
       value: bibliographyDraft,
       confirmVerified: bibliographyIsVerified && bibliographyVerifiedEditConfirmed,
     });
-  };
-  const replaceBibliographySelection = (replacement: string, nextSelectionStart: number, nextSelectionEnd: number) => {
-    const textarea = bibliographyTextareaRef.current;
-    const start = textarea?.selectionStart ?? bibliographyDraft.length;
-    const end = textarea?.selectionEnd ?? bibliographyDraft.length;
-    const nextValue = `${bibliographyDraft.slice(0, start)}${replacement}${bibliographyDraft.slice(end)}`;
-    setBibliographyDraft(nextValue);
-    window.requestAnimationFrame(() => {
-      bibliographyTextareaRef.current?.focus();
-      bibliographyTextareaRef.current?.setSelectionRange(start + nextSelectionStart, start + nextSelectionEnd);
-    });
-  };
-  const applyBibliographyInlineFormat = (prefix: string, suffix: string, placeholder: string) => {
-    if (updateBibliography.isPending) return;
-    const textarea = bibliographyTextareaRef.current;
-    const start = textarea?.selectionStart ?? bibliographyDraft.length;
-    const end = textarea?.selectionEnd ?? bibliographyDraft.length;
-    const selected = bibliographyDraft.slice(start, end) || placeholder;
-    replaceBibliographySelection(`${prefix}${selected}${suffix}`, prefix.length, prefix.length + selected.length);
-  };
-  const clearBibliographyFormatting = () => {
-    if (updateBibliography.isPending) return;
-    const textarea = bibliographyTextareaRef.current;
-    const start = textarea?.selectionStart ?? 0;
-    const end = textarea?.selectionEnd ?? 0;
-    if (start !== end) {
-      const cleaned = stripMarkdownFormatting(bibliographyDraft.slice(start, end));
-      replaceBibliographySelection(cleaned, 0, cleaned.length);
-      return;
-    }
-    setBibliographyDraft(stripMarkdownFormatting(bibliographyDraft));
-    window.requestAnimationFrame(() => bibliographyTextareaRef.current?.focus());
-  };
-  const handleBibliographyEditorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-    const key = event.key.toLowerCase();
-    if (key !== "b" && key !== "i") return;
-    event.preventDefault();
-    const marker = key === "b" ? "**" : "*";
-    applyBibliographyInlineFormat(marker, marker, key === "b" ? "bold text" : "italic text");
   };
   const markBibliographyVerified = () => {
     if (!document.bibliography || verifyBibliography.isPending) return;
@@ -12098,49 +12277,16 @@ function DocumentPanelContent({
               saveBibliographyEdit();
             }}
           >
-            <div className="summary-editor-toolbar" aria-label="Bibliography formatting tools">
-              <button
-                className="icon-button compact"
-                data-disabled-reason="the bibliography edit is already saving."
-                data-tooltip="Wrap the selected bibliography text in Markdown bold markers."
-                disabled={updateBibliography.isPending}
-                onClick={() => applyBibliographyInlineFormat("**", "**", "bold text")}
-                type="button"
-              >
-                <Bold size={14} />
-              </button>
-              <button
-                className="icon-button compact"
-                data-disabled-reason="the bibliography edit is already saving."
-                data-tooltip="Wrap the selected bibliography text in Markdown italic markers."
-                disabled={updateBibliography.isPending}
-                onClick={() => applyBibliographyInlineFormat("*", "*", "italic text")}
-                type="button"
-              >
-                <Italic size={14} />
-              </button>
-              <button
-                className="icon-button compact"
-                data-disabled-reason="the bibliography edit is already saving."
-                data-tooltip="Remove common Markdown formatting markers from the bibliography draft."
-                disabled={updateBibliography.isPending}
-                onClick={clearBibliographyFormatting}
-                type="button"
-              >
-                <RemoveFormatting size={14} />
-              </button>
-            </div>
-            <textarea
-              aria-label="Bibliography Markdown"
-              data-disabled-reason="the bibliography edit is already saving."
-              data-tooltip="Edit the Markdown bibliography that appears in the document detail pane and contributes to search."
+            <MarkdownRichEditor
+              ariaLabel="Bibliography Markdown"
+              autoFocus
               disabled={updateBibliography.isPending}
-              onChange={(event) => {
-                setBibliographyDraft(event.target.value);
+              onChange={(nextValue) => {
+                setBibliographyDraft(nextValue);
                 if (bibliographyEditError) setBibliographyEditError(null);
               }}
-              onKeyDown={handleBibliographyEditorKeyDown}
-              ref={bibliographyTextareaRef}
+              placeholder="No bibliography text"
+              toolbarLabel="Bibliography formatting tools"
               value={bibliographyDraft}
             />
             <div className="summary-editor-actions">
@@ -12245,50 +12391,17 @@ function DocumentPanelContent({
               saveCitationEdit(kind);
             }}
           >
-            <div className="summary-editor-toolbar citation-editor-toolbar" aria-label={`${title} formatting tools`}>
-              <button
-                className="icon-button compact"
-                data-disabled-reason="a citation edit is already saving."
-                data-tooltip={`Wrap the selected ${title} text in Markdown bold markers.`}
-                disabled={updateCitation.isPending}
-                onClick={() => applyCitationInlineFormat(kind, "**", "**", "bold text")}
-                type="button"
-              >
-                <Bold size={14} />
-              </button>
-              <button
-                className="icon-button compact"
-                data-disabled-reason="a citation edit is already saving."
-                data-tooltip={`Wrap the selected ${title} text in Markdown italic markers.`}
-                disabled={updateCitation.isPending}
-                onClick={() => applyCitationInlineFormat(kind, "*", "*", "italic text")}
-                type="button"
-              >
-                <Italic size={14} />
-              </button>
-              <button
-                className="icon-button compact"
-                data-disabled-reason="a citation edit is already saving."
-                data-tooltip={`Remove common Markdown formatting markers from the ${title} draft.`}
-                disabled={updateCitation.isPending}
-                onClick={() => clearCitationFormatting(kind)}
-                type="button"
-              >
-                <RemoveFormatting size={14} />
-              </button>
-            </div>
-            <textarea
-              aria-label={`${title} text`}
-              data-disabled-reason="a citation edit is already saving."
-              data-tooltip={`Edit the ${title} Markdown text stored for this document.`}
+            <MarkdownRichEditor
+              ariaLabel={`${title} text`}
+              autoFocus
               disabled={updateCitation.isPending}
-              onKeyDown={(event) => handleCitationEditorKeyDown(event, kind)}
-              ref={citationTextareaRef}
-              value={citationDrafts[kind]}
-              onChange={(event) => {
-                setCitationDrafts((current) => ({ ...current, [kind]: event.target.value }));
+              onChange={(nextValue) => {
+                setCitationDrafts((current) => ({ ...current, [kind]: nextValue }));
                 if (citationEditError) setCitationEditError(null);
               }}
+              placeholder={`No ${title} text`}
+              toolbarLabel={`${title} formatting tools`}
+              value={citationDrafts[kind]}
             />
             <div className="citation-editor-actions">
               <button
@@ -13467,10 +13580,17 @@ function DocumentPanelContent({
             Summary
             <textarea value={draft.rich_summary} onChange={(event) => setDraftValue("rich_summary", event.target.value)} />
           </label>
-          <label>
-            Bibliography
-            <textarea value={draft.bibliography} onChange={(event) => setDraftValue("bibliography", event.target.value)} />
-          </label>
+          <div className="document-editor-rich-field">
+            <span>Bibliography</span>
+            <MarkdownRichEditor
+              ariaLabel="Bibliography"
+              className="document-editor-markdown-field"
+              onChange={(nextValue) => setDraftValue("bibliography", nextValue)}
+              placeholder="No bibliography text"
+              toolbarLabel="Bibliography formatting tools"
+              value={draft.bibliography}
+            />
+          </div>
           <div className="editor-block">
             <div className="editor-block-head">
               <strong>Attributes</strong>

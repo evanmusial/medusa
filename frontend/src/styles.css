@@ -5388,6 +5388,13 @@ textarea {
   min-height: 30px;
 }
 
+.summary-editor-toolbar .icon-button.selected,
+.summary-editor-toolbar .icon-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .summary-editor textarea {
   min-height: 220px;
   resize: vertical;
@@ -5396,7 +5403,53 @@ textarea {
   line-height: 1.55;
 }
 
+.markdown-rich-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.markdown-rich-editor-surface {
+  min-height: 220px;
+  width: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 10px 12px;
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown-rich-editor-surface:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+}
+
+.markdown-rich-editor-surface[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.markdown-rich-editor-surface.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.markdown-rich-editor-surface div {
+  min-height: 1.55em;
+}
+
 .bibliography-editor textarea {
+  min-height: 260px;
+}
+
+.bibliography-editor .markdown-rich-editor-surface {
   min-height: 260px;
 }
 
@@ -5423,6 +5476,10 @@ textarea {
   min-height: 104px;
   font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   line-height: 1.55;
+}
+
+.citation-editor .markdown-rich-editor-surface {
+  min-height: 104px;
 }
 
 .citation-editor-actions {
@@ -6259,9 +6316,20 @@ textarea {
 }
 
 .editor-block > strong,
-.editor-block-head strong {
+.editor-block-head strong,
+.document-editor-rich-field > span {
   font-size: 13px;
   color: var(--muted);
+  font-weight: 650;
+}
+
+.document-editor-rich-field {
+  display: grid;
+  gap: 7px;
+}
+
+.document-editor-markdown-field .markdown-rich-editor-surface {
+  min-height: 180px;
 }
 
 .editor-block-head {
