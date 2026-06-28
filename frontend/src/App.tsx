@@ -210,6 +210,7 @@ type BackgroundJob = {
   runId?: string;
   documentId?: string;
   capabilityKey?: string;
+  acceptedAt?: number;
   completedJobs?: number;
   failedJobs?: number;
   progress?: number;
@@ -217,6 +218,13 @@ type BackgroundJob = {
   error?: string;
   createdAt: number;
   completedAt?: number;
+};
+type ConcordanceActivitySnapshot = {
+  activeJobs: number;
+  dashboardFetchedAt: number;
+  runsFetchedAt: number;
+  jobsFetchedAt: number;
+  now: number;
 };
 type LibraryDocumentRow = DocumentListRow | DocumentSummary | DocumentDetail;
 type ReleaseUpgradeLockStage = "requesting" | "requested" | "polling" | "health" | "reloading" | "failed";
@@ -420,8 +428,8 @@ const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
-const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 45000;
-const BACKGROUND_JOB_SERVER_IDLE_GRACE_MS = 60000;
+const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 10000;
+const BACKGROUND_JOB_SERVER_IDLE_GRACE_MS = 10000;
 const IMPORT_COMPLETED_ROW_RETENTION_MS = 15000;
 const IMPORT_JOB_LIST_LIMIT = 20;
 const IMPORT_ACCEPT =
@@ -1713,6 +1721,23 @@ function isActiveConcordanceStatus(status: string) {
   return status === "queued" || status === "running";
 }
 
+function concordanceRunAnchor(run?: ConcordanceRun | null, fallback?: number) {
+  const parsed = run?.created_at ? Date.parse(run.created_at) : NaN;
+  if (Number.isFinite(parsed)) return parsed;
+  return fallback || 0;
+}
+
+function concordanceServerIdleAfter(activity: ConcordanceActivitySnapshot, startedAt: number, graceMs = BACKGROUND_JOB_SERVER_IDLE_GRACE_MS) {
+  if (!startedAt || activity.activeJobs > 0) return false;
+  if (activity.dashboardFetchedAt < startedAt || activity.runsFetchedAt < startedAt || activity.jobsFetchedAt < startedAt) return false;
+  return activity.now - startedAt >= graceMs;
+}
+
+function concordanceServerIdleAfterConcordanceSnapshot(activity: ConcordanceActivitySnapshot) {
+  const latestConcordanceFetch = Math.max(activity.runsFetchedAt || 0, activity.jobsFetchedAt || 0);
+  return activity.activeJobs === 0 && latestConcordanceFetch > 0 && activity.dashboardFetchedAt >= latestConcordanceFetch;
+}
+
 function concordanceRunFailed(run: ConcordanceRun) {
   return run.status === "failed" || run.status === "complete_with_errors" || run.failed_jobs > 0;
 }
@@ -1754,6 +1779,7 @@ function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], ex
     runId: run.id,
     documentId: existing?.documentId,
     capabilityKey: existing?.capabilityKey,
+    acceptedAt: existing?.acceptedAt || new Date(run.created_at).getTime() || now,
     completedJobs: run.completed_jobs,
     failedJobs: run.failed_jobs,
     totalJobs: run.total_jobs,
@@ -6747,6 +6773,7 @@ function LibraryView({
   tags,
   projects,
   citationJobs,
+  concordanceActivity,
   concordanceRuns,
   query,
   setQuery,
@@ -6781,6 +6808,7 @@ function LibraryView({
   tags: Tag[];
   projects: Project[];
   citationJobs: ConcordanceJob[];
+  concordanceActivity: ConcordanceActivitySnapshot;
   concordanceRuns: ConcordanceRun[];
   query: string;
   setQuery: (query: string) => void;
@@ -7274,6 +7302,7 @@ function LibraryView({
       <section className="library-grid reader-mode" style={paneStyle}>
         <DocumentPanel
           citationJobs={citationJobs}
+          concordanceActivity={concordanceActivity}
           concordanceRuns={concordanceRuns}
           dialogs={dialogs}
           document={document}
@@ -7812,6 +7841,7 @@ function LibraryView({
       />
       <DocumentPanel
         citationJobs={citationJobs}
+        concordanceActivity={concordanceActivity}
         concordanceRuns={concordanceRuns}
         dialogs={dialogs}
         document={document}
@@ -7973,6 +8003,7 @@ function annotationPageLabel(annotation: Annotation) {
 
 function DocumentPanel({
   citationJobs,
+  concordanceActivity,
   concordanceRuns,
   dialogs,
   document,
@@ -7988,6 +8019,7 @@ function DocumentPanel({
   tags,
 }: {
   citationJobs: ConcordanceJob[];
+  concordanceActivity: ConcordanceActivitySnapshot;
   concordanceRuns: ConcordanceRun[];
   dialogs: AppDialogController;
   document?: DocumentDetail;
@@ -8014,6 +8046,7 @@ function DocumentPanel({
   return (
     <DocumentPanelContent
       citationJobs={citationJobs}
+      concordanceActivity={concordanceActivity}
       concordanceRuns={concordanceRuns}
       dialogs={dialogs}
       document={document}
@@ -8820,6 +8853,7 @@ function CompositionDialog({
 
 function DocumentPanelContent({
   citationJobs,
+  concordanceActivity,
   concordanceRuns,
   dialogs,
   document,
@@ -8835,6 +8869,7 @@ function DocumentPanelContent({
   tags,
 }: {
   citationJobs: ConcordanceJob[];
+  concordanceActivity: ConcordanceActivitySnapshot;
   concordanceRuns: ConcordanceRun[];
   dialogs: AppDialogController;
   document: DocumentDetail;
@@ -8917,6 +8952,19 @@ function DocumentPanelContent({
   const [bibliographyRunId, setBibliographyRunId] = useState<string | null>(null);
   const [formulaCaptureRunId, setFormulaCaptureRunId] = useState<string | null>(null);
   const [tagRefreshRunId, setTagRefreshRunId] = useState<string | null>(null);
+  const trackedRunAcceptedAtRef = useRef<Record<string, number>>({});
+  const rememberTrackedRun = useCallback((run: ConcordanceRun) => {
+    trackedRunAcceptedAtRef.current[run.id] = Date.now();
+    return run.id;
+  }, []);
+  const trackedRunServerIdle = useCallback(
+    (runId: string | null, run?: ConcordanceRun | null) => {
+      if (!runId) return false;
+      const acceptedAt = trackedRunAcceptedAtRef.current[runId];
+      return concordanceServerIdleAfter(concordanceActivity, concordanceRunAnchor(run, acceptedAt));
+    },
+    [concordanceActivity],
+  );
   const [editingCitation, setEditingCitation] = useState<CitationKind | null>(null);
   const [citationDrafts, setCitationDrafts] = useState<Record<CitationKind, string>>({
     reference: document.apa_citation || "",
@@ -9166,7 +9214,7 @@ function DocumentPanelContent({
         if (skipped) runConcordanceFeedback.showSuccess();
         return;
       }
-      if (run.total_jobs > 0) setDocumentConcordanceRunId(run.id);
+      if (run.total_jobs > 0) setDocumentConcordanceRunId(rememberTrackedRun(run));
       else runConcordanceFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
@@ -9195,7 +9243,7 @@ function DocumentPanelContent({
       setCitationRefreshTarget(target);
       const feedback =
         target === "doi" ? doiRefreshFeedback : target === "reference" ? referenceCitationFeedback : inTextCitationFeedback;
-      if (run.total_jobs > 0) setCitationRunId(run.id);
+      if (run.total_jobs > 0) setCitationRunId(rememberTrackedRun(run));
       else feedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
@@ -9225,7 +9273,7 @@ function DocumentPanelContent({
         scope_type: "documents",
       }),
     onSuccess: (run) => {
-      if (run.total_jobs > 0) setSummaryRunId(run.id);
+      if (run.total_jobs > 0) setSummaryRunId(rememberTrackedRun(run));
       else summaryRefreshFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
@@ -9253,7 +9301,7 @@ function DocumentPanelContent({
         scope_type: "documents",
       }),
     onSuccess: (run) => {
-      if (run.total_jobs > 0) setBibliographyRunId(run.id);
+      if (run.total_jobs > 0) setBibliographyRunId(rememberTrackedRun(run));
       else bibliographyRefreshFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
@@ -9281,7 +9329,7 @@ function DocumentPanelContent({
         scope_type: "documents",
       }),
     onSuccess: (run) => {
-      if (run.total_jobs > 0) setFormulaCaptureRunId(run.id);
+      if (run.total_jobs > 0) setFormulaCaptureRunId(rememberTrackedRun(run));
       else formulaCaptureFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
@@ -9309,7 +9357,7 @@ function DocumentPanelContent({
         scope_type: "documents",
       }),
     onSuccess: (run) => {
-      if (run.total_jobs > 0) setTagRefreshRunId(run.id);
+      if (run.total_jobs > 0) setTagRefreshRunId(rememberTrackedRun(run));
       else tagRefreshFeedback.showSuccess();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
@@ -9496,6 +9544,7 @@ function DocumentPanelContent({
     pdfDrivenReaderPageRef.current = false;
     setVisualScanReview(null);
     setSelectedVisualScanCandidateIds(new Set());
+    trackedRunAcceptedAtRef.current = {};
     setDocumentConcordanceRunId(null);
     setCitationRunId(null);
     setCitationRefreshTarget(null);
@@ -9657,11 +9706,6 @@ function DocumentPanelContent({
     () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "tag_refresh"),
     [citationJobs, document.id],
   );
-  const citationRefreshActive = citationRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
-  const summaryRefreshActive = summaryRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
-  const bibliographyRefreshActive = bibliographyRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
-  const formulaCaptureActive = formulaCaptureJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
-  const tagRefreshActive = tagRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
   const trackedDocumentConcordanceJobs = useMemo(
     () => (documentConcordanceRunId ? citationJobs.filter((job) => job.run_id === documentConcordanceRunId && job.document_id === document.id) : []),
     [citationJobs, document.id, documentConcordanceRunId],
@@ -9729,22 +9773,55 @@ function DocumentPanelContent({
     () => (tagRefreshRunId ? concordanceRuns.find((run) => run.id === tagRefreshRunId) : undefined),
     [concordanceRuns, tagRefreshRunId],
   );
+  const documentConcordanceServerIdle = trackedRunServerIdle(documentConcordanceRunId, trackedDocumentConcordanceRun);
+  const citationRunServerIdle = trackedRunServerIdle(citationRunId, trackedCitationRun);
+  const summaryRunServerIdle = trackedRunServerIdle(summaryRunId, trackedSummaryRun);
+  const bibliographyRunServerIdle = trackedRunServerIdle(bibliographyRunId, trackedBibliographyRun);
+  const formulaCaptureRunServerIdle = trackedRunServerIdle(formulaCaptureRunId, trackedFormulaCaptureRun);
+  const tagRefreshRunServerIdle = trackedRunServerIdle(tagRefreshRunId, trackedTagRefreshRun);
+  const ignoreStaleActiveConcordanceRows = concordanceServerIdleAfterConcordanceSnapshot(concordanceActivity);
+  const citationRefreshActive =
+    !ignoreStaleActiveConcordanceRows &&
+    !citationRunServerIdle &&
+    citationRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const summaryRefreshActive =
+    !ignoreStaleActiveConcordanceRows &&
+    !summaryRunServerIdle &&
+    summaryRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const bibliographyRefreshActive =
+    !ignoreStaleActiveConcordanceRows &&
+    !bibliographyRunServerIdle &&
+    bibliographyRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const formulaCaptureActive =
+    !ignoreStaleActiveConcordanceRows &&
+    !formulaCaptureRunServerIdle &&
+    formulaCaptureJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const tagRefreshActive =
+    !ignoreStaleActiveConcordanceRows &&
+    !tagRefreshRunServerIdle &&
+    tagRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
   const documentConcordanceBusy =
     runConcordance.isPending ||
     Boolean(
       documentConcordanceRunId &&
+        !documentConcordanceServerIdle &&
         (!trackedDocumentConcordanceJobs.length || trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))),
     );
-  const citationBusy = refreshCitation.isPending || citationRefreshActive || Boolean(citationRunId);
+  const citationBusy = refreshCitation.isPending || citationRefreshActive || Boolean(citationRunId && !citationRunServerIdle);
   const summaryRefreshBusy =
     refreshSummary.isPending ||
     summaryRefreshActive ||
-    Boolean(summaryRunId && (!trackedSummaryJobs.length || trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))));
+    Boolean(
+      summaryRunId &&
+        !summaryRunServerIdle &&
+        (!trackedSummaryJobs.length || trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))),
+    );
   const bibliographyRefreshBusy =
     refreshBibliography.isPending ||
     bibliographyRefreshActive ||
     Boolean(
       bibliographyRunId &&
+        !bibliographyRunServerIdle &&
         (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status)) ||
           (!trackedBibliographyJobs.length && trackedBibliographyRun && isActiveConcordanceStatus(trackedBibliographyRun.status))),
     );
@@ -9753,12 +9830,17 @@ function DocumentPanelContent({
     formulaCaptureActive ||
     Boolean(
       formulaCaptureRunId &&
+        !formulaCaptureRunServerIdle &&
         (!trackedFormulaCaptureJobs.length || trackedFormulaCaptureJobs.some((job) => isActiveConcordanceStatus(job.status))),
     );
   const tagRefreshBusy =
     refreshTags.isPending ||
     tagRefreshActive ||
-    Boolean(tagRefreshRunId && (!trackedTagRefreshJobs.length || trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))));
+    Boolean(
+      tagRefreshRunId &&
+        !tagRefreshRunServerIdle &&
+        (!trackedTagRefreshJobs.length || trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))),
+    );
   const documentConcordanceProgress = concordanceJobButtonProgress(trackedDocumentConcordanceJobs, documentConcordanceBusy);
   const citationProgress = concordanceJobButtonProgress(
     trackedCitationJobs.length ? trackedCitationJobs : citationRefreshJobsForDocument,
@@ -9787,27 +9869,27 @@ function DocumentPanelContent({
       : "";
   const citationBusyReason = refreshCitation.isPending
     ? "a citation refresh request is already starting."
-    : citationRefreshActive || citationRunId
+    : citationRefreshActive || (citationRunId && !citationRunServerIdle)
       ? "a DOI or citation refresh is already queued or running for this document."
       : "";
   const summaryRefreshBusyReason = refreshSummary.isPending
     ? "a summary refresh request is already starting."
-    : summaryRefreshActive || summaryRunId
+    : summaryRefreshActive || (summaryRunId && !summaryRunServerIdle)
       ? "a summary refresh is already queued or running for this document."
       : "";
   const bibliographyRefreshBusyReason = refreshBibliography.isPending
     ? "a bibliography refresh request is already starting."
-    : bibliographyRefreshActive || bibliographyRunId
+    : bibliographyRefreshActive || (bibliographyRunId && !bibliographyRunServerIdle)
       ? "a bibliography refresh is already queued or running for this document."
       : "";
   const formulaCaptureBusyReason = captureFormulas.isPending
     ? "a formula capture request is already starting."
-    : formulaCaptureActive || formulaCaptureRunId
+    : formulaCaptureActive || (formulaCaptureRunId && !formulaCaptureRunServerIdle)
       ? "formula capture is already queued or running for this document."
       : "";
   const tagRefreshBusyReason = refreshTags.isPending
     ? "a tag refresh request is already starting."
-    : tagRefreshActive || tagRefreshRunId
+    : tagRefreshActive || (tagRefreshRunId && !tagRefreshRunServerIdle)
       ? "a tag refresh is already queued or running for this document."
       : "";
   const documentConcordanceBusyReason = runConcordance.isPending
@@ -9872,8 +9954,8 @@ function DocumentPanelContent({
   useEffect(() => {
     if (!documentConcordanceRunId) return;
     if (trackedDocumentConcordanceJobs.length === 0) {
-      if (!trackedDocumentConcordanceRun || isActiveConcordanceStatus(trackedDocumentConcordanceRun.status)) return;
-      if (concordanceRunFailed(trackedDocumentConcordanceRun)) {
+      if ((!trackedDocumentConcordanceRun || isActiveConcordanceStatus(trackedDocumentConcordanceRun.status)) && !documentConcordanceServerIdle) return;
+      if (trackedDocumentConcordanceRun && concordanceRunFailed(trackedDocumentConcordanceRun)) {
         runConcordanceFeedback.showError(
           actionFailureMessage("Document Concordance failed", runFailureMessage(trackedDocumentConcordanceRun, []) || "Concordance run failed"),
         );
@@ -9885,7 +9967,7 @@ function DocumentPanelContent({
       refreshActiveDocumentDetail(queryClient, document.id);
       return;
     }
-    if (trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    if (trackedDocumentConcordanceJobs.some((job) => isActiveConcordanceStatus(job.status)) && !documentConcordanceServerIdle) return;
     const failedJob = trackedDocumentConcordanceJobs.find((job) => job.status === "failed");
     if (failedJob) {
       runConcordanceFeedback.showError(
@@ -9899,6 +9981,7 @@ function DocumentPanelContent({
     refreshActiveDocumentDetail(queryClient, document.id);
   }, [
     document.id,
+    documentConcordanceServerIdle,
     documentConcordanceRunId,
     queryClient,
     runConcordanceFeedback.showError,
@@ -9917,8 +10000,8 @@ function DocumentPanelContent({
           : referenceCitationFeedback;
     if (!citationRunId) return;
     if (trackedCitationJobs.length === 0) {
-      if (!trackedCitationRun || isActiveConcordanceStatus(trackedCitationRun.status)) return;
-      if (concordanceRunFailed(trackedCitationRun)) {
+      if ((!trackedCitationRun || isActiveConcordanceStatus(trackedCitationRun.status)) && !citationRunServerIdle) return;
+      if (trackedCitationRun && concordanceRunFailed(trackedCitationRun)) {
         feedback.showError(
           actionFailureMessage(
             citationRefreshTarget === "doi" ? "DOI refresh failed" : "Citation refresh failed",
@@ -9935,7 +10018,7 @@ function DocumentPanelContent({
       refreshActiveDocumentDetail(queryClient, document.id);
       return;
     }
-    if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    if (trackedCitationJobs.some((job) => isActiveConcordanceStatus(job.status)) && !citationRunServerIdle) return;
     if (failedJob) {
       feedback.showError(
         actionFailureMessage(
@@ -9954,6 +10037,7 @@ function DocumentPanelContent({
   }, [
     citationRefreshTarget,
     citationRunId,
+    citationRunServerIdle,
     document.id,
     doiRefreshFeedback,
     inTextCitationFeedback,
@@ -9966,8 +10050,8 @@ function DocumentPanelContent({
   useEffect(() => {
     if (!summaryRunId) return;
     if (trackedSummaryJobs.length === 0) {
-      if (!trackedSummaryRun || isActiveConcordanceStatus(trackedSummaryRun.status)) return;
-      if (concordanceRunFailed(trackedSummaryRun)) {
+      if ((!trackedSummaryRun || isActiveConcordanceStatus(trackedSummaryRun.status)) && !summaryRunServerIdle) return;
+      if (trackedSummaryRun && concordanceRunFailed(trackedSummaryRun)) {
         summaryRefreshFeedback.showError(
           actionFailureMessage("Summary refresh failed", runFailureMessage(trackedSummaryRun, []) || "Concordance run failed"),
         );
@@ -9980,7 +10064,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
       return;
     }
-    if (trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    if (trackedSummaryJobs.some((job) => isActiveConcordanceStatus(job.status)) && !summaryRunServerIdle) return;
     const failedJob = trackedSummaryJobs.find((job) => job.status === "failed");
     if (failedJob) {
       summaryRefreshFeedback.showError(
@@ -9993,14 +10077,13 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
-  }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, trackedSummaryJobs, trackedSummaryRun]);
+  }, [document.id, queryClient, summaryRefreshFeedback, summaryRunId, summaryRunServerIdle, trackedSummaryJobs, trackedSummaryRun]);
 
   useEffect(() => {
     if (!bibliographyRunId) return;
     if (trackedBibliographyJobs.length === 0) {
-      if (!trackedBibliographyRun) return;
-      if (isActiveConcordanceStatus(trackedBibliographyRun.status)) return;
-      if (concordanceRunFailed(trackedBibliographyRun)) {
+      if ((!trackedBibliographyRun || isActiveConcordanceStatus(trackedBibliographyRun.status)) && !bibliographyRunServerIdle) return;
+      if (trackedBibliographyRun && concordanceRunFailed(trackedBibliographyRun)) {
         bibliographyRefreshFeedback.showError(
           actionFailureMessage("Bibliography refresh failed", runFailureMessage(trackedBibliographyRun, []) || "Concordance run failed"),
         );
@@ -10013,7 +10096,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
       return;
     }
-    if (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    if (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status)) && !bibliographyRunServerIdle) return;
     const failedJob = trackedBibliographyJobs.find((job) => job.status === "failed");
     if (failedJob) {
       bibliographyRefreshFeedback.showError(
@@ -10026,13 +10109,21 @@ function DocumentPanelContent({
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
-  }, [bibliographyRefreshFeedback, bibliographyRunId, document.id, queryClient, trackedBibliographyJobs, trackedBibliographyRun]);
+  }, [
+    bibliographyRefreshFeedback,
+    bibliographyRunId,
+    bibliographyRunServerIdle,
+    document.id,
+    queryClient,
+    trackedBibliographyJobs,
+    trackedBibliographyRun,
+  ]);
 
   useEffect(() => {
     if (!formulaCaptureRunId) return;
     if (trackedFormulaCaptureJobs.length === 0) {
-      if (!trackedFormulaCaptureRun || isActiveConcordanceStatus(trackedFormulaCaptureRun.status)) return;
-      if (concordanceRunFailed(trackedFormulaCaptureRun)) {
+      if ((!trackedFormulaCaptureRun || isActiveConcordanceStatus(trackedFormulaCaptureRun.status)) && !formulaCaptureRunServerIdle) return;
+      if (trackedFormulaCaptureRun && concordanceRunFailed(trackedFormulaCaptureRun)) {
         formulaCaptureFeedback.showError(
           actionFailureMessage("Formula capture failed", runFailureMessage(trackedFormulaCaptureRun, []) || "Concordance run failed"),
         );
@@ -10046,7 +10137,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
       return;
     }
-    if (trackedFormulaCaptureJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    if (trackedFormulaCaptureJobs.some((job) => isActiveConcordanceStatus(job.status)) && !formulaCaptureRunServerIdle) return;
     const failedJob = trackedFormulaCaptureJobs.find((job) => job.status === "failed");
     if (failedJob) {
       formulaCaptureFeedback.showError(
@@ -10060,13 +10151,21 @@ function DocumentPanelContent({
     refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
-  }, [document.id, formulaCaptureFeedback, formulaCaptureRunId, queryClient, trackedFormulaCaptureJobs, trackedFormulaCaptureRun]);
+  }, [
+    document.id,
+    formulaCaptureFeedback,
+    formulaCaptureRunId,
+    formulaCaptureRunServerIdle,
+    queryClient,
+    trackedFormulaCaptureJobs,
+    trackedFormulaCaptureRun,
+  ]);
 
   useEffect(() => {
     if (!tagRefreshRunId) return;
     if (trackedTagRefreshJobs.length === 0) {
-      if (!trackedTagRefreshRun || isActiveConcordanceStatus(trackedTagRefreshRun.status)) return;
-      if (concordanceRunFailed(trackedTagRefreshRun)) {
+      if ((!trackedTagRefreshRun || isActiveConcordanceStatus(trackedTagRefreshRun.status)) && !tagRefreshRunServerIdle) return;
+      if (trackedTagRefreshRun && concordanceRunFailed(trackedTagRefreshRun)) {
         tagRefreshFeedback.showError(
           actionFailureMessage("Tag refresh failed", runFailureMessage(trackedTagRefreshRun, []) || "Concordance run failed"),
         );
@@ -10080,7 +10179,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
       return;
     }
-    if (trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status))) return;
+    if (trackedTagRefreshJobs.some((job) => isActiveConcordanceStatus(job.status)) && !tagRefreshRunServerIdle) return;
     const failedJob = trackedTagRefreshJobs.find((job) => job.status === "failed");
     if (failedJob) {
       tagRefreshFeedback.showError(
@@ -10094,7 +10193,7 @@ function DocumentPanelContent({
     refreshActiveDocumentDetail(queryClient, document.id);
     void queryClient.invalidateQueries({ queryKey: ["tags"] });
     void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
-  }, [document.id, queryClient, tagRefreshFeedback, tagRefreshRunId, trackedTagRefreshJobs, trackedTagRefreshRun]);
+  }, [document.id, queryClient, tagRefreshFeedback, tagRefreshRunId, tagRefreshRunServerIdle, trackedTagRefreshJobs, trackedTagRefreshRun]);
 
   useEffect(() => {
     if (!trackedAccessorySummaryId || !trackedAccessorySummary) return;
@@ -22717,6 +22816,7 @@ export default function App() {
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [recentDocuments, setRecentDocuments] = useState<RecentDocumentShortcut[]>(() => readRecentDocuments());
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
+  const [backgroundReconcileNow, setBackgroundReconcileNow] = useState(() => Date.now());
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
   const [dismissedIngestionHistoryIds, setDismissedIngestionHistoryIds] = useState<Set<string>>(() => readDismissedIngestionHistoryIds());
   const [dismissedAiFailureNoticeIds, setDismissedAiFailureNoticeIds] = useState<Set<string>>(() => readDismissedAiFailureNoticeIds());
@@ -22921,6 +23021,22 @@ export default function App() {
         : WORKSPACE_REFETCH_INTERVAL_MS
       : false,
   });
+  const concordanceActivity = useMemo<ConcordanceActivitySnapshot>(
+    () => ({
+      activeJobs: dashboard.data?.active_concordance_jobs ?? 0,
+      dashboardFetchedAt: dashboard.dataUpdatedAt || 0,
+      runsFetchedAt: concordanceRuns.dataUpdatedAt || 0,
+      jobsFetchedAt: concordanceJobs.dataUpdatedAt || 0,
+      now: backgroundReconcileNow,
+    }),
+    [
+      backgroundReconcileNow,
+      concordanceJobs.dataUpdatedAt,
+      concordanceRuns.dataUpdatedAt,
+      dashboard.data?.active_concordance_jobs,
+      dashboard.dataUpdatedAt,
+    ],
+  );
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, enabled: Boolean(me.data && needsProjects) });
   const notes = useQuery({ queryKey: ["notes"], queryFn: () => api.notes(), enabled: Boolean(me.data && activeView === "notes") });
   const review = useQuery({
@@ -23332,6 +23448,7 @@ export default function App() {
                   ...job,
                   status: run.total_jobs > 0 ? "queued" : "complete",
                   runId: run.id,
+                  acceptedAt: Date.now(),
                   completedJobs: run.completed_jobs,
                   failedJobs: run.failed_jobs,
                   totalJobs: run.total_jobs,
@@ -23447,20 +23564,24 @@ export default function App() {
   useEffect(() => {
     const runs = concordanceRuns.data || [];
     const jobs = concordanceJobs.data || [];
-    const now = Date.now();
-    const serverConcordanceIdle = Boolean(dashboard.data) && (dashboard.data?.active_concordance_jobs ?? 0) === 0;
     setBackgroundJobs((current) =>
       current
         .map((job) => {
           if (!job.runId) return job;
           const run = runs.find((item) => item.id === job.runId);
+          const startedAt = job.acceptedAt || concordanceRunAnchor(run, job.createdAt);
+          const serverIdleAfterJob = concordanceServerIdleAfter(
+            concordanceActivity,
+            startedAt,
+            BACKGROUND_JOB_MISSING_SERVER_GRACE_MS,
+          );
           if (!run) {
-            if (now - job.createdAt < BACKGROUND_JOB_MISSING_SERVER_GRACE_MS) return job;
+            if (!serverIdleAfterJob) return job;
             return {
               ...job,
               status: "complete" as const,
               detail: "No longer active",
-              completedAt: now,
+              completedAt: concordanceActivity.now,
             };
           }
           return backgroundJobFromRun(
@@ -23471,22 +23592,25 @@ export default function App() {
         })
         .map((job) => {
           const isTrackedConcordanceJob = Boolean(job.runId || job.capabilityKey);
-          if (!serverConcordanceIdle || !isTrackedConcordanceJob || isTerminalBackgroundStatus(job.status)) return job;
-          if (now - job.createdAt < BACKGROUND_JOB_SERVER_IDLE_GRACE_MS) return job;
+          if (!isTrackedConcordanceJob || isTerminalBackgroundStatus(job.status)) return job;
+          const run = job.runId ? runs.find((item) => item.id === job.runId) : undefined;
+          const startedAt = job.acceptedAt || concordanceRunAnchor(run, job.createdAt);
+          if (!concordanceServerIdleAfter(concordanceActivity, startedAt)) return job;
           return {
             ...job,
             status: "complete" as const,
             detail: "No active server job",
-            completedAt: now,
+            completedAt: concordanceActivity.now,
           };
         })
-        .filter((job) => !job.completedAt || now - job.completedAt < BACKGROUND_JOB_RETENTION_MS),
+        .filter((job) => !job.completedAt || concordanceActivity.now - job.completedAt < BACKGROUND_JOB_RETENTION_MS),
     );
-  }, [concordanceJobs.data, concordanceRuns.data, dashboard.data?.active_concordance_jobs]);
+  }, [concordanceActivity, concordanceJobs.data, concordanceRuns.data]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       const now = Date.now();
+      setBackgroundReconcileNow(now);
       setBackgroundJobs((current) =>
         current.filter((job) => !job.completedAt || now - job.completedAt < BACKGROUND_JOB_RETENTION_MS),
       );
@@ -23613,17 +23737,20 @@ export default function App() {
     stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
     portfolio: portfolioItems.data?.length ?? 0,
   };
+  const ignoreStaleServerBackgroundJobs = concordanceServerIdleAfterConcordanceSnapshot(concordanceActivity);
   const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
-  const activeServerBackgroundJobs = (concordanceRuns.data || [])
-    .filter((run) => !trackedRunIds.has(run.id))
-    .map((run) =>
-      backgroundJobFromRun(
-        run,
-        (concordanceJobs.data || []).filter((job) => job.run_id === run.id),
-      ),
-    )
-    .filter((job) => job.status === "queued" || job.status === "running")
-    .slice(0, 3);
+  const activeServerBackgroundJobs = ignoreStaleServerBackgroundJobs
+    ? []
+    : (concordanceRuns.data || [])
+        .filter((run) => !trackedRunIds.has(run.id))
+        .map((run) =>
+          backgroundJobFromRun(
+            run,
+            (concordanceJobs.data || []).filter((job) => job.run_id === run.id),
+          ),
+        )
+        .filter((job) => job.status === "queued" || job.status === "running")
+        .slice(0, 3);
   const activeBackupBackgroundJobs = (backupRuns.data || [])
     .map(backgroundJobFromBackupRun)
     .filter((job) => job.status === "queued" || job.status === "running")
@@ -23692,6 +23819,7 @@ export default function App() {
             tags={tags.data || []}
             projects={projects.data || []}
             citationJobs={concordanceJobs.data || []}
+            concordanceActivity={concordanceActivity}
             concordanceRuns={concordanceRuns.data || []}
             query={query}
             setQuery={setQuery}
