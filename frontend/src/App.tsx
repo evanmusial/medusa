@@ -7611,7 +7611,7 @@ function LibraryView({
                 if (sortedDocuments[0]) activateDocument(sortedDocuments[0].id, { updateUrl: false });
               }}
             />
-            <strong>{loading ? "Searching..." : libraryCountLabel}</strong>
+            <strong>{libraryCountLabel}</strong>
           </label>
           {selectedIds.length ? (
             <div className="bulk-bar">
