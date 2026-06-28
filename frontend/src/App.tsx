@@ -217,6 +217,7 @@ type BackgroundJob = {
   label: string;
   detail?: string;
   status: BackgroundJobStatus;
+  activeJobs?: number;
   runId?: string;
   documentId?: string;
   capabilityKey?: string;
@@ -1847,8 +1848,11 @@ function accessorySummaryTone(summary: AccessorySummary): "neutral" | "good" | "
 }
 
 function statusFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[]): BackgroundJobStatus {
-  if (run.status === "complete_with_errors" || run.failed_jobs > 0 || runJobs.some((job) => job.status === "failed")) return "failed";
+  if (run.status === "failed" || run.status === "complete_with_errors" || run.failed_jobs > 0 || runJobs.some((job) => job.status === "failed")) {
+    return "failed";
+  }
   if (run.status === "complete") return "complete";
+  if (run.status === "running") return "running";
   if (runJobs.some((job) => job.status === "running")) return "running";
   return "queued";
 }
@@ -1860,6 +1864,21 @@ function runFailureMessage(run: ConcordanceRun, runJobs: ConcordanceJob[]) {
   return undefined;
 }
 
+function concordanceRunActiveJobCount(run: ConcordanceRun) {
+  return Math.max(0, (run.total_jobs || 0) - (run.completed_jobs || 0) - (run.failed_jobs || 0));
+}
+
+function concordanceRunProgressDetail(run: ConcordanceRun) {
+  const total = Math.max(0, run.total_jobs || 0);
+  if (!total) return "Already current";
+  const finished = Math.min(total, Math.max(0, (run.completed_jobs || 0) + (run.failed_jobs || 0)));
+  const active = concordanceRunActiveJobCount(run);
+  const finishedLabel = `${formatMetric(finished)} of ${formatMetric(total)} finished`;
+  const failedLabel = run.failed_jobs > 0 ? ` / ${formatMetric(run.failed_jobs)} failed` : "";
+  if (!active) return `${finishedLabel}${failedLabel}`;
+  return `${formatMetric(active)} active / ${finishedLabel}${failedLabel}`;
+}
+
 function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], existing?: BackgroundJob): BackgroundJob {
   const status = statusFromRun(run, runJobs);
   const terminal = isTerminalBackgroundStatus(status);
@@ -1867,8 +1886,9 @@ function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], ex
   return {
     id: existing?.id || run.id,
     label: existing?.label || run.label || `${scopeLabel(run.scope_type)} Concordance`,
-    detail: existing?.detail || `${run.completed_jobs + run.failed_jobs} of ${run.total_jobs} jobs finished`,
+    detail: concordanceRunProgressDetail(run),
     status,
+    activeJobs: terminal ? 0 : concordanceRunActiveJobCount(run),
     runId: run.id,
     documentId: existing?.documentId,
     capabilityKey: existing?.capabilityKey,
@@ -2056,6 +2076,10 @@ function backgroundStatusLabel(job: BackgroundJob) {
   return "Complete";
 }
 
+function backgroundActiveJobCount(jobs: BackgroundJob[]) {
+  return jobs.reduce((total, job) => total + Math.max(0, job.activeJobs ?? 1), 0);
+}
+
 function aiFailureTaskLabel(notice: AIFailureNotice) {
   return (notice.task_key || notice.operation || "model call").replaceAll("_", " ");
 }
@@ -2168,8 +2192,9 @@ function HeaderWorkProgress({
     tooltip = "Open Queue to inspect completed and active import work.";
   } else {
     const job = activeJobs[0];
+    const activeJobCount = backgroundActiveJobCount(activeJobs);
     progress = backgroundProgress(job);
-    label = activeJobs.length > 1 ? `${activeJobs.length} background jobs` : job.label;
+    label = activeJobCount > 1 ? `${formatMetric(activeJobCount)} background jobs` : job.label;
     detail = job.detail || backgroundStatusLabel(job);
     activeClass = job.status;
   }
@@ -4066,9 +4091,22 @@ function useClipboardNotice(resetMs = 1600) {
     [],
   );
 
-  const copyToClipboard = async (key: string, text: string) => {
+  const copyToClipboard = async (key: string, text: string, options: { html?: string } = {}) => {
     if (!text || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(text);
+    if (options.html && "write" in navigator.clipboard && typeof ClipboardItem !== "undefined") {
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([options.html], { type: "text/html" }),
+            "text/plain": new Blob([text], { type: "text/plain" }),
+          }),
+        ]);
+      } catch {
+        await navigator.clipboard.writeText(text);
+      }
+    } else {
+      await navigator.clipboard.writeText(text);
+    }
     setCopiedKey(key);
     if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = window.setTimeout(() => {
@@ -4468,6 +4506,73 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
     else nodes.push(...renderInlineMarkdownText(segment.text, `${keyPrefix}-text-${index}`));
   });
   return nodes;
+}
+
+function escapeClipboardHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function inlineMarkdownToClipboardHtml(text: string) {
+  const nodes: string[] = [];
+  const pattern = /(<u>.*?<\/u>|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    if (match.index > lastIndex) nodes.push(escapeClipboardHtml(text.slice(lastIndex, match.index)));
+    const token = match[0];
+    if (token.startsWith("<u>")) nodes.push(`<u>${escapeClipboardHtml(token.slice(3, -4))}</u>`);
+    else if (token.startsWith("**")) nodes.push(`<strong>${escapeClipboardHtml(token.slice(2, -2))}</strong>`);
+    else if (token.startsWith("*")) nodes.push(`<em>${escapeClipboardHtml(token.slice(1, -1))}</em>`);
+    else nodes.push(`<code>${escapeClipboardHtml(token.slice(1, -1))}</code>`);
+    lastIndex = pattern.lastIndex;
+  }
+  if (lastIndex < text.length) nodes.push(escapeClipboardHtml(text.slice(lastIndex)));
+  return nodes.join("");
+}
+
+function markdownParagraphsToClipboardHtml(content?: string | null) {
+  const source = decodeHtmlEntities(content || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+  if (!source) return "";
+  return source
+    .split(/\n\s*\n+/)
+    .map((paragraph) =>
+      paragraph
+        .split(/\n+/)
+        .map((line) => inlineMarkdownToClipboardHtml(line.trim()))
+        .filter(Boolean)
+        .join("<br>"),
+    )
+    .filter(Boolean)
+    .map((paragraph) => `<p>${paragraph}</p>`)
+    .join("");
+}
+
+function bibliographyMarkdownToClipboardHtml(content?: string | null) {
+  return bibliographyEntriesFromText(content)
+    .map((entry) => `<p>${inlineMarkdownToClipboardHtml(entry)}</p>`)
+    .join("");
+}
+
+function richClipboardHtml(body: string) {
+  return body ? `<div>${body}</div>` : "";
+}
+
+function markdownClipboardText(content?: string | null) {
+  return stripMarkdownFormatting(decodeHtmlEntities(content || "")).trim();
+}
+
+function bibliographyClipboardText(content?: string | null) {
+  return bibliographyEntriesFromText(content)
+    .map((entry) => stripMarkdownFormatting(entry).trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function stripMarkdownFormatting(value: string) {
@@ -8702,7 +8807,11 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             <button
               className={`secondary-button compact recommendation-copy-action${sourceCopied ? " copy-acknowledged" : ""}`}
               data-tooltip="Copy this bibliography source text to the clipboard."
-              onClick={() => void copyToClipboard(`bibliography-source-${item.key}`, item.text)}
+              onClick={() =>
+                void copyToClipboard(`bibliography-source-${item.key}`, markdownClipboardText(item.text), {
+                  html: richClipboardHtml(markdownParagraphsToClipboardHtml(item.text)),
+                })
+              }
               type="button"
             >
               {sourceCopied ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
@@ -9996,7 +10105,10 @@ function DocumentPanelContent({
 
   const copyCitation = (kind: CitationKind) => {
     const text = citationText(document, kind);
-    if (text) void copyToClipboard(`citation-${kind}`, decodeHtmlEntities(text));
+    if (!text) return;
+    void copyToClipboard(`citation-${kind}`, markdownClipboardText(text), {
+      html: richClipboardHtml(markdownParagraphsToClipboardHtml(text)),
+    });
   };
   const copyDoi = () => {
     if (document.doi) void copyToClipboard("document-doi", document.doi);
@@ -12018,7 +12130,12 @@ function DocumentPanelContent({
             className="icon-button"
             data-disabled-reason="this document does not have an extracted bibliography to copy."
             data-tooltip="Copy this document's extracted source bibliography to the clipboard."
-            onClick={() => document.bibliography && void copyToClipboard("document-bibliography", decodeHtmlEntities(document.bibliography))}
+            onClick={() =>
+              document.bibliography &&
+              void copyToClipboard("document-bibliography", bibliographyClipboardText(document.bibliography), {
+                html: richClipboardHtml(bibliographyMarkdownToClipboardHtml(document.bibliography)),
+              })
+            }
             disabled={!document.bibliography}
             type="button"
           >
@@ -17750,6 +17867,16 @@ function ProjectsView({
           .map((entry) => decodeHtmlEntities(entry).trim())
           .filter(Boolean)
       : [];
+  const copyBibliography = () => {
+    if (!bibliographyText) return;
+    if (bibliographyStyle === "apa") {
+      void copyToClipboard("bibliography", bibliographyClipboardText(bibliographyText), {
+        html: richClipboardHtml(bibliographyMarkdownToClipboardHtml(bibliographyText)),
+      });
+      return;
+    }
+    void copyToClipboard("bibliography", decodeHtmlEntities(bibliographyText));
+  };
 
   return (
     <section className="workbench project-workbench">
@@ -17835,9 +17962,7 @@ function ProjectsView({
             data-disabled-reason="generate a bibliography before copying it."
             data-tooltip="Copy the currently displayed bibliography text to the clipboard."
             disabled={!bibliographyText}
-            onClick={() => {
-              void copyToClipboard("bibliography", decodeHtmlEntities(bibliographyText));
-            }}
+            onClick={copyBibliography}
           >
             {copiedKey === "bibliography" ? <CheckCircle2 size={16} /> : <Clipboard size={16} />}
             {copiedKey === "bibliography" ? "Copied" : "Copy"}
