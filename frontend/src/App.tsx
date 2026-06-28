@@ -22307,7 +22307,7 @@ function SettingsView({
         <div className="usage-table recent">
           <div className="usage-row header">
             <span>Recent call</span>
-            <span>Model</span>
+            <span className="usage-model-cell">Model</span>
             <span>Status</span>
             <span>Input</span>
             <span>Output</span>
@@ -22317,7 +22317,9 @@ function SettingsView({
             recentUsageRows.slice(0, 6).map((row) => (
               <div className="usage-row" key={row.id}>
                 <span>{row.page_number ? `${row.task_key} p.${row.page_number}` : row.task_key}</span>
-                <span>{row.model}</span>
+                <span className="usage-model-cell" title={row.model}>
+                  {row.model}
+                </span>
                 <StatusPill value={row.status} tone={row.status === "failed" ? "warn" : "good"} />
                 <span>{formatMetric(row.input_tokens)}</span>
                 <span>{formatMetric(row.output_tokens)}</span>

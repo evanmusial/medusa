@@ -11284,11 +11284,13 @@ pre {
   min-width: 0;
   display: grid;
   gap: 0;
+  overflow-x: auto;
   border-top: 1px solid var(--line);
 }
 
 .usage-row {
-  min-width: 0;
+  width: 100%;
+  min-width: 650px;
   display: grid;
   grid-template-columns: minmax(190px, 1fr) 74px 92px 92px 92px 92px;
   align-items: center;
@@ -11315,6 +11317,18 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.usage-table.recent .usage-row {
+  min-width: 860px;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.6fr) 92px 82px 82px 82px;
+}
+
+.usage-table.recent .usage-model-cell {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .accent-settings {
