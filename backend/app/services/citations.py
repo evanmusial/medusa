@@ -45,11 +45,151 @@ def apa_author_list(authors: list[dict[str, Any]] | list[str]) -> str:
     return ", ".join(cleaned[:19]) + f", ... {cleaned[-1]}"
 
 
+APA_SENTENCE_CASE_PRESERVED_WORDS = {
+    "api": "API",
+    "bayesian": "Bayesian",
+    "covid": "COVID",
+    "crossref": "Crossref",
+    "doi": "DOI",
+    "gcs": "GCS",
+    "html": "HTML",
+    "ieee": "IEEE",
+    "iot": "IoT",
+    "json": "JSON",
+    "alexa": "Alexa",
+    "markov": "Markov",
+    "medusa": "Medusa",
+    "openai": "OpenAI",
+    "pdf": "PDF",
+    "google": "Google",
+    "snowden": "Snowden",
+    "postgresql": "PostgreSQL",
+    "sql": "SQL",
+    "url": "URL",
+    "xml": "XML",
+}
+
+APA_SENTENCE_CASE_PRESERVED_PHRASES = {
+    "edward snowden": "Edward Snowden",
+    "google home": "Google Home",
+}
+
+
+def _sentence_case_core_word(word: str, *, capitalize: bool) -> str:
+    if not word:
+        return word
+    preserved = APA_SENTENCE_CASE_PRESERVED_WORDS.get(word.casefold())
+    if preserved:
+        cased = preserved
+    elif re.search(r"://|@", word):
+        cased = word
+    elif re.fullmatch(r"[A-Z0-9][A-Z0-9&.+/-]{1,}", word) and (len(re.sub(r"[^A-Z0-9]", "", word)) <= 6 or any(ch.isdigit() for ch in word)):
+        cased = word
+    elif re.search(r"[a-z][A-Z]", word):
+        cased = word
+    else:
+        cased = word.lower()
+    if not capitalize:
+        return cased
+    first_letter = re.search(r"[A-Za-z]", cased)
+    if not first_letter:
+        return cased
+    index = first_letter.start()
+    return cased[:index] + cased[index].upper() + cased[index + 1 :]
+
+
+def _sentence_case_token(token: str, *, capitalize: bool) -> str:
+    leading = re.match(r"^[^A-Za-z0-9]+", token)
+    trailing = re.search(r"[^A-Za-z0-9]+$", token)
+    leading_text = leading.group(0) if leading else ""
+    trailing_text = trailing.group(0) if trailing and trailing.start() >= len(leading_text) else ""
+    core_end = len(token) - len(trailing_text) if trailing_text else len(token)
+    core = token[len(leading_text) : core_end]
+    if not core:
+        return token
+    if "-" in core and not re.search(r"://", core):
+        parts = core.split("-")
+        cased_parts = [
+            _sentence_case_core_word(part, capitalize=capitalize and index == 0)
+            for index, part in enumerate(parts)
+        ]
+        cased_core = "-".join(cased_parts)
+    else:
+        cased_core = _sentence_case_core_word(core, capitalize=capitalize)
+    return f"{leading_text}{cased_core}{trailing_text}"
+
+
 def sentence_case_title(title: str) -> str:
     title = re.sub(r"\s+", " ", decode_html_entities(title)).strip()
     if not title:
         return title
-    return title[0].upper() + title[1:]
+    parts = re.split(r"(\s+)", title)
+    cased_parts: list[str] = []
+    capitalize_next = True
+    for part in parts:
+        if not part or part.isspace():
+            cased_parts.append(part)
+            continue
+        cased_parts.append(_sentence_case_token(part, capitalize=capitalize_next))
+        if re.search(r"[:!?]\s*$", part):
+            capitalize_next = True
+        elif re.search(r"[A-Za-z0-9]", part):
+            capitalize_next = False
+    cased = "".join(cased_parts)
+    for phrase, replacement in APA_SENTENCE_CASE_PRESERVED_PHRASES.items():
+        pattern = r"\b" + r"\s+".join(re.escape(part) for part in phrase.split()) + r"\b"
+        cased = re.sub(pattern, replacement, cased, flags=re.IGNORECASE)
+    return cased
+
+
+_APA_REFERENCE_YEAR_PREFIX_RE = re.compile(r"\(\s*(?:n\.d\.|(?:18|19|20)\d{2}[a-z]?)\s*\)\.\s+", re.IGNORECASE)
+_APA_REFERENCE_TITLE_BOUNDARY_HINT_RE = re.compile(
+    r"^(?:\*|In\s+|Retrieved\s+|https?://|doi:|Journal\b|Proceedings\b|Press\b|Publisher\b|University\b|Institute\b|"
+    r"Association\b|Conference\b|Review\b|Magazine\b|Report\b|Department\b|Springer\b|ACM\b|IEEE\b|"
+    r"[A-Z][A-Za-z& ]{0,40}\b(?:Journal|Proceedings|Press|Publisher|University|Institute|Association|Conference|"
+    r"Review|Magazine|Report|Department|Springer|ACM|IEEE)\b)",
+    re.IGNORECASE,
+)
+
+
+def _sentence_case_markdown_title(title: str) -> str:
+    stripped = title.strip()
+    if len(stripped) >= 2 and stripped.startswith("*") and stripped.endswith("*"):
+        return title.replace(stripped, f"*{sentence_case_title(stripped[1:-1])}*", 1)
+    return sentence_case_title(title)
+
+
+def _split_reference_title(rest: str) -> tuple[str, str, str] | None:
+    if not rest.strip():
+        return None
+    if rest.startswith("*"):
+        closing = rest.find("*", 1)
+        if closing > 1 and closing + 1 < len(rest) and rest[closing + 1] in ".!?":
+            return rest[: closing + 1], rest[closing + 1], rest[closing + 2 :]
+    delimiter_matches = list(re.finditer(r"([.!?])(\s+|$)", rest))
+    if not delimiter_matches:
+        return rest, "", ""
+    for match in delimiter_matches:
+        tail = rest[match.end() :]
+        if not tail or _APA_REFERENCE_TITLE_BOUNDARY_HINT_RE.search(tail):
+            return rest[: match.start()], match.group(1), rest[match.end() - len(match.group(2)) :]
+    match = delimiter_matches[-1]
+    return rest[: match.start()], match.group(1), rest[match.end() - len(match.group(2)) :]
+
+
+def sentence_case_apa_reference_title(reference: str) -> str:
+    reference = decode_html_entities(reference).strip()
+    match = _APA_REFERENCE_YEAR_PREFIX_RE.search(reference)
+    if not match:
+        return reference
+    prefix = reference[: match.end()]
+    rest = reference[match.end() :]
+    split = _split_reference_title(rest)
+    if not split:
+        return reference
+    title, ending, tail = split
+    cased_title = _sentence_case_markdown_title(title)
+    return f"{prefix}{cased_title}{ending}{tail}".strip()
 
 
 def _has_value(value: Any) -> bool:
@@ -288,6 +428,8 @@ def validate_apa_citation_pair(
         normalized_reference = fallback_reference
         if supplied_reference:
             warnings.append("reference_list_fallback")
+    else:
+        normalized_reference = sentence_case_apa_reference_title(normalized_reference)
     fallback_in_text = _fallback_in_text_for_reference(metadata, normalized_reference)
     if not _in_text_is_plausible(normalized_in_text, metadata) or _pair_years_conflict(normalized_reference, normalized_in_text):
         normalized_in_text = fallback_in_text

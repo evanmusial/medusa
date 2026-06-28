@@ -9199,6 +9199,7 @@ function DocumentPanelContent({
   const doiEditInputRef = useRef<HTMLInputElement | null>(null);
   const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const bibliographyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const citationTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pdfPreviewScrollRef = useRef<HTMLDivElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
@@ -10882,6 +10883,7 @@ function DocumentPanelContent({
     setCitationVerifiedEditConfirmed((current) => ({ ...current, [kind]: isFieldVerified(verifiedField) }));
     setCitationEditError(null);
     setEditingCitation(kind);
+    window.requestAnimationFrame(() => citationTextareaRef.current?.focus());
   };
 
   const cancelCitationEdit = () => {
@@ -10893,6 +10895,50 @@ function DocumentPanelContent({
 
   const saveCitationEdit = (kind: CitationKind) => {
     updateCitation.mutate({ kind, value: citationDrafts[kind] || "", confirmVerified: citationVerifiedEditConfirmed[kind] });
+  };
+
+  const replaceCitationSelection = (kind: CitationKind, replacement: string, nextSelectionStart: number, nextSelectionEnd: number) => {
+    const textarea = citationTextareaRef.current;
+    const currentDraft = citationDrafts[kind] || "";
+    const start = textarea?.selectionStart ?? currentDraft.length;
+    const end = textarea?.selectionEnd ?? currentDraft.length;
+    const nextValue = `${currentDraft.slice(0, start)}${replacement}${currentDraft.slice(end)}`;
+    setCitationDrafts((current) => ({ ...current, [kind]: nextValue }));
+    window.requestAnimationFrame(() => {
+      citationTextareaRef.current?.focus();
+      citationTextareaRef.current?.setSelectionRange(start + nextSelectionStart, start + nextSelectionEnd);
+    });
+  };
+  const applyCitationInlineFormat = (kind: CitationKind, prefix: string, suffix: string, placeholder: string) => {
+    if (updateCitation.isPending) return;
+    const textarea = citationTextareaRef.current;
+    const currentDraft = citationDrafts[kind] || "";
+    const start = textarea?.selectionStart ?? currentDraft.length;
+    const end = textarea?.selectionEnd ?? currentDraft.length;
+    const selected = currentDraft.slice(start, end) || placeholder;
+    replaceCitationSelection(kind, `${prefix}${selected}${suffix}`, prefix.length, prefix.length + selected.length);
+  };
+  const clearCitationFormatting = (kind: CitationKind) => {
+    if (updateCitation.isPending) return;
+    const textarea = citationTextareaRef.current;
+    const currentDraft = citationDrafts[kind] || "";
+    const start = textarea?.selectionStart ?? 0;
+    const end = textarea?.selectionEnd ?? 0;
+    if (start !== end) {
+      const cleaned = stripMarkdownFormatting(currentDraft.slice(start, end));
+      replaceCitationSelection(kind, cleaned, 0, cleaned.length);
+      return;
+    }
+    setCitationDrafts((current) => ({ ...current, [kind]: stripMarkdownFormatting(currentDraft) }));
+    window.requestAnimationFrame(() => citationTextareaRef.current?.focus());
+  };
+  const handleCitationEditorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>, kind: CitationKind) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key !== "b" && key !== "i") return;
+    event.preventDefault();
+    const marker = key === "b" ? "**" : "*";
+    applyCitationInlineFormat(kind, marker, marker, key === "b" ? "bold text" : "italic text");
   };
 
   const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
@@ -12034,12 +12080,50 @@ function DocumentPanelContent({
               saveCitationEdit(kind);
             }}
           >
+            <div className="summary-editor-toolbar citation-editor-toolbar" aria-label={`${title} formatting tools`}>
+              <button
+                className="icon-button compact"
+                data-disabled-reason="a citation edit is already saving."
+                data-tooltip={`Wrap the selected ${title} text in Markdown bold markers.`}
+                disabled={updateCitation.isPending}
+                onClick={() => applyCitationInlineFormat(kind, "**", "**", "bold text")}
+                type="button"
+              >
+                <Bold size={14} />
+              </button>
+              <button
+                className="icon-button compact"
+                data-disabled-reason="a citation edit is already saving."
+                data-tooltip={`Wrap the selected ${title} text in Markdown italic markers.`}
+                disabled={updateCitation.isPending}
+                onClick={() => applyCitationInlineFormat(kind, "*", "*", "italic text")}
+                type="button"
+              >
+                <Italic size={14} />
+              </button>
+              <button
+                className="icon-button compact"
+                data-disabled-reason="a citation edit is already saving."
+                data-tooltip={`Remove common Markdown formatting markers from the ${title} draft.`}
+                disabled={updateCitation.isPending}
+                onClick={() => clearCitationFormatting(kind)}
+                type="button"
+              >
+                <RemoveFormatting size={14} />
+              </button>
+            </div>
             <textarea
               aria-label={`${title} text`}
               data-disabled-reason="a citation edit is already saving."
               data-tooltip={`Edit the ${title} Markdown text stored for this document.`}
+              disabled={updateCitation.isPending}
+              onKeyDown={(event) => handleCitationEditorKeyDown(event, kind)}
+              ref={citationTextareaRef}
               value={citationDrafts[kind]}
-              onChange={(event) => setCitationDrafts((current) => ({ ...current, [kind]: event.target.value }))}
+              onChange={(event) => {
+                setCitationDrafts((current) => ({ ...current, [kind]: event.target.value }));
+                if (citationEditError) setCitationEditError(null);
+              }}
             />
             <div className="citation-editor-actions">
               <button

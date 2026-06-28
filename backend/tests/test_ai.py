@@ -168,6 +168,8 @@ def test_bibliography_cleanup_alphabetizes_model_output(monkeypatch, tmp_path):
     assert "first author surname" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "Do not sort by author initials" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert "bracketed author/year source keys" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "cited work title in sentence case" in BIBLIOGRAPHY_CLEANUP_PROMPT
+    assert "container titles in title case" in BIBLIOGRAPHY_CLEANUP_PROMPT
     assert result["bibliography"].splitlines() == [
         "Adams, A. (2022). *Alpha methods*. Press.",
         "Ariani, D. W. (2013). *Employee engagement*. Journal.",
@@ -277,7 +279,7 @@ def test_bibliography_sort_fallback_ignores_spacing_artifacts_for_group_authors(
         "D. J. Barret, Mediawiki. Sebastopol, CA, USA: O'Reilly Media 2008.",
         "B News. (2014). Edward Snowden: Leaks that exposed US spy programme.",
         "Y. Vardi, M. Theusan, A. F. Karr, W.-H. Ju, W. DuMouchel, and M. Schonlau. (2001). Computer intrusion.",
-        "V C 2008. (2008). Mc3-Cell Phone Calls.",
+        "V C 2008. (2008). Mc3-cell phone calls.",
         "ZDNet. (2019). Alexa and Google Home devices leveraged to phish.",
     ]
 
@@ -299,6 +301,9 @@ def test_bibliography_cleanup_strips_missing_page_placeholders():
     assert normalize_model_bibliography_entry(
         "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference (pp. 1-?). ACM Press."
     ) == "Anderson, R. (1993). Why cryptosystems fail. In Proceedings of the ACM conference. ACM Press."
+    assert normalize_model_bibliography_entry(
+        "Bashah, N. (2007). Hybrid Intelligent Intrusion Detection System. *World Academy of Science, Engineering and Technology*."
+    ) == "Bashah, N. (2007). Hybrid intelligent intrusion detection system. *World Academy of Science, Engineering and Technology*."
 
 
 def test_formula_capture_returns_latex_entries(monkeypatch, tmp_path):

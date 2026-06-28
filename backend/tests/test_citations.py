@@ -4,6 +4,8 @@ from app.services.citations import (
     format_apa_in_text_citation,
     format_bibtex,
     format_ris,
+    sentence_case_apa_reference_title,
+    sentence_case_title,
     to_csl_json,
     validate_apa_citation_pair,
 )
@@ -52,6 +54,24 @@ def test_format_apa_includes_journal_volume_issue_and_pages_as_markdown():
         "A Bayesian network model for predicting insider threats. "
         "*2013 IEEE Security and Privacy Workshops, 1*(2), 82-89. "
         "https://doi.org/10.1109/spw.2013.35"
+    )
+
+
+def test_sentence_case_title_lowercases_work_title_without_lowering_acronyms_or_subtitle_start():
+    assert sentence_case_title("Hybrid Intelligent Intrusion Detection System") == "Hybrid intelligent intrusion detection system"
+    assert sentence_case_title("Network IDS For IoT Devices: A Bayesian Approach") == "Network IDS for IoT devices: A Bayesian approach"
+    assert sentence_case_title("Edward Snowden: Leaks That Exposed US Spy Programme") == "Edward Snowden: Leaks that exposed US spy programme"
+
+
+def test_sentence_case_apa_reference_title_keeps_container_title_case():
+    reference = (
+        "Mallikarjunan, K. N. (2012). Model For Cyber Attacker Behavioral Analysis. "
+        "*International Journal of Computer Applications, 54*(14), 1-7."
+    )
+
+    assert sentence_case_apa_reference_title(reference) == (
+        "Mallikarjunan, K. N. (2012). Model for cyber attacker behavioral analysis. "
+        "*International Journal of Computer Applications, 54*(14), 1-7."
     )
 
 
@@ -107,6 +127,24 @@ def test_validate_apa_citation_pair_strips_labels_and_accepts_pair():
 
     assert pair.reference_list == "Haraway, D. (1988). Situated knowledges. *Feminist Studies*."
     assert pair.in_text == "(Haraway, 1988)"
+    assert pair.validation_warnings == []
+
+
+def test_validate_apa_citation_pair_sentence_cases_supplied_reference_title():
+    metadata = {
+        "title": "Hybrid intelligent intrusion detection system",
+        "authors": [{"given": "Noor", "family": "Bashah"}],
+        "publication_year": 2007,
+        "journal": "World Academy of Science, Engineering and Technology",
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list="Bashah, N. (2007). Hybrid Intelligent Intrusion Detection System. *World Academy of Science, Engineering and Technology*.",
+        in_text="(Bashah, 2007)",
+    )
+
+    assert pair.reference_list == "Bashah, N. (2007). Hybrid intelligent intrusion detection system. *World Academy of Science, Engineering and Technology*."
     assert pair.validation_warnings == []
 
 

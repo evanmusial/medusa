@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.config import get_settings
+from app.services.citations import sentence_case_apa_reference_title
 from app.services.analysis_models import (
     DEFAULT_KEYWORDS_TOPICS_MODEL,
     MODEL_APA_CITATION,
@@ -270,7 +271,9 @@ APA_CITATION_JUDGMENT_PROMPT = (
     "in-text citation in this single response. Do not add field labels, headings, bullets, or code fences inside either "
     "citation string. If the evidence is insufficient or internally conflicting, return null for uncertain citation "
     "fields and explain the uncertainty in citation_warnings. Do not invent authors, year, venue, DOI, volume, issue, "
-    "pages, or URLs. Use Markdown-compatible italics where APA requires italicized publication elements."
+    "pages, or URLs. Use Markdown-compatible italics where APA requires italicized publication elements. For APA "
+    "reference-list entries, format the cited work title in sentence case; keep journal, magazine, newspaper, "
+    "proceedings, and other container titles in title case."
 )
 
 BIBLIOGRAPHY_CLEANUP_PROMPT = (
@@ -289,8 +292,9 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "like [Ariani 2013] or [Hanley et al.2011a], bullets, and list markers. Start each entry "
     "with the visible author or group author when present; when no author is visible, start with the title. Use "
     "Markdown italics where APA requires italics, such as book, "
-    "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Preserve DOI "
-    "links, stable URLs, retrieval notes, edition/series details, page ranges, publishers, and years when visible. "
+    "report, journal, proceedings, and other container titles, and journal volume numbers when evident. Format the "
+    "cited work title in sentence case for APA; keep journal, magazine, newspaper, proceedings, and other container "
+    "titles in title case. Preserve DOI links, stable URLs, retrieval notes, edition/series details, page ranges, publishers, and years when visible. "
     "Do not invent missing authors, years, titles, venues, publishers, pages, DOI links, URLs, or access dates. Omit "
     "missing fields instead of writing placeholders such as n/a, unknown, not available, or page ranges that are not visible. If "
     "the supplied text is incomplete, keep the available source wording in the closest sensible APA order. Do not "
@@ -627,7 +631,7 @@ def normalize_model_bibliography_entry(value: Any) -> str:
     entry = _BIBLIOGRAPHY_MISSING_PAGES_RE.sub(".", entry).strip()
     entry = re.sub(r"\s+([,.;:!?])", r"\1", entry)
     entry = re.sub(r"\.{2,}", ".", entry).strip()
-    return entry
+    return sentence_case_apa_reference_title(entry)
 
 
 def bibliography_entry_sort_key(value: Any) -> tuple[str, str]:
