@@ -123,7 +123,7 @@ def _bibliography_entries_for_cleanup(bibliography: str | None) -> list[str]:
             continue
         if entries and not _bibliography_line_starts_entry(line):
             entries[-1] = f"{entries[-1].rstrip()} {line}"
-        else:
+        elif _bibliography_line_starts_entry(line):
             entries.append(line)
     return entries
 

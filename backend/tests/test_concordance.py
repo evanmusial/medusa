@@ -396,6 +396,7 @@ def test_bibliography_cleanup_author_loss_ignores_vancouver_title_and_venue_toke
     entries = _bibliography_entries_for_cleanup(split_continuation)
     assert _bibliography_entry_count(split_continuation) == 2
     assert entries[0].endswith("Sota, (Accessed 5 September 2023).")
+    assert _bibliography_entry_count("(Accessed 5 September 2023).\n" + split_continuation) == 2
 
 
 def test_forced_bibliography_refresh_skips_model_cleanup_for_large_lists(monkeypatch, tmp_path):
