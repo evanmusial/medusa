@@ -7981,7 +7981,7 @@ function LibraryView({
             ) : null}
             <div className="library-result-controls">
               <LibrarySortDropdown onChange={onSortChange} value={sortKey} />
-              <div className="library-page-controls">
+              <div aria-busy={loading || undefined} className="library-page-controls">
                 <label className="library-page-size">
                   <span>Rows</span>
                   <input
@@ -8005,7 +8005,7 @@ function LibraryView({
                   className="icon-button compact library-page-arrow"
                   data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
                   data-tooltip="Load the previous Library result window."
-                  disabled={pageOffset <= 0 || loading}
+                  disabled={pageOffset <= 0}
                   onClick={onPreviousPage}
                   type="button"
                 >
@@ -8017,7 +8017,7 @@ function LibraryView({
                   className="icon-button compact library-page-arrow"
                   data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
                   data-tooltip="Load the next Library result window."
-                  disabled={!hasMoreDocuments || loading}
+                  disabled={!hasMoreDocuments}
                   onClick={onNextPage}
                   type="button"
                 >
@@ -24486,6 +24486,9 @@ export default function App() {
   const libraryRows = libraryDocumentList.data?.items ?? EMPTY_LIBRARY_ROWS;
   const libraryTotalDocumentCount = libraryDocumentList.data?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
   const libraryTotalPageCount = libraryDocumentList.data?.total_page_count ?? 0;
+  const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? libraryDocumentList.data?.offset ?? libraryOffset;
+  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryDocumentList.data?.limit ?? libraryPageSize);
+  const libraryHasMoreDocuments = libraryTotalDocumentCount > libraryDisplayOffset + libraryDisplayLimit;
   useEffect(() => {
     const page = libraryDocumentList.data;
     if (!page || !libraryPageTurnIntent || page.offset !== libraryPageTurnIntent.offset) return;
@@ -25181,21 +25184,21 @@ export default function App() {
             alternatingRows={preferences.data?.library_alternating_rows ?? true}
             totalDocumentCount={libraryTotalDocumentCount}
             totalPageCount={libraryTotalPageCount}
-            pageOffset={libraryDocumentList.data?.offset ?? libraryOffset}
-            pageLimit={libraryDocumentList.data?.limit ?? libraryPageSize}
+            pageOffset={libraryDisplayOffset}
+            pageLimit={libraryDisplayLimit}
             pageSize={libraryPageSize}
             sortKey={librarySort}
-            hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
+            hasMoreDocuments={libraryHasMoreDocuments}
             onPreviousPage={() => {
-              const nextOffset = Math.max(0, (libraryDocumentList.data?.offset ?? libraryOffset) - libraryPageSize);
+              const nextOffset = Math.max(0, libraryDisplayOffset - libraryDisplayLimit);
               setLibraryFocusDocumentId(null);
               setLibraryScrollTargetId(null);
               setLibraryPageTurnIntent((current) => ({ offset: nextOffset, token: (current?.token ?? 0) + 1 }));
               setLibraryOffset(nextOffset);
             }}
             onNextPage={() => {
-              if (libraryDocumentList.data?.has_more) {
-                const nextOffset = (libraryDocumentList.data?.offset ?? libraryOffset) + libraryPageSize;
+              if (libraryHasMoreDocuments) {
+                const nextOffset = libraryDisplayOffset + libraryDisplayLimit;
                 setLibraryFocusDocumentId(null);
                 setLibraryScrollTargetId(null);
                 setLibraryPageTurnIntent((current) => ({ offset: nextOffset, token: (current?.token ?? 0) + 1 }));
