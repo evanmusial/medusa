@@ -4661,10 +4661,7 @@ function MarkdownBlock({
 }
 
 function BibliographyBlock({ content, empty }: { content?: string | null; empty: string }) {
-  const entries = decodeHtmlEntities(content || "")
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const entries = bibliographyEntriesFromText(content);
   if (!entries.length) return <p className="markdown-empty">{empty}</p>;
 
   return (
@@ -11321,51 +11318,57 @@ function DocumentPanelContent({
       </div>
     </section>
   );
-  const renderBibliographySection = () => (
-    <section className="detail-section bibliography-section">
-      <h3>Bibliography</h3>
-      {bibliographyGeneratedLabel ? <p className="section-kicker">Generated {bibliographyGeneratedLabel}</p> : null}
-      {bibliographyCleanupMessage ? (
-        <p className="bibliography-refresh-note">
-          <AlertTriangle size={14} />
-          <span>{bibliographyCleanupMessage}</span>
-        </p>
-      ) : null}
-      <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
-      <div className="citation-actions">
-        <button
-          aria-label={copiedKey === "document-bibliography" ? "Bibliography copied" : "Copy bibliography"}
-          className="icon-button"
-          data-disabled-reason="this document does not have an extracted bibliography to copy."
-          data-tooltip="Copy this document's extracted source bibliography to the clipboard."
-          onClick={() => document.bibliography && void copyToClipboard("document-bibliography", decodeHtmlEntities(document.bibliography))}
-          disabled={!document.bibliography}
-          type="button"
-        >
-          {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
-        </button>
-        <AsyncActionSlot
-          busy={bibliographyRefreshBusy}
-          feedback={bibliographyRefreshFeedback.feedback}
-          label="Bibliography refresh in progress"
-          progress={bibliographyRefreshProgress}
-        >
+  const renderBibliographySection = () => {
+    const bibliographyItemCount = bibliographyEntriesFromText(document.bibliography).length;
+    return (
+      <section className="detail-section bibliography-section">
+        <h3>
+          Bibliography
+          {bibliographyItemCount > 0 ? <span className="detail-section-title-count">({bibliographyItemCount})</span> : null}
+        </h3>
+        {bibliographyGeneratedLabel ? <p className="section-kicker">Generated {bibliographyGeneratedLabel}</p> : null}
+        {bibliographyCleanupMessage ? (
+          <p className="bibliography-refresh-note">
+            <AlertTriangle size={14} />
+            <span>{bibliographyCleanupMessage}</span>
+          </p>
+        ) : null}
+        <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
+        <div className="citation-actions">
           <button
-            aria-label={bibliographyRefreshBusy ? "Refreshing bibliography" : "Refresh bibliography"}
-            className={asyncFeedbackClass("icon-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
-            data-disabled-reason={bibliographyRefreshBusyReason}
-            data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as alphabetized APA-style sources, one per line, with the selected Bibliography Cleanup model."
-            onClick={checkBibliography}
-            disabled={bibliographyRefreshBusy}
+            aria-label={copiedKey === "document-bibliography" ? "Bibliography copied" : "Copy bibliography"}
+            className="icon-button"
+            data-disabled-reason="this document does not have an extracted bibliography to copy."
+            data-tooltip="Copy this document's extracted source bibliography to the clipboard."
+            onClick={() => document.bibliography && void copyToClipboard("document-bibliography", decodeHtmlEntities(document.bibliography))}
+            disabled={!document.bibliography}
             type="button"
           >
-            <RefreshCw className={bibliographyRefreshBusy ? "spin" : ""} size={15} />
+            {copiedKey === "document-bibliography" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
           </button>
-        </AsyncActionSlot>
-        <span className="citation-model-label">{analysisModelActionLabel(preferences, BIBLIOGRAPHY_CLEANUP_MODEL_KEY, "gpt-5-mini")}</span>
-      </div>
-    </section>
-  );
+          <AsyncActionSlot
+            busy={bibliographyRefreshBusy}
+            feedback={bibliographyRefreshFeedback.feedback}
+            label="Bibliography refresh in progress"
+            progress={bibliographyRefreshProgress}
+          >
+            <button
+              aria-label={bibliographyRefreshBusy ? "Refreshing bibliography" : "Refresh bibliography"}
+              className={asyncFeedbackClass("icon-button", bibliographyRefreshFeedback.feedback, bibliographyRefreshBusy)}
+              data-disabled-reason={bibliographyRefreshBusyReason}
+              data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as alphabetized APA-style sources, one per line, with the selected Bibliography Cleanup model."
+              onClick={checkBibliography}
+              disabled={bibliographyRefreshBusy}
+              type="button"
+            >
+              <RefreshCw className={bibliographyRefreshBusy ? "spin" : ""} size={15} />
+            </button>
+          </AsyncActionSlot>
+          <span className="citation-model-label">{analysisModelActionLabel(preferences, BIBLIOGRAPHY_CLEANUP_MODEL_KEY, "gpt-5-mini")}</span>
+        </div>
+      </section>
+    );
+  };
   const renderCitationSection = (kind: CitationKind, title: string, empty: string) => {
     const text = citationText(document, kind);
     const isEditing = editingCitation === kind;

@@ -5079,6 +5079,11 @@ textarea {
   margin: 0;
 }
 
+.detail-section-title-count {
+  margin-left: 4px;
+  font-weight: 400;
+}
+
 .detail-section p {
   line-height: 1.5;
 }
