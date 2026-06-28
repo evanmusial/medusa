@@ -7,7 +7,7 @@ Medusa stands for **Metadata-Enhanced Document Understanding, Search, and Analys
 - Password-protected LAN web app behind HAProxy TLS on port `3737`, with database-backed password hashes, optional authenticator-app 2FA, and an explicit local-only auto-login flag for single-user development instances
 - React research cockpit UI with day/night modes, open-canvas workbenches, an app-wide Quick Switcher, browser-local recently viewed document shortcuts, Library density preferences, darker light-theme contrast grays, and restrained icon-left action buttons
 - Lowercase contextual browser titles such as `medusa | DOCUMENT_TITLE`, `medusa | PROJECT_TITLE`, or the current workspace name
-- Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected and `/documents/{document_id}/reader` for expanded Reader mode
+- Bookmarkable top-level workspace URLs plus document focus links such as `/documents/{document_id}` for opening Library with a specific document selected and scrolled into view, and `/documents/{document_id}/reader` for expanded Reader mode with list-position restoration on close
 - Icon-only header Status button linking to `/status`, with build/version identity, short commit hash, uptime, memory and disk footprints, runtime versions, proxy status, and storage path details
 - FastAPI backend with session cookies
 - PostgreSQL schema with Alembic migrations, `pgvector`, full-text/trigram indexes, JSONB metadata, and durable import jobs

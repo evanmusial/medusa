@@ -6767,8 +6767,10 @@ function LibraryView({
   onPageSizeChange,
   preferences,
   readerOpen,
+  scrollTargetId,
   onOpenReader,
   onCloseReader,
+  onScrollTargetHandled,
 }: {
   dialogs: AppDialogController;
   documents: LibraryDocumentRow[];
@@ -6799,13 +6801,16 @@ function LibraryView({
   onPageSizeChange: (pageSize: LibraryPageSize) => void;
   preferences?: AppPreferences;
   readerOpen: boolean;
+  scrollTargetId?: string | null;
   onOpenReader: () => void;
   onCloseReader: (options?: { updateUrl?: boolean }) => void;
+  onScrollTargetHandled?: (documentId: string) => void;
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
   const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const rowsViewportRef = useRef<HTMLDivElement | null>(null);
+  const selectedRowViewportTopRef = useRef<{ documentId: string; top: number } | null>(null);
   const [rowsScrollTop, setRowsScrollTop] = useState(0);
   const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
   const [saveName, setSaveName] = useState("");
@@ -7077,6 +7082,34 @@ function LibraryView({
     if (targetScrollTop !== rowsScrollTop) setRowsScrollTop(targetScrollTop);
     if (Math.abs(element.scrollTop - targetScrollTop) > 1) element.scrollTop = targetScrollTop;
   }, [libraryRowHeight, readerOpen, rowsScrollTop, sortedDocuments.length]);
+  useEffect(() => {
+    if (readerOpen || !scrollTargetId) return;
+    const element = rowsViewportRef.current;
+    if (!element) return;
+    const targetIndex = sortedDocuments.findIndex((item) => item.id === scrollTargetId);
+    if (targetIndex < 0) return;
+    const rowTop = targetIndex * libraryRowHeight;
+    const rowBottom = rowTop + libraryRowHeight;
+    const visibleTop = element.scrollTop;
+    const visibleBottom = visibleTop + element.clientHeight;
+    const savedTop = selectedRowViewportTopRef.current?.documentId === scrollTargetId ? selectedRowViewportTopRef.current.top : null;
+    let targetScrollTop = visibleTop;
+    if (savedTop !== null) {
+      targetScrollTop = rowTop - clampNumber(savedTop, 0, Math.max(0, element.clientHeight - libraryRowHeight));
+    } else if (rowTop < visibleTop) {
+      targetScrollTop = rowTop;
+    } else if (rowBottom > visibleBottom) {
+      targetScrollTop = rowTop - Math.max(0, (element.clientHeight - libraryRowHeight) / 2);
+    } else {
+      onScrollTargetHandled?.(scrollTargetId);
+      return;
+    }
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const nextScrollTop = clampNumber(targetScrollTop, 0, maxScrollTop);
+    setRowsScrollTop(nextScrollTop);
+    if (Math.abs(element.scrollTop - nextScrollTop) > 1) element.scrollTop = nextScrollTop;
+    onScrollTargetHandled?.(scrollTargetId);
+  }, [libraryRowHeight, onScrollTargetHandled, readerOpen, scrollTargetId, sortedDocuments, rowsViewportHeight]);
   const hasBulkUpdate = selectedBulkDocument
     ? Boolean(
         bulkReadStatus ||
@@ -7210,6 +7243,18 @@ function LibraryView({
 
   const activateDocument = (id: string, options?: { updateUrl?: boolean }) => {
     setSelectedId(id, options);
+  };
+
+  const rememberSelectedRowPosition = () => {
+    const element = rowsViewportRef.current;
+    if (!element || !selectedId) return;
+    const selectedIndex = sortedDocuments.findIndex((item) => item.id === selectedId);
+    if (selectedIndex < 0) return;
+    const rowTop = selectedIndex * libraryRowHeight;
+    selectedRowViewportTopRef.current = {
+      documentId: selectedId,
+      top: clampNumber(rowTop - element.scrollTop, 0, Math.max(0, element.clientHeight - libraryRowHeight)),
+    };
   };
 
   const handleDocumentLinkClick = (event: ReactMouseEvent<HTMLAnchorElement>, id: string) => {
@@ -7772,7 +7817,10 @@ function LibraryView({
         document={document}
         domains={domains}
         onTrashDocument={trashFocusedDocument}
-        onOpenReader={onOpenReader}
+        onOpenReader={() => {
+          rememberSelectedRowPosition();
+          onOpenReader();
+        }}
         preferences={preferences}
         projects={projects}
         query={query}
@@ -22664,6 +22712,8 @@ export default function App() {
   const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(DEFAULT_LIBRARY_PAGE_SIZE);
   const [libraryDocumentMode, setLibraryDocumentMode] = useState<DocumentRouteMode>(() => initialRoute.documentMode || "detail");
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
+  const [libraryFocusDocumentId, setLibraryFocusDocumentId] = useState<string | null>(() => initialRoute.documentId || null);
+  const [libraryScrollTargetId, setLibraryScrollTargetId] = useState<string | null>(() => initialRoute.documentId || null);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
   const [recentDocuments, setRecentDocuments] = useState<RecentDocumentShortcut[]>(() => readRecentDocuments());
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
@@ -22779,9 +22829,10 @@ export default function App() {
     setLibraryOffset(0);
   }, [documentQuery, filters, libraryPageSize]);
   const libraryDocumentList = useQuery({
-    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize],
+    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize, libraryFocusDocumentId],
     queryFn: () =>
       api.documentList(documentQuery, filters, {
+        focusDocumentId: libraryFocusDocumentId,
         offset: libraryOffset,
         limit: libraryPageSize,
       }),
@@ -22981,6 +23032,21 @@ export default function App() {
   const libraryRows = libraryDocumentList.data?.items ?? EMPTY_LIBRARY_ROWS;
   const libraryTotalDocumentCount = libraryDocumentList.data?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
   const libraryTotalPageCount = libraryDocumentList.data?.total_page_count ?? 0;
+  useEffect(() => {
+    const page = libraryDocumentList.data;
+    if (!page) return;
+    if (page.offset !== libraryOffset) setLibraryOffset(page.offset);
+    if (!libraryFocusDocumentId || page.focus_document_id !== libraryFocusDocumentId) return;
+    const focusedItemIsVisible = page.items.some((item) => item.id === libraryFocusDocumentId);
+    if (focusedItemIsVisible) {
+      setLibraryFocusDocumentId(null);
+      return;
+    }
+    if (page.focus_index === null || page.focus_index === undefined) {
+      setLibraryFocusDocumentId(null);
+      setLibraryScrollTargetId((current) => (current === libraryFocusDocumentId ? null : current));
+    }
+  }, [libraryDocumentList.data, libraryFocusDocumentId, libraryOffset]);
 
   const activeTitleSubject = useMemo(() => {
     if (activeView === "library") {
@@ -23330,16 +23396,19 @@ export default function App() {
   );
   const requestDocumentFocus = useCallback(
     async (documentId: string, historyMode: BrowserHistoryMode = "push", documentMode: DocumentRouteMode = "detail") => {
+      const documentAlreadyInWindow = activeView === "library" && libraryRows.some((item) => item.id === documentId);
       if (activeView !== "library") {
         const changed = await requestActiveViewChange("library", "none");
         if (!changed) return false;
       }
+      setLibraryScrollTargetId(documentId);
+      if (!documentAlreadyInWindow) setLibraryFocusDocumentId(documentId);
       setSelectedId(documentId);
       setLibraryDocumentMode(documentMode);
       if (historyMode !== "none") syncBrowserUrlForDocument(documentId, historyMode, documentMode);
       return true;
     },
-    [activeView, requestActiveViewChange],
+    [activeView, libraryRows, requestActiveViewChange],
   );
   const openViewFromCommandPalette = useCallback(
     async (view: View) => requestActiveViewChange(view),
@@ -23433,6 +23502,10 @@ export default function App() {
       if (refreshed.has(refreshKey)) continue;
       refreshed.add(refreshKey);
       refreshActiveDocumentDetail(queryClient, job.documentId);
+      if (job.documentId === selectedId) {
+        setLibraryFocusDocumentId(job.documentId);
+        setLibraryScrollTargetId(job.documentId);
+      }
       if (job.capabilityKey === "bibliography_extraction" || job.capabilityKey === "formula_capture") {
         void queryClient.invalidateQueries({ queryKey: ["document-composition", job.documentId] });
       }
@@ -23442,7 +23515,7 @@ export default function App() {
         recentKeys.forEach((key) => refreshed.add(key));
       }
     }
-  }, [backgroundJobs, queryClient]);
+  }, [backgroundJobs, queryClient, selectedId]);
 
   useEffect(() => {
     const handleCommandPaletteShortcut = (event: KeyboardEvent) => {
@@ -23635,25 +23708,41 @@ export default function App() {
             pageSize={libraryPageSize}
             hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
             onPreviousPage={() => {
+              setLibraryFocusDocumentId(null);
+              setLibraryScrollTargetId(null);
               setLibraryOffset((current) => Math.max(0, current - libraryPageSize));
             }}
             onNextPage={() => {
               if (libraryDocumentList.data?.has_more) {
+                setLibraryFocusDocumentId(null);
+                setLibraryScrollTargetId(null);
                 setLibraryOffset((current) => current + libraryPageSize);
               }
             }}
             onPageSizeChange={(pageSize) => {
               setLibraryPageSize(pageSize);
+              if (selectedId) {
+                setLibraryFocusDocumentId(selectedId);
+                setLibraryScrollTargetId(selectedId);
+              }
               setLibraryOffset(0);
             }}
             preferences={preferences.data}
             readerOpen={libraryDocumentMode === "reader"}
+            scrollTargetId={libraryScrollTargetId}
             onOpenReader={() => {
               if (selectedId) void requestDocumentFocus(selectedId, "push", "reader");
             }}
             onCloseReader={(options) => {
               setLibraryDocumentMode("detail");
+              if (selectedId) {
+                setLibraryFocusDocumentId(selectedId);
+                setLibraryScrollTargetId(selectedId);
+              }
               if (options?.updateUrl !== false && selectedId) syncBrowserUrlForDocument(selectedId, "push", "detail");
+            }}
+            onScrollTargetHandled={(documentId) => {
+              setLibraryScrollTargetId((current) => (current === documentId ? null : current));
             }}
           />
         ) : null}
