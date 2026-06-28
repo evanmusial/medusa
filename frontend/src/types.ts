@@ -1166,6 +1166,14 @@ export type DocumentDetail = DocumentSummary & {
   abstract?: string | null;
   bibliography?: string | null;
   bibliography_generated_at?: string | null;
+  doi_verified_at?: string | null;
+  doi_verified_by?: string | null;
+  apa_citation_verified_at?: string | null;
+  apa_citation_verified_by?: string | null;
+  apa_in_text_citation_verified_at?: string | null;
+  apa_in_text_citation_verified_by?: string | null;
+  bibliography_verified_at?: string | null;
+  bibliography_verified_by?: string | null;
   metadata_evidence: Record<string, unknown>;
   gcs_uri?: string | null;
   storage_status: string;
@@ -1427,6 +1435,10 @@ export type DocumentUpdatePayload = Partial<DocumentDetail> & {
   domain_ids?: string[];
   project_ids?: string[];
   attribute_values?: Record<string, unknown>;
+  confirm_verified_doi_edit?: boolean;
+  confirm_verified_apa_citation_edit?: boolean;
+  confirm_verified_apa_in_text_citation_edit?: boolean;
+  confirm_verified_bibliography_edit?: boolean;
 };
 
 export type Project = {

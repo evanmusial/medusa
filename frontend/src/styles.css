@@ -5324,6 +5324,43 @@ textarea {
   gap: 8px;
 }
 
+.bibliography-section {
+  display: grid;
+  gap: 8px;
+}
+
+.bibliography-title-row,
+.verified-field-title-row {
+  margin-bottom: 0;
+}
+
+.bibliography-verify-button,
+.bibliography-verified-badge,
+.field-verify-button,
+.verified-field-badge {
+  margin-left: auto;
+}
+
+.bibliography-verified-badge,
+.verified-field-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--blue) 8%, var(--panel));
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.bibliography-verified-badge svg,
+.verified-field-badge svg {
+  color: var(--blue);
+}
+
 .summary-editor {
   display: grid;
   gap: 8px;
@@ -5349,6 +5386,10 @@ textarea {
   font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   font-size: 14px;
   line-height: 1.55;
+}
+
+.bibliography-editor textarea {
+  min-height: 260px;
 }
 
 .citation-actions {

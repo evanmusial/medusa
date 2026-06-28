@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -153,6 +156,68 @@ def test_patch_document_marks_no_doi_without_placeholder(monkeypatch, tmp_path):
         assert updated.doi == "10.1000/real"
         assert updated.no_doi is False
         assert "no_doi" not in updated.metadata_evidence
+
+
+def test_document_field_verification_requires_confirmed_doi_and_citation_edits(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import patch_document, verify_document_field
+    from app.models import Document
+    from app.schemas import DocumentPatch
+
+    Session = make_session()
+    user = SimpleNamespace(id="user-1", email="editor@example.com")
+    with Session() as db:
+        document = Document(
+            title="Verified Citation Paper",
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            publication_year=1843,
+            doi="10.1000/example",
+            original_filename="verified-citation.pdf",
+            checksum_sha256="f" * 64,
+            apa_citation="Lovelace, A. (1843). Source.",
+            apa_in_text_citation="(Lovelace, 1843)",
+            processing_status="ready",
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        verified_doi = verify_document_field(document.id, "doi", user, db)
+        verified_reference = verify_document_field(document.id, "apa_citation", user, db)
+
+        assert verified_doi.doi_verified_by == "editor@example.com"
+        assert verified_reference.apa_citation_verified_at is not None
+
+        with pytest.raises(HTTPException) as exc_info:
+            patch_document(document.id, DocumentPatch(doi="10.1000/other"), user, db)
+        assert exc_info.value.status_code == 409
+
+        with pytest.raises(HTTPException) as exc_info:
+            patch_document(document.id, DocumentPatch(apa_citation="Edited reference."), user, db)
+        assert exc_info.value.status_code == 409
+
+        updated = patch_document(
+            document.id,
+            DocumentPatch(
+                doi="10.1000/other",
+                apa_citation="Edited reference.",
+                confirm_verified_doi_edit=True,
+                confirm_verified_apa_citation_edit=True,
+            ),
+            user,
+            db,
+        )
+
+        assert updated.doi == "10.1000/other"
+        assert updated.apa_citation == "Edited reference."
+        assert updated.doi_verified_at is None
+        assert updated.apa_citation_verified_at is None
+        assert updated.metadata_evidence.get("doi_verification") is None
+        assert updated.metadata_evidence.get("apa_citation_verification") is None
 
 
 def test_create_document_note_updates_search_text(monkeypatch, tmp_path):
@@ -1013,6 +1078,52 @@ def test_document_detail_prefers_bibliography_generated_evidence(monkeypatch, tm
         assert detail.bibliography_generated_at.isoformat() == "2026-06-26T12:34:56+00:00"
 
 
+def test_document_bibliography_verification_requires_confirmed_edit(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import patch_document, verify_document_bibliography
+    from app.models import Document
+    from app.schemas import DocumentPatch
+
+    Session = make_session()
+    user = SimpleNamespace(id="user-1", email="editor@example.com")
+    with Session() as db:
+        document = Document(
+            title="Verified References Paper",
+            original_filename="verified-references.pdf",
+            checksum_sha256="v" * 64,
+            bibliography="Smith, A. (2024). Source. *Journal*.",
+            processing_status="ready",
+            page_count=1,
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        verified = verify_document_bibliography(document.id, user, db)
+
+        assert verified.bibliography_verified_at is not None
+        assert verified.bibliography_verified_by == "editor@example.com"
+
+        with pytest.raises(HTTPException) as exc_info:
+            patch_document(document.id, DocumentPatch(bibliography="Edited source."), user, db)
+        assert exc_info.value.status_code == 409
+
+        updated = patch_document(
+            document.id,
+            DocumentPatch(bibliography="Edited source.", confirm_verified_bibliography_edit=True),
+            user,
+            db,
+        )
+
+        assert updated.bibliography == "Edited source."
+        assert updated.bibliography_verified_at is None
+        assert updated.metadata_evidence.get("bibliography_verification") is None
+
+
 def test_patch_document_page_records_history_and_updates_search_text(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -1251,6 +1362,57 @@ def test_refresh_document_citation_queues_citation_concordance(monkeypatch, tmp_
         assert jobs[0].capability_key == "citation_refresh"
 
 
+def test_refresh_document_citation_requires_confirmation_for_verified_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import refresh_document_citation
+    from app.models import ConcordanceJob, Document
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Verified DOI Refresh Paper",
+            original_filename="verified-doi-refresh.pdf",
+            checksum_sha256="8" * 64,
+            processing_status="ready",
+            doi="10.1000/verified-refresh",
+            apa_citation="Smith, A. (2024). Verified.",
+            apa_in_text_citation="(Smith, 2024)",
+            metadata_evidence={
+                "doi_verification": {
+                    "status": "verified",
+                    "verified_at": "2026-06-27T12:00:00+00:00",
+                    "verified_by": "editor@example.com",
+                    "verified_by_user_id": "user-1",
+                },
+                "apa_citation_verification": {
+                    "status": "verified",
+                    "verified_at": "2026-06-27T12:05:00+00:00",
+                    "verified_by": "editor@example.com",
+                    "verified_by_user_id": "user-1",
+                },
+            },
+        )
+        db.add(document)
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            refresh_document_citation(document.id, object(), db)
+        assert exc_info.value.status_code == 409
+
+        run = refresh_document_citation(document.id, object(), db, confirm_verified=True)
+        jobs = db.query(ConcordanceJob).filter(ConcordanceJob.run_id == run.id).all()
+        db.refresh(document)
+
+        assert jobs
+        assert jobs[0].capability_key == "citation_refresh"
+        assert document.metadata_evidence.get("doi_verification") is None
+        assert document.metadata_evidence.get("apa_citation_verification") is None
+
+
 def test_refresh_document_bibliography_queues_forced_bibliography_concordance(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -1289,6 +1451,47 @@ def test_refresh_document_bibliography_queues_forced_bibliography_concordance(mo
         assert jobs
         assert jobs[0].document_id == document.id
         assert jobs[0].capability_key == "bibliography_extraction"
+
+
+def test_refresh_document_bibliography_requires_confirmation_for_verified_bibliography(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import refresh_document_bibliography
+    from app.models import ConcordanceJob, Document
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Verified Bibliography Paper",
+            original_filename="verified-bibliography.pdf",
+            checksum_sha256="9" * 64,
+            processing_status="ready",
+            bibliography="Verified source list.",
+            metadata_evidence={
+                "bibliography_verification": {
+                    "status": "verified",
+                    "verified_at": "2026-06-27T12:00:00+00:00",
+                    "verified_by": "editor@example.com",
+                    "verified_by_user_id": "user-1",
+                }
+            },
+        )
+        db.add(document)
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            refresh_document_bibliography(document.id, object(), db)
+        assert exc_info.value.status_code == 409
+
+        run = refresh_document_bibliography(document.id, object(), db, confirm_verified=True)
+        jobs = db.query(ConcordanceJob).filter(ConcordanceJob.run_id == run.id).all()
+        db.refresh(document)
+
+        assert jobs
+        assert document.metadata_evidence.get("bibliography_verification") is None
 
 
 def test_document_annotations_update_search_text_and_soft_delete(monkeypatch, tmp_path):

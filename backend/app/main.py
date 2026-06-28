@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, Iterable
 from urllib.parse import quote
 
 from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -994,6 +994,25 @@ def same_drop_duplicate_reasons(left: Any, right: Any) -> list[str]:
 
 
 NO_DOI_METADATA_KEY = "no_doi"
+BIBLIOGRAPHY_VERIFICATION_METADATA_KEY = "bibliography_verification"
+DOCUMENT_FIELD_VERIFICATION_CONFIG = {
+    "doi": {"attribute": "doi", "metadata_key": "doi_verification", "label": "DOI"},
+    "apa_citation": {
+        "attribute": "apa_citation",
+        "metadata_key": "apa_citation_verification",
+        "label": "APA reference list",
+    },
+    "apa_in_text_citation": {
+        "attribute": "apa_in_text_citation",
+        "metadata_key": "apa_in_text_citation_verification",
+        "label": "APA in-text citation",
+    },
+    "bibliography": {
+        "attribute": "bibliography",
+        "metadata_key": BIBLIOGRAPHY_VERIFICATION_METADATA_KEY,
+        "label": "Bibliography",
+    },
+}
 
 
 def no_doi_flag_from_evidence(evidence: dict[str, Any] | None, doi: str | None = None) -> bool:
@@ -1072,6 +1091,68 @@ def document_bibliography_generated_at(document: Document, db: Session) -> datet
     return parse_evidence_datetime(capability.completed_at) if capability else None
 
 
+def document_field_verification(document: Document, field: str) -> dict[str, Any] | None:
+    config = DOCUMENT_FIELD_VERIFICATION_CONFIG.get(field)
+    if not config:
+        return None
+    value = getattr(document, str(config["attribute"]), None)
+    if not (str(value or "").strip()):
+        return None
+    evidence = document.metadata_evidence or {}
+    verification = evidence.get(str(config["metadata_key"]))
+    if not isinstance(verification, dict) or verification.get("status") != "verified":
+        return None
+    verified_at = parse_evidence_datetime(verification.get("verified_at"))
+    if not verified_at:
+        return None
+    return {
+        "verified_at": verified_at,
+        "verified_by": str(verification.get("verified_by") or "").strip() or None,
+    }
+
+
+def document_field_is_verified(document: Document, field: str) -> bool:
+    return document_field_verification(document, field) is not None
+
+
+def clear_document_field_verifications(document: Document, fields: Iterable[str]) -> bool:
+    evidence = dict(document.metadata_evidence or {})
+    changed = False
+    for field in fields:
+        config = DOCUMENT_FIELD_VERIFICATION_CONFIG.get(field)
+        if not config:
+            continue
+        if evidence.pop(str(config["metadata_key"]), None) is not None:
+            changed = True
+    if changed:
+        document.metadata_evidence = evidence
+    return changed
+
+
+def verified_document_fields(document: Document, fields: Iterable[str]) -> list[str]:
+    return [field for field in fields if document_field_is_verified(document, field)]
+
+
+def verified_document_field_labels(fields: Iterable[str]) -> list[str]:
+    return [
+        str(DOCUMENT_FIELD_VERIFICATION_CONFIG[field]["label"])
+        for field in fields
+        if field in DOCUMENT_FIELD_VERIFICATION_CONFIG
+    ]
+
+
+def document_bibliography_verification(document: Document) -> dict[str, Any] | None:
+    return document_field_verification(document, "bibliography")
+
+
+def document_bibliography_is_verified(document: Document) -> bool:
+    return document_field_is_verified(document, "bibliography")
+
+
+def clear_document_bibliography_verification(document: Document) -> bool:
+    return clear_document_field_verifications(document, ["bibliography"])
+
+
 def compact_document_version_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         return {}
@@ -1126,6 +1207,10 @@ def document_version_out(version: DocumentVersion) -> DocumentVersionOut:
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     duplicate_summary = persisted_duplicate_summary_by_document([document]).get(document.id, {})
     projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
+    doi_verification = document_field_verification(document, "doi")
+    apa_citation_verification = document_field_verification(document, "apa_citation")
+    apa_in_text_citation_verification = document_field_verification(document, "apa_in_text_citation")
+    bibliography_verification = document_bibliography_verification(document)
     return DocumentDetail.model_validate(document).model_copy(
         update={
             "duplicate_count": duplicate_summary.get("duplicate_count", 0),
@@ -1134,6 +1219,18 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "projects": projects,
             "no_doi": document_no_doi(document),
             "bibliography_generated_at": document_bibliography_generated_at(document, db),
+            "doi_verified_at": doi_verification["verified_at"] if doi_verification else None,
+            "doi_verified_by": doi_verification["verified_by"] if doi_verification else None,
+            "apa_citation_verified_at": apa_citation_verification["verified_at"] if apa_citation_verification else None,
+            "apa_citation_verified_by": apa_citation_verification["verified_by"] if apa_citation_verification else None,
+            "apa_in_text_citation_verified_at": (
+                apa_in_text_citation_verification["verified_at"] if apa_in_text_citation_verification else None
+            ),
+            "apa_in_text_citation_verified_by": (
+                apa_in_text_citation_verification["verified_by"] if apa_in_text_citation_verification else None
+            ),
+            "bibliography_verified_at": bibliography_verification["verified_at"] if bibliography_verification else None,
+            "bibliography_verified_by": bibliography_verification["verified_by"] if bibliography_verification else None,
             "versions": [document_version_out(version) for version in document.versions],
         }
     )
@@ -4562,10 +4659,33 @@ def refresh_document_citation(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    confirm_verified: bool = False,
 ) -> ConcordanceRun:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    verified_fields = verified_document_fields(document, ["doi", "apa_citation", "apa_in_text_citation"])
+    if verified_fields:
+        if not confirm_verified:
+            raise HTTPException(status_code=409, detail="Confirm refreshing manually verified DOI or APA citation data before starting")
+        before = document_correction_snapshot(document)
+        if clear_document_field_verifications(document, verified_fields):
+            db.flush()
+            record_document_version(
+                db,
+                document=document,
+                change_note="Cleared DOI/APA verification for refresh",
+                changed_fields={"metadata_evidence"},
+                before=before,
+                after=document_correction_snapshot(document),
+                extra={"operation": "citation_refresh_unverify", "fields": verified_fields},
+            )
+            record_manual_edit(
+                db,
+                document=document,
+                message="Cleared DOI/APA verification for refresh",
+                metadata={"operation": "citation_refresh_unverify", "fields": verified_fields},
+            )
     run = create_concordance_run(
         db,
         scope_type="documents",
@@ -4579,15 +4699,101 @@ def refresh_document_citation(
     return run
 
 
+def mark_document_field_verified(db: Session, document: Document, field: str, user: User) -> DocumentDetail:
+    config = DOCUMENT_FIELD_VERIFICATION_CONFIG.get(field)
+    if not config:
+        raise HTTPException(status_code=404, detail="Verification field not found")
+    value = getattr(document, str(config["attribute"]), None)
+    if not (str(value or "").strip()):
+        raise HTTPException(status_code=400, detail=f"{config['label']} is required before it can be marked verified")
+
+    before = document_correction_snapshot(document)
+    verified_at = utc_now()
+    evidence = dict(document.metadata_evidence or {})
+    evidence[str(config["metadata_key"])] = {
+        "status": "verified",
+        "verified_at": verified_at.isoformat(),
+        "verified_by": user.email,
+        "verified_by_user_id": user.id,
+    }
+    document.metadata_evidence = evidence
+    db.flush()
+    record_document_version(
+        db,
+        document=document,
+        change_note=f"Verified {config['label']}",
+        changed_fields={"metadata_evidence"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"operation": "document_field_verification", "field": field, "verified_at": verified_at.isoformat()},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=f"Verified {config['label']}",
+        metadata={"operation": "document_field_verification", "field": field, "verified_at": verified_at.isoformat()},
+    )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.post("/api/documents/{document_id}/field-verifications/{field}", response_model=DocumentDetail)
+def verify_document_field(
+    document_id: str,
+    field: str,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return mark_document_field_verified(db, document, field, user)
+
+
+@app.post("/api/documents/{document_id}/bibliography-verification", response_model=DocumentDetail)
+def verify_document_bibliography(
+    document_id: str,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return mark_document_field_verified(db, document, "bibliography", user)
+
+
 @app.post("/api/documents/{document_id}/bibliography-refresh", response_model=ConcordanceRunOut)
 def refresh_document_bibliography(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    confirm_verified: bool = False,
 ) -> ConcordanceRun:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    if document_bibliography_is_verified(document):
+        if not confirm_verified:
+            raise HTTPException(status_code=409, detail="Confirm refreshing the manually verified bibliography before starting")
+        before = document_correction_snapshot(document)
+        if clear_document_bibliography_verification(document):
+            db.flush()
+            record_document_version(
+                db,
+                document=document,
+                change_note="Cleared bibliography verification for refresh",
+                changed_fields={"metadata_evidence"},
+                before=before,
+                after=document_correction_snapshot(document),
+                extra={"operation": "bibliography_refresh_unverify"},
+            )
+            record_manual_edit(
+                db,
+                document=document,
+                message="Cleared bibliography verification for refresh",
+                metadata={"operation": "bibliography_refresh_unverify"},
+            )
     run = create_concordance_run(
         db,
         scope_type="documents",
@@ -6562,6 +6768,34 @@ def patch_document(
     project_ids = data.pop("project_ids", None)
     attribute_values = data.pop("attribute_values", None)
     no_doi = data.pop("no_doi", None)
+    confirm_verified_doi_edit = bool(data.pop("confirm_verified_doi_edit", False))
+    confirm_verified_apa_citation_edit = bool(data.pop("confirm_verified_apa_citation_edit", False))
+    confirm_verified_apa_in_text_citation_edit = bool(data.pop("confirm_verified_apa_in_text_citation_edit", False))
+    confirm_verified_bibliography_edit = bool(data.pop("confirm_verified_bibliography_edit", False))
+    requested_field_changes = {key for key, value in data.items() if getattr(document, key) != value}
+    citation_fields = {"title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"}
+    no_doi_clears_doi = no_doi is True and bool(document.doi)
+    doi_change_requested = "doi" in requested_field_changes or no_doi_clears_doi
+    citation_metadata_change_requested = bool(requested_field_changes & citation_fields) or no_doi_clears_doi
+    apa_citation_change_requested = "apa_citation" in requested_field_changes or (
+        citation_metadata_change_requested and "apa_citation" not in data
+    )
+    apa_in_text_citation_change_requested = "apa_in_text_citation" in requested_field_changes or (
+        citation_metadata_change_requested and "apa_in_text_citation" not in data
+    )
+    bibliography_change_requested = "bibliography" in requested_field_changes
+    if doi_change_requested and document_field_is_verified(document, "doi") and not confirm_verified_doi_edit:
+        raise HTTPException(status_code=409, detail="Confirm editing the manually verified DOI before saving changes")
+    if apa_citation_change_requested and document_field_is_verified(document, "apa_citation") and not confirm_verified_apa_citation_edit:
+        raise HTTPException(status_code=409, detail="Confirm editing the manually verified APA reference list before saving changes")
+    if (
+        apa_in_text_citation_change_requested
+        and document_field_is_verified(document, "apa_in_text_citation")
+        and not confirm_verified_apa_in_text_citation_edit
+    ):
+        raise HTTPException(status_code=409, detail="Confirm editing the manually verified APA in-text citation before saving changes")
+    if bibliography_change_requested and document_bibliography_is_verified(document) and not confirm_verified_bibliography_edit:
+        raise HTTPException(status_code=409, detail="Confirm editing the manually verified bibliography before saving changes")
     before = document_correction_snapshot(document)
     changed_fields: set[str] = set()
     for key, value in data.items():
@@ -6665,7 +6899,6 @@ def patch_document(
                 )
                 changed_fields.add("attributes")
 
-    citation_fields = {"title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"}
     if changed_fields & citation_fields:
         citation_metadata = document_metadata(document)
         citation_model = get_analysis_model(db, MODEL_APA_CITATION)
@@ -6691,6 +6924,17 @@ def patch_document(
             document.apa_in_text_citation_model = citation_model
             document.apa_in_text_citation_source = "metadata"
             changed_fields.update({"apa_in_text_citation", "apa_in_text_citation_model", "apa_in_text_citation_source"})
+    verification_fields_to_clear = []
+    if "doi" in changed_fields:
+        verification_fields_to_clear.append("doi")
+    if "apa_citation" in changed_fields:
+        verification_fields_to_clear.append("apa_citation")
+    if "apa_in_text_citation" in changed_fields:
+        verification_fields_to_clear.append("apa_in_text_citation")
+    if "bibliography" in changed_fields:
+        verification_fields_to_clear.append("bibliography")
+    if verification_fields_to_clear and clear_document_field_verifications(document, verification_fields_to_clear):
+        changed_fields.add("metadata_evidence")
     if changed_fields:
         document.search_text = rebuild_document_search_text(document)
         db.flush()

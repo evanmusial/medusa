@@ -346,10 +346,19 @@ export const api = {
   deleteFigure: (figureId: string) => request<DocumentDetail>(`/api/figures/${figureId}`, { method: "DELETE" }),
   restoreDocumentVersion: (documentId: string, versionId: string) =>
     request<DocumentDetail>(`/api/documents/${documentId}/versions/${versionId}/restore`, { method: "POST" }),
-  refreshDocumentCitation: (id: string) =>
-    request<ConcordanceRun>(`/api/documents/${id}/citation-refresh`, { method: "POST" }),
-  refreshDocumentBibliography: (id: string) =>
-    request<ConcordanceRun>(`/api/documents/${id}/bibliography-refresh`, { method: "POST" }),
+  refreshDocumentCitation: (id: string, options: { confirmVerified?: boolean } = {}) =>
+    request<ConcordanceRun>(`/api/documents/${id}/citation-refresh${options.confirmVerified ? "?confirm_verified=true" : ""}`, {
+      method: "POST",
+    }),
+  verifyDocumentField: (id: string, field: "doi" | "apa_citation" | "apa_in_text_citation" | "bibliography") =>
+    request<DocumentDetail>(`/api/documents/${id}/field-verifications/${field}`, { method: "POST" }),
+  verifyDocumentBibliography: (id: string) =>
+    request<DocumentDetail>(`/api/documents/${id}/bibliography-verification`, { method: "POST" }),
+  refreshDocumentBibliography: (id: string, options: { confirmVerified?: boolean } = {}) =>
+    request<ConcordanceRun>(
+      `/api/documents/${id}/bibliography-refresh${options.confirmVerified ? "?confirm_verified=true" : ""}`,
+      { method: "POST" },
+    ),
   createAccessorySummary: (documentId: string, body: AccessorySummaryPayload) =>
     request<AccessorySummary>(`/api/documents/${documentId}/inquests`, { method: "POST", body: JSON.stringify(body) }),
   updateAccessorySummary: (id: string, body: Partial<AccessorySummaryPayload>) =>

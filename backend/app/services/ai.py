@@ -270,7 +270,8 @@ BIBLIOGRAPHY_CLEANUP_PROMPT = (
     "Clean and format an extracted scholarly reference section for a research library. APA 7-style formatting, "
     "intelligent source grouping, and one source per output item are paramount. First infer which wrapped, indented, "
     "blank-separated, numbered, or bulleted lines belong to the same source. Then return one Markdown-compatible "
-    "APA-style reference-list entry per source. Normalize personal author names into APA reference-list order: "
+    "reference-list entry per source that conforms to the selected reference/source style supplied with the input; "
+    "Medusa currently supports APA 7. Normalize personal author names into APA reference-list order: "
     "Surname, Initials. If the extracted text shows initials before a surname, invert it (for example, "
     "'S. Jakobwitz' becomes 'Jakobwitz, S.' and 'S. R. Band' becomes 'Band, S. R.'). Preserve the work's original "
     "coauthor order; do not alphabetize coauthors within a source. Sort the returned references in APA reference-list "
@@ -1091,6 +1092,7 @@ class AiService:
         bibliography: str,
         *,
         model: str | None = None,
+        reference_style: str = "apa_7",
         usage_context: OpenAIUsageContext | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, Any]:
@@ -1111,9 +1113,12 @@ class AiService:
                 "_openai": {"model": selected_model, "configured": False},
             }
         clipped_bibliography = fallback[:BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS]
+        reference_style_label = "APA 7" if reference_style == "apa_7" else reference_style.replace("_", " ").upper()
         input_text = (
             f"Filename: {filename}\n\n"
-            "Extracted source bibliography text. Format this as APA-style references, one source per item:\n"
+            f"Selected reference/source style: {reference_style_label} ({reference_style}).\n\n"
+            "Extracted source bibliography text. Format this as references that conform to the selected style, "
+            "one source per item:\n"
             f"{clipped_bibliography}"
         )
         result = self._responses_json(
