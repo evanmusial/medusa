@@ -11905,6 +11905,7 @@ function DocumentPanelContent({
       {trashDocumentButton}
     </div>
   );
+  const annotationSection = renderAnnotationSection();
 
   return (
     <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
@@ -12018,9 +12019,10 @@ function DocumentPanelContent({
             renderTextReader()
           )}
           {renderVisualScanReview()}
-          {renderAnnotationSection()}
+          {readerExpanded ? null : annotationSection}
         </div>
       </div>
+      {readerExpanded ? annotationSection : null}
       {editing ? (
         <form
           className="document-editor"
