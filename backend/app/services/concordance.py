@@ -31,6 +31,7 @@ from app.services.analysis_models import (
     MODEL_METADATA,
     MODEL_PAGE_TEXT_NORMALIZATION,
     MODEL_SUMMARY,
+    MODEL_TEXT_CHUNK_ENCODING,
     is_google_text_model,
 )
 from app.services.citations import decode_html_entities, merge_citation_metadata
@@ -410,8 +411,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="search_index",
         label="Search index",
-        version=3,
-        description="Rebuild full-text search from metadata, author contacts, normalized page text, summaries, figures, notes, attributes, tags, and domains.",
+        version=4,
+        description="Rebuild full-text search from metadata, author contacts, normalized page text, summaries, figures, notes, attributes, tags, and domains, then encode any missing text chunks for semantic search.",
     ),
     CapabilityDefinition(
         key="citation_refresh",
@@ -502,6 +503,7 @@ CONCORDANCE_TOKEN_PROFILES: dict[str, dict[str, int]] = {
     MODEL_KEYWORDS_TOPICS: {"input_base": 900, "input_per_page": 1_000, "output_base": 850},
     MODEL_PAGE_TEXT_NORMALIZATION: {"input_base": 150, "input_per_page": 1_600, "output_base": 350, "output_per_page": 900},
     MODEL_FORMULA_CAPTURE: {"input_base": 1_000, "input_per_page": 1_800, "output_base": 800, "output_per_page": 250},
+    MODEL_TEXT_CHUNK_ENCODING: {"input_base": 100, "input_per_page": 1_200, "output_base": 0},
 }
 
 
@@ -553,6 +555,8 @@ def concordance_stage_model(db: Session, capability_key: str) -> str | None:
             ]
             if model
         )
+    if capability_key == "search_index":
+        return get_analysis_model(db, MODEL_TEXT_CHUNK_ENCODING)
     if capability_key == "citation_refresh":
         return get_analysis_model(db, MODEL_APA_CITATION)
     if capability_key == "bibliography_extraction":
@@ -710,6 +714,8 @@ def _model_requirement_current(db: Session, document: Document, requirement: Con
             return True
     if requirement.task_key == MODEL_PAGE_TEXT_NORMALIZATION and not any(page.normalized_text for page in document.pages):
         return False
+    if requirement.task_key == MODEL_TEXT_CHUNK_ENCODING and any(chunk.embedding is None for chunk in document.chunks):
+        return False
     if model in _metadata_models(document, requirement.task_key):
         return True
     return _latest_successful_task_model(db, document.id, requirement.task_key, model)
@@ -750,6 +756,18 @@ def concordance_model_requirements(
                 label="Page text normalization",
                 model=model_preferences.get(MODEL_PAGE_TEXT_NORMALIZATION),
                 estimated_pages=estimated_pages,
+            )
+        ]
+    if capability_key == "search_index":
+        if document is not None and not force and document.chunks and all(chunk.embedding is not None for chunk in document.chunks):
+            return []
+        return [
+            ConcordanceModelRequirement(
+                task_key=MODEL_TEXT_CHUNK_ENCODING,
+                field_key="text_chunks",
+                label="Text chunk encoding",
+                model=model_preferences.get(MODEL_TEXT_CHUNK_ENCODING),
+                estimated_pages=_document_page_count(document) if document is not None else None,
             )
         ]
     if capability_key == "summary_refresh":
@@ -1256,7 +1274,7 @@ class ConcordanceProcessor:
             elif job.capability_key == "ocr_fallback":
                 evidence = self._audit_ocr_fallback(document)
             elif job.capability_key == "search_index":
-                evidence = self._rebuild_search_index(document)
+                evidence = self._refresh_search_index(db, document, job)
             elif job.capability_key == "citation_refresh":
                 evidence = self._refresh_citation(db, document, job)
             elif job.capability_key == "summary_refresh":
@@ -1360,6 +1378,47 @@ class ConcordanceProcessor:
     def _rebuild_search_index(self, document: Document) -> dict[str, Any]:
         document.search_text = rebuild_document_search_text(document)
         return {"indexed_characters": len(document.search_text or ""), "pages": len(document.pages)}
+
+    def _refresh_search_index(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        evidence = self._rebuild_search_index(document)
+        ai = get_ai_service()
+        encoding_model = get_analysis_model(db, MODEL_TEXT_CHUNK_ENCODING)
+        missing_chunks = [chunk for chunk in document.chunks if chunk.embedding is None]
+        existing_chunks = len(document.chunks) - len(missing_chunks)
+        encoded_chunks = 0
+        skipped_chunks = 0
+        embedding_errors: list[str] = []
+        embedding_client_configured = bool(getattr(ai, "client", None))
+        if not embedding_client_configured:
+            skipped_chunks = len(missing_chunks)
+        else:
+            for chunk in missing_chunks:
+                try:
+                    chunk.embedding = ai.embed(
+                        chunk.text,
+                        model=encoding_model,
+                        usage_context=self._usage_context(document, job, MODEL_TEXT_CHUNK_ENCODING),
+                    )
+                    if chunk.embedding is not None:
+                        encoded_chunks += 1
+                    else:
+                        skipped_chunks += 1
+                except Exception as exc:
+                    embedding_errors.append(str(exc))
+        encoding_status = "unconfigured" if missing_chunks and not embedding_client_configured else "warning" if embedding_errors else "complete"
+        text_chunk_encoding = {
+            "model": encoding_model,
+            "chunk_count": len(document.chunks),
+            "existing_embeddings": existing_chunks,
+            "encoded_chunks": encoded_chunks,
+            "skipped_chunks": skipped_chunks,
+            "errors": embedding_errors[:3],
+            "status": encoding_status,
+        }
+        metadata_evidence = dict(document.metadata_evidence or {})
+        metadata_evidence["text_chunk_encoding"] = text_chunk_encoding
+        document.metadata_evidence = metadata_evidence
+        return {**evidence, "text_chunk_encoding": text_chunk_encoding}
 
     def _usage_context(self, document: Document, job: ConcordanceJob, capability_key: str | None = None) -> OpenAIUsageContext:
         return OpenAIUsageContext(

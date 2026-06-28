@@ -168,6 +168,9 @@ import type {
   ProjectItem,
   RecommendationFamily,
   RecommendationView,
+  ReconEstimate,
+  ReconInquiry,
+  ReconRun,
   ReleaseStatus,
   SavedSearch,
   SlipstreamLease,
@@ -189,6 +192,7 @@ type View =
   | "library"
   | "domains"
   | "projects"
+  | "recon"
   | "tags"
   | "portfolio"
   | "queue"
@@ -671,8 +675,21 @@ type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag
 type BrowserHistoryMode = "none" | "push" | "replace";
 type DocumentRouteMode = "detail" | "reader";
 type AppRoute = { view: View; documentId?: string; documentMode?: DocumentRouteMode };
+type ReconScopeType = "library" | "domain" | "project" | "saved_search";
 
 const DOMAIN_COLOR_SWATCHES = ["#2563eb", "#0f766e", "#7c3aed", "#c2410c", "#be123c", "#475569"];
+const RECON_MODE_OPTIONS = [
+  { id: "source_finder", label: "Source Finder" },
+  { id: "quick_answer", label: "Quick Answer" },
+  { id: "broad_sweep", label: "Broad Sweep" },
+  { id: "exhaustive", label: "Exhaustive" },
+];
+const RECON_SCOPE_OPTIONS: Array<{ id: ReconScopeType; label: string }> = [
+  { id: "library", label: "Library" },
+  { id: "domain", label: "Domain" },
+  { id: "project", label: "Project" },
+  { id: "saved_search", label: "Saved Search" },
+];
 const STASH_LANE_OPTIONS: Array<{ id: StashLane; label: string; description: string }> = [
   { id: "wishlist", label: "Wishlist", description: "Saved DOI leads that still need a PDF or external acquisition." },
   { id: "open_pdf", label: "Open PDF", description: "Saved leads with open-PDF evidence that can be resolved through Import DOI." },
@@ -694,6 +711,7 @@ const navItems: WorkspaceNavItem[] = [
   { id: "library", label: "Library", icon: Library, shortcut: "L" },
   { id: "domains", label: "Domains", icon: FolderTree, shortcut: "D" },
   { id: "projects", label: "Projects", icon: ListChecks, shortcut: "P" },
+  { id: "recon", label: "Recon", icon: Orbit, shortcut: "R" },
   { id: "tags", label: "Tags", icon: Tags, shortcut: "T" },
   { id: "stashes", label: "Stashes", icon: Bookmark, shortcut: "A" },
   { id: "portfolio", label: "Portfolio", icon: Briefcase, shortcut: "W" },
@@ -710,6 +728,7 @@ const VIEW_PATHS: Record<View, string> = {
   library: "/library",
   domains: "/domains",
   projects: "/projects",
+  recon: "/recon",
   tags: "/tags",
   portfolio: "/portfolio",
   queue: "/queue",
@@ -727,6 +746,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   library: "Library",
   domains: "Domains",
   projects: "Projects",
+  recon: "Recon",
   tags: "Tags",
   portfolio: "Portfolio",
   queue: "Import Queue",
@@ -14248,6 +14268,513 @@ function portfolioFindingTone(severity: string): "neutral" | "good" | "warn" | "
   return "neutral";
 }
 
+function reconModeLabel(mode: string) {
+  return RECON_MODE_OPTIONS.find((item) => item.id === mode)?.label || mode.replaceAll("_", " ");
+}
+
+function reconStatusTone(status?: string | null): "neutral" | "good" | "warn" | "blue" {
+  if (status === "complete") return "good";
+  if (status === "failed" || status === "cancelled") return "warn";
+  if (status === "queued" || status === "running") return "blue";
+  return "neutral";
+}
+
+function reconEvidencePageLabel(evidence: { page_start?: number | null; page_end?: number | null }) {
+  if (!evidence.page_start && !evidence.page_end) return "";
+  if (evidence.page_start && evidence.page_end && evidence.page_start !== evidence.page_end) {
+    return `pp. ${evidence.page_start}-${evidence.page_end}`;
+  }
+  return `p. ${evidence.page_start || evidence.page_end}`;
+}
+
+function reconScopePayload(scopeType: ReconScopeType, scopeId: string) {
+  if (scopeType === "domain") return { domain_ids: scopeId ? [scopeId] : [] };
+  if (scopeType === "project") return { project_ids: scopeId ? [scopeId] : [] };
+  if (scopeType === "saved_search") return { saved_search_id: scopeId || null };
+  return {};
+}
+
+function reconScopeId(scopeType: ReconScopeType, scope: Record<string, unknown>) {
+  if (scopeType === "domain") {
+    const ids = Array.isArray(scope.domain_ids) ? scope.domain_ids : [];
+    return typeof ids[0] === "string" ? ids[0] : "";
+  }
+  if (scopeType === "project") {
+    const ids = Array.isArray(scope.project_ids) ? scope.project_ids : [];
+    return typeof ids[0] === "string" ? ids[0] : "";
+  }
+  if (scopeType === "saved_search") return typeof scope.saved_search_id === "string" ? scope.saved_search_id : "";
+  return "";
+}
+
+function ReconView({
+  domains,
+  inquiries,
+  onOpenDocument,
+  onTitleSubjectChange,
+  preferences,
+  projects,
+  savedSearches,
+}: {
+  domains: Domain[];
+  inquiries: ReconInquiry[];
+  onOpenDocument: (documentId: string) => void;
+  onTitleSubjectChange: (subject: string | null) => void;
+  preferences?: AppPreferences;
+  projects: Project[];
+  savedSearches: SavedSearch[];
+}) {
+  const queryClient = useQueryClient();
+  const defaultModel = selectedAnalysisModel(preferences, "recon_inquiry", "gpt-5.4");
+  const reconTask = preferences?.analysis_model_tasks.find((task) => task.key === "recon_inquiry");
+  const [selectedId, setSelectedId] = useState<string | null>(inquiries[0]?.id || null);
+  const [title, setTitle] = useState("");
+  const [question, setQuestion] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [scopeType, setScopeType] = useState<ReconScopeType>("library");
+  const [scopeId, setScopeId] = useState("");
+  const [mode, setMode] = useState("quick_answer");
+  const [model, setModel] = useState(defaultModel);
+  const [estimate, setEstimate] = useState<ReconEstimate | null>(null);
+  const [notice, setNotice] = useState("");
+  const saveFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const estimateFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const runFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const cancelFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+
+  useEffect(() => {
+    if (!inquiries.length) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !inquiries.some((inquiry) => inquiry.id === selectedId)) setSelectedId(inquiries[0].id);
+  }, [inquiries, selectedId]);
+
+  const selected = inquiries.find((inquiry) => inquiry.id === selectedId) || null;
+  const latestRun = selected?.runs[0] || null;
+  const latestAnswer = latestRun?.answers[0] || null;
+  const evidence = latestRun?.evidence || [];
+
+  useEffect(() => {
+    onTitleSubjectChange(selected?.title || null);
+  }, [onTitleSubjectChange, selected?.title]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const selectedScopeType = (selected.scope_type as ReconScopeType) || "library";
+    setTitle(selected.title || "");
+    setQuestion(selected.question || "");
+    setInstructions(selected.instructions || "");
+    setScopeType(selectedScopeType);
+    setScopeId(reconScopeId(selectedScopeType, selected.scope || {}));
+    setMode(selected.default_mode || "quick_answer");
+    setModel(selected.model || defaultModel);
+    setEstimate(null);
+  }, [defaultModel, selected]);
+
+  useEffect(() => {
+    if (!selected && model === "gpt-5.4") setModel(defaultModel);
+  }, [defaultModel, model, selected]);
+
+  const scopeOptions = scopeType === "domain" ? domains : scopeType === "project" ? projects : scopeType === "saved_search" ? savedSearches : [];
+  const scopeReady = scopeType === "library" || Boolean(scopeId);
+  const canSave = question.trim().length > 0 && scopeReady;
+  const canRun = Boolean(selected && latestRun?.status !== "running" && latestRun?.status !== "queued");
+  const exhaustiveNeedsEstimate = mode === "exhaustive" && !estimate;
+  const modelOptions = preferences?.model_options[reconTask?.model_kind || "gpt"] || [];
+
+  const payload = () => ({
+    title: title.trim() || null,
+    question: question.trim(),
+    instructions: instructions.trim() || null,
+    scope: reconScopePayload(scopeType, scopeId),
+    scope_type: scopeType,
+    default_mode: mode,
+    model,
+  });
+
+  const refreshRecon = () => {
+    void queryClient.invalidateQueries({ queryKey: ["recon"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  };
+
+  const saveInquiry = useMutation({
+    mutationFn: () => {
+      if (!canSave) throw new Error("Question and scope are required");
+      return selected ? api.updateReconInquiry(selected.id, payload()) : api.createReconInquiry(payload());
+    },
+    onSuccess: (inquiry) => {
+      saveFeedback.showSuccess();
+      setSelectedId(inquiry.id);
+      setNotice(selected ? "Inquiry updated" : "Inquiry created");
+      refreshRecon();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not save Recon inquiry", error);
+      saveFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const estimateRun = useMutation({
+    mutationFn: () => {
+      if (!selected) throw new Error("Save the inquiry first");
+      return api.estimateReconRun(selected.id, { mode, model });
+    },
+    onSuccess: (nextEstimate) => {
+      estimateFeedback.showSuccess();
+      setEstimate(nextEstimate);
+      setNotice(`${formatMetric(nextEstimate.resolved_document_count)} scoped / ${formatUsd(nextEstimate.estimated_cost_usd)}`);
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not estimate Recon run", error);
+      estimateFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const startRun = useMutation({
+    mutationFn: () => {
+      if (!selected) throw new Error("Save the inquiry first");
+      if (exhaustiveNeedsEstimate) throw new Error("Estimate exhaustive runs first");
+      return api.startReconRun(selected.id, { mode, model });
+    },
+    onSuccess: (run: ReconRun) => {
+      runFeedback.showSuccess();
+      setEstimate(null);
+      setNotice(`${reconModeLabel(run.mode)} complete`);
+      refreshRecon();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not start Recon run", error);
+      runFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const cancelRun = useMutation({
+    mutationFn: () => {
+      if (!latestRun) throw new Error("No Recon run selected");
+      return api.cancelReconRun(latestRun.id);
+    },
+    onSuccess: () => {
+      cancelFeedback.showSuccess();
+      setNotice("Run cancelled");
+      refreshRecon();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not cancel Recon run", error);
+      cancelFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
+  const resetForm = () => {
+    setSelectedId(null);
+    setTitle("");
+    setQuestion("");
+    setInstructions("");
+    setScopeType("library");
+    setScopeId("");
+    setMode("quick_answer");
+    setModel(defaultModel);
+    setEstimate(null);
+    setNotice("");
+  };
+
+  return (
+    <section className="workbench recon-workbench">
+      <aside className="recon-pane recon-list-pane">
+        <div className="recon-pane-head">
+          <div>
+            <h2>Recon</h2>
+            <span>{inquiries.length} inquir{inquiries.length === 1 ? "y" : "ies"}</span>
+          </div>
+          <button className="icon-button compact" data-tooltip="Compose a new Recon inquiry." onClick={resetForm} type="button">
+            <Plus size={15} />
+          </button>
+        </div>
+        <form
+          className="recon-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveInquiry.mutate();
+          }}
+        >
+          <label>
+            Title
+            <input placeholder="Authoritative sources for..." value={title} onChange={(event) => setTitle(event.target.value)} />
+          </label>
+          <label>
+            Question
+            <textarea
+              placeholder="Show me papers that talk about..."
+              rows={4}
+              value={question}
+              onChange={(event) => {
+                setQuestion(event.target.value);
+                setEstimate(null);
+              }}
+            />
+          </label>
+          <label>
+            Notes
+            <textarea placeholder="Optional constraints" rows={2} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
+          </label>
+          <div className="recon-control-grid">
+            <label>
+              Scope
+              <select
+                value={scopeType}
+                onChange={(event) => {
+                  setScopeType(event.target.value as ReconScopeType);
+                  setScopeId("");
+                  setEstimate(null);
+                }}
+              >
+                {RECON_SCOPE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Set
+              <select
+                data-disabled-reason="the Library scope does not need a second selector."
+                disabled={scopeType === "library"}
+                value={scopeId}
+                onChange={(event) => {
+                  setScopeId(event.target.value);
+                  setEstimate(null);
+                }}
+              >
+                <option value="">{scopeType === "library" ? "All Library" : "Choose"}</option>
+                {scopeOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="recon-control-grid">
+            <label>
+              Mode
+              <select
+                value={mode}
+                onChange={(event) => {
+                  setMode(event.target.value);
+                  setEstimate(null);
+                }}
+              >
+                {RECON_MODE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Model
+              <ModelSelect
+                defaultModel={reconTask?.default_model || defaultModel}
+                onChange={(nextModel) => {
+                  setModel(nextModel);
+                  setEstimate(null);
+                }}
+                optionGroups={reconTask?.option_groups}
+                options={modelOptions}
+                value={model}
+              />
+            </label>
+          </div>
+          <AsyncActionSlot busy={saveInquiry.isPending} feedback={saveFeedback.feedback} label="Recon inquiry save in progress">
+            <button
+              className={asyncFeedbackClass("primary-button compact", saveFeedback.feedback, saveInquiry.isPending)}
+              data-disabled-reason="a question and valid scope are required."
+              disabled={!canSave || saveInquiry.isPending}
+              type="submit"
+            >
+              <Save size={14} />
+              {selected ? "Update" : "Save"}
+            </button>
+          </AsyncActionSlot>
+        </form>
+        <div className="recon-inquiry-list">
+          {inquiries.length ? (
+            inquiries.map((inquiry) => {
+              const run = inquiry.runs[0];
+              return (
+                <button
+                  key={inquiry.id}
+                  className={`recon-inquiry-button${inquiry.id === selected?.id ? " active" : ""}`}
+                  onClick={() => setSelectedId(inquiry.id)}
+                  type="button"
+                >
+                  <strong>{inquiry.title}</strong>
+                  <span>{inquiry.question}</span>
+                  <small>{[reconModeLabel(inquiry.default_mode), run?.status ? run.status : "not run"].join(" / ")}</small>
+                </button>
+              );
+            })
+          ) : (
+            <div className="empty-inline">
+              <FileSearch size={17} />
+              <span>No Recon inquiries yet.</span>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section className="recon-pane recon-main-pane">
+        {selected ? (
+          <>
+            <div className="recon-pane-head">
+              <div>
+                <h2>{selected.title}</h2>
+                <span>{[reconModeLabel(mode), selected.scope_type.replaceAll("_", " "), model].filter(Boolean).join(" / ")}</span>
+              </div>
+              {latestRun ? <StatusPill value={latestRun.status} tone={reconStatusTone(latestRun.status)} /> : null}
+            </div>
+            {notice ? <p className="recon-notice">{notice}</p> : null}
+            <div className="recon-run-actions">
+              <AsyncActionSlot busy={estimateRun.isPending} feedback={estimateFeedback.feedback} label="Recon estimate in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button compact", estimateFeedback.feedback, estimateRun.isPending)}
+                  disabled={!selected || estimateRun.isPending}
+                  onClick={() => estimateRun.mutate()}
+                  type="button"
+                >
+                  <Timer size={14} />
+                  Estimate
+                </button>
+              </AsyncActionSlot>
+              <AsyncActionSlot busy={startRun.isPending} feedback={runFeedback.feedback} label="Recon run in progress">
+                <button
+                  className={asyncFeedbackClass("primary-button compact", runFeedback.feedback, startRun.isPending)}
+                  data-disabled-reason={exhaustiveNeedsEstimate ? "estimate exhaustive runs first." : "save the inquiry first."}
+                  disabled={!canRun || startRun.isPending || exhaustiveNeedsEstimate}
+                  onClick={() => startRun.mutate()}
+                  type="button"
+                >
+                  <Play size={14} />
+                  Run
+                </button>
+              </AsyncActionSlot>
+              <AsyncActionSlot busy={cancelRun.isPending} feedback={cancelFeedback.feedback} label="Recon cancel in progress">
+                <button
+                  className={asyncFeedbackClass("secondary-button compact", cancelFeedback.feedback, cancelRun.isPending)}
+                  disabled={!latestRun || (latestRun.status !== "queued" && latestRun.status !== "running")}
+                  onClick={() => cancelRun.mutate()}
+                  type="button"
+                >
+                  <Ban size={14} />
+                  Cancel
+                </button>
+              </AsyncActionSlot>
+            </div>
+            {estimate ? (
+              <div className="recon-estimate">
+                <div>
+                  <span>Scope</span>
+                  <strong>{formatMetric(estimate.resolved_document_count)}</strong>
+                </div>
+                <div>
+                  <span>Evidence</span>
+                  <strong>{formatMetric(estimate.estimated_evidence_count)}</strong>
+                </div>
+                <div>
+                  <span>Tokens</span>
+                  <strong>{formatMetric(estimate.estimated_input_tokens)}</strong>
+                </div>
+                <div>
+                  <span>Cost</span>
+                  <strong>{formatUsd(estimate.estimated_cost_usd)}</strong>
+                </div>
+              </div>
+            ) : null}
+            <article className="recon-question-panel">
+              <strong>{selected.question}</strong>
+              {selected.instructions ? <span>{selected.instructions}</span> : null}
+            </article>
+            <article className="recon-answer-panel">
+              {latestAnswer ? (
+                <>
+                  <div className="recon-answer-head">
+                    <strong>Answer</strong>
+                    <span>{latestAnswer.confidence !== null && latestAnswer.confidence !== undefined ? `${Math.round(latestAnswer.confidence * 100)}% confidence` : "confidence unscored"}</span>
+                  </div>
+                  <div className="recon-answer-text">{latestAnswer.answer}</div>
+                  {latestAnswer.limitations.length ? (
+                    <div className="recon-limitations">
+                      {latestAnswer.limitations.map((limitation) => (
+                        <span key={limitation}>{limitation}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : latestRun ? (
+                <div className="empty-inline">
+                  <BrainCircuit size={17} />
+                  <span>{latestRun.status.replaceAll("_", " ")}</span>
+                </div>
+              ) : (
+                <div className="empty-inline">
+                  <Search size={17} />
+                  <span>No run yet.</span>
+                </div>
+              )}
+            </article>
+          </>
+        ) : (
+          <div className="empty-inline recon-empty">
+            <FileSearch size={17} />
+            <span>Create or select a Recon inquiry.</span>
+          </div>
+        )}
+      </section>
+
+      <aside className="recon-pane recon-evidence-pane">
+        <div className="recon-pane-head">
+          <div>
+            <h3>Evidence</h3>
+            <span>{evidence.length} item{evidence.length === 1 ? "" : "s"}</span>
+          </div>
+          <FileSearch size={18} />
+        </div>
+        <div className="recon-evidence-list">
+          {evidence.length ? (
+            evidence.map((item) => (
+              <article className="recon-evidence-row" key={item.id}>
+                <div>
+                  <strong>{item.document_title || "Untitled source"}</strong>
+                  <StatusPill value={item.relevance_label} tone={item.relevance_label === "negative" ? "warn" : "blue"} />
+                </div>
+                <span>{[reconEvidencePageLabel(item), item.evidence_kind].filter(Boolean).join(" / ")}</span>
+                <p>{item.snippet}</p>
+                {item.citation_text ? <small>{item.citation_text}</small> : null}
+                {item.document_id ? (
+                  <button className="secondary-button compact" onClick={() => onOpenDocument(item.document_id!)} type="button">
+                    <FileText size={14} />
+                    Open Source
+                  </button>
+                ) : null}
+              </article>
+            ))
+          ) : (
+            <div className="empty-inline">
+              <FileSearch size={17} />
+              <span>No evidence recorded.</span>
+            </div>
+          )}
+        </div>
+      </aside>
+    </section>
+  );
+}
+
 function PortfolioView({
   items,
   onTitleSubjectChange,
@@ -23486,10 +24013,12 @@ export default function App() {
 
   const needsLibraryDocumentList = activeView === "library";
   const needsReferenceDocumentList = activeView === "domains" || activeView === "projects" || activeView === "notes";
-  const needsDomains = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "notes" || activeView === "settings";
+  const needsDomains =
+    activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "notes" || activeView === "recon" || activeView === "settings";
   const needsTags = activeView === "library" || activeView === "domains" || activeView === "import" || activeView === "tags";
-  const needsProjects = activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "settings";
-  const needsSavedSearches = activeView === "library" || activeView === "settings" || commandPaletteOpen;
+  const needsProjects =
+    activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "recon" || activeView === "settings";
+  const needsSavedSearches = activeView === "library" || activeView === "recon" || activeView === "settings" || commandPaletteOpen;
   const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "activity" || activeView === "health" || activeView === "portfolio";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
@@ -23712,6 +24241,12 @@ export default function App() {
     queryFn: api.portfolioItems,
     enabled: Boolean(me.data && activeView === "portfolio"),
     refetchInterval: activeView === "portfolio" ? (activeDashboardWork ? ACTIVE_WORK_REFETCH_INTERVAL_MS : WORKSPACE_REFETCH_INTERVAL_MS) : false,
+  });
+  const reconInquiries = useQuery({
+    queryKey: ["recon"],
+    queryFn: api.reconInquiries,
+    enabled: Boolean(me.data && activeView === "recon"),
+    refetchInterval: activeView === "recon" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
   });
   const releaseUpgradeLocked = Boolean(releaseUpgradeLock && releaseUpgradeLock.stage !== "failed");
   const releaseUpgradePollActive = Boolean(
@@ -24388,6 +24923,7 @@ export default function App() {
     import: dashboard.data?.active_import_jobs ?? 0,
     stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
     portfolio: portfolioItems.data?.length ?? 0,
+    recon: reconInquiries.data?.length ?? 0,
   };
   const ignoreStaleServerBackgroundJobs = concordanceServerIdleAfterConcordanceSnapshot(concordanceActivity);
   const trackedRunIds = new Set(backgroundJobs.map((job) => job.runId).filter(Boolean));
@@ -24550,6 +25086,17 @@ export default function App() {
             documents={documents.data || []}
             projects={projects.data || []}
             onTitleSubjectChange={(subject) => updateViewTitleSubject("projects", subject)}
+          />
+        ) : null}
+        {activeView === "recon" ? (
+          <ReconView
+            domains={domains.data || []}
+            inquiries={reconInquiries.data || []}
+            onOpenDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
+            onTitleSubjectChange={(subject) => updateViewTitleSubject("recon", subject)}
+            preferences={preferences.data}
+            projects={projects.data || []}
+            savedSearches={savedSearches.data || []}
           />
         ) : null}
         {activeView === "tags" ? (

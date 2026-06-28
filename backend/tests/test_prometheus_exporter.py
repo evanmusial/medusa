@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import json
+import time
 
 import pytest
 
@@ -123,7 +125,7 @@ def test_database_collector_handles_empty_schema(monkeypatch, tmp_path):
 
     rendered = writer.render()
     assert "medusa_database_table_rows" in rendered
-    assert "medusa_library_document_items 0" in rendered
+    assert "medusa_library_documents 0" in rendered
 
 
 def test_collector_partial_failure_still_renders(monkeypatch, tmp_path):
@@ -138,50 +140,76 @@ def test_collector_partial_failure_still_renders(monkeypatch, tmp_path):
     def broken_collector(_writer):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(prometheus_exporter, "collect_database_metrics", broken_collector)
-    monkeypatch.setattr(prometheus_exporter, "collect_storage_metrics", lambda writer: writer.add("storage_fake_count", 1, help_text="Fake count."))
-    monkeypatch.setattr(prometheus_exporter, "collect_valkey_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_haproxy_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_backend_snapshot_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_docker_metrics", lambda writer: None)
+    monkeypatch.setattr(prometheus_exporter, "_live_collectors", lambda: [("database", broken_collector), ("storage", lambda writer: writer.add("storage_fake_count", 1, help_text="Fake count."))])
+    monkeypatch.setattr(prometheus_exporter, "_heavy_collectors", lambda: [])
+    monkeypatch.setattr(prometheus_exporter, "_load_heavy_snapshot", lambda: (None, "missing"))
 
     rendered = prometheus_exporter.collect_metrics()
 
     assert 'medusa_exporter_collector_up{collector="database"} 0' in rendered
-    assert "medusa_storage_fake_items 1" in rendered
+    assert "medusa_storage_fake_records 1" in rendered
 
 
-def test_heavy_collector_samples_are_cached(monkeypatch, tmp_path):
+def test_collect_metrics_uses_heavy_snapshot_without_running_heavy_collectors(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEDUSA_METRICS_HEAVY_TTL_SECONDS", "60")
 
     from app.config import get_settings
     from app.tools import prometheus_exporter
 
     get_settings.cache_clear()
-    prometheus_exporter._COLLECTOR_SAMPLE_CACHE.clear()
     prometheus_exporter._LAST_COLLECTOR_SUCCESS.clear()
-    calls = {"count": 0}
 
-    def fake_storage_collector(writer):
-        calls["count"] += 1
-        writer.add("storage_fake_count", calls["count"], help_text="Fake cached storage count.")
+    def should_not_run(_writer):
+        raise AssertionError("heavy collector should not run during collect_metrics")
 
-    monkeypatch.setattr(prometheus_exporter, "collect_database_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_storage_metrics", fake_storage_collector)
-    monkeypatch.setattr(prometheus_exporter, "collect_valkey_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_haproxy_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_backend_snapshot_metrics", lambda writer: None)
-    monkeypatch.setattr(prometheus_exporter, "collect_docker_metrics", lambda writer: None)
+    snapshot = {
+        "generated_at": time.time(),
+        "duration_seconds": 0.25,
+        "sample_count": 1,
+        "rendered": "# HELP medusa_library_documents Current library documents.\n# TYPE medusa_library_documents gauge\nmedusa_library_documents 7\n",
+        "collectors": [{"collector": "database", "up": 1, "duration_seconds": 0.25, "last_success_timestamp_seconds": 123.0}],
+    }
+    monkeypatch.setattr(prometheus_exporter, "_live_collectors", lambda: [])
+    monkeypatch.setattr(prometheus_exporter, "_heavy_collectors", lambda: [("database", should_not_run)])
+    monkeypatch.setattr(prometheus_exporter, "_load_heavy_snapshot", lambda: (snapshot, "valkey"))
 
-    first = prometheus_exporter.collect_metrics()
-    second = prometheus_exporter.collect_metrics()
+    rendered = prometheus_exporter.collect_metrics()
 
-    assert calls["count"] == 1
-    assert "medusa_storage_fake_items 1" in first
-    assert "medusa_storage_fake_items 1" in second
-    assert 'medusa_exporter_collector_cached{collector="storage"} 1' in second
+    assert "medusa_library_documents 7" in rendered
+    assert 'medusa_exporter_heavy_snapshot_up{source="valkey"} 1' in rendered
+    assert 'medusa_exporter_collector_cached{collector="database"} 1' in rendered
+
+
+def test_refresh_heavy_metrics_snapshot_stores_rendered_text_in_valkey(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.config import get_settings
+    from app.tools import prometheus_exporter
+
+    get_settings.cache_clear()
+    stored: dict[str, str] = {}
+
+    class FakeValkey:
+        def set(self, key, value, ex=None):
+            stored[key] = value
+            stored[f"{key}:ex"] = str(ex)
+
+        def get(self, key):
+            return stored.get(key)
+
+    monkeypatch.setattr(prometheus_exporter, "_metrics_valkey_client", lambda: FakeValkey())
+    monkeypatch.setattr(prometheus_exporter, "_heavy_collectors", lambda: [("storage", lambda writer: writer.add("storage_fake_count", 4, help_text="Fake count."))])
+
+    payload = prometheus_exporter.refresh_heavy_metrics_snapshot()
+    loaded, source = prometheus_exporter._load_heavy_snapshot()
+
+    assert payload["storage"] == "valkey"
+    assert source == "valkey"
+    assert loaded is not None
+    assert "medusa_storage_fake_records 4" in loaded["rendered"]
+    assert json.loads(stored[prometheus_exporter._HEAVY_SNAPSHOT_KEY])["sample_count"] == 1
 
 
 def test_metrics_snapshot_access_disabled_missing_wrong_and_valid(monkeypatch, tmp_path):

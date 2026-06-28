@@ -7046,6 +7046,215 @@ pre {
   pointer-events: none;
 }
 
+.recon-workbench {
+  min-height: calc(100vh - 132px);
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(420px, 1fr) minmax(300px, 390px);
+  gap: 10px;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.recon-pane {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.recon-list-pane,
+.recon-main-pane,
+.recon-evidence-pane {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.recon-main-pane {
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  padding: 12px;
+}
+
+.recon-pane-head,
+.recon-run-actions,
+.recon-answer-head,
+.recon-evidence-row > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recon-pane-head,
+.recon-answer-head,
+.recon-evidence-row > div {
+  justify-content: space-between;
+}
+
+.recon-pane-head h2,
+.recon-pane-head h3 {
+  margin: 0;
+}
+
+.recon-pane-head span,
+.recon-inquiry-button span,
+.recon-inquiry-button small,
+.recon-question-panel span,
+.recon-answer-head span,
+.recon-evidence-row span,
+.recon-evidence-row small,
+.recon-notice,
+.recon-limitations span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.recon-form,
+.recon-inquiry-list,
+.recon-evidence-list,
+.recon-answer-panel,
+.recon-question-panel,
+.recon-limitations {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.recon-form textarea {
+  resize: vertical;
+}
+
+.recon-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.recon-inquiry-list,
+.recon-evidence-list,
+.recon-answer-panel {
+  overflow: auto;
+}
+
+.recon-inquiry-list,
+.recon-evidence-list {
+  align-content: start;
+}
+
+.recon-inquiry-button,
+.recon-evidence-row,
+.recon-question-panel,
+.recon-answer-panel,
+.recon-estimate {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+
+.recon-inquiry-button {
+  display: grid;
+  gap: 5px;
+  min-height: 78px;
+  padding: 9px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.recon-inquiry-button:hover,
+.recon-inquiry-button:focus-visible,
+.recon-inquiry-button.active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--panel-2));
+  outline: 0;
+}
+
+.recon-inquiry-button strong,
+.recon-inquiry-button span,
+.recon-inquiry-button small,
+.recon-evidence-row strong,
+.recon-evidence-row span,
+.recon-evidence-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recon-run-actions {
+  flex-wrap: wrap;
+}
+
+.recon-notice {
+  min-height: 18px;
+  margin: 0;
+  font-weight: 700;
+}
+
+.recon-estimate {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 9px;
+}
+
+.recon-estimate > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.recon-estimate span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.recon-question-panel,
+.recon-answer-panel,
+.recon-evidence-row {
+  padding: 10px;
+}
+
+.recon-answer-text {
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.recon-limitations {
+  gap: 5px;
+}
+
+.recon-limitations span {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+
+.recon-evidence-row {
+  display: grid;
+  gap: 7px;
+}
+
+.recon-evidence-row p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.recon-evidence-row .secondary-button {
+  justify-self: start;
+}
+
+.recon-empty {
+  align-self: center;
+  justify-self: center;
+}
+
 .portfolio-workbench {
   min-height: calc(100vh - 132px);
   display: grid;
@@ -12439,6 +12648,7 @@ button.history-row,
 .budget-view,
 .utilities-workbench,
 .status-workbench,
+.recon-workbench,
 .portfolio-workbench {
   background: transparent;
   border: 0;
@@ -12459,6 +12669,9 @@ button.history-row,
 .budget-recent-panel,
 .utilities-section,
 .status-detail-panel,
+.recon-list-pane,
+.recon-main-pane,
+.recon-evidence-pane,
 .portfolio-list-pane,
 .portfolio-main-pane,
 .portfolio-side-pane,
@@ -12547,6 +12760,16 @@ button.history-row,
   .recommendations-dialog-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .recon-workbench {
+    grid-template-columns: minmax(250px, 330px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .recon-evidence-pane {
+    grid-column: 1 / -1;
+    max-height: 42vh;
   }
 
   .portfolio-workbench {
@@ -12670,6 +12893,7 @@ button.history-row,
 
   .library-grid,
   .domains-workbench,
+  .recon-workbench,
   .portfolio-workbench,
   .domain-stat-grid,
   .domain-edit-grid,
@@ -12700,6 +12924,15 @@ button.history-row,
 
   .portfolio-workbench {
     overflow: auto;
+  }
+
+  .recon-workbench {
+    overflow: auto;
+  }
+
+  .recon-evidence-pane {
+    grid-column: auto;
+    max-height: none;
   }
 
   .portfolio-side-pane {

@@ -56,6 +56,8 @@ from app.models import (
     Project,
     ProjectBibliography,
     ProjectItem,
+    ReconInquiry,
+    ReconRun,
     SavedSearch,
     SlipstreamClient,
     SlipstreamLease,
@@ -164,6 +166,12 @@ from app.schemas import (
     ProjectItemPatch,
     ProjectOut,
     ReleaseStatusOut,
+    ReconEstimateOut,
+    ReconInquiryCreate,
+    ReconInquiryOut,
+    ReconInquiryPatch,
+    ReconRunCreate,
+    ReconRunOut,
     RestoreDatabaseCreate,
     RuntimeLocationOut,
     SavedSearchCreate,
@@ -230,6 +238,7 @@ from app.services.analysis_models import (
     MODEL_PAGE_TEXT_NORMALIZATION,
     MODEL_PORTFOLIO_ASSESSMENT,
     MODEL_RAW_TEXT_EXTRACTION,
+    MODEL_RECON_INQUIRY,
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
@@ -315,6 +324,15 @@ from app.services.preferences import (
     render_download_filename,
     store_google_service_account,
     update_app_preferences,
+)
+from app.services.recon import (
+    cancel_recon_run,
+    create_recon_inquiry,
+    document_recon_text,
+    estimate_recon_run,
+    retrieve_recon_evidence,
+    run_recon_inquiry,
+    update_recon_inquiry,
 )
 from app.services.openai_usage import (
     OpenAIUsageContext,
@@ -4204,6 +4222,134 @@ def delete_saved_search(
     return {"status": "deleted"}
 
 
+def recon_inquiry_or_404(db: Session, inquiry_id: str) -> ReconInquiry:
+    inquiry = (
+        db.query(ReconInquiry)
+        .options(
+            selectinload(ReconInquiry.runs).selectinload(ReconRun.evidence),
+            selectinload(ReconInquiry.runs).selectinload(ReconRun.answers),
+        )
+        .filter(ReconInquiry.id == inquiry_id, ReconInquiry.deleted_at.is_(None))
+        .one_or_none()
+    )
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="Recon inquiry not found")
+    return inquiry
+
+
+def recon_run_or_404(db: Session, run_id: str) -> ReconRun:
+    run = (
+        db.query(ReconRun)
+        .options(selectinload(ReconRun.evidence), selectinload(ReconRun.answers), joinedload(ReconRun.inquiry))
+        .filter(ReconRun.id == run_id)
+        .one_or_none()
+    )
+    if not run or not run.inquiry or run.inquiry.deleted_at:
+        raise HTTPException(status_code=404, detail="Recon run not found")
+    return run
+
+
+@app.get("/api/recon/inquiries", response_model=list[ReconInquiryOut])
+def list_recon_inquiries(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[ReconInquiry]:
+    return (
+        db.query(ReconInquiry)
+        .options(
+            selectinload(ReconInquiry.runs).selectinload(ReconRun.evidence),
+            selectinload(ReconInquiry.runs).selectinload(ReconRun.answers),
+        )
+        .filter(ReconInquiry.deleted_at.is_(None))
+        .order_by(ReconInquiry.updated_at.desc(), ReconInquiry.title)
+        .all()
+    )
+
+
+@app.post("/api/recon/inquiries", response_model=ReconInquiryOut)
+def create_recon_inquiry_route(
+    payload: ReconInquiryCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReconInquiry:
+    try:
+        inquiry = create_recon_inquiry(
+            db,
+            title=payload.title,
+            question=payload.question,
+            instructions=payload.instructions,
+            scope_type=payload.scope_type,
+            scope=payload.scope,
+            default_mode=payload.default_mode,
+            model=payload.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return recon_inquiry_or_404(db, inquiry.id)
+
+
+@app.patch("/api/recon/inquiries/{inquiry_id}", response_model=ReconInquiryOut)
+def patch_recon_inquiry_route(
+    inquiry_id: str,
+    payload: ReconInquiryPatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReconInquiry:
+    inquiry = recon_inquiry_or_404(db, inquiry_id)
+    try:
+        update_recon_inquiry(db, inquiry, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return recon_inquiry_or_404(db, inquiry_id)
+
+
+@app.post("/api/recon/inquiries/{inquiry_id}/estimate", response_model=ReconEstimateOut)
+def estimate_recon_inquiry_route(
+    inquiry_id: str,
+    payload: ReconRunCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    inquiry = recon_inquiry_or_404(db, inquiry_id)
+    return estimate_recon_run(
+        db,
+        question=inquiry.question,
+        scope_type=inquiry.scope_type,
+        scope=inquiry.scope,
+        mode=payload.mode or inquiry.default_mode,
+    )
+
+
+@app.post("/api/recon/inquiries/{inquiry_id}/runs", response_model=ReconRunOut)
+def start_recon_run_route(
+    inquiry_id: str,
+    payload: ReconRunCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReconRun:
+    inquiry = recon_inquiry_or_404(db, inquiry_id)
+    return run_recon_inquiry(db, inquiry, mode=payload.mode, model=payload.model)
+
+
+@app.get("/api/recon/runs/{run_id}", response_model=ReconRunOut)
+def get_recon_run_route(
+    run_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReconRun:
+    return recon_run_or_404(db, run_id)
+
+
+@app.post("/api/recon/runs/{run_id}/cancel", response_model=ReconRunOut)
+def cancel_recon_run_route(
+    run_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReconRun:
+    run = recon_run_or_404(db, run_id)
+    return cancel_recon_run(db, run)
+
+
 @app.get("/api/attributes", response_model=list[AttributeDefinitionOut])
 def list_attributes(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[AttributeDefinition]:
     return db.query(AttributeDefinition).filter(AttributeDefinition.deleted_at.is_(None)).order_by(AttributeDefinition.name).all()
@@ -5623,29 +5769,27 @@ def refresh_portfolio_suggestions(
     if not version or not version.document:
         raise HTTPException(status_code=409, detail="Upload a Portfolio version before refreshing resources")
     document = version.document
-    terms = portfolio_suggestion_terms(document)
-    seed = " ".join(terms[:10]) or document.title
-    condition, rank = document_search_condition_and_rank(db, seed)
-    query = filter_library_visible_documents(db.query(Document)).filter(Document.id != document.id)
-    candidates: list[tuple[Document, float | None]] = []
-    if condition is not None:
-        if rank is not None:
-            rows = query.filter(condition).add_columns(rank.label("rank")).order_by(rank.desc(), Document.updated_at.desc()).limit(8).all()
-            candidates = [(row[0], float(row[1] or 0.0)) for row in rows]
-        else:
-            documents = query.filter(condition).order_by(Document.updated_at.desc()).limit(8).all()
-            candidates = [(row, portfolio_overlap_score(terms, row)) for row in documents]
-    if not candidates and terms:
-        fallback_terms = terms[:6]
-        fallback_condition = or_(
-            *[
-                or_(Document.title.ilike(f"%{term}%"), Document.search_text.ilike(f"%{term}%"))
-                for term in fallback_terms
-            ]
-        )
-        documents = query.filter(fallback_condition).order_by(Document.updated_at.desc()).limit(20).all()
-        scored = [(row, portfolio_overlap_score(terms, row)) for row in documents]
-        candidates = sorted(scored, key=lambda item: (item[1] or 0.0, item[0].updated_at), reverse=True)[:8]
+    recon_question = (
+        f"Find authoritative Library sources that can support or enrich this Portfolio paper: {document.title}.\n\n"
+        f"{document_recon_text(document, max_chars=20_000)}"
+    )
+    recon_candidates, _ = retrieve_recon_evidence(
+        db,
+        question=recon_question,
+        scope_type="library",
+        scope={},
+        mode="source_finder",
+        exclude_document_ids={document.id},
+    )
+    seen_document_ids: set[str] = set()
+    candidates = []
+    for evidence in recon_candidates:
+        if evidence.document.id in seen_document_ids:
+            continue
+        seen_document_ids.add(evidence.document.id)
+        candidates.append(evidence)
+        if len(candidates) >= 8:
+            break
 
     db.query(PortfolioSuggestion).filter(
         PortfolioSuggestion.portfolio_item_id == item.id,
@@ -5653,7 +5797,8 @@ def refresh_portfolio_suggestions(
         PortfolioSuggestion.source_type == "library",
     ).delete(synchronize_session=False)
     suggestions: list[PortfolioSuggestion] = []
-    for document_candidate, score in candidates:
+    for index, evidence in enumerate(candidates, start=1):
+        document_candidate = evidence.document
         suggestion = PortfolioSuggestion(
             portfolio_item_id=item.id,
             version_id=version.id,
@@ -5661,11 +5806,16 @@ def refresh_portfolio_suggestions(
             source_type="library",
             title=document_candidate.title,
             relation_family="closest",
-            score=score,
+            score=evidence.score,
             status="candidate",
             evidence={
-                "basis": "library_semantic_search",
-                "seed_terms": terms[:12],
+                "basis": "recon_retrieval",
+                "label": f"R{index}",
+                "snippet": evidence.snippet,
+                "page_start": evidence.page_start,
+                "page_end": evidence.page_end,
+                "evidence_kind": evidence.evidence_kind,
+                "score_basis": (evidence.metadata or {}).get("score_basis"),
                 "source_document_processing_status": document.processing_status,
             },
         )
@@ -5774,6 +5924,32 @@ def create_portfolio_assessment(
             "Resource suggestions have not been refreshed",
             "Run Find Resources to compare this version with Library material and collect additional context before a deep assessment.",
         )
+    recon_question = (
+        f"Find Library evidence that can support, challenge, or enrich this Portfolio version: {item.title}.\n\n"
+        f"{document_recon_text(document, max_chars=18_000)}"
+    )
+    recon_evidence, _ = retrieve_recon_evidence(db, question=recon_question, scope_type="library", scope={}, mode="source_finder")
+    library_evidence_items = [
+        {
+            "label": f"L{index}",
+            "document_id": evidence.document.id,
+            "title": evidence.document.title,
+            "citation": evidence.document.apa_citation or evidence.document.title,
+            "page_start": evidence.page_start,
+            "page_end": evidence.page_end,
+            "snippet": evidence.snippet,
+            "score": evidence.score,
+        }
+        for index, evidence in enumerate(recon_evidence[:8], start=1)
+    ]
+    if library_evidence_items:
+        add_finding(
+            "resources",
+            "info",
+            "Library support evidence found",
+            "Recon found Library sources that can support or contextualize this Portfolio version. Review Find Resources for the ranked source list.",
+            {"library_evidence": library_evidence_items[:5]},
+        )
     text_for_count = document.search_text or document.abstract or document.rich_summary or document.title
     word_count = len(re.findall(r"\b[\w'-]+\b", text_for_count or ""))
     if document.processing_status == "ready" and word_count < 250:
@@ -5792,7 +5968,49 @@ def create_portfolio_assessment(
             "The version has extracted text and at least one supporting material. Run a multi-model assessment when deeper scoring prompts are enabled.",
             {"word_count": word_count},
         )
-    run.summary = f"Baseline Portfolio assessment completed with {len(findings)} finding{'s' if len(findings) != 1 else ''}."
+    model_assessment_result: dict[str, Any] | None = None
+    material_items = [
+        {
+            "label": f"M{index}",
+            "role": material.role,
+            "title": material.label or (material.document.title if material.document else None),
+            "required_for_assessment": material.required_for_assessment,
+            "notes": material.notes,
+            "text": document_recon_text(material.document, max_chars=12_000) if material.document else "",
+        }
+        for index, material in enumerate(materials[:8], start=1)
+    ]
+    try:
+        model_assessment_result = get_ai_service().generate_portfolio_assessment(
+            item.title,
+            document_recon_text(document, max_chars=60_000),
+            material_items,
+            library_evidence_items,
+            model=model_ids[0],
+            usage_context=OpenAIUsageContext(document_id=document.id, source="portfolio", capability_key=MODEL_PORTFOLIO_ASSESSMENT),
+        )
+        for finding_payload in model_assessment_result.get("findings") or []:
+            raw_severity = str(finding_payload.get("severity") or "info").lower()
+            severity = raw_severity if raw_severity in {"info", "warning", "critical"} else "info"
+            add_finding(
+                str(finding_payload.get("category") or "model_review")[:80],
+                severity,
+                str(finding_payload.get("title") or "Model assessment finding")[:300],
+                str(finding_payload.get("body") or ""),
+                {
+                    "source": "model",
+                    "model": model_ids[0],
+                    "evidence_labels": finding_payload.get("evidence_labels") or [],
+                },
+            )
+    except Exception as exc:
+        model_assessment_result = {"fallback_reason": str(exc)}
+
+    run.summary = (
+        str(model_assessment_result.get("summary"))
+        if model_assessment_result and model_assessment_result.get("summary")
+        else f"Portfolio assessment completed with {len(findings)} finding{'s' if len(findings) != 1 else ''}."
+    )
     run.assessment_metadata = {
         "local_baseline": True,
         "model_ids": model_ids,
@@ -5807,6 +6025,9 @@ def create_portfolio_assessment(
             for material in materials
         ],
         "suggestion_count": len(item.suggestions),
+        "library_evidence_count": len(library_evidence_items),
+        "library_evidence": library_evidence_items,
+        "model_assessment": model_assessment_result or {},
         "word_count": word_count,
     }
     db.commit()
