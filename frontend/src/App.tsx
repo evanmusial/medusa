@@ -11,7 +11,7 @@ import type {
   RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   Background,
   Controls,
@@ -2771,9 +2771,37 @@ function patchCachedDocumentSummaries(
   });
 }
 
+function documentSummaryPatchFromDetail(document: DocumentDetail): Partial<LibraryDocumentRow> & Pick<LibraryDocumentRow, "id"> {
+  return {
+    id: document.id,
+    title: document.title,
+    authors: document.authors,
+    publication_year: document.publication_year,
+    doi: document.doi,
+    rich_summary: document.rich_summary,
+    apa_citation: document.apa_citation,
+    apa_citation_model: document.apa_citation_model,
+    apa_citation_source: document.apa_citation_source,
+    apa_in_text_citation: document.apa_in_text_citation,
+    apa_in_text_citation_model: document.apa_in_text_citation_model,
+    apa_in_text_citation_source: document.apa_in_text_citation_source,
+    citation_status: document.citation_status,
+    no_doi: document.no_doi,
+    page_count: document.page_count,
+    processing_status: document.processing_status,
+    read_status: document.read_status,
+    priority: document.priority,
+    updated_at: document.updated_at,
+    duplicate_count: document.duplicate_count,
+    duplicate_reasons: document.duplicate_reasons,
+    tags: document.tags,
+    domains: document.domains,
+    projects: document.projects,
+  };
+}
+
 function refreshActiveDocumentDetail(queryClient: QueryClient, documentId?: string | null) {
   if (!documentId) return;
-  void queryClient.invalidateQueries({ queryKey: ["documents"] });
   void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
   void queryClient.refetchQueries({ queryKey: ["document", documentId], type: "active" });
 }
@@ -9358,8 +9386,6 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["review"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     },
     onError: (error, target) => {
       setCitationRunId(null);
@@ -9387,8 +9413,6 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
     },
     onError: (error) => {
       setSummaryRunId(null);
@@ -9415,8 +9439,6 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
     },
     onError: (error) => {
@@ -9443,8 +9465,6 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
     },
     onError: (error) => {
@@ -9471,8 +9491,6 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
-      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["tags"] });
     },
     onError: (error) => {
@@ -9592,7 +9610,6 @@ function DocumentPanelContent({
     onSuccess: (summary) => {
       setTrackedAccessorySummaryId(summary.id);
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
     },
@@ -23003,6 +23020,7 @@ export default function App() {
     refetchInterval: 30000,
   });
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
+  const activeLibraryListWork = (dashboard.data?.active_import_jobs ?? 0) > 0;
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
   const needsConcordanceData =
     activeView === "settings" ||
@@ -23064,8 +23082,9 @@ export default function App() {
         limit: libraryPageSize,
       }),
     enabled: Boolean(me.data && needsLibraryDocumentList),
-    staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
-    refetchInterval: needsLibraryDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
+    placeholderData: keepPreviousData,
+    staleTime: activeLibraryListWork ? 0 : DOCUMENT_LIST_STALE_MS,
+    refetchInterval: needsLibraryDocumentList && activeLibraryListWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
   const documents = useQuery({
     queryKey: ["documents", "reference-list"],
@@ -23075,8 +23094,8 @@ export default function App() {
         includeProjects: false,
       }),
     enabled: Boolean(me.data && needsReferenceDocumentList),
-    staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
-    refetchInterval: needsReferenceDocumentList && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
+    staleTime: activeLibraryListWork ? 0 : DOCUMENT_LIST_STALE_MS,
+    refetchInterval: needsReferenceDocumentList && activeLibraryListWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
   const healthDocuments = useQuery({
     queryKey: ["documents", "health-reference"],
@@ -23086,8 +23105,8 @@ export default function App() {
         includeProjects: true,
       }),
     enabled: Boolean(me.data && activeView === "health"),
-    staleTime: activeDocumentWork ? 0 : DOCUMENT_LIST_STALE_MS,
-    refetchInterval: activeView === "health" && activeDocumentWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
+    staleTime: activeLibraryListWork ? 0 : DOCUMENT_LIST_STALE_MS,
+    refetchInterval: activeView === "health" && activeLibraryListWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
   const selectedDocument = useQuery({
     queryKey: ["document", selectedId],
@@ -23097,11 +23116,8 @@ export default function App() {
   });
   useEffect(() => {
     if (!selectedDocument.data) return;
-    patchCachedDocumentSummaries(queryClient, {
-      id: selectedDocument.data.id,
-      doi: selectedDocument.data.doi,
-    });
-  }, [queryClient, selectedDocument.data?.doi, selectedDocument.data?.id]);
+    patchCachedDocumentSummaries(queryClient, documentSummaryPatchFromDetail(selectedDocument.data));
+  }, [queryClient, selectedDocument.data]);
   useEffect(() => {
     if (!selectedDocument.data) return;
     const nextEntry = recentDocumentFromDetail(selectedDocument.data);
@@ -23753,10 +23769,6 @@ export default function App() {
       if (refreshed.has(refreshKey)) continue;
       refreshed.add(refreshKey);
       refreshActiveDocumentDetail(queryClient, job.documentId);
-      if (job.documentId === selectedId) {
-        setLibraryFocusDocumentId(job.documentId);
-        setLibraryScrollTargetId(job.documentId);
-      }
       if (job.capabilityKey === "bibliography_extraction" || job.capabilityKey === "formula_capture") {
         void queryClient.invalidateQueries({ queryKey: ["document-composition", job.documentId] });
       }
@@ -23766,7 +23778,7 @@ export default function App() {
         recentKeys.forEach((key) => refreshed.add(key));
       }
     }
-  }, [backgroundJobs, queryClient, selectedId]);
+  }, [backgroundJobs, queryClient]);
 
   useEffect(() => {
     const handleCommandPaletteShortcut = (event: KeyboardEvent) => {
