@@ -99,7 +99,7 @@ The login email defaults to `admin@medusa.local` and the first admin password co
 
 ## TLS And HAProxy
 
-Docker Compose runs HAProxy as the only host-exposed service on port `3737`. HAProxy terminates TLS, redirects plain HTTP on the same port to HTTPS, and proxies Medusa to the internal frontend service. Backend, worker, database, and frontend ports stay on Compose networks; Valkey is additionally isolated on an internal cache-only network with no published port.
+Docker Compose runs HAProxy as the only host-exposed service on port `3737`. HAProxy terminates TLS, redirects plain HTTP on the same port to HTTPS, routes `/api/*` to the internal backend service, and routes browser shell/assets to the internal frontend service. Backend, worker, database, and frontend ports stay on Compose networks; Valkey is additionally isolated on an internal cache-only network with no published port.
 
 Certificate files belong in ignored `data/haproxy/fullchain.pem` and `data/haproxy/privatekey.pem`. Compose combines them into HAProxy's runtime PEM inside the container; the HAProxy image reads these files as UID/GID `99`, so server installs should make `data/haproxy` group-executable and the PEM files group-readable by group `99` without making the private key world-readable. Do not commit certificate private keys.
 
@@ -127,7 +127,7 @@ Dependency freshness is tracked through `renovate.json` and the twice-weekly ope
 
 HAProxy's stats listener is internal-only. Utilities reads the authenticated backend endpoint `/api/utilities/haproxy/status`, which summarizes the internal CSV stats feed.
 
-HAProxy and the Vite API proxy keep five-minute client/server timeouts so synchronous plan-building requests can finish while the UI progress state remains visible. Tags > Optimize also skips the model planner on broad scopes and returns a deterministic local governance plan quickly enough for whole-library cleanup.
+HAProxy keeps five-minute client/server timeouts so synchronous plan-building requests can finish while the UI progress state remains visible. The Docker frontend service builds and serves the compiled Vite bundle so browser reloads switch to hashed assets instead of a development module graph; direct `npm run dev` previews can still use Vite's API proxy. Tags > Optimize also skips the model planner on broad scopes and returns a deterministic local governance plan quickly enough for whole-library cleanup.
 
 When the internal frontend service has no healthy HAProxy backend server during maintenance or restart, HAProxy serves a branded Medusa waiting page for normal browser routes and refreshes it automatically. `/api/*` requests still fail while the app is unavailable, and the waiting page carries `X-Medusa-Restarting: true` so frontend readiness checks cannot mistake it for the real app shell. HAProxy serves compact proxy-safe emblem derivatives from `deploy/haproxy/` for that fallback path because inline `http-request return file` assets must stay below HAProxy's response buffer limit.
 

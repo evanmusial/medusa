@@ -124,7 +124,7 @@ services:
       - "3737"
     depends_on:
       - backend
-    command: npm run dev
+    command: /bin/sh -ec "npm run build && npm run preview"
 
   haproxy:
     image: haproxy:3.0-alpine

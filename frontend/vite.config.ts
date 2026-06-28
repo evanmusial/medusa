@@ -135,4 +135,9 @@ export default defineConfig({
       ...(devApiPrefix === "/api" ? {} : { [devApiPrefix]: apiProxy(devApiPrefix) }),
     },
   },
+  preview: {
+    allowedHosts,
+    host: "0.0.0.0",
+    port: 3737,
+  },
 });
