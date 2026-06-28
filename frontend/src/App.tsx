@@ -4633,6 +4633,9 @@ function bibliographyCleanupNotice(metadataEvidence: Record<string, unknown>): s
   if (status === "rejected_duplicate_cleanup") {
     return "Cleanup kept the complete extracted list because the model introduced duplicate references. Deterministic APA sorting was applied instead.";
   }
+  if (status === "rejected_low_confidence") {
+    return "Cleanup kept the complete extracted list because the model reported low confidence. Deterministic APA sorting was applied instead.";
+  }
   if (status === "skipped_large_bibliography") {
     const entryCount = evidenceNumber(cleanup.entry_count);
     const maxEntries = evidenceNumber(cleanup.max_entries);
@@ -10915,7 +10918,7 @@ function DocumentPanelContent({
             {bibliographyRefreshBusy ? "Refreshing" : "Refresh"}
           </button>
         </AsyncActionSlot>
-        <span className="citation-model-label">{analysisModelActionLabel(preferences, BIBLIOGRAPHY_CLEANUP_MODEL_KEY, "gpt-5.4-nano")}</span>
+        <span className="citation-model-label">{analysisModelActionLabel(preferences, BIBLIOGRAPHY_CLEANUP_MODEL_KEY, "gpt-5-mini")}</span>
       </div>
     </section>
   );
