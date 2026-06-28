@@ -1065,3 +1065,148 @@ def test_extract_document_bibliography_filters_ieee_footer_after_final_reference
     assert "IEEE" not in result["bibliography"]
     assert "Authorized licensed use" not in result["bibliography"]
     assert result["evidence"]["entry_count_estimate"] == 2
+
+
+def test_extract_document_bibliography_continues_after_repeated_references_header(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Repeated Header References Paper",
+        original_filename="repeated-header-references.pdf",
+        checksum_sha256="4" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="References\nPlain fallback."))
+    pdf_path = tmp_path / "repeated-header-references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (2, "References"),
+            (2, "Cyberterrorism e the spectre that is the convergence Introduction body text " * 80),
+            (24, "References"),
+            (24, "Ahmad, R., & Yunos, Z. (2012). A dynamic cyber terrorism framework."),
+            (24, "Denning, D. (2001). Activism, hacktivism, and cyberterrorism: The Internet as a tool"),
+            (24, "for influencing foreign policy. In Networks and netwars: The future"),
+            (25, "References"),
+            (25, "of terror, crime (pp. 239-288). RAND. Retrieved from https://www.rand.org/content/"),
+            (25, "Denning, D. (2012). Stuxnet: What has changed? Future Internet, 4(3), 672-687."),
+            (25, "Klausen, J. (2015). Tweeting the Jihad: Social media networks."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["page_start"] == 24
+    assert result["evidence"]["page_end"] == 25
+    assert entries == [
+        "Ahmad, R., & Yunos, Z. (2012). A dynamic cyber terrorism framework.",
+        (
+            "Denning, D. (2001). Activism, hacktivism, and cyberterrorism: The Internet as a tool "
+            "for influencing foreign policy. In Networks and netwars: The future of terror, crime "
+            "(pp. 239-288). RAND. Retrieved from https://www.rand.org/content/"
+        ),
+        "Denning, D. (2012). Stuxnet: What has changed? Future Internet, 4(3), 672-687.",
+        "Klausen, J. (2015). Tweeting the Jihad: Social media networks.",
+    ]
+
+
+def test_extract_document_bibliography_keeps_marker_list_italic_title_continuations():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Bracketed Marker Continuation Paper",
+        original_filename="bracketed-marker-continuation.pdf",
+        checksum_sha256="5" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=7,
+            normalized_text=(
+                "REFERENCES\n"
+                "[8] Fei Tony Liu, Kai Ming Ting, and Zhi-Hua Zhou.\n"
+                "Isolation forest. In Data Mining, 2008. ICDM'08.\n"
+                "Eighth IEEE International Conference on, pages\n"
+                "413-422. IEEE, 2008.\n"
+                "[9] Teresa F Lunt. A survey of intrusion detection\n"
+                "techniques. Computers & Security, 12(4):405-418,\n"
+                "1993.\n"
+                "[10] GB Magklaras and SM Furnell. Insider threat\n"
+                "prediction tool: Evaluating the probability of it\n"
+                "misuse. Computers & Security, 21(1):62-73, 2001.\n"
+                "APPENDIX\n"
+                "A. RED TEAM SCENARIOS"
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert entries == [
+        (
+            "Fei Tony Liu, Kai Ming Ting, and Zhi-Hua Zhou. Isolation forest. In Data Mining, "
+            "2008. ICDM'08. Eighth IEEE International Conference on, pages 413-422. IEEE, 2008."
+        ),
+        "Teresa F Lunt. A survey of intrusion detection techniques. Computers & Security, 12(4):405-418, 1993.",
+        (
+            "GB Magklaras and SM Furnell. Insider threat prediction tool: Evaluating the probability of it "
+            "misuse. Computers & Security, 21(1):62-73, 2001."
+        ),
+    ]
+    assert result["evidence"]["entry_count_estimate"] == 3
+
+
+def test_extract_document_bibliography_splits_legal_and_news_references():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Legal News References Paper",
+        original_filename="legal-news-references.pdf",
+        checksum_sha256="6" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=16,
+            normalized_text=(
+                "References\n"
+                "Albert Abed, v Wei Lin, Melis, Case 1:23-cv-21059, Plaintiff's Memorandum of Law in\n"
+                "Support of his Motion for a Preliminary Injunction (U.S. District Court, October 11, 2023).\n"
+                "Access Wire, 2022. The Slaughtered Love: RealCall's Survey Finds Americans Were Targeted.\n"
+                "Governance, Risk & Compliance Monitor Worldwide. NJ attorney general announces\n"
+                "crackdown on pig butchering schemes (NexisUni database). 7 February 2023.\n"
+                "Gurung, Anjita v. Metaquotes LTD, a Cyprus Corporation; Metaquotes Software corp., a\n"
+                "Bahamas Corporation; OPSO, Case 1:23-cv-06362, Plaintiff's Opposition to Defendants' Motions\n"
+                "to Dismiss the Complaint (United States District Court Eastern District of New York, 2023).\n"
+                "Zuo, M., 2021. Online love scams have gone global. South China Morning Post."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert entries == [
+        (
+            "Albert Abed, v Wei Lin, Melis, Case 1:23-cv-21059, Plaintiff's Memorandum of Law in "
+            "Support of his Motion for a Preliminary Injunction (U.S. District Court, October 11, 2023)."
+        ),
+        "Access Wire, 2022. The Slaughtered Love: RealCall's Survey Finds Americans Were Targeted.",
+        (
+            "Governance, Risk & Compliance Monitor Worldwide. NJ attorney general announces "
+            "crackdown on pig butchering schemes (NexisUni database). 7 February 2023."
+        ),
+        (
+            "Gurung, Anjita v. Metaquotes LTD, a Cyprus Corporation; Metaquotes Software corp., a "
+            "Bahamas Corporation; OPSO, Case 1:23-cv-06362, Plaintiff's Opposition to Defendants' Motions "
+            "to Dismiss the Complaint (United States District Court Eastern District of New York, 2023)."
+        ),
+        "Zuo, M., 2021. Online love scams have gone global. South China Morning Post.",
+    ]
+    assert result["evidence"]["entry_count_estimate"] == 5

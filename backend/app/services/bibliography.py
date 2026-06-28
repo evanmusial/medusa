@@ -61,13 +61,38 @@ REFERENCE_SURNAME_INITIALS_START_RE = re.compile(
     re.IGNORECASE,
 )
 REFERENCE_ORGANIZATION_YEAR_RE = re.compile(r"^\s*[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b")
+REFERENCE_ENTITY_COMMA_YEAR_RE = re.compile(
+    rf"^\s*{REFERENCE_AUTHOR_WORD}(?:\s+(?:{REFERENCE_AUTHOR_WORD}|&|and|of|the|for|in|on|[A-Z0-9&()./\-]+)){{0,12}},\s*"
+    r"(?:18|19|20)\d{2}[a-z]?\b"
+)
 REFERENCE_ORGANIZATION_DOT_YEAR_RE = re.compile(
-    rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\.\s+"
-    r".{0,240}\b(?:18|19|20)\d{2}[a-z]?\b"
+    r"^\s*[A-Z]{2,}[A-Z0-9&()./\-\s\u00ae\u2122]{0,60}\.\s+\(?\s*(?:18|19|20)\d{2}[a-z]?\b"
 )
 REFERENCE_ORGANIZATION_PAREN_YEAR_RE = re.compile(
     rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
     r"\((?:18|19|20)\d{2}[a-z]?\)\.?\s+"
+)
+REFERENCE_LEGAL_CASE_START_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:In\s+(?:re|the\s+matter\s+of)\b)|"
+    r"(?:United\s+States\s+of\s+America|Commodity\s+Futures\s+Trading\s+Comm?iss?ion),?\s+v\.?\b|"
+    r"(?:[A-Z][^.\n]{1,180},\s+(?:[^,\n]{1,60},\s+){0,4}v\.?\s+[A-Z0-9])|"
+    r"(?:[A-Z][A-Za-z'`\u2019.-]+(?:\s+[A-Z][A-Za-z'`\u2019.-]+){0,6}\s+v\.?\s+[A-Z0-9])"
+    r").{0,260}\b(?:Case|Complaint|Application|Affidavit|Declaration|Motion|Order|Warrant|District\s+Court)\b",
+    re.IGNORECASE,
+)
+REFERENCE_LEGAL_CAPTION_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:In\s+(?:re|the\s+matter\s+of)\b)|"
+    r"(?:[A-Z][A-Za-z'`\u2019.-]+,\s+[A-Z][^,\n]{1,80}\s+v\.?\s+[A-Z0-9])|"
+    r"(?:[A-Z][^.\n]{1,180},\s+(?:[^,\n]{1,70},\s+){0,4}v\.?\s+[A-Z0-9])|"
+    r"(?:[A-Z][A-Za-z'`\u2019.-]+(?:\s+[A-Z][A-Za-z'`\u2019.-]+){0,6}\s+v\.?\s+[A-Z0-9])"
+    r")",
+    re.IGNORECASE,
+)
+REFERENCE_PERIODICAL_TITLE_START_RE = re.compile(
+    r"^\s*[A-Z][A-Za-z'`\u2019&.,\-\s]{1,120}\b"
+    r"(?:Worldwide|Magazine|News|Times|Journal|Forbes|MailOnline|Wired|Sun|Star|Monitor)\.\s+",
 )
 REFERENCE_UPPER_AUTHOR_LIST_RE = re.compile(
     r"^\s*[A-Z][A-Z'`.-]+,\s+[A-Z].*(?:\bAND\b|(?:,\s+[A-Z][A-Z'`.-]+,\s+[A-Z]))"
@@ -119,11 +144,12 @@ PAGE_FURNITURE_RE = re.compile(
     r"CMU/SEI-\d{4}-[A-Z]{2}-\d{3}\s+\|\s+SOFTWARE ENGINEERING INSTITUTE\s+\|\s+CARNEGIE MELLON UNIVERSITY|"
     r"Distribution Statement A:\s+Approved for Public Release; Distribution is Unlimited|"
     r"PART\s*\|\s*[IVXLC]+\b.*|"
+    r"\d+\.\s+Cyberterrorism\s+e\s+the\s+spectre\s+that\s+is\s+the\s+convergence|"
     r".+\s+Chapter\s*\|\s*\d+\s*$|"
     r"Computers\s*&\s*Security\s+\d+\s+\(\d{4}\)\s+\d+|"
     r"Computers\s+in\s+Human\s+Behavior\s+Reports\s+\d+\s+\(\d{4}\)\s+\d+|"
     r"Journal\s+of\s+.+\s+\d+\s+\(\d{4}\)\s+\d+|"
-    r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+\s+and\s+[A-Z]\.(?:[A-Z]\.)?\s+[A-Z][A-Za-z'`.-]+$|"
+    r"[A-Z]\.(?:-[A-Z]\.)?\s+[A-Z][A-Za-z'`.-]+\s+and\s+[A-Z]\.(?:[A-Z]\.)?\s+[A-Z][A-Za-z'`.-]+$|"
     r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+\s+et\s+al\.$|"
     r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+$|"
     r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+(?:\s+and\s+[A-Z]\.(?:[A-Z]\.)?\s+[A-Z][A-Za-z'`.-]+)?\s+Journal\s+of\s+.+\s+\d+\s+\(\d{4}\)\s+\d+|"
@@ -165,6 +191,8 @@ def _line_starts_reference_entry(line: str) -> bool:
 
 def _line_starts_unmarked_reference_entry(line: str) -> bool:
     plain = _reference_match_text(_strip_markdown(_strip_reference_list_marker(line)).strip())
+    if REFERENCE_CONTINUATION_PREFIX_RE.match(plain):
+        return False
     return bool(
         REFERENCE_AUTHOR_YEAR_RE.match(plain)
         or REFERENCE_AUTHOR_LIST_CONTINUED_RE.match(plain)
@@ -172,8 +200,12 @@ def _line_starts_unmarked_reference_entry(line: str) -> bool:
         or REFERENCE_INITIAL_AUTHOR_START_RE.match(plain)
         or REFERENCE_SURNAME_INITIALS_START_RE.match(plain)
         or REFERENCE_ORGANIZATION_YEAR_RE.match(plain)
+        or REFERENCE_ENTITY_COMMA_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_DOT_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_PAREN_YEAR_RE.match(plain)
+        or REFERENCE_LEGAL_CASE_START_RE.match(plain)
+        or REFERENCE_LEGAL_CAPTION_LINE_RE.match(plain)
+        or REFERENCE_PERIODICAL_TITLE_START_RE.match(plain)
         or REFERENCE_UPPER_AUTHOR_LIST_RE.match(plain)
         or REFERENCE_UPPER_SINGLE_AUTHOR_RE.match(plain)
     )
@@ -304,9 +336,20 @@ def _reference_signal_count(lines: list[str]) -> int:
     return signals
 
 
+def _future_reference_heading_starts_new_candidate(selected: list[str], index: int) -> bool:
+    for line in selected[index + 1 : index + 8]:
+        cleaned = _clean_reference_line(line)
+        if not cleaned or _line_is_page_furniture(cleaned) or _line_is_reference_heading(cleaned):
+            continue
+        return _line_starts_reference_entry(cleaned)
+    return False
+
+
 def _first_future_reference_heading_offset(selected: list[str]) -> int | None:
     for index, line in enumerate(selected):
-        if _line_is_reference_heading(line) or _line_starts_reference_section(line):
+        if (_line_is_reference_heading(line) or _line_starts_reference_section(line)) and (
+            index == 0 or _future_reference_heading_starts_new_candidate(selected, index)
+        ):
             return index
     return None
 
@@ -325,6 +368,9 @@ def _reference_candidate_score(
     entries = [line for line in text.splitlines() if line.strip()]
     entry_count = len(entries)
     if entry_count == 0:
+        return None
+    average_entry_length = len(text) / max(entry_count, 1)
+    if average_entry_length > 1200 and entry_count < 20:
         return None
     if entry_count <= 2 and not any(_line_starts_reference_entry(entry) for entry in entries):
         return None
@@ -601,6 +647,10 @@ def _line_looks_like_new_section_after_references(line: str) -> bool:
         return False
     if REFERENCE_CONTINUATION_PREFIX_RE.match(plain):
         return False
+    if "%" in plain or plain.startswith("*"):
+        return False
+    if "," in plain:
+        return False
     if _line_is_page_furniture(plain) or _line_is_reference_heading(plain) or _line_starts_reference_section(plain):
         return False
     if _line_starts_reference_entry(plain) or REFERENCE_YEAR_RE.search(plain) or REFERENCE_URL_DOI_RE.search(plain):
@@ -639,6 +689,18 @@ def _marker_bounded_style(cleaned_lines: list[str], marker_offsets: list[int]) -
     return _reference_marker_style(cleaned_lines[marker_offsets[0]])
 
 
+def _following_lines_have_reference_signal(lines: list[str], index: int) -> bool:
+    for line in lines[index + 1 : index + 5]:
+        if _line_starts_reference_marker(line):
+            return True
+        plain = _strip_markdown(line)
+        if REFERENCE_YEAR_RE.search(plain) or REFERENCE_URL_DOI_RE.search(plain):
+            return True
+        if _line_stops_reference_section(line):
+            return False
+    return False
+
+
 def _format_reference_lines(lines: list[str]) -> str:
     entries: list[str] = []
     current: list[str] = []
@@ -655,53 +717,48 @@ def _format_reference_lines(lines: list[str]) -> str:
     marker_offsets = [index for index, line in enumerate(cleaned_lines) if _line_starts_reference_marker(line)]
     marker_bounded = _should_use_marker_bounded_mode(cleaned_lines, marker_offsets)
     marker_style = _marker_bounded_style(cleaned_lines, marker_offsets) if marker_bounded else None
-    for raw_line in lines:
-        line = _clean_reference_line(raw_line)
-        if not line:
+    for index, part in enumerate(cleaned_lines):
+        if (
+            not marker_bounded
+            and _line_starts_reference_marker(part)
+            and not _strip_reference_entry_prefix(part)
+        ):
             continue
-        if _line_is_page_furniture(line) or _line_is_reference_heading(line) or _line_starts_reference_section(line):
-            continue
-        for part in _split_inline_reference_lines(line):
-            if (
-                not marker_bounded
-                and _line_starts_reference_marker(part)
-                and not _strip_reference_entry_prefix(part)
-            ):
-                continue
-            starts_entry = (
-                _line_starts_reference_marker(part, marker_style)
-                if marker_bounded
-                else _line_starts_unmarked_reference_entry(part)
-            )
-            if (
-                current
-                and len(entries) >= 2
-                and _reference_entry_has_terminal_evidence(current)
-                and _line_looks_like_new_section_after_references(part)
-            ):
-                entry = _normalize_reference_entry(current)
-                if entry:
-                    entries.append(entry)
-                return "\n".join(entries).strip()
-            if starts_entry and current:
-                if not marker_bounded and not _reference_entry_has_terminal_evidence(current):
-                    if _reference_parts_have_signal(current):
-                        current.append(part)
-                    else:
-                        current = [part]
-                    continue
-                if marker_bounded and not _reference_parts_have_signal(current):
+        starts_entry = (
+            _line_starts_reference_marker(part, marker_style)
+            if marker_bounded
+            else _line_starts_unmarked_reference_entry(part)
+        )
+        if (
+            current
+            and len(entries) >= 2
+            and _reference_entry_has_terminal_evidence(current)
+            and _line_looks_like_new_section_after_references(part)
+            and not _following_lines_have_reference_signal(cleaned_lines, index)
+        ):
+            entry = _normalize_reference_entry(current)
+            if entry:
+                entries.append(entry)
+            return "\n".join(entries).strip()
+        if starts_entry and current:
+            if not marker_bounded and not _reference_entry_has_terminal_evidence(current):
+                if _reference_parts_have_signal(current):
+                    current.append(part)
+                else:
                     current = [part]
-                    continue
-                entry = _normalize_reference_entry(current)
-                if entry:
-                    entries.append(entry)
+                continue
+            if marker_bounded and not _reference_parts_have_signal(current):
                 current = [part]
                 continue
-            if current:
-                current.append(part)
-            else:
-                current = [part]
+            entry = _normalize_reference_entry(current)
+            if entry:
+                entries.append(entry)
+            current = [part]
+            continue
+        if current:
+            current.append(part)
+        else:
+            current = [part]
     if current:
         entry = _normalize_reference_entry(current)
         if entry:

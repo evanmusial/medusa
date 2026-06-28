@@ -27,6 +27,15 @@ class StorageService:
         raise NotImplementedError
 
 
+def split_gs_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise ValueError("GCS URI must start with gs://")
+    bucket_name, separator, object_name = uri[len("gs://") :].partition("/")
+    if not bucket_name or not separator or not object_name:
+        raise ValueError("GCS URI must include a bucket and object name.")
+    return bucket_name, object_name
+
+
 class LocalStorageService(StorageService):
     def __init__(self, root: Path):
         self.root = root
@@ -75,23 +84,23 @@ class GcsStorageService(StorageService):
         return StoredObject(uri=f"gs://{self.bucket_name}/{object_name}", backend="gcs")
 
     def get_bytes(self, uri: str, **kwargs: Any) -> bytes:
-        parsed = urlparse(uri)
-        if parsed.scheme != "gs":
+        if not uri.startswith("gs://"):
             return Path(uri).read_bytes()
-        bucket = self.client.bucket(parsed.netloc)
-        blob = bucket.blob(parsed.path.lstrip("/"))
+        bucket_name, object_name = split_gs_uri(uri)
+        bucket = self.client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
         return blob.download_as_bytes(**kwargs)
 
     def delete_uri(self, uri: str) -> bool:
-        parsed = urlparse(uri)
-        if parsed.scheme != "gs":
+        if not uri.startswith("gs://"):
             try:
                 Path(uri).unlink()
                 return True
             except FileNotFoundError:
                 return False
-        bucket = self.client.bucket(parsed.netloc)
-        blob = bucket.blob(parsed.path.lstrip("/"))
+        bucket_name, object_name = split_gs_uri(uri)
+        bucket = self.client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
         if not blob.exists():
             return False
         blob.delete()
