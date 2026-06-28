@@ -27,6 +27,7 @@ import type {
   DocumentComposition,
   DocumentFilters,
   DocumentListResponse,
+  DocumentListSort,
   DocumentPageUpdatePayload,
   DocumentRecommendation,
   DocumentRecommendationDownload,
@@ -312,7 +313,7 @@ export const api = {
   documentList: (
     query: string,
     filters: DocumentFilters = {},
-    options: { all?: boolean; focusDocumentId?: string | null; offset?: number; limit?: number } = {},
+    options: { all?: boolean; focusDocumentId?: string | null; offset?: number; limit?: number; sort?: DocumentListSort } = {},
   ) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -320,6 +321,7 @@ export const api = {
       if (value) params.set(key, value);
     });
     if (options.focusDocumentId) params.set("focus_document_id", options.focusDocumentId);
+    if (options.sort) params.set("sort", options.sort);
     if (options.all) {
       params.set("all", "true");
     } else {

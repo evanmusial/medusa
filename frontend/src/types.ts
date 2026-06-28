@@ -1253,6 +1253,8 @@ export type DocumentListRow = {
   projects?: Project[];
 };
 
+export type DocumentListSort = "title" | "date" | "page_count";
+
 export type DocumentListResponse = {
   items: DocumentListRow[];
   total_count: number;

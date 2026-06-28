@@ -675,6 +675,60 @@ def test_list_documents_sorts_by_title(monkeypatch, tmp_path):
     assert [document.title for document in documents] == ["A framework", "Advanced methods", "alpha", "Beta", "Zeta"]
 
 
+def test_list_document_rows_supports_date_and_page_count_sort(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_document_rows
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(
+                    title="Short old",
+                    publication_year=1999,
+                    page_count=12,
+                    original_filename="short-old.pdf",
+                    checksum_sha256="1" * 64,
+                    processing_status="ready",
+                ),
+                Document(
+                    title="Long new",
+                    publication_year=2024,
+                    page_count=220,
+                    original_filename="long-new.pdf",
+                    checksum_sha256="2" * 64,
+                    processing_status="ready",
+                ),
+                Document(
+                    title="Middle study",
+                    publication_year=2010,
+                    page_count=48,
+                    original_filename="middle-study.pdf",
+                    checksum_sha256="3" * 64,
+                    processing_status="ready",
+                ),
+                Document(
+                    title="Undated appendix",
+                    publication_year=None,
+                    page_count=90,
+                    original_filename="undated-appendix.pdf",
+                    checksum_sha256="4" * 64,
+                    processing_status="ready",
+                ),
+            ]
+        )
+        db.commit()
+
+        by_date = list_document_rows(object(), db, sort="date", limit=10)
+        by_page_count = list_document_rows(object(), db, sort="page_count", limit=10)
+
+    assert [document.title for document in by_date.items] == ["Long new", "Middle study", "Short old", "Undated appendix"]
+    assert [document.title for document in by_page_count.items] == ["Long new", "Undated appendix", "Middle study", "Short old"]
+
+
 def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -776,7 +830,13 @@ def test_trash_documents_soft_deletes_visible_documents_with_history(monkeypatch
 
     Session = make_session()
     with Session() as db:
-        first = Document(title="First", original_filename="first.pdf", checksum_sha256="1" * 64, processing_status="ready")
+        first = Document(
+            title="First",
+            original_filename="first.pdf",
+            checksum_sha256="1" * 64,
+            processing_status="ready",
+            metadata_evidence=["legacy malformed evidence"],
+        )
         second = Document(title="Second", original_filename="second.pdf", checksum_sha256="2" * 64, processing_status="ready")
         queued = Document(title="Queued", original_filename="queued.pdf", checksum_sha256="3" * 64, processing_status="queued")
         db.add_all([first, second, queued])
@@ -799,6 +859,7 @@ def test_trash_documents_soft_deletes_visible_documents_with_history(monkeypatch
     assert second.deleted_at is not None
     assert queued.deleted_at is None
     assert {document.title for document in visible} == set()
+    assert isinstance(first.metadata_evidence, dict)
     assert first.metadata_evidence["trash_events"][0]["source"] == "library_selection"
     assert first_versions[0].change_note == "Moved to Trash"
     assert first_versions[0].metadata_snapshot["changed_fields"] == ["deleted_at", "metadata_evidence"]

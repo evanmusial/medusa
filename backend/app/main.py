@@ -931,6 +931,23 @@ def document_title_order_columns(db: Session):
     return title_key, Document.title, Document.id
 
 
+def document_list_order_columns(db: Session, sort: str):
+    title_columns = document_title_order_columns(db)
+    if sort == "date":
+        return (
+            case((Document.publication_year.is_(None), 1), else_=0),
+            Document.publication_year.desc(),
+            *title_columns,
+        )
+    if sort == "page_count":
+        return (
+            case((Document.page_count <= 0, 1), else_=0),
+            Document.page_count.desc(),
+            *title_columns,
+        )
+    return title_columns
+
+
 def normalize_document_title_spacing(value: str | None) -> str:
     return " ".join((value or "").split())
 
@@ -4547,7 +4564,9 @@ def document_list_rows_out(
     focus_document_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 50,
+    sort: str = "title",
 ) -> DocumentListOut:
+    normalized_sort = sort if sort in {"title", "date", "page_count"} else "title"
     query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
     query, search_rank = apply_document_filters(
         query,
@@ -4569,7 +4588,7 @@ def document_list_rows_out(
     total_page_count = int(query.order_by(None).with_entities(func.coalesce(func.sum(Document.page_count), 0)).scalar() or 0)
     latest_updated = query.order_by(None).with_entities(func.max(Document.updated_at)).scalar()
     order_columns = [search_rank.desc()] if search_rank is not None else []
-    order_columns.extend(document_title_order_columns(db))
+    order_columns.extend(document_list_order_columns(db, normalized_sort))
     focus_index: int | None = None
     if focus_document_id:
         ordered_ids = [row[0] for row in query.order_by(None).order_by(*order_columns).with_entities(Document.id).all()]
@@ -4617,6 +4636,7 @@ def list_document_rows(
     focus_document_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 50,
+    sort: Annotated[str, Query(pattern="^(title|date|page_count)$")] = "title",
 ) -> DocumentListOut:
     key_parts = {
         "q": q or "",
@@ -4631,6 +4651,7 @@ def list_document_rows(
         "focus_document_id": focus_document_id or "",
         "offset": int(offset),
         "limit": int(limit),
+        "sort": sort,
     }
     return cache_or_load(
         db,
@@ -4652,6 +4673,7 @@ def list_document_rows(
             focus_document_id=focus_document_id,
             offset=offset,
             limit=limit,
+            sort=sort,
         ),
     )
 
@@ -7465,8 +7487,9 @@ def trash_documents_by_id(db: Session, document_ids: list[str], *, source: str) 
     trashed_ids: list[str] = []
     for document in ordered_documents:
         before = document_correction_snapshot(document)
-        evidence = dict(document.metadata_evidence or {})
-        trash_events = list(evidence.get("trash_events") or [])
+        evidence = dict(document.metadata_evidence) if isinstance(document.metadata_evidence, dict) else {}
+        existing_trash_events = evidence.get("trash_events")
+        trash_events = list(existing_trash_events) if isinstance(existing_trash_events, list) else []
         trash_events.append({"source": source, "trashed_at": trashed_at.isoformat()})
         evidence["trash_events"] = trash_events
         document.metadata_evidence = evidence

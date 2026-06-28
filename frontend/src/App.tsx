@@ -40,6 +40,7 @@ import {
   Briefcase,
   BrainCircuit,
   Calendar,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -134,6 +135,7 @@ import type {
   DocumentFilters,
   DocumentListResponse,
   DocumentListRow,
+  DocumentListSort,
   DuplicateDocument,
   DuplicatePair,
   DuplicateScan,
@@ -395,6 +397,12 @@ const FILTER_PANE_MAX = 420;
 const MIN_LIBRARY_PAGE_SIZE = 10;
 type LibraryPageSize = number;
 const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 50;
+const DEFAULT_LIBRARY_SORT: DocumentListSort = "title";
+const LIBRARY_SORT_OPTIONS: Array<{ value: DocumentListSort; label: string }> = [
+  { value: "title", label: "Title" },
+  { value: "date", label: "Date" },
+  { value: "page_count", label: "Page count" },
+];
 type LibraryDensity = "compact" | "comfortable" | "reading";
 const DEFAULT_LIBRARY_DENSITY: LibraryDensity = "comfortable";
 const LIBRARY_DENSITY_OPTIONS: Array<{ value: LibraryDensity; label: string; description: string }> = [
@@ -441,6 +449,7 @@ const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "re
 const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
+const ASYNC_ACTION_MESSAGE_MAX_WIDTH = 360;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 10000;
 const BACKGROUND_JOB_SERVER_IDLE_GRACE_MS = 10000;
@@ -1664,11 +1673,42 @@ function AsyncActionSlot({
   label?: string;
   progress?: number | null;
 }) {
+  const slotRef = useRef<HTMLSpanElement | null>(null);
+  const [messagePosition, setMessagePosition] = useState<{ left: number; top: number } | null>(null);
   const hasProgress = typeof progress === "number" && Number.isFinite(progress);
   const progressValue = hasProgress ? progressPercent(progress) : undefined;
   const progressStyle = hasProgress ? ({ "--async-action-progress": `${progressValue}%` } as CSSProperties) : undefined;
+  const showErrorMessage = feedback?.tone === "error" && feedback.message;
+  useEffect(() => {
+    if (!showErrorMessage) {
+      setMessagePosition(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      const rect = slotRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const gutter = 16;
+      const width = Math.min(ASYNC_ACTION_MESSAGE_MAX_WIDTH, Math.max(0, window.innerWidth - gutter * 2));
+      const left = Math.min(Math.max(gutter, rect.right - width), Math.max(gutter, window.innerWidth - gutter - width));
+      const top = Math.min(Math.max(gutter, rect.bottom + 8), Math.max(gutter, window.innerHeight - gutter - 72));
+      setMessagePosition({ left, top });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [showErrorMessage, feedback?.token]);
+  const messageStyle = messagePosition
+    ? ({
+        left: `${messagePosition.left}px`,
+        top: `${messagePosition.top}px`,
+      } as CSSProperties)
+    : undefined;
   return (
-    <span className={`async-action-slot ${busy ? "in-flight" : ""}`}>
+    <span ref={slotRef} className={`async-action-slot ${busy ? "in-flight" : ""}`}>
       {children}
       {busy ? (
         <span
@@ -1682,11 +1722,14 @@ function AsyncActionSlot({
           <span style={progressStyle} />
         </span>
       ) : null}
-      {feedback?.tone === "error" && feedback.message ? (
-        <span key={feedback.token} className="async-action-message" role="alert">
-          {feedback.message}
-        </span>
-      ) : null}
+      {showErrorMessage && messageStyle
+        ? createPortal(
+            <span key={feedback.token} className="async-action-message" role="alert" style={messageStyle}>
+              {feedback.message}
+            </span>,
+            document.body,
+          )
+        : null}
     </span>
   );
 }
@@ -6650,6 +6693,111 @@ function LibrarySingleSelect({
   );
 }
 
+function LibrarySortDropdown({ onChange, value }: { onChange: (value: DocumentListSort) => void; value: DocumentListSort }) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const menuStyle = useFloatingSelectMenuStyle(open, triggerRef);
+  const selected = LIBRARY_SORT_OPTIONS.find((option) => option.value === value) || LIBRARY_SORT_OPTIONS[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!wrapperRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    window.addEventListener("mousedown", closeOnOutsideClick);
+    return () => window.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open]);
+  useEscapeLayer(open, () => setOpen(false), ESCAPE_PRIORITY_MENU);
+  useEffect(() => {
+    if (!open) return;
+    const selectedIndex = Math.max(
+      0,
+      LIBRARY_SORT_OPTIONS.findIndex((option) => option.value === value),
+    );
+    setActiveIndex(selectedIndex);
+    const handle = window.setTimeout(() => optionRefs.current[selectedIndex]?.focus(), 0);
+    return () => window.clearTimeout(handle);
+  }, [open, value]);
+
+  const choose = (nextValue: DocumentListSort) => {
+    onChange(nextValue);
+    setOpen(false);
+    window.setTimeout(() => triggerRef.current?.focus(), 0);
+  };
+  const moveActive = (offset: number) => {
+    setActiveIndex((index) => {
+      const nextIndex = (index + offset + LIBRARY_SORT_OPTIONS.length) % LIBRARY_SORT_OPTIONS.length;
+      window.setTimeout(() => optionRefs.current[nextIndex]?.focus(), 0);
+      return nextIndex;
+    });
+  };
+  const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActive(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActive(-1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      window.setTimeout(() => triggerRef.current?.focus(), 0);
+    }
+  };
+
+  const menu = open ? (
+    <div className="bulk-multi-menu single-select-menu library-sort-menu" ref={menuRef} role="listbox" style={menuStyle}>
+      {LIBRARY_SORT_OPTIONS.map((option, index) => (
+        <button
+          ref={(element) => {
+            optionRefs.current[index] = element;
+          }}
+          aria-selected={value === option.value}
+          className={[value === option.value ? "selected" : "", index === activeIndex ? "active" : ""].filter(Boolean).join(" ")}
+          data-tooltip={`Sort Library results by ${option.label.toLocaleLowerCase()}.`}
+          key={option.value}
+          onClick={() => choose(option.value)}
+          onKeyDown={handleOptionKeyDown}
+          onMouseEnter={() => setActiveIndex(index)}
+          role="option"
+          type="button"
+        >
+          <span>{option.label}</span>
+        </button>
+      ))}
+    </div>
+  ) : null;
+
+  return (
+    <div className="library-sort-control" ref={wrapperRef}>
+      <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="secondary-button compact library-sort-trigger"
+        data-tooltip="Choose the Library result sort order."
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <span>Sort: {selected.label}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {menu ? createPortal(menu, document.body) : null}
+    </div>
+  );
+}
+
 function DuplicateDocumentCard({
   document,
   disabled,
@@ -6877,10 +7025,12 @@ function LibraryView({
   pageOffset,
   pageLimit,
   pageSize,
+  sortKey,
   hasMoreDocuments,
   onPreviousPage,
   onNextPage,
   onPageSizeChange,
+  onSortChange,
   preferences,
   readerOpen,
   scrollTargetId,
@@ -6912,10 +7062,12 @@ function LibraryView({
   pageOffset: number;
   pageLimit: number;
   pageSize: LibraryPageSize;
+  sortKey: DocumentListSort;
   hasMoreDocuments: boolean;
   onPreviousPage: () => void;
   onNextPage: () => void;
   onPageSizeChange: (pageSize: LibraryPageSize) => void;
+  onSortChange: (sortKey: DocumentListSort) => void;
   preferences?: AppPreferences;
   readerOpen: boolean;
   scrollTargetId?: string | null;
@@ -7125,14 +7277,7 @@ function LibraryView({
   } as CSSProperties;
   const libraryDensity = normalizeLibraryDensity(preferences?.library_density);
   const libraryRowHeight = LIBRARY_ROW_HEIGHT_BY_DENSITY[libraryDensity];
-  const sortedDocuments = useMemo(
-    () =>
-      [...documents].sort((left, right) => {
-        const titleOrder = left.title.trim().localeCompare(right.title.trim(), undefined, { sensitivity: "base", numeric: true });
-        return titleOrder || left.id.localeCompare(right.id);
-      }),
-    [documents],
-  );
+  const sortedDocuments = useMemo(() => [...documents], [documents]);
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
   const visibleStart = totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
   const visibleEnd = Math.min(pageOffset + sortedDocuments.length, totalDocumentCount);
@@ -7834,48 +7979,51 @@ function LibraryView({
                 </AsyncActionSlot>
               </div>
             ) : null}
-            <div className="library-page-controls">
-              <label className="library-page-size">
-                <span>Rows</span>
-                <input
-                  data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
-                  list="library-page-size-suggestions"
-                  min={MIN_LIBRARY_PAGE_SIZE}
-                  onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
-                  type="number"
-                  value={pageSize}
-                />
-                <datalist id="library-page-size-suggestions">
-                  {LIBRARY_PAGE_SIZE_SUGGESTIONS.map((option) => (
-                    <option key={String(option.value)} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </datalist>
-              </label>
-              <button
-                aria-label="Previous Library result page"
-                className="icon-button compact library-page-arrow"
-                data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
-                data-tooltip="Load the previous Library result window."
-                disabled={pageOffset <= 0 || loading}
-                onClick={onPreviousPage}
-                type="button"
-              >
-                <ArrowLeft size={18} strokeWidth={3} />
-              </button>
-              <span className="library-page-count">{pageCountLabel}</span>
-              <button
-                aria-label="Next Library result page"
-                className="icon-button compact library-page-arrow"
-                data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
-                data-tooltip="Load the next Library result window."
-                disabled={!hasMoreDocuments || loading}
-                onClick={onNextPage}
-                type="button"
-              >
-                <ArrowRight size={18} strokeWidth={3} />
-              </button>
+            <div className="library-result-controls">
+              <LibrarySortDropdown onChange={onSortChange} value={sortKey} />
+              <div className="library-page-controls">
+                <label className="library-page-size">
+                  <span>Rows</span>
+                  <input
+                    data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
+                    list="library-page-size-suggestions"
+                    min={MIN_LIBRARY_PAGE_SIZE}
+                    onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
+                    type="number"
+                    value={pageSize}
+                  />
+                  <datalist id="library-page-size-suggestions">
+                    {LIBRARY_PAGE_SIZE_SUGGESTIONS.map((option) => (
+                      <option key={String(option.value)} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+                <button
+                  aria-label="Previous Library result page"
+                  className="icon-button compact library-page-arrow"
+                  data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
+                  data-tooltip="Load the previous Library result window."
+                  disabled={pageOffset <= 0 || loading}
+                  onClick={onPreviousPage}
+                  type="button"
+                >
+                  <ArrowLeft size={18} strokeWidth={3} />
+                </button>
+                <span className="library-page-count">{pageCountLabel}</span>
+                <button
+                  aria-label="Next Library result page"
+                  className="icon-button compact library-page-arrow"
+                  data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
+                  data-tooltip="Load the next Library result window."
+                  disabled={!hasMoreDocuments || loading}
+                  onClick={onNextPage}
+                  type="button"
+                >
+                  <ArrowRight size={18} strokeWidth={3} />
+                </button>
+              </div>
             </div>
           </div>
           {hasResultChips ? (
@@ -23980,6 +24128,7 @@ export default function App() {
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [libraryOffset, setLibraryOffset] = useState(0);
   const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(DEFAULT_LIBRARY_PAGE_SIZE);
+  const [librarySort, setLibrarySort] = useState<DocumentListSort>(DEFAULT_LIBRARY_SORT);
   const [libraryPageTurnIntent, setLibraryPageTurnIntent] = useState<LibraryPageTurnIntent | null>(null);
   const [libraryDocumentMode, setLibraryDocumentMode] = useState<DocumentRouteMode>(() => initialRoute.documentMode || "detail");
   const [selectedId, setSelectedId] = useState<string | undefined>(() => initialRoute.documentId);
@@ -24111,14 +24260,15 @@ export default function App() {
   useEffect(() => {
     if (libraryFocusDocumentId) return;
     setLibraryOffset(0);
-  }, [documentQuery, filters, libraryFocusDocumentId, libraryPageSize]);
+  }, [documentQuery, filters, libraryFocusDocumentId, libraryPageSize, librarySort]);
   const libraryDocumentList = useQuery({
-    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize, libraryFocusDocumentId],
+    queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize, libraryFocusDocumentId, librarySort],
     queryFn: () =>
       api.documentList(documentQuery, filters, {
         focusDocumentId: libraryFocusDocumentId,
         offset: libraryOffset,
         limit: libraryPageSize,
+        sort: librarySort,
       }),
     enabled: Boolean(me.data && needsLibraryDocumentList),
     placeholderData: keepPreviousData,
@@ -25034,6 +25184,7 @@ export default function App() {
             pageOffset={libraryDocumentList.data?.offset ?? libraryOffset}
             pageLimit={libraryDocumentList.data?.limit ?? libraryPageSize}
             pageSize={libraryPageSize}
+            sortKey={librarySort}
             hasMoreDocuments={Boolean(libraryDocumentList.data?.has_more)}
             onPreviousPage={() => {
               const nextOffset = Math.max(0, (libraryDocumentList.data?.offset ?? libraryOffset) - libraryPageSize);
@@ -25056,6 +25207,17 @@ export default function App() {
               if (selectedId) {
                 setLibraryFocusDocumentId(selectedId);
                 setLibraryScrollTargetId(selectedId);
+              }
+              setLibraryOffset(0);
+            }}
+            onSortChange={(sortKey) => {
+              setLibrarySort(sortKey);
+              if (selectedId) {
+                setLibraryFocusDocumentId(selectedId);
+                setLibraryScrollTargetId(selectedId);
+              } else {
+                setLibraryFocusDocumentId(null);
+                setLibraryScrollTargetId(null);
               }
               setLibraryOffset(0);
             }}
