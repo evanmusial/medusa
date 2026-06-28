@@ -3818,7 +3818,7 @@ textarea {
 .detail-sticky-zone::before {
   content: "";
   position: absolute;
-  inset: -24px -12px -1px;
+  inset: -24px -12px 0;
   z-index: -1;
   background: var(--panel);
   pointer-events: none;
