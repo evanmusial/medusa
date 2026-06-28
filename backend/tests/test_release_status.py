@@ -103,6 +103,55 @@ def test_release_status_recommends_browser_reload_when_server_is_newer(monkeypat
     reset_settings_cache()
 
 
+def test_release_status_prefers_runtime_identity_over_stale_status_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_BUILD_VERSION", "20260627 (bbbbbbbbbbbb)")
+    monkeypatch.setenv("MEDUSA_BUILD_DATE", "20260627")
+    monkeypatch.setenv("MEDUSA_BUILD_HASH", "bbbbbbbbbbbb")
+    monkeypatch.setenv("MEDUSA_GIT_SHA", "b" * 40)
+    reset_settings_cache()
+
+    from app.services.release_status import release_status
+
+    write_status(
+        tmp_path / "data" / "deploy" / "release-status.json",
+        {
+            "checked_at": "2026-06-26T12:00:00+00:00",
+            "phase": "current",
+            "message": "The server checkout has local changes; automatic upgrade is blocked.",
+            "update_available": False,
+            "apply_available": False,
+            "dirty": True,
+            "running": {
+                "version": "20260626 (aaaaaaaaaaaa)",
+                "git_sha": "a" * 40,
+                "git_sha_short": "aaaaaaaaaaaa",
+                "branch": "main",
+                "source": "git-local",
+            },
+            "available": {
+                "version": "20260626 (aaaaaaaaaaaa)",
+                "git_sha": "a" * 40,
+                "git_sha_short": "aaaaaaaaaaaa",
+                "branch": "main",
+                "source": "git-upstream",
+            },
+        },
+    )
+
+    status = release_status(client_version="20260627 (bbbbbbbbbbbb)")
+    assert status.running.version == "20260627 (bbbbbbbbbbbb)"
+    assert status.running.git_sha == "b" * 40
+    assert status.available and status.available.version == "20260627 (bbbbbbbbbbbb)"
+    assert status.update_available is False
+    assert status.apply_available is False
+    assert status.browser_reload_recommended is False
+    assert status.phase == "current"
+    assert status.dirty is False
+
+    reset_settings_cache()
+
+
 def test_release_status_writes_check_and_maintenance_requests(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
     reset_settings_cache()

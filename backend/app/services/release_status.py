@@ -109,6 +109,22 @@ def _runtime_version() -> ReleaseVersionOut:
     )
 
 
+def _version_has_runtime_identity(version: ReleaseVersionOut) -> bool:
+    return version.source != "runtime-default" and bool(version.version or version.git_sha)
+
+
+def _versions_match(left: ReleaseVersionOut | None, right: ReleaseVersionOut | None) -> bool:
+    if not left or not right:
+        return False
+    if left.git_sha and right.git_sha:
+        return left.git_sha == right.git_sha
+    if left.version and right.version:
+        return left.version == right.version
+    if left.git_sha_short and right.git_sha_short:
+        return left.git_sha_short == right.git_sha_short
+    return False
+
+
 def _request_summary() -> tuple[datetime | None, str | None]:
     payload = _read_json(_release_request_path())
     if not payload:
@@ -126,17 +142,29 @@ def release_status(client_version: str | None = None, db: Session | None = None)
     requested_at, request_id = _request_summary()
 
     runtime = _runtime_version()
-    running = _version_from_payload(payload.get("running") if payload else None) if payload else None
-    running = running or runtime
+    status_running = _version_from_payload(payload.get("running") if payload else None) if payload else None
+    status_running_stale = bool(
+        status_running and _version_has_runtime_identity(runtime) and not _versions_match(status_running, runtime)
+    )
+    # The status file can outlive a container rebuild; browser reload decisions must use the real runtime.
+    running = runtime if status_running_stale else status_running or runtime
     available = _version_from_payload(payload.get("available") if payload else None) if payload else None
 
     checked_at = _parse_datetime(payload.get("checked_at") if payload else None) or _now()
     dirty = bool(payload.get("dirty")) if payload else False
     raw_update_available = payload.get("update_available") if payload else None
-    if isinstance(raw_update_available, bool):
+    if status_running_stale:
+        dirty = False
+        if raw_update_available is False:
+            available = running
+    if available and _versions_match(running, available):
+        update_available = False
+    elif isinstance(raw_update_available, bool):
         update_available = raw_update_available
     elif available and running.git_sha and available.git_sha:
         update_available = running.git_sha != available.git_sha
+    elif available and running.version and available.version:
+        update_available = running.version != available.version
     else:
         update_available = False
 
@@ -144,11 +172,16 @@ def release_status(client_version: str | None = None, db: Session | None = None)
     apply_available = bool(raw_apply_available) and update_available and not dirty
     raw_phase = payload.get("phase") if payload else None
     phase = raw_phase if isinstance(raw_phase, str) and raw_phase else "current"
+    if not update_available and phase == "update_available":
+        phase = "current"
     if request_exists and phase in {"current", "update_available"}:
         phase = "requested"
 
     raw_message = payload.get("message") if payload else None
     message = raw_message if isinstance(raw_message, str) and raw_message else "Release status has not been checked by the host agent yet."
+    if status_running_stale and not update_available and phase in {"current", "blocked"}:
+        phase = "current"
+        message = "Medusa is current."
     last_error = payload.get("last_error") if payload else None
     last_error = last_error if isinstance(last_error, str) and last_error else None
 
@@ -172,6 +205,7 @@ def release_status(client_version: str | None = None, db: Session | None = None)
     normalized_client_version = (client_version or "").strip()
     browser_reload_recommended = bool(
         normalized_client_version
+        and not update_available
         and running.version
         and normalized_client_version != running.version
         and running.source != "runtime-default"
