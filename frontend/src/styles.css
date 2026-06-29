@@ -469,6 +469,15 @@ textarea {
   padding: 0;
 }
 
+.document-lock-button.active {
+  --async-feedback-base-bg: var(--amber-soft);
+  --async-feedback-base-border: color-mix(in srgb, var(--amber) 42%, var(--button-line));
+  --async-feedback-base-color: var(--amber);
+  background: var(--amber-soft);
+  border-color: color-mix(in srgb, var(--amber) 42%, var(--button-line));
+  color: var(--amber);
+}
+
 .async-feedback-success,
 .async-feedback-error {
   animation-fill-mode: forwards;

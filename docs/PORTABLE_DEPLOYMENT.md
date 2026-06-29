@@ -16,6 +16,8 @@ Prometheus metrics are opt-in. When the server should expose the Medusa exporter
 docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend haproxy metrics-exporter
 ```
 
+After metrics is enabled, host deploy/release commands preserve that overlay automatically when `MEDUSA_METRICS_OVERLAY=auto` and a metrics token file or explicit token setting is present. This keeps later app rebuilds from recreating HAProxy without the `43737` listener. Set `MEDUSA_METRICS_OVERLAY=false` only when intentionally disabling the public metrics sidecar.
+
 The server environment and override:
 
 - pins all Medusa services to `MEDUSA_CPUSET`, defaulting to logical CPUs `0-5`;
@@ -171,10 +173,12 @@ A typical server setup is a timer for `check`, a path or short timer for `apply`
 Template systemd units live under `deploy/systemd/` and assume the checkout is installed at `/opt/medusa`. `medusa.service` owns the Docker Compose app stack, optional `medusa-metrics.service` owns the metrics sidecar overlay, `medusa-release-check.timer` periodically refreshes the release status file, `medusa-release-check.path` handles app-requested checks, `medusa-release-apply.path` watches for authenticated upgrade requests, and `medusa-maintenance.timer` plus `medusa-maintenance.path` run the idle-gated maintenance lane. Copy them to `/etc/systemd/system/`, edit paths if the host uses a different checkout location, and run them as the checkout owner so Git SSH credentials and Docker group membership are available.
 
 ```ini
-ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
-ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
-ExecStop=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml stop
+ExecStart=/opt/medusa/scripts/medusa-release-agent.py compose --repo /opt/medusa --compose-file docker-compose.yml --compose-file docker-compose.server.yml -- up -d --build
+ExecReload=/opt/medusa/scripts/medusa-release-agent.py compose --repo /opt/medusa --compose-file docker-compose.yml --compose-file docker-compose.server.yml -- up -d --build
+ExecStop=/opt/medusa/scripts/medusa-release-agent.py compose --repo /opt/medusa --compose-file docker-compose.yml --compose-file docker-compose.server.yml -- stop
 ```
+
+The `compose` wrapper expands to the base/server Compose files and auto-adds `docker-compose.metrics.yml` when the server has metrics enabled. If maintaining a hand-edited unit, preserve that wrapper or include the metrics overlay explicitly, or the next HAProxy recreate will drop the `43737` listener.
 
 Then enable:
 

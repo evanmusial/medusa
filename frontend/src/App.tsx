@@ -6385,6 +6385,7 @@ function DomainsView({
   });
   const assignSuggestion = useMutation({
     mutationFn: ({ document, domainId }: { document: DocumentSummary; domainId: string }) => {
+      if (document.is_locked) throw new Error("Unlock this document before assigning domains.");
       const currentDomainIds = uniqueValues(document.domains.map((domain) => domain.id));
       if (currentDomainIds.includes(domainId)) return Promise.resolve(null);
       return api.updateDocument(document.id, { domain_ids: [...currentDomainIds, domainId] });
@@ -6849,9 +6850,9 @@ function DomainsView({
               </small>
               <button
                 className="secondary-button compact"
-                data-disabled-reason="a suggested document assignment is already saving."
+                data-disabled-reason={suggestion.document.is_locked ? "unlock this document before assigning domains." : "a suggested document assignment is already saving."}
                 data-tooltip={`Assign ${suggestion.document.title} to ${selected?.name || "this domain"}.`}
-                disabled={!selected || assignSuggestion.isPending}
+                disabled={!selected || suggestion.document.is_locked || assignSuggestion.isPending}
                 onClick={() => selected && assignSuggestion.mutate({ document: suggestion.document, domainId: selected.id })}
                 type="button"
               >
@@ -7686,6 +7687,7 @@ function LibraryView({
   });
   const bulkUpdate = useMutation({
     mutationFn: async () => {
+      if (selectedLockedCount) throw new Error(selectedLockedReason);
       const updates: Record<string, unknown> = {};
       if (bulkReadStatus) updates.read_status = bulkReadStatus;
       if (bulkPriority) updates.priority = bulkPriority;
@@ -7734,6 +7736,7 @@ function LibraryView({
     mutationFn: ({ documentId, domainId }: { documentId: string; domainId: string }) => {
       const targetDocument = document?.id === documentId ? document : documents.find((item) => item.id === documentId);
       if (!targetDocument) throw new Error("The dragged document is no longer visible in the Library list.");
+      if (targetDocument.is_locked) throw new Error("Unlock this document before assigning domains.");
       const currentDomainIds = uniqueValues(targetDocument.domains.map((domain) => domain.id));
       if (currentDomainIds.includes(domainId)) return Promise.resolve(null);
       return api.updateDocument(documentId, { domain_ids: [...currentDomainIds, domainId] });
@@ -7766,6 +7769,11 @@ function LibraryView({
   const libraryDensity = normalizeLibraryDensity(preferences?.library_density);
   const libraryRowHeight = LIBRARY_ROW_HEIGHT_BY_DENSITY[libraryDensity];
   const sortedDocuments = useMemo(() => [...documents], [documents]);
+  const selectedLockedCount = sortedDocuments.filter((item) => item.is_locked && selectedIds.includes(item.id)).length;
+  const selectedLockedReason =
+    selectedLockedCount === 1
+      ? "unlock the selected locked document before applying changes."
+      : `unlock the ${selectedLockedCount} selected locked documents before applying changes.`;
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
   const visibleStart = totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
   const visibleEnd = Math.min(pageOffset + sortedDocuments.length, totalDocumentCount);
@@ -7964,6 +7972,11 @@ function LibraryView({
   const confirmTrashDocuments = async (documentIds: string[], label: string) => {
     const uniqueIds = uniqueValues(documentIds);
     if (!uniqueIds.length || trashDocuments.isPending) return;
+    const lockedCount = sortedDocuments.filter((item) => item.is_locked && uniqueIds.includes(item.id)).length;
+    if (lockedCount) {
+      trashFeedback.showError(lockedCount === 1 ? "Unlock the locked document before moving it to Trash." : `Unlock ${lockedCount} locked documents before moving them to Trash.`);
+      return;
+    }
     const ok = await dialogs.confirm({
       cancelLabel: "Keep",
       confirmLabel: "Move to Trash",
@@ -8232,9 +8245,15 @@ function LibraryView({
               </div>
               <button
                 className="primary-button"
-                data-disabled-reason={bulkUpdate.isPending ? "a bulk update is already saving." : "choose at least one bulk edit value first."}
+                data-disabled-reason={
+                  bulkUpdate.isPending
+                    ? "a bulk update is already saving."
+                    : selectedLockedCount
+                      ? selectedLockedReason
+                      : "choose at least one bulk edit value first."
+                }
                 data-tooltip="Apply the selected bulk read status, priority, tags, domains, and projects to the selected documents."
-                disabled={!hasBulkUpdate || bulkUpdate.isPending}
+                disabled={!hasBulkUpdate || Boolean(selectedLockedCount) || bulkUpdate.isPending}
                 onClick={() => bulkUpdate.mutate()}
               >
                 <CheckSquare size={15} />
@@ -8584,10 +8603,14 @@ function LibraryView({
             <div
               key={item.id}
               className={`doc-row virtual-doc-row ${alternatingRows && actualIndex % 2 === 1 ? "even-row" : ""} ${selectedId === item.id ? "selected" : ""} ${draggedDocumentId === item.id ? "dragging" : ""}`}
-              draggable
+              draggable={!item.is_locked}
               style={{ height: libraryRowHeight, transform: `translateY(${actualIndex * libraryRowHeight}px)` }}
               onDragEnd={() => setDraggedDocumentId(null)}
               onDragStart={(event) => {
+                if (item.is_locked) {
+                  event.preventDefault();
+                  return;
+                }
                 setDraggedDocumentId(item.id);
                 setDomainDropError(null);
                 event.dataTransfer.effectAllowed = "copy";
@@ -8905,7 +8928,8 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const stashFeedback = useAsyncActionFeedbackMap();
   const bibliographyEntries = useMemo(() => bibliographyEntriesFromText(document.bibliography), [document.bibliography]);
   const hasBibliography = bibliographyEntries.length > 0;
-  const canRefresh = document.processing_status === "ready" && Boolean(document.title?.trim());
+  const documentLocked = Boolean(document.is_locked);
+  const canRefresh = !documentLocked && document.processing_status === "ready" && Boolean(document.title?.trim());
   const recommendations = useQuery({
     queryKey: ["document-recommendations", document.id, view, family],
     queryFn: () => api.documentRecommendations(document.id, { view, family }),
@@ -9320,7 +9344,9 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
               <button
                 className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback, refresh.isPending)}
                 data-disabled-reason={
-                  refresh.isPending
+                  documentLocked
+                    ? "this document is locked."
+                    : refresh.isPending
                     ? "recommendation refresh is already running."
                     : "related recommendations need a completed document with a searchable title."
                 }
@@ -9811,7 +9837,6 @@ function DocumentPanelContent({
   const queryClient = useQueryClient();
   const documentLocked = Boolean(document.is_locked);
   const documentLockedReason = "this document is locked.";
-  const documentLockedTooltip = "Unlock this document before editing fields, refreshing derived content, or changing document properties.";
   const runConcordanceFeedback = useAsyncActionFeedback();
   const doiRefreshFeedback = useAsyncActionFeedback();
   const citationRefreshFeedback = useAsyncActionFeedback();
@@ -10875,7 +10900,9 @@ function DocumentPanelContent({
         (!trackedAccessorySummary || isActiveAccessorySummaryStatus(trackedAccessorySummary.status)),
     );
   const accessorySummaryProgress = accessorySummaryButtonProgress(trackedAccessorySummary, accessorySummaryBusy);
-  const accessorySummaryBusyReason = createAccessorySummary.isPending
+  const accessorySummaryBusyReason = documentLocked
+    ? documentLockedReason
+    : createAccessorySummary.isPending
     ? "an Inquest request is already starting."
     : accessorySummaryBusy
       ? "an Inquest is already queued or running for this document."
@@ -11750,7 +11777,7 @@ function DocumentPanelContent({
     }));
   };
   const saveFigureEdit = (figure: FigureRecord) => {
-    if (figureEditBusy) return;
+    if (documentLocked || figureEditBusy) return;
     updateFigure.mutate({ figureId: figure.id, draft: figureDrafts[figure.id] || figureDraftFromFigure(figure) });
   };
   const deleteExtractedFigure = async (figure: FigureRecord) => {
@@ -11790,6 +11817,7 @@ function DocumentPanelContent({
   useEscapeLayer(Boolean(editingFigureId) && !figureEditBusy, cancelFigureEdit, ESCAPE_PRIORITY_EXPANDED);
 
   const saveAccessorySummaryTitle = (summary: AccessorySummary) => {
+    if (documentLocked) return;
     const title = accessoryTitleDrafts[summary.id] ?? summary.title ?? "";
     updateAccessorySummary.mutate({ id: summary.id, title });
   };
@@ -12830,6 +12858,7 @@ function DocumentPanelContent({
     setAnnotationBody(readerSelectedText);
   };
   const startAnnotationEdit = (annotation: Annotation) => {
+    if (documentLocked) return;
     setEditingAnnotationId(annotation.id);
     setAnnotationDrafts((current) => ({ ...current, [annotation.id]: annotationDraftFromAnnotation(annotation) }));
   };
@@ -12843,6 +12872,7 @@ function DocumentPanelContent({
     }));
   };
   const saveAnnotationEdit = (annotation: Annotation) => {
+    if (documentLocked) return;
     const draftValue = annotationDrafts[annotation.id] || annotationDraftFromAnnotation(annotation);
     if (!draftValue.body.trim()) {
       setAnnotationError("Annotation body is required.");
@@ -13153,10 +13183,12 @@ function DocumentPanelContent({
     </section>
   );
   const renderAnnotationSection = () => {
-    const annotationCanCreate = Boolean((annotationBody.trim() || readerSelectedText.trim()) && !createAnnotation.isPending);
-    const createDisabledReason = createAnnotation.isPending
-      ? "an annotation is already being saved."
-      : "add annotation text or select parsed text from the Reader first.";
+    const annotationCanCreate = Boolean(!documentLocked && (annotationBody.trim() || readerSelectedText.trim()) && !createAnnotation.isPending);
+    const createDisabledReason = documentLocked
+      ? documentLockedReason
+      : createAnnotation.isPending
+        ? "an annotation is already being saved."
+        : "add annotation text or select parsed text from the Reader first.";
     const jumpToAnnotationPage = (annotation: Annotation) => {
       if (!annotation.page_number) return;
       const pageIndex = pages.findIndex((page) => page.page_number === annotation.page_number);
@@ -13201,7 +13233,7 @@ function DocumentPanelContent({
           <div className="annotation-composer-controls">
             <label>
               Kind
-              <select value={annotationKind} onChange={(event) => setAnnotationKind(event.target.value)}>
+              <select disabled={documentLocked} value={annotationKind} onChange={(event) => setAnnotationKind(event.target.value)}>
                 {ANNOTATION_KIND_OPTIONS.map((option) => (
                   <option key={option.id} value={option.id}>
                     {option.label}
@@ -13211,7 +13243,7 @@ function DocumentPanelContent({
             </label>
             <label>
               Color
-              <select value={annotationColor} onChange={(event) => setAnnotationColor(event.target.value)}>
+              <select disabled={documentLocked} value={annotationColor} onChange={(event) => setAnnotationColor(event.target.value)}>
                 {ANNOTATION_COLOR_OPTIONS.map((option) => (
                   <option key={option.id} value={option.id}>
                     {option.label}
@@ -13222,6 +13254,7 @@ function DocumentPanelContent({
             <label>
               Page
               <input
+                disabled={documentLocked}
                 inputMode="numeric"
                 min={1}
                 max={maxVisualScanPage}
@@ -13236,11 +13269,11 @@ function DocumentPanelContent({
               <span>Selected Text</span>
               <p>{readerSelectedText}</p>
               <div>
-                <button className="secondary-button compact" onClick={useReaderSelectionAsAnnotationBody} type="button">
+                <button className="secondary-button compact" disabled={documentLocked} onClick={useReaderSelectionAsAnnotationBody} type="button">
                   <Clipboard size={14} />
                   Use
                 </button>
-                <button className="icon-button compact" aria-label="Clear selected reader text" onClick={() => setReaderSelectedText("")} type="button">
+                <button className="icon-button compact" aria-label="Clear selected reader text" disabled={documentLocked} onClick={() => setReaderSelectedText("")} type="button">
                   <X size={14} />
                 </button>
               </div>
@@ -13248,6 +13281,7 @@ function DocumentPanelContent({
           ) : null}
           <textarea
             data-tooltip="Create a page-aware reader note. Selected parsed text is saved as quote evidence when present."
+            disabled={documentLocked}
             onChange={(event) => setAnnotationBody(event.target.value)}
             placeholder="Reader note"
             value={annotationBody}
@@ -13291,7 +13325,9 @@ function DocumentPanelContent({
                       ) : null}
                       <button
                         className="icon-button compact"
+                        data-disabled-reason={documentLocked ? documentLockedReason : ""}
                         data-tooltip={editingThis ? "Cancel annotation editing." : "Edit this annotation."}
+                        disabled={documentLocked}
                         onClick={() => {
                           if (editingThis) setEditingAnnotationId(null);
                           else startAnnotationEdit(annotation);
@@ -13302,10 +13338,12 @@ function DocumentPanelContent({
                       </button>
                       <button
                         className="icon-button compact"
-                        data-disabled-reason="an annotation delete is already running."
+                        data-disabled-reason={documentLocked ? documentLockedReason : "an annotation delete is already running."}
                         data-tooltip="Delete this reader note from the active document."
-                        disabled={deleteAnnotation.isPending}
-                        onClick={() => deleteAnnotation.mutate(annotation.id)}
+                        disabled={documentLocked || deleteAnnotation.isPending}
+                        onClick={() => {
+                          if (!documentLocked) deleteAnnotation.mutate(annotation.id);
+                        }}
                         type="button"
                       >
                         <Trash2 size={14} />
@@ -13316,7 +13354,7 @@ function DocumentPanelContent({
                     <div className="annotation-edit-grid">
                       <label>
                         Kind
-                        <select value={draftValue.kind} onChange={(event) => updateAnnotationDraft(annotation.id, "kind", event.target.value)}>
+                        <select disabled={documentLocked || updateAnnotation.isPending} value={draftValue.kind} onChange={(event) => updateAnnotationDraft(annotation.id, "kind", event.target.value)}>
                           {ANNOTATION_KIND_OPTIONS.map((option) => (
                             <option key={option.id} value={option.id}>
                               {option.label}
@@ -13326,7 +13364,7 @@ function DocumentPanelContent({
                       </label>
                       <label>
                         Color
-                        <select value={draftValue.color} onChange={(event) => updateAnnotationDraft(annotation.id, "color", event.target.value)}>
+                        <select disabled={documentLocked || updateAnnotation.isPending} value={draftValue.color} onChange={(event) => updateAnnotationDraft(annotation.id, "color", event.target.value)}>
                           {ANNOTATION_COLOR_OPTIONS.map((option) => (
                             <option key={option.id} value={option.id}>
                               {option.label}
@@ -13337,6 +13375,7 @@ function DocumentPanelContent({
                       <label>
                         Page
                         <input
+                          disabled={documentLocked || updateAnnotation.isPending}
                           inputMode="numeric"
                           min={1}
                           max={maxVisualScanPage}
@@ -13345,12 +13384,12 @@ function DocumentPanelContent({
                           value={draftValue.page_number}
                         />
                       </label>
-                      <textarea value={draftValue.body} onChange={(event) => updateAnnotationDraft(annotation.id, "body", event.target.value)} />
+                      <textarea disabled={documentLocked || updateAnnotation.isPending} value={draftValue.body} onChange={(event) => updateAnnotationDraft(annotation.id, "body", event.target.value)} />
                       <button
                         className="primary-button compact"
-                        data-disabled-reason={updateAnnotation.isPending ? "an annotation update is already running." : "annotation body is required."}
+                        data-disabled-reason={documentLocked ? documentLockedReason : updateAnnotation.isPending ? "an annotation update is already running." : "annotation body is required."}
                         data-tooltip="Save annotation edits and refresh document search."
-                        disabled={updateAnnotation.isPending || !draftValue.body.trim()}
+                        disabled={documentLocked || updateAnnotation.isPending || !draftValue.body.trim()}
                         onClick={() => saveAnnotationEdit(annotation)}
                         type="button"
                       >
@@ -13609,6 +13648,7 @@ function DocumentPanelContent({
                 {compositionButton}
                 {concordButton}
                 {formulaCaptureButton}
+                {lockDocumentButton}
                 {trashDocumentButton}
               </div>
             ) : (
@@ -13825,10 +13865,10 @@ function DocumentPanelContent({
           </div>
           <button
             className="primary-button"
-            data-disabled-reason="the document correction is already saving."
+            data-disabled-reason={documentLocked ? documentLockedReason : "the document correction is already saving."}
             data-tooltip="Save the document metadata correction, rebuild affected search text, and record the change in history."
             type="submit"
-            disabled={updateDocument.isPending}
+            disabled={documentLocked || updateDocument.isPending}
           >
             <Save size={15} />
             Save correction
@@ -13850,7 +13890,7 @@ function DocumentPanelContent({
             className="secondary-button compact"
             data-disabled-reason={accessorySummaryBusyReason}
             data-tooltip={accessoryComposerOpen ? "Close the Inquest question composer." : "Open the Inquest question composer for this document."}
-            disabled={accessorySummaryBusy}
+            disabled={documentLocked || accessorySummaryBusy}
             onClick={() => {
               if (accessoryComposerOpen) setAccessoryComposerOpen(false);
               else openInquestComposer();
@@ -13873,7 +13913,7 @@ function DocumentPanelContent({
             <input
               data-disabled-reason={accessorySummaryBusyReason}
               data-tooltip="Optionally name this Inquest before asking."
-              disabled={accessorySummaryBusy}
+              disabled={documentLocked || accessorySummaryBusy}
               onChange={(event) => setAccessoryTitle(event.target.value)}
               placeholder="Optional title"
               value={accessoryTitle}
@@ -13882,7 +13922,7 @@ function DocumentPanelContent({
               ref={accessoryPromptRef}
               data-disabled-reason={accessorySummaryBusyReason}
               data-tooltip="Type the question for a new Inquest on this document."
-              disabled={accessorySummaryBusy}
+              disabled={documentLocked || accessorySummaryBusy}
               onChange={(event) => setAccessoryPrompt(event.target.value)}
               placeholder="Ask a question about this document"
               rows={6}
@@ -13904,9 +13944,9 @@ function DocumentPanelContent({
               >
                 <button
                   className={asyncFeedbackClass("primary-button", accessorySummaryFeedback.feedback, accessorySummaryBusy)}
-                  data-disabled-reason={accessorySummaryBusy ? accessorySummaryBusyReason : "an Inquest question is required."}
+                  data-disabled-reason={documentLocked || accessorySummaryBusy ? accessorySummaryBusyReason : "an Inquest question is required."}
                   data-tooltip="Ask the selected model now and save the durable Inquest with this document."
-                  disabled={accessorySummaryBusy || !accessoryPrompt.trim()}
+                  disabled={documentLocked || accessorySummaryBusy || !accessoryPrompt.trim()}
                   type="submit"
                 >
                   <MessageSquare className={accessorySummaryBusy ? "spin" : ""} size={15} />
@@ -13925,9 +13965,9 @@ function DocumentPanelContent({
                   <div className="accessory-summary-head">
                     <input
                       aria-label="Inquest title"
-                      data-disabled-reason="an Inquest title update is already saving."
+                      data-disabled-reason={documentLocked ? documentLockedReason : "an Inquest title update is already saving."}
                       data-tooltip="Edit the optional display title for this Inquest; it saves when the field loses focus."
-                      disabled={updateAccessorySummary.isPending}
+                      disabled={documentLocked || updateAccessorySummary.isPending}
                       onBlur={() => {
                         if (titleValue !== (summary.title ?? "")) saveAccessorySummaryTitle(summary);
                       }}
@@ -13996,9 +14036,9 @@ function DocumentPanelContent({
                       <div className="figure-card-actions">
                         <button
                           className="icon-button compact"
-                          data-disabled-reason="a figure edit is already running."
+                          data-disabled-reason={documentLocked ? documentLockedReason : "a figure edit is already running."}
                           data-tooltip="Edit this figure label, caption, and searchable description."
-                          disabled={figureEditBusy}
+                          disabled={documentLocked || figureEditBusy}
                           onClick={() => startFigureEdit(figure)}
                           type="button"
                         >
@@ -14006,9 +14046,9 @@ function DocumentPanelContent({
                         </button>
                         <button
                           className="icon-button compact"
-                          data-disabled-reason="a figure edit is already running."
+                          data-disabled-reason={documentLocked ? documentLockedReason : "a figure edit is already running."}
                           data-tooltip="Delete this extracted figure from the document."
-                          disabled={figureEditBusy}
+                          disabled={documentLocked || figureEditBusy}
                           onClick={() => deleteExtractedFigure(figure)}
                           type="button"
                         >
@@ -14021,7 +14061,7 @@ function DocumentPanelContent({
                         <label>
                           <span>Label</span>
                           <input
-                            disabled={figureEditBusy}
+                            disabled={documentLocked || figureEditBusy}
                             onChange={(event) => updateFigureDraft(figure.id, "figure_label", event.target.value)}
                             placeholder="Figure 1"
                             value={figureDraft.figure_label}
@@ -14030,7 +14070,7 @@ function DocumentPanelContent({
                         <label>
                           <span>Caption</span>
                           <textarea
-                            disabled={figureEditBusy}
+                            disabled={documentLocked || figureEditBusy}
                             onChange={(event) => updateFigureDraft(figure.id, "caption", event.target.value)}
                             placeholder="Caption visible in the paper"
                             value={figureDraft.caption}
@@ -14039,7 +14079,7 @@ function DocumentPanelContent({
                         <label>
                           <span>Description</span>
                           <textarea
-                            disabled={figureEditBusy}
+                            disabled={documentLocked || figureEditBusy}
                             onChange={(event) => updateFigureDraft(figure.id, "gist", event.target.value)}
                             placeholder="Searchable description"
                             value={figureDraft.gist}
@@ -14048,9 +14088,9 @@ function DocumentPanelContent({
                         <div className="figure-editor-actions">
                           <button
                             className="secondary-button compact"
-                            data-disabled-reason="a figure edit is already running."
+                            data-disabled-reason={documentLocked ? documentLockedReason : "a figure edit is already running."}
                             data-tooltip="Save this figure correction and refresh document search."
-                            disabled={figureEditBusy}
+                            disabled={documentLocked || figureEditBusy}
                             onClick={() => saveFigureEdit(figure)}
                             type="button"
                           >
@@ -14164,12 +14204,14 @@ function DocumentPanelContent({
                   <button
                     className="primary-button compact"
                     data-disabled-reason={
-                      restoreHistoryVersion.isPending
+                      documentLocked
+                        ? documentLockedReason
+                        : restoreHistoryVersion.isPending
                         ? "a history restore is already running."
                         : "the selected history snapshot has no restorable document or page fields."
                     }
                     data-tooltip="Restore the selected history snapshot as the current document state and append a new history entry."
-                    disabled={!selectedHistoryRestorable || restoreHistoryVersion.isPending}
+                    disabled={documentLocked || !selectedHistoryRestorable || restoreHistoryVersion.isPending}
                     onClick={restoreSelectedHistoryVersion}
                     type="button"
                   >

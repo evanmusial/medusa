@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def load_release_agent():
     root = Path(__file__).resolve().parents[2]
@@ -23,6 +25,13 @@ def commit_all(repo: Path, message: str) -> str:
     run_git(repo, "add", ".")
     run_git(repo, "commit", "-m", message)
     return run_git(repo, "rev-parse", "HEAD")
+
+
+def write_haproxy_tls_placeholders(repo: Path) -> None:
+    cert_dir = repo / "data" / "haproxy"
+    cert_dir.mkdir(parents=True)
+    (cert_dir / "fullchain.pem").write_text("certificate\n")
+    (cert_dir / "privatekey.pem").write_text("private key\n")
 
 
 def test_release_agent_classifies_safe_dependency_and_risky_runtime_updates(tmp_path):
@@ -127,8 +136,68 @@ def test_release_agent_appends_release_history_entries(tmp_path):
     ]
 
 
+def test_release_agent_validates_haproxy_tls_material(tmp_path):
+    agent = load_release_agent()
+
+    with pytest.raises(RuntimeError, match="HAProxy TLS material is missing"):
+        agent.validate_haproxy_tls_material(tmp_path)
+
+    write_haproxy_tls_placeholders(tmp_path)
+    agent.validate_haproxy_tls_material(tmp_path)
+
+
+def test_release_agent_does_not_run_compose_when_haproxy_tls_is_missing(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    args = SimpleNamespace(
+        repo=tmp_path,
+        data_dir=tmp_path / "data",
+        status_file=tmp_path / "release-status.json",
+        request_file=None,
+        remote="origin",
+        upstream=None,
+        compose_file=["docker-compose.yml"],
+        no_fetch=True,
+        force=True,
+        force_window=True,
+        ignore_active_sessions=True,
+        idle_grace_seconds=300,
+        maintenance_window="03:00-06:00",
+        maintenance_timezone="UTC",
+        health_timeout_seconds=1,
+    )
+    compose_calls = []
+
+    monkeypatch.setattr(
+        agent,
+        "build_status",
+        lambda *_args, **_kwargs: {
+            "maintenance": {
+                "requires_approval": False,
+                "message": "Runtime refresh.",
+                "backup_required": False,
+            }
+        },
+    )
+    monkeypatch.setattr(agent, "update_maintenance_status", lambda *_args, **_kwargs: {})
+
+    def fail_if_readiness_runs(*_args, **_kwargs):
+        raise AssertionError("readiness should not run before HAProxy cert preflight")
+
+    def fake_run_command(command, **_kwargs):
+        if command[:2] == ["docker", "compose"]:
+            compose_calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent, "check_maintenance_readiness", fail_if_readiness_runs)
+    monkeypatch.setattr(agent, "run_command", fake_run_command)
+
+    assert agent.auto_maintenance(args) == 1
+    assert compose_calls == []
+
+
 def test_release_agent_does_not_run_compose_when_required_backup_gate_fails(monkeypatch, tmp_path):
     agent = load_release_agent()
+    write_haproxy_tls_placeholders(tmp_path)
     args = SimpleNamespace(
         repo=tmp_path,
         data_dir=tmp_path / "data",
@@ -177,8 +246,81 @@ def test_release_agent_does_not_run_compose_when_required_backup_gate_fails(monk
     assert compose_calls == []
 
 
+def test_release_agent_keeps_metrics_overlay_optional(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "docker-compose.server.yml").write_text("services: {}\n")
+    (tmp_path / "docker-compose.metrics.yml").write_text("services: {}\n")
+    args = SimpleNamespace(repo=tmp_path, compose_file=["docker-compose.yml", "docker-compose.server.yml"])
+
+    monkeypatch.delenv("MEDUSA_METRICS_OVERLAY", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_ENABLED", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_INTERNAL_TOKEN", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_BEARER_TOKEN_FILE", raising=False)
+
+    assert agent.compose_base_command(args) == [
+        "docker",
+        "compose",
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.server.yml",
+    ]
+
+
+def test_release_agent_preserves_enabled_metrics_overlay(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "docker-compose.server.yml").write_text("services: {}\n")
+    (tmp_path / "docker-compose.metrics.yml").write_text("services: {}\n")
+    token_file = tmp_path / "data" / "secrets" / "prometheus-token"
+    token_file.parent.mkdir(parents=True)
+    token_file.write_text("secret\n")
+    args = SimpleNamespace(repo=tmp_path, compose_file=["docker-compose.yml", "docker-compose.server.yml"])
+
+    monkeypatch.delenv("MEDUSA_METRICS_OVERLAY", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_ENABLED", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_INTERNAL_TOKEN", raising=False)
+    monkeypatch.delenv("MEDUSA_METRICS_BEARER_TOKEN", raising=False)
+    monkeypatch.setenv("MEDUSA_METRICS_BEARER_TOKEN_FILE", "/app/data/secrets/prometheus-token")
+
+    assert agent.compose_base_command(args) == [
+        "docker",
+        "compose",
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.server.yml",
+        "-f",
+        "docker-compose.metrics.yml",
+    ]
+
+
+def test_release_agent_allows_metrics_overlay_opt_out(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "docker-compose.server.yml").write_text("services: {}\n")
+    (tmp_path / "docker-compose.metrics.yml").write_text("services: {}\n")
+    (tmp_path / "data" / "secrets").mkdir(parents=True)
+    (tmp_path / "data" / "secrets" / "prometheus-token").write_text("secret\n")
+    args = SimpleNamespace(repo=tmp_path, compose_file=["docker-compose.yml", "docker-compose.server.yml"])
+
+    monkeypatch.setenv("MEDUSA_METRICS_OVERLAY", "false")
+
+    assert agent.compose_base_command(args) == [
+        "docker",
+        "compose",
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.server.yml",
+    ]
+
+
 def test_release_agent_reaches_pull_refresh_without_backup_when_not_required(monkeypatch, tmp_path):
     agent = load_release_agent()
+    write_haproxy_tls_placeholders(tmp_path)
     args = SimpleNamespace(
         repo=tmp_path,
         data_dir=tmp_path / "data",

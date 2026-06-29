@@ -7560,11 +7560,12 @@ def patch_annotation(
     annotation = db.get(Annotation, annotation_id)
     if not annotation or annotation.deleted_at:
         raise HTTPException(status_code=404, detail="Annotation not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(annotation, key, value)
     document = db.get(Document, annotation.document_id)
     if document_is_library_visible(document):
         ensure_document_unlocked(document)
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(annotation, key, value)
+    if document_is_library_visible(document):
         document.search_text = rebuild_document_search_text(document)
     db.commit()
     db.refresh(annotation)
@@ -7580,10 +7581,11 @@ def delete_annotation(
     annotation = db.get(Annotation, annotation_id)
     if not annotation or annotation.deleted_at:
         raise HTTPException(status_code=404, detail="Annotation not found")
-    annotation.deleted_at = utc_now()
     document = db.get(Document, annotation.document_id)
     if document_is_library_visible(document):
         ensure_document_unlocked(document)
+    annotation.deleted_at = utc_now()
+    if document_is_library_visible(document):
         document.search_text = rebuild_document_search_text(document)
     db.commit()
     return {"status": "deleted"}
@@ -10790,6 +10792,7 @@ def patch_citation_candidate(
         document = db.get(Document, candidate.document_id)
         if not document_is_library_visible(document):
             raise HTTPException(status_code=404, detail="Document not found")
+        ensure_document_unlocked(document)
         before = document_correction_snapshot(document)
         changed_fields: set[str] = set()
         metadata = candidate.source_metadata or {}

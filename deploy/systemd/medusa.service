@@ -8,9 +8,9 @@ Requires=docker.service
 Type=oneshot
 WorkingDirectory=/opt/medusa
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
-ExecStart=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
-ExecReload=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
-ExecStop=/usr/bin/env docker compose -f docker-compose.yml -f docker-compose.server.yml stop
+ExecStart=/opt/medusa/scripts/medusa-release-agent.py compose --repo /opt/medusa --compose-file docker-compose.yml --compose-file docker-compose.server.yml -- up -d --build
+ExecReload=/opt/medusa/scripts/medusa-release-agent.py compose --repo /opt/medusa --compose-file docker-compose.yml --compose-file docker-compose.server.yml -- up -d --build
+ExecStop=/opt/medusa/scripts/medusa-release-agent.py compose --repo /opt/medusa --compose-file docker-compose.yml --compose-file docker-compose.server.yml -- stop
 RemainAfterExit=yes
 TimeoutStartSec=900
 TimeoutStopSec=120

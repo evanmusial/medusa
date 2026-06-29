@@ -31,6 +31,7 @@ RUNTIME_FILES = {
     "frontend/Dockerfile",
     "docker-compose.yml",
     "docker-compose.server.yml",
+    "docker-compose.metrics.yml",
 }
 BACKUP_REQUIRED_FILES = {
     "backend/Dockerfile",
@@ -46,6 +47,13 @@ BACKUP_REQUIRED_FILES = {
 BACKUP_REQUIRED_PREFIXES = ("backend/alembic/",)
 DOC_PREFIXES = ("docs/",)
 DOC_FILES = {"README.md", "TODO.md"}
+METRICS_COMPOSE_FILE = "docker-compose.metrics.yml"
+HAPROXY_CERT_FILES = (
+    ("fullchain.pem", "HAProxy certificate"),
+    ("privatekey.pem", "HAProxy private key"),
+)
+TRUTHY_VALUES = {"1", "true", "yes", "on", "enabled"}
+FALSEY_VALUES = {"0", "false", "no", "off", "disabled"}
 
 
 def utc_now() -> str:
@@ -120,6 +128,78 @@ def env_file_value(repo: Path, key: str) -> str | None:
             continue
         return stripped[len(prefix) :].strip().strip("'\"") or None
     return None
+
+
+def env_flag_value(repo: Path, key: str) -> bool | None:
+    raw = os.environ.get(key)
+    if raw is None:
+        raw = env_file_value(repo, key)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in TRUTHY_VALUES:
+        return True
+    if normalized in FALSEY_VALUES:
+        return False
+    return None
+
+
+def host_path_for_container_data_path(repo: Path, value: str | None) -> Path | None:
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        try:
+            relative = path.relative_to("/app/data")
+        except ValueError:
+            return path
+        return repo / "data" / relative
+    return repo / path
+
+
+def metrics_overlay_enabled(repo: Path) -> bool:
+    explicit = env_flag_value(repo, "MEDUSA_METRICS_OVERLAY")
+    if explicit is not None:
+        return explicit
+    explicit = env_flag_value(repo, "MEDUSA_METRICS_ENABLED")
+    if explicit is not None:
+        return explicit
+    if not (repo / METRICS_COMPOSE_FILE).exists():
+        return False
+    if os.environ.get("MEDUSA_METRICS_INTERNAL_TOKEN") or env_file_value(repo, "MEDUSA_METRICS_INTERNAL_TOKEN"):
+        return True
+    if os.environ.get("MEDUSA_METRICS_BEARER_TOKEN") or env_file_value(repo, "MEDUSA_METRICS_BEARER_TOKEN"):
+        return True
+    token_file = os.environ.get("MEDUSA_METRICS_BEARER_TOKEN_FILE") or env_file_value(repo, "MEDUSA_METRICS_BEARER_TOKEN_FILE")
+    token_path = host_path_for_container_data_path(repo, token_file)
+    if token_path and token_path.is_file():
+        return True
+    return (repo / "data" / "secrets" / "prometheus-token").is_file()
+
+
+def resolved_compose_files(args: argparse.Namespace) -> list[str]:
+    repo = args.repo.resolve()
+    compose_files = list(args.compose_file or ["docker-compose.yml"])
+    names = {Path(compose_file).name for compose_file in compose_files}
+    if METRICS_COMPOSE_FILE not in names and metrics_overlay_enabled(repo):
+        compose_files.append(METRICS_COMPOSE_FILE)
+    return compose_files
+
+
+def validate_haproxy_tls_material(repo: Path) -> None:
+    cert_dir = repo / "data" / "haproxy"
+    missing: list[str] = []
+    for filename, label in HAPROXY_CERT_FILES:
+        path = cert_dir / filename
+        if not path.is_file() or path.stat().st_size <= 0:
+            missing.append(f"{path} ({label})")
+    if missing:
+        joined = "; ".join(missing)
+        raise RuntimeError(
+            "HAProxy TLS material is missing; refusing to restart Compose services. "
+            "Install data/haproxy/fullchain.pem and data/haproxy/privatekey.pem, then retry. "
+            f"Missing: {joined}"
+        )
 
 
 def env_assignment(key: str, value: str) -> str:
@@ -534,8 +614,7 @@ def update_maintenance_status(args: argparse.Namespace, phase: str, message: str
 
 def compose_base_command(args: argparse.Namespace) -> list[str]:
     command = ["docker", "compose"]
-    compose_files = args.compose_file or ["docker-compose.yml"]
-    for compose_file in compose_files:
+    for compose_file in resolved_compose_files(args):
         command.extend(["-f", compose_file])
     return command
 
@@ -676,6 +755,17 @@ def compose_up_command(args: argparse.Namespace, *, pull_always: bool = False) -
     return command
 
 
+def compose_passthrough(args: argparse.Namespace) -> int:
+    compose_args = list(args.compose_args)
+    if compose_args and compose_args[0] == "--":
+        compose_args = compose_args[1:]
+    if not compose_args:
+        print("No docker compose arguments supplied.", file=sys.stderr)
+        return 2
+    command = [*compose_base_command(args), *compose_args]
+    return subprocess.run(command, cwd=str(args.repo.resolve())).returncode
+
+
 def wait_for_health(repo: Path, timeout_seconds: int) -> None:
     probes = [health_url(repo), app_shell_url(repo)]
     deadline = time.monotonic() + timeout_seconds
@@ -743,6 +833,7 @@ def auto_maintenance(args: argparse.Namespace) -> int:
         backup_required = bool(classification.get("backup_required"))
         backup_status = "not_started" if backup_required else "not_required"
         backup: dict[str, Any] | None = None
+        validate_haproxy_tls_material(repo)
         update_maintenance_status(
             args,
             "readiness",
@@ -899,6 +990,7 @@ def apply(args: argparse.Namespace) -> int:
         backup_required = bool(classification.get("backup_required"))
         backup_status = "not_started" if backup_required else "not_required"
         backup: dict[str, Any] | None = None
+        validate_haproxy_tls_material(repo)
         update_maintenance_status(
             args,
             "readiness",
@@ -1005,7 +1097,7 @@ def apply(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     base = argparse.ArgumentParser(description="Medusa host-side release status and upgrade agent.")
     subcommands = base.add_subparsers(dest="command", required=True)
-    for name in ("check", "apply", "auto-maintenance"):
+    for name in ("check", "apply", "auto-maintenance", "compose"):
         command = subcommands.add_parser(name)
         command.add_argument("--repo", type=Path, default=Path.cwd(), help="Medusa checkout path.")
         command.add_argument("--data-dir", type=Path, default=Path("data"), help="Medusa ignored data directory.")
@@ -1020,6 +1112,7 @@ def parser() -> argparse.ArgumentParser:
             default=None,
             help="Compose file to include for apply; repeat for overrides. Defaults to docker-compose.yml.",
         )
+    subcommands.choices["compose"].add_argument("compose_args", nargs=argparse.REMAINDER, help="Arguments passed through to docker compose.")
     subcommands.choices["check"].add_argument("--no-fetch", action="store_true", help="Do not fetch before checking.")
     subcommands.choices["apply"].add_argument("--force", action="store_true", help="Apply even when no request file exists.")
     subcommands.choices["apply"].add_argument("--health-timeout-seconds", type=int, default=120)
@@ -1038,6 +1131,8 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    if args.command == "compose":
+        return compose_passthrough(args)
     if args.command == "check":
         return check(args)
     if args.command == "apply":

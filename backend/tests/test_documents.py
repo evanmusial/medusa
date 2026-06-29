@@ -158,6 +158,52 @@ def test_patch_document_marks_no_doi_without_placeholder(monkeypatch, tmp_path):
         assert "no_doi" not in updated.metadata_evidence
 
 
+def test_document_lock_blocks_document_mutations(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import bulk_update_documents, patch_document, set_document_lock, trash_documents
+    from app.models import Document
+    from app.schemas import DocumentLockPatch, DocumentPatch, DocumentTrashRequest
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Lock Target",
+            original_filename="lock-target.pdf",
+            checksum_sha256="l" * 64,
+            processing_status="ready",
+        )
+        db.add(document)
+        db.commit()
+
+        locked = set_document_lock(document.id, DocumentLockPatch(is_locked=True), object(), db)
+        db.refresh(document)
+
+        assert locked.is_locked is True
+        assert document.locked_at is not None
+
+        with pytest.raises(HTTPException) as patch_exc:
+            patch_document(document.id, DocumentPatch(title="Changed"), object(), db)
+        assert patch_exc.value.status_code == 423
+
+        with pytest.raises(HTTPException) as bulk_exc:
+            bulk_update_documents({"document_ids": [document.id], "updates": {"priority": "high"}}, object(), db)
+        assert bulk_exc.value.status_code == 423
+
+        with pytest.raises(HTTPException) as trash_exc:
+            trash_documents(DocumentTrashRequest(document_ids=[document.id]), object(), db)
+        assert trash_exc.value.status_code == 423
+
+        unlocked = set_document_lock(document.id, DocumentLockPatch(is_locked=False), object(), db)
+        updated = patch_document(document.id, DocumentPatch(title="Unlocked Change"), object(), db)
+
+        assert unlocked.is_locked is False
+        assert updated.title == "Unlocked Change"
+
+
 def test_document_field_verification_requires_confirmed_doi_and_citation_edits(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

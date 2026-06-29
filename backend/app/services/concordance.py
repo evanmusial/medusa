@@ -1272,6 +1272,11 @@ class ConcordanceProcessor:
         if document_is_locked(document):
             job.status = "complete"
             job.last_error = None
+            job.locked_at = None
+            job.completed_at = utc_now()
+            run = db.get(ConcordanceRun, job.run_id)
+            if run:
+                refresh_concordance_run_progress(db, run)
             log_event(
                 db,
                 job=None,

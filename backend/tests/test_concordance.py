@@ -45,6 +45,57 @@ def test_create_concordance_run_skips_current_capability(monkeypatch, tmp_path):
         assert run.status == "complete"
 
 
+def test_concordance_skips_locked_documents(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document, ProcessingEvent, utc_now
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor, create_concordance_run
+
+    Session = make_session()
+    with Session() as db:
+        locked = Document(
+            title="Locked",
+            original_filename="locked.pdf",
+            checksum_sha256="l" * 64,
+            processing_status="ready",
+            locked_at=utc_now(),
+        )
+        unlocked = Document(
+            title="Unlocked",
+            original_filename="unlocked.pdf",
+            checksum_sha256="u" * 64,
+            processing_status="ready",
+        )
+        db.add_all([locked, unlocked])
+        db.commit()
+
+        run = create_concordance_run(db, capability_keys=["search_index"], force=True)
+        queued_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.run_id == run.id).all()
+
+        assert run.total_jobs == 1
+        assert [job.document_id for job in queued_jobs] == [unlocked.id]
+
+        forced_run = ConcordanceRun(scope_type="documents", scope_data={"document_ids": [locked.id]}, capability_keys=["search_index"], total_jobs=1)
+        db.add(forced_run)
+        db.flush()
+        forced_job = ConcordanceJob(
+            run=forced_run,
+            document=locked,
+            capability_key="search_index",
+            target_version=CAPABILITY_BY_KEY["search_index"].version,
+        )
+        db.add(forced_job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, forced_job)
+
+        event = db.query(ProcessingEvent).filter_by(document_id=locked.id, event_type="concordance_skipped_locked").one()
+        assert forced_job.status == "complete"
+        assert forced_run.status == "complete"
+        assert event.payload["capability_key"] == "search_index"
+
+
 def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
