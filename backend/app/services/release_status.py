@@ -14,9 +14,6 @@ from app.services.maintenance import DEFAULT_IDLE_GRACE_SECONDS, maintenance_rea
 
 
 STATUS_SCHEMA_VERSION = 1
-RELEASE_RELOAD_PROMPT_PHASES = {"requested", "fetching", "applying", "building", "restarting", "verifying", "reload_ready"}
-
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -288,14 +285,12 @@ def release_status(client_version: str | None = None, db: Session | None = None)
         maintenance_phase = "requested"
 
     normalized_client_version = (client_version or "").strip()
-    release_reload_prompt_active = bool(request_exists or requested_at or request_id or phase in RELEASE_RELOAD_PROMPT_PHASES)
     browser_reload_recommended = bool(
         normalized_client_version
         and not update_available
         and running.version
         and normalized_client_version != running.version
         and running.source != "runtime-default"
-        and release_reload_prompt_active
     )
     if browser_reload_recommended and not update_available and phase == "current":
         message = "A newer Medusa build is already running. Reload the browser to use it."

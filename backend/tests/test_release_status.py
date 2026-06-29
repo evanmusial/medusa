@@ -106,7 +106,7 @@ def test_release_status_recommends_browser_reload_for_completed_release_request(
     reset_settings_cache()
 
 
-def test_release_status_suppresses_browser_reload_for_settled_maintenance_refresh(monkeypatch, tmp_path):
+def test_release_status_recommends_browser_reload_for_any_stale_settled_client(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
     reset_settings_cache()
 
@@ -147,7 +147,7 @@ def test_release_status_suppresses_browser_reload_for_settled_maintenance_refres
 
     status = release_status(client_version="20260624 (aaaaaaaaaaaa)")
     assert status.update_available is False
-    assert status.browser_reload_recommended is False
+    assert status.browser_reload_recommended is True
     assert status.phase == "complete"
 
     reset_settings_cache()
