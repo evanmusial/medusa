@@ -5386,6 +5386,12 @@ function bibliographyCleanupNotice(metadataEvidence: Record<string, unknown>): s
   return null;
 }
 
+function bibliographyRefreshDidNotFindReferences(document: DocumentDetail): boolean {
+  if (document.bibliography?.trim()) return false;
+  const evidence = document.metadata_evidence?.bibliography_extraction;
+  return isRecord(evidence) && evidence.status === "not_found";
+}
+
 function ResizeHandle({
   label,
   value,
@@ -9967,6 +9973,39 @@ function DocumentPanelContent({
     queryKey: ["annotations", document.id],
     queryFn: () => api.annotations(document.id),
   });
+  const finishBibliographyRefresh = useCallback(
+    (failedMessage?: string) => {
+      setBibliographyRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+      if (failedMessage) {
+        bibliographyRefreshFeedback.showError(actionFailureMessage("Bibliography refresh failed", failedMessage));
+        refreshActiveDocumentDetail(queryClient, document.id);
+        return;
+      }
+      void (async () => {
+        let notFound = false;
+        try {
+          const updatedDocument = await api.document(document.id);
+          queryClient.setQueryData(["document", document.id], updatedDocument);
+          notFound = bibliographyRefreshDidNotFindReferences(updatedDocument);
+          if (notFound) {
+            await dialogs.alert({
+              confirmLabel: "OK",
+              eyebrow: "Bibliography",
+              message: "Medusa wasn't able to find references.",
+              title: "References not found",
+              tone: "warning",
+            });
+          }
+        } catch {
+          refreshActiveDocumentDetail(queryClient, document.id);
+        }
+        if (!notFound) bibliographyRefreshFeedback.showSuccess();
+      })();
+    },
+    [bibliographyRefreshFeedback, dialogs, document.id, queryClient],
+  );
   const updateDocumentLock = useMutation({
     mutationFn: (isLocked: boolean) => api.updateDocumentLock(document.id, { is_locked: isLocked }),
     onSuccess: (updatedDocument) => {
@@ -10348,7 +10387,7 @@ function DocumentPanelContent({
       }),
     onSuccess: (run) => {
       if (run.total_jobs > 0) setBibliographyRunId(rememberTrackedRun(run));
-      else bibliographyRefreshFeedback.showSuccess();
+      else finishBibliographyRefresh();
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
@@ -11190,37 +11229,23 @@ function DocumentPanelContent({
     if (trackedBibliographyJobs.length === 0) {
       if ((!trackedBibliographyRun || isActiveConcordanceStatus(trackedBibliographyRun.status)) && !bibliographyRunServerIdle) return;
       if (trackedBibliographyRun && concordanceRunFailed(trackedBibliographyRun)) {
-        bibliographyRefreshFeedback.showError(
-          actionFailureMessage("Bibliography refresh failed", runFailureMessage(trackedBibliographyRun, []) || "Concordance run failed"),
-        );
+        finishBibliographyRefresh(runFailureMessage(trackedBibliographyRun, []) || "Concordance run failed");
       } else {
-        bibliographyRefreshFeedback.showSuccess();
+        finishBibliographyRefresh();
       }
-      setBibliographyRunId(null);
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      refreshActiveDocumentDetail(queryClient, document.id);
-      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
       return;
     }
     if (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status)) && !bibliographyRunServerIdle) return;
     const failedJob = trackedBibliographyJobs.find((job) => job.status === "failed");
     if (failedJob) {
-      bibliographyRefreshFeedback.showError(
-        actionFailureMessage("Bibliography refresh failed", failedJob.last_error || "Concordance job failed without a detailed error"),
-      );
+      finishBibliographyRefresh(failedJob.last_error || "Concordance job failed without a detailed error");
     } else {
-      bibliographyRefreshFeedback.showSuccess();
+      finishBibliographyRefresh();
     }
-    setBibliographyRunId(null);
-    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    refreshActiveDocumentDetail(queryClient, document.id);
-    void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
   }, [
-    bibliographyRefreshFeedback,
+    finishBibliographyRefresh,
     bibliographyRunId,
     bibliographyRunServerIdle,
-    document.id,
-    queryClient,
     trackedBibliographyJobs,
     trackedBibliographyRun,
   ]);

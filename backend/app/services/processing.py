@@ -28,7 +28,7 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
-from app.services.bibliography import extract_document_bibliography
+from app.services.bibliography import bibliography_visual_ocr_enabled, extract_document_bibliography
 from app.services.citations import merge_citation_metadata, validate_apa_citation_pair
 from app.services.composition import (
     elapsed_ms,
@@ -797,9 +797,16 @@ class DocumentProcessor:
         if bool(bibliography_config.get("enabled", True)):
             bibliography_started_at, bibliography_started_perf = stage_timer()
             checkpoint_job_step(db, job, document, "extracting_bibliography", "Extracting source bibliography.")
+            bibliography_visual_ocr = bibliography_visual_ocr_enabled(preset_snapshot)
+            bibliography_pdf_path = (
+                pdf_path
+                if bool(bibliography_config.get("preserve_italics", True)) or bibliography_visual_ocr
+                else None
+            )
             bibliography_result = extract_document_bibliography(
                 document,
-                pdf_path if bool(bibliography_config.get("preserve_italics", True)) else None,
+                bibliography_pdf_path,
+                visual_ocr=bibliography_visual_ocr,
             )
             bibliography_evidence = bibliography_result.get("evidence") or {}
             document.bibliography = bibliography_result.get("bibliography") or None

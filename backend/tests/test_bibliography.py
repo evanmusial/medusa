@@ -137,6 +137,75 @@ def test_extract_document_bibliography_prefers_pdf_span_markdown(monkeypatch, tm
     assert result["evidence"]["formatting"] == "markdown_italics_from_pdf_spans"
 
 
+def test_extract_document_bibliography_uses_visual_ocr_tail_pages(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Graphical References Paper",
+        original_filename="graphical-references.pdf",
+        checksum_sha256="4" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=6, normalized_text="2068\nRunning header only."))
+    document.pages.append(DocumentPage(page_number=7, normalized_text="2069\nRunning header only."))
+    pdf_path = tmp_path / "references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(bibliography_service, "_formatted_bibliography_from_pdf", lambda _path: None)
+    monkeypatch.setattr(
+        bibliography_service,
+        "_visual_ocr_pdf_page_lines",
+        lambda _path: (
+            [
+                (6, "6. REFERENCES"),
+                (6, "1. D. Denning, An Intrusion-Detection Model, Proc. 1986 EEE Symp. Sec. Privacy, 1986, pp. 118-31."),
+                (7, "2. W. Lee, S. Stolfo, and K. Mok, Mining Audit Data to Build Intrusion Detection Models, Proc. KDD, 1998."),
+            ],
+            [4, 5, 6, 7],
+        ),
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path), visual_ocr=True)
+
+    assert result["evidence"]["source"] == "visual_ocr"
+    assert result["evidence"]["status"] == "extracted"
+    assert result["evidence"]["page_start"] == 6
+    assert result["evidence"]["page_end"] == 7
+    assert result["evidence"]["entry_count_estimate"] == 2
+    assert result["bibliography"].splitlines()[0].startswith("D. Denning")
+
+
+def test_extract_document_bibliography_records_visual_ocr_error(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Unavailable OCR References Paper",
+        original_filename="unavailable-ocr-references.pdf",
+        checksum_sha256="5" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="No extracted reference text."))
+    pdf_path = tmp_path / "references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    def raise_ocr_error(_path):
+        raise RuntimeError("Cloud Vision API is disabled")
+
+    monkeypatch.setattr(bibliography_service, "_formatted_bibliography_from_pdf", lambda _path: None)
+    monkeypatch.setattr(bibliography_service, "_visual_ocr_pdf_page_lines", raise_ocr_error)
+
+    result = extract_document_bibliography(document, Path(pdf_path), visual_ocr=True)
+
+    assert result["bibliography"] is None
+    assert result["evidence"]["source"] == "page_text"
+    assert result["evidence"]["status"] == "not_found"
+    assert result["evidence"]["fallback_sources_attempted"] == ["pdf_span_layout", "page_text", "visual_ocr"]
+    assert result["evidence"]["visual_ocr"]["status"] == "ocr_error"
+    assert "disabled" in result["evidence"]["visual_ocr"]["error"]
+
+
 def test_extract_document_bibliography_prefers_late_complete_references_over_table_label(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service

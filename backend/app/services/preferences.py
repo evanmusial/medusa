@@ -137,7 +137,7 @@ IMPORT_PROCESSING_STEPS: tuple[dict[str, Any], ...] = (
         "label": "OCR Fallback",
         "default_enabled": True,
         "configurable": True,
-        "description": "Audits low-text or scanned pages for OCR eligibility under the selected preset; Google Vision execution is still pending integration.",
+        "description": "Audits low-text or scanned pages for OCR eligibility under the selected preset; Bibliography extraction can use Google Vision as a last-resort references rescue while broader OCR page-text persistence remains pending.",
         "accomplishes": "Identifies pages that need OCR without adding provider cost until the OCR retry loop is wired.",
     },
     {

@@ -35,7 +35,7 @@ from app.services.analysis_models import (
     is_google_text_model,
 )
 from app.services.citations import decode_html_entities, merge_citation_metadata
-from app.services.bibliography import _line_starts_reference_entry, extract_document_bibliography
+from app.services.bibliography import _line_starts_reference_entry, bibliography_visual_ocr_enabled, extract_document_bibliography
 from app.services.composition import elapsed_ms, record_concordance_stage, record_import_erratum, stage_timer, sync_import_usage_composition
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.document_visibility import document_is_locked, filter_library_visible_documents
@@ -458,8 +458,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="bibliography_extraction",
         label="Bibliography extraction",
-        version=2,
-        description="Extract the source document's own reference list into the Bibliography field, rejecting publisher boilerplate and preserving Markdown italics from PDF span evidence when available.",
+        version=3,
+        description="Extract the source document's own reference list into the Bibliography field, rejecting publisher boilerplate, preserving Markdown italics from PDF span evidence when available, and using visual OCR as a last-resort references rescue when the active preset allows it.",
     ),
     CapabilityDefinition(
         key="formula_capture",
@@ -1598,11 +1598,16 @@ class ConcordanceProcessor:
             return {"status": "disabled_by_preset"}
         pdf_bytes = self._document_pdf_bytes(db, document)
         result: dict[str, Any]
-        if pdf_bytes and bool(bibliography_config.get("preserve_italics", True)):
+        bibliography_visual_ocr = bibliography_visual_ocr_enabled(preset)
+        if pdf_bytes and (bool(bibliography_config.get("preserve_italics", True)) or bibliography_visual_ocr):
             with NamedTemporaryFile(suffix=".pdf") as handle:
                 handle.write(pdf_bytes)
                 handle.flush()
-                result = extract_document_bibliography(document, Path(handle.name))
+                result = extract_document_bibliography(
+                    document,
+                    Path(handle.name),
+                    visual_ocr=bibliography_visual_ocr,
+                )
         else:
             result = extract_document_bibliography(document)
         bibliography = result.get("bibliography")

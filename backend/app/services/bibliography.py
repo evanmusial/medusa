@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,25 @@ PAGE_NUMBER_RE = re.compile(r"^(?:\d{1,3}|1[0-7]\d{2})$")
 PDF_STANDALONE_REFERENCE_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*$")
 READABLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]{2,}")
 GARBLED_SYMBOL_RE = re.compile(r"[#@$%^&*=<>\\|~]{2,}|(?:[!?][!?#<>{}=])")
+VISUAL_OCR_TAIL_PAGE_LIMIT = 4
+VISUAL_OCR_RENDER_ZOOM = 2.0
+VISUAL_OCR_ERROR_MAX_LENGTH = 700
+
+
+class VisualOcrUnavailable(RuntimeError):
+    pass
+
+
+def bibliography_visual_ocr_enabled(preset: dict[str, Any] | None) -> bool:
+    if not isinstance(preset, dict):
+        return False
+    if not bool(preset.get("second_pass_enabled", True)):
+        return False
+    ocr = preset.get("ocr") if isinstance(preset.get("ocr"), dict) else {}
+    if not bool(ocr.get("enabled", True)):
+        return False
+    provider = str(ocr.get("provider") or "google_vision").strip().lower()
+    return provider in {"google_vision", "vision", "google"}
 
 
 def _strip_markdown(value: str) -> str:
@@ -626,6 +646,105 @@ def _formatted_bibliography_from_pdf(path: Path) -> dict[str, Any] | None:
     }
 
 
+def _visual_ocr_candidate_pages(page_count: int) -> list[int]:
+    if page_count <= 0:
+        return []
+    first_page = max(1, page_count - VISUAL_OCR_TAIL_PAGE_LIMIT + 1)
+    return list(range(first_page, page_count + 1))
+
+
+def _visual_ocr_pdf_page_lines(path: Path) -> tuple[list[tuple[int, str]], list[int]]:
+    import fitz
+
+    from app.services.ocr import OcrService
+
+    ocr = OcrService()
+    if not getattr(ocr, "client", None):
+        raise VisualOcrUnavailable("Google Vision OCR is not configured.")
+
+    rows: list[tuple[int, str]] = []
+    with fitz.open(path) as pdf:
+        page_numbers = _visual_ocr_candidate_pages(len(pdf))
+        with TemporaryDirectory(prefix="medusa-bibliography-ocr-") as temp_dir:
+            temp_root = Path(temp_dir)
+            for page_number in page_numbers:
+                page = pdf[page_number - 1]
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(VISUAL_OCR_RENDER_ZOOM, VISUAL_OCR_RENDER_ZOOM),
+                    alpha=False,
+                )
+                image_path = temp_root / f"page-{page_number}.png"
+                pixmap.save(image_path)
+                text = ocr.image_to_text(image_path) or ""
+                for line in sanitize_extracted_text(text).replace("\r\n", "\n").replace("\r", "\n").splitlines():
+                    if line.strip():
+                        rows.append((page_number, line.strip()))
+    return rows, page_numbers
+
+
+def _visual_ocr_bibliography_from_pdf(path: Path) -> dict[str, Any]:
+    try:
+        page_rows, attempted_pages = _visual_ocr_pdf_page_lines(path)
+    except VisualOcrUnavailable as exc:
+        return {
+            "bibliography": None,
+            "evidence": {
+                "source": "visual_ocr",
+                "status": "ocr_unavailable",
+                "error": str(exc)[:VISUAL_OCR_ERROR_MAX_LENGTH],
+            },
+        }
+    except Exception as exc:
+        return {
+            "bibliography": None,
+            "evidence": {
+                "source": "visual_ocr",
+                "status": "ocr_error",
+                "error": str(exc)[:VISUAL_OCR_ERROR_MAX_LENGTH],
+            },
+        }
+
+    evidence_base: dict[str, Any] = {
+        "source": "visual_ocr",
+        "page_start": min(attempted_pages) if attempted_pages else None,
+        "page_end": max(attempted_pages) if attempted_pages else None,
+        "pages_attempted": attempted_pages,
+        "ocr_line_count": len(page_rows),
+    }
+    if not page_rows:
+        return {"bibliography": None, "evidence": {**evidence_base, "status": "empty"}}
+
+    page_rows = _expand_embedded_reference_heading_rows(page_rows)
+    lines = [line for _, line in page_rows]
+    selected, start, end = _extract_reference_lines(lines)
+    if not selected:
+        return {"bibliography": None, "evidence": {**evidence_base, "status": "not_found"}}
+
+    page_numbers = [page for page, _ in page_rows[start:end] if page] if start is not None and end is not None else []
+    text = _format_reference_lines(selected)
+    if not text:
+        return {"bibliography": None, "evidence": {**evidence_base, "status": "empty"}}
+    return {
+        "bibliography": text,
+        "evidence": {
+            **evidence_base,
+            "status": "extracted",
+            "page_start": min(page_numbers) if page_numbers else evidence_base["page_start"],
+            "page_end": max(page_numbers) if page_numbers else evidence_base["page_end"],
+            "formatting": "plain_text_from_visual_ocr",
+            "entry_count_estimate": _entry_count(text),
+        },
+    }
+
+
+def _with_visual_ocr_not_found_evidence(base: dict[str, Any], visual_ocr: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(base)
+    evidence["status"] = "not_found"
+    evidence["visual_ocr"] = visual_ocr.get("evidence") or {"source": "visual_ocr", "status": "not_found"}
+    evidence["fallback_sources_attempted"] = ["pdf_span_layout", "page_text", "visual_ocr"]
+    return evidence
+
+
 def _entry_count(text: str | None) -> int:
     if not text:
         return 0
@@ -851,9 +970,20 @@ def _format_reference_lines(lines: list[str]) -> str:
     return "\n".join(entries).strip()
 
 
-def extract_document_bibliography(document: Document, pdf_path: Path | None = None) -> dict[str, Any]:
+def extract_document_bibliography(
+    document: Document,
+    pdf_path: Path | None = None,
+    *,
+    visual_ocr: bool = False,
+) -> dict[str, Any]:
     if pdf_path and pdf_path.exists():
         formatted = _formatted_bibliography_from_pdf(pdf_path)
         if formatted and formatted.get("bibliography"):
             return formatted
-    return _plain_bibliography_from_pages(document)
+    plain = _plain_bibliography_from_pages(document)
+    if plain.get("bibliography") or not visual_ocr or not pdf_path or not pdf_path.exists():
+        return plain
+    visual = _visual_ocr_bibliography_from_pdf(pdf_path)
+    if visual.get("bibliography"):
+        return visual
+    return {"bibliography": None, "evidence": _with_visual_ocr_not_found_evidence(plain.get("evidence") or {}, visual)}
