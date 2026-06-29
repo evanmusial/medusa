@@ -4615,18 +4615,18 @@ function markdownParagraphsToClipboardHtml(content?: string | null) {
         .join("<br>"),
     )
     .filter(Boolean)
-    .map((paragraph) => `<p>${paragraph}</p>`)
+    .map((paragraph) => `<div style="margin:0;">${paragraph}</div>`)
     .join("");
 }
 
 function bibliographyMarkdownToClipboardHtml(content?: string | null) {
   return bibliographyEntriesFromText(content)
-    .map((entry) => `<p>${inlineMarkdownToClipboardHtml(entry)}</p>`)
+    .map((entry) => `<div style="margin:0;">${inlineMarkdownToClipboardHtml(entry)}</div>`)
     .join("");
 }
 
 function richClipboardHtml(body: string) {
-  return body ? `<div>${body}</div>` : "";
+  return body ? `<div data-medusa-clipboard="true" style="margin:0;">${body}</div>` : "";
 }
 
 function markdownToEditableHtml(content?: string | null) {
@@ -4640,6 +4640,22 @@ function markdownToEditableHtml(content?: string | null) {
 
 function markdownClipboardText(content?: string | null) {
   return stripMarkdownFormatting(decodeHtmlEntities(content || "")).trim();
+}
+
+type RichEditorLineBreakMode = "preserve" | "compact";
+
+function normalizeRichEditorMarkdown(value: string, lineBreakMode: RichEditorLineBreakMode = "preserve") {
+  const normalized = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\u00a0/g, " ");
+  const lines = normalized.split("\n").map((line) => line.replace(/[ \t]+$/g, ""));
+  if (lineBreakMode === "compact") {
+    return lines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(" ");
+  }
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 function bibliographyClipboardText(content?: string | null) {
@@ -4698,7 +4714,13 @@ function editableNodeToMarkdown(node: Node): string {
   if (tagName === "br") return "\n";
 
   let content = Array.from(element.childNodes)
-    .map((child) => editableNodeToMarkdown(child))
+    .map((child) => {
+      const childContent = editableNodeToMarkdown(child);
+      if (child.nodeType === Node.ELEMENT_NODE && EDITABLE_BLOCK_TAGS.has((child as HTMLElement).tagName.toLowerCase())) {
+        return `${childContent.replace(/\n+$/g, "")}\n`;
+      }
+      return childContent;
+    })
     .join("");
 
   if (tagName === "code") content = wrapMarkdownInline("`", content.replace(/`/g, "'"));
@@ -4759,6 +4781,7 @@ function MarkdownRichEditor({
   autoFocus = false,
   className = "",
   disabled = false,
+  lineBreakMode = "preserve",
   onChange,
   placeholder,
   toolbarLabel,
@@ -4768,6 +4791,7 @@ function MarkdownRichEditor({
   autoFocus?: boolean;
   className?: string;
   disabled?: boolean;
+  lineBreakMode?: RichEditorLineBreakMode;
   onChange: (value: string) => void;
   placeholder?: string;
   toolbarLabel: string;
@@ -4857,7 +4881,7 @@ function MarkdownRichEditor({
     event.preventDefault();
     const html = event.clipboardData.getData("text/html");
     const text = event.clipboardData.getData("text/plain");
-    const markdown = html ? editableHtmlToMarkdown(html) : text;
+    const markdown = normalizeRichEditorMarkdown(html ? editableHtmlToMarkdown(html) : text, lineBreakMode);
     window.document.execCommand("insertHTML", false, markdownToEditableHtml(markdown));
     window.requestAnimationFrame(syncFromEditor);
   };
@@ -10483,9 +10507,9 @@ function DocumentPanelContent({
   }, [domainAssignOpen]);
 
   const copyCitation = (kind: CitationKind) => {
-    const text = citationText(document, kind);
+    const text = normalizeRichEditorMarkdown(citationText(document, kind), "compact");
     if (!text) return;
-    void copyToClipboard(`citation-${kind}`, markdownClipboardText(text), {
+    void copyToClipboard(`citation-${kind}`, normalizeRichEditorMarkdown(markdownClipboardText(text), "compact"), {
       html: richClipboardHtml(markdownParagraphsToClipboardHtml(text)),
     });
   };
@@ -11384,7 +11408,11 @@ function DocumentPanelContent({
   };
 
   const saveCitationEdit = (kind: CitationKind) => {
-    updateCitation.mutate({ kind, value: citationDrafts[kind] || "", confirmVerified: citationVerifiedEditConfirmed[kind] });
+    updateCitation.mutate({
+      kind,
+      value: normalizeRichEditorMarkdown(citationDrafts[kind] || "", "compact"),
+      confirmVerified: citationVerifiedEditConfirmed[kind],
+    });
   };
 
   const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
@@ -12461,6 +12489,7 @@ function DocumentPanelContent({
               ariaLabel={`${title} text`}
               autoFocus
               disabled={updateCitation.isPending}
+              lineBreakMode="compact"
               onChange={(nextValue) => {
                 setCitationDrafts((current) => ({ ...current, [kind]: nextValue }));
                 if (citationEditError) setCitationEditError(null);
