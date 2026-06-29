@@ -176,6 +176,59 @@ def test_extract_document_bibliography_uses_visual_ocr_tail_pages(monkeypatch, t
     assert result["bibliography"].splitlines()[0].startswith("D. Denning")
 
 
+def test_extract_document_bibliography_splits_ocr_bare_initial_entry_and_strips_footer(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="OCR Running Footer References Paper",
+        original_filename="ocr-running-footer-references.pdf",
+        checksum_sha256="9" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=6, normalized_text="2068\nRunning header only."))
+    document.pages.append(DocumentPage(page_number=7, normalized_text="2069\nRunning header only."))
+    pdf_path = tmp_path / "references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(bibliography_service, "_formatted_bibliography_from_pdf", lambda _path: None)
+    monkeypatch.setattr(
+        bibliography_service,
+        "_visual_ocr_pdf_page_lines",
+        lambda _path: (
+            [
+                (6, "6. REFERENCES"),
+                (
+                    6,
+                    "5. R. Agrawal, T. Imielinski, and A. Swami, Mining Association Rules between "
+                    "Sets of Items in Large Databases, Proc. ACM SIGMOD, vol. 22, no. 2, pp. 207-216, "
+                    "1993. Khosravifar B and Bentahar J 2008) An experience improving intrusion "
+                    "detection systems false alarm ratio by using honeypot. IEEE, 22nd Intl. Conf. "
+                    "on Advanced Information Networking and Applications.pp: 997-1004. "
+                    "A. J. Deepa and V. Kavitha / Procedia Engineering 38 (2012) 2063 - 2069 2069",
+                ),
+                (
+                    7,
+                    "7. W. Lee, S. Stolfo, and K. Mok, Mining Audit Data to Build Intrusion "
+                    "Detection Models, Proc. Fourth Int'l Conf. Knowledge Discovery and Data Mining "
+                    "(KDD '98), pp. 66-72, 1998.",
+                ),
+            ],
+            [4, 5, 6, 7],
+        ),
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path), visual_ocr=True)
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["entry_count_estimate"] == 3
+    assert len(entries) == 3
+    assert entries[0].startswith("R. Agrawal")
+    assert entries[1].startswith("Khosravifar B and Bentahar J 2008")
+    assert entries[2].startswith("W. Lee")
+    assert "Procedia Engineering" not in entries[1]
+
+
 def test_extract_document_bibliography_records_visual_ocr_error(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service

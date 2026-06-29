@@ -53,6 +53,8 @@ REFERENCE_AUTHOR_WORD = r"[A-Z][A-Za-z\u00c0-\u024f'`\u2019.-]+"
 REFERENCE_ORGANIZATION_NAME = rf"{REFERENCE_AUTHOR_WORD}(?:\s+(?:{REFERENCE_AUTHOR_WORD}|of|the|and|for|in|on|&)){{0,10}}"
 REFERENCE_INITIAL_TOKEN = r"[A-Z](?:\.-[A-Z])?\."
 REFERENCE_INITIALS = rf"(?:{REFERENCE_INITIAL_TOKEN}\s*){{1,5}}"
+REFERENCE_BARE_INITIAL_TOKEN = r"[A-Z](?:\.-?[A-Z])?\.?"
+REFERENCE_BARE_INITIALS = rf"(?:{REFERENCE_BARE_INITIAL_TOKEN}\s*){{1,5}}"
 REFERENCE_AUTHOR_YEAR_RE = re.compile(
     rf"^\s*{REFERENCE_AUTHOR_WORD}(?:\s+{REFERENCE_AUTHOR_WORD}){{0,4}},\s+.+?\b(?:18|19|20)\d{{2}}[a-z]?\b"
 )
@@ -70,6 +72,12 @@ REFERENCE_INITIAL_AUTHOR_START_RE = re.compile(
 )
 REFERENCE_SURNAME_INITIALS_START_RE = re.compile(
     rf"^\s*{REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.\s*){{1,5}}(?:,|\s+and\b).+",
+    re.IGNORECASE,
+)
+REFERENCE_SURNAME_BARE_INITIALS_YEAR_RE = re.compile(
+    rf"^\s*{REFERENCE_AUTHOR_WORD}\s+{REFERENCE_BARE_INITIALS}"
+    rf"(?:,?\s+(?:and|&)\s+{REFERENCE_AUTHOR_WORD}\s+{REFERENCE_BARE_INITIALS}){{0,6}}"
+    r"\(?\s*(?:18|19|20)\d{2}[a-z]?\)?(?=\W|$)",
     re.IGNORECASE,
 )
 REFERENCE_ORGANIZATION_YEAR_RE = re.compile(r"^\s*[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b")
@@ -117,6 +125,12 @@ INLINE_SURNAME_INITIALS_START_CANDIDATE_RE = re.compile(
     rf"\s+(?={REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.\s*){{1,6}}(?:,|\s+and\b|\s+&)[^\n]{{0,260}}?\b(?:18|19|20)\d{{2}}[a-z]?\b)",
     re.IGNORECASE,
 )
+INLINE_SURNAME_BARE_INITIALS_YEAR_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?={REFERENCE_AUTHOR_WORD}\s+{REFERENCE_BARE_INITIALS}"
+    rf"(?:,?\s+(?:and|&)\s+{REFERENCE_AUTHOR_WORD}\s+{REFERENCE_BARE_INITIALS}){{0,6}}"
+    r"\(?\s*(?:18|19|20)\d{2}[a-z]?\)?[^\n]{0,260})",
+    re.IGNORECASE,
+)
 INLINE_ORGANIZATION_START_CANDIDATE_RE = re.compile(
     r"\s+(?=[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b)"
 )
@@ -150,6 +164,12 @@ AUTHOR_BIO_START_RE = re.compile(
 INLINE_AUTHOR_BIO_START_RE = re.compile(
     r"\s+(?=[A-Z][A-Za-z'`.-]+(?:\s+(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`.-]+){1,4}\s+"
     r"(?:is|was|received|obtained|currently|has\s+worked|joined)\b)"
+)
+AUTHOR_RUNNING_FOOTER_TRAILER_RE = re.compile(
+    r"\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+"
+    r"(?:\s+and\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+)?"
+    r"\s*/\s*[A-Z][A-Za-z&.,'\u2019\-\s]{2,80}\s+\d+\s+\(\d{4}\)\s+"
+    r"\d+\s*[-\u2010-\u2015]\s*\d+\s+\d+\s*$"
 )
 PAGE_FURNITURE_RE = re.compile(
     r"^(?:"
@@ -221,6 +241,10 @@ def _strip_reference_entry_prefix(value: str) -> str:
     return REFERENCE_ENTRY_PREFIX_RE.sub("", value, count=1).strip()
 
 
+def _strip_author_running_footer_trailer(value: str) -> str:
+    return AUTHOR_RUNNING_FOOTER_TRAILER_RE.sub("", value).strip()
+
+
 def _reference_match_text(value: str) -> str:
     text = re.sub(r"\s+([,.;:!?])", r"\1", value)
     text = re.sub(r"([(\[])\s+", r"\1", text)
@@ -242,6 +266,7 @@ def _line_starts_unmarked_reference_entry(line: str) -> bool:
         or REFERENCE_INITIAL_AUTHOR_YEAR_RE.match(plain)
         or REFERENCE_INITIAL_AUTHOR_START_RE.match(plain)
         or REFERENCE_SURNAME_INITIALS_START_RE.match(plain)
+        or REFERENCE_SURNAME_BARE_INITIALS_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_YEAR_RE.match(plain)
         or REFERENCE_ENTITY_COMMA_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_DOT_YEAR_RE.match(plain)
@@ -760,18 +785,20 @@ def _clean_reference_line(raw_line: str) -> str:
 
 
 def _split_inline_reference_lines(line: str) -> list[str]:
+    inline_missing_marker_candidate = bool(INLINE_SURNAME_BARE_INITIALS_YEAR_START_CANDIDATE_RE.search(line))
     if _line_starts_reference_marker(line) and not REFERENCE_CITATION_KEY_ENTRY_MARKER_RE.match(
         _strip_markdown(line).strip()
     ):
         stripped = _strip_reference_entry_prefix(_strip_markdown(line).strip())
         if not REFERENCE_CONTINUATION_PREFIX_RE.match(stripped) and not INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE.search(
             line
-        ):
+        ) and not inline_missing_marker_candidate:
             return [line]
     split_offsets: list[int] = []
     matches = [
         *INLINE_REFERENCE_START_CANDIDATE_RE.finditer(line),
         *INLINE_SURNAME_INITIALS_START_CANDIDATE_RE.finditer(line),
+        *INLINE_SURNAME_BARE_INITIALS_YEAR_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
@@ -813,6 +840,7 @@ def _split_inline_reference_lines(line: str) -> list[str]:
 def _normalize_reference_entry(parts: list[str]) -> str:
     entry = " ".join(part.strip() for part in parts if part.strip())
     entry = re.sub(r"(?<=\d)([-\u2010-\u2015])\s+(?=\d)", r"\1", entry)
+    entry = _strip_author_running_footer_trailer(entry)
     entry = _strip_reference_entry_prefix(normalize_extracted_text(entry).replace("\n", " ")).strip()
     return re.sub(r"(?<=\d)([-\u2010-\u2015])\s+(?=\d)", r"\1", entry)
 
@@ -820,7 +848,9 @@ def _normalize_reference_entry(parts: list[str]) -> str:
 def _reference_entry_has_terminal_evidence(parts: list[str]) -> bool:
     if not parts:
         return False
-    text = _strip_markdown(" ".join(part.strip() for part in parts if part.strip())).strip()
+    text = _strip_author_running_footer_trailer(
+        _strip_markdown(" ".join(part.strip() for part in parts if part.strip())).strip()
+    )
     text_without_prefix = _strip_reference_entry_prefix(text).strip()
     if not text_without_prefix:
         return False
@@ -933,6 +963,14 @@ def _format_reference_lines(lines: list[str]) -> str:
             if marker_bounded
             else _line_starts_unmarked_reference_entry(part)
         )
+        if (
+            marker_bounded
+            and not starts_entry
+            and current
+            and _reference_entry_has_terminal_evidence(current)
+            and _line_starts_unmarked_reference_entry(part)
+        ):
+            starts_entry = True
         if (
             current
             and len(entries) >= 2
