@@ -581,7 +581,7 @@ def test_list_documents_filters_health_status_scopes(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.main import document_list_rows_out, list_documents
-    from app.models import Document, Domain, Project, ProjectItem, Tag
+    from app.models import Document, Domain, Figure, Project, ProjectItem, Tag
 
     Session = make_session()
 
@@ -622,6 +622,12 @@ def test_list_documents_filters_health_status_scopes(monkeypatch, tmp_path):
                 document.tags.append(tag)
         db.add_all([domain, tag, project, *documents])
         db.flush()
+        db.add_all(
+            [
+                Figure(document_id=documents[-1].id, page_number=1, figure_label="Figure 1"),
+                Figure(document_id=documents[-1].id, page_number=2, figure_label="Figure 2"),
+            ]
+        )
         for document in documents:
             if document.title != "No project use":
                 db.add(ProjectItem(project_id=project.id, document_id=document.id))
@@ -637,6 +643,7 @@ def test_list_documents_filters_health_status_scopes(monkeypatch, tmp_path):
         no_project_rows = document_list_rows_out(db, health_status="no_project_use")
         assert no_project_rows.total_count == 1
         assert [document.title for document in no_project_rows.items] == ["No project use"]
+        assert [document.figure_count for document in no_project_rows.items] == [2]
 
 
 def test_get_document_uses_persisted_duplicate_summary(monkeypatch, tmp_path):

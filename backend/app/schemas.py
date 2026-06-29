@@ -663,6 +663,7 @@ class DocumentListRow(ApiModel):
     citation_status: str
     no_doi: bool = False
     page_count: int
+    figure_count: int = 0
     processing_status: str
     read_status: str
     priority: str
