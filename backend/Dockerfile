@@ -11,7 +11,7 @@ ENV MPLCONFIGDIR=/app/data/model-cache/matplotlib
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg libglib2.0-0 libgl1 zstd \
+  && apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg libglib2.0-0 libgl1 tesseract-ocr tesseract-ocr-eng zstd \
   && install -d /usr/share/postgresql-common/pgdg \
   && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg \
   && . /etc/os-release \

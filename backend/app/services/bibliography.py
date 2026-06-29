@@ -659,8 +659,8 @@ def _visual_ocr_pdf_page_lines(path: Path) -> tuple[list[tuple[int, str]], list[
     from app.services.ocr import OcrService
 
     ocr = OcrService()
-    if not getattr(ocr, "client", None):
-        raise VisualOcrUnavailable("Google Vision OCR is not configured.")
+    if not getattr(ocr, "available", False):
+        raise VisualOcrUnavailable("OCR is not configured.")
 
     rows: list[tuple[int, str]] = []
     with fitz.open(path) as pdf:

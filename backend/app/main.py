@@ -9427,7 +9427,7 @@ def import_estimate_processing_steps(
                 "estimated_cost_usd": 0.0,
                 "basis": "pending_provider_integration" if ocr_enabled else "disabled_by_preset",
                 "status": "pending_provider_integration" if ocr_enabled else "disabled_by_preset",
-                "note": "Low-text OCR is eligibility-audit for page text; Bibliography extraction may use Google Vision as a last-resort references rescue.",
+                "note": "Low-text OCR is eligibility-audit for page text; Bibliography extraction may use visual OCR as a last-resort references rescue.",
             }
         )
         cleanup_cloud_enabled = bool(cleanup.get("cloud_escalation", True))
