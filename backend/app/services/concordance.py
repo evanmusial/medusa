@@ -1643,7 +1643,16 @@ class ConcordanceProcessor:
             reference_style = get_citation_convention(db)
             evidence["reference_style"] = reference_style
             bibliography_entry_count = _bibliography_entry_count(bibliography)
-            if (
+            if evidence.get("source") == "visual_ocr":
+                evidence["model_cleanup"] = {
+                    "status": "skipped_visual_ocr",
+                    "model": cleanup_model,
+                    "characters": len(bibliography),
+                    "entry_count": bibliography_entry_count,
+                    "formatting": evidence.get("formatting") or "plain_text_from_visual_ocr",
+                    "reason": "Visual OCR bibliography extraction is kept deterministic to avoid losing or blocking recovered references.",
+                }
+            elif (
                 len(bibliography) > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS
                 or bibliography_entry_count > BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES
             ):

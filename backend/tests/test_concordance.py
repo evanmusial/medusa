@@ -194,6 +194,77 @@ def test_forced_bibliography_refresh_reextracts_existing_bibliography(monkeypatc
         assert cleanup_calls[0]["capability_key"] == "bibliography_extraction"
 
 
+def test_forced_bibliography_refresh_skips_model_cleanup_for_visual_ocr(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+    from app.services import concordance as concordance_service
+    from app.services.concordance import CAPABILITY_BY_KEY, ConcordanceProcessor
+
+    class FailingAiService:
+        def normalize_bibliography(self, *args, **kwargs):
+            raise AssertionError("visual OCR bibliography should not be sent to model cleanup")
+
+    monkeypatch.setattr(concordance_service, "get_ai_service", lambda: FailingAiService())
+    monkeypatch.setattr(
+        concordance_service,
+        "extract_document_bibliography",
+        lambda _document, _pdf_path=None, **_kwargs: {
+            "bibliography": (
+                "Zed, Z. (2024). Visual OCR recovered source. Journal.\n"
+                "Adams, A. (2023). Visual OCR recovered source. Journal."
+            ),
+            "evidence": {
+                "source": "visual_ocr",
+                "status": "extracted",
+                "page_start": 6,
+                "page_end": 7,
+                "entry_count_estimate": 2,
+                "formatting": "plain_text_from_visual_ocr",
+            },
+        },
+    )
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Visual OCR References Target",
+            original_filename="visual-ocr-references.pdf",
+            checksum_sha256="v" * 64,
+            processing_status="ready",
+            bibliography="Old bibliography.",
+        )
+        db.add(document)
+        run = ConcordanceRun(
+            scope_type="documents",
+            scope_data={"_force": True},
+            capability_keys=["bibliography_extraction"],
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run=run,
+            document=document,
+            capability_key="bibliography_extraction",
+            target_version=CAPABILITY_BY_KEY["bibliography_extraction"].version,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+
+        assert job.status == "complete"
+        entries = document.bibliography.splitlines()
+        assert entries[0].startswith("Adams, A.")
+        assert entries[1].startswith("Zed, Z.")
+        evidence = document.metadata_evidence["bibliography_extraction"]
+        assert evidence["source"] == "visual_ocr"
+        assert evidence["model_cleanup"]["status"] == "skipped_visual_ocr"
+        assert evidence["model_cleanup"]["entry_count"] == 2
+
+
 def test_forced_bibliography_refresh_clears_stale_machine_output_when_not_found(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
