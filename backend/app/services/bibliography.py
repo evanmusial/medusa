@@ -169,7 +169,7 @@ AUTHOR_RUNNING_FOOTER_TRAILER_RE = re.compile(
     r"\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+"
     r"(?:\s+and\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+)?"
     r"\s*/\s*[A-Z][A-Za-z&.,'\u2019\-\s]{2,80}\s+\d+\s+\(\d{4}\)\s+"
-    r"\d+\s*[-\u2010-\u2015]\s*\d+\s+\d+\s*$"
+    r"\d+\s*[-\u2010-\u2015]\s*\d+\s+\d+(?:\s+[A-Z]\.){0,3}\s*$"
 )
 PAGE_FURNITURE_RE = re.compile(
     r"^(?:"
@@ -196,6 +196,10 @@ PAGE_FURNITURE_RE = re.compile(
     r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+\s+et\s+al\.$|"
     r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+$|"
     r"[A-Z]\.\s+[A-Z][A-Za-z'`.-]+(?:\s+and\s+[A-Z]\.(?:[A-Z]\.)?\s+[A-Z][A-Za-z'`.-]+)?\s+Journal\s+of\s+.+\s+\d+\s+\(\d{4}\)\s+\d+|"
+    r"[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+"
+    r"(?:\s+and\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+)?"
+    r"\s*/\s*[A-Z][A-Za-z&.,'\u2019\-\s]{2,80}\s+\d+\s+\(\d{4}\)\s+"
+    r"\d+\s*[-\u2010-\u2015]\s*\d+\s+\d+|"
     r"(?:©|\(c\))\s*\d{4}\s+by\s+the\s+authors|"
     r"Licensee\s+MDPI|"
     r"This article is an open access article distributed|"
@@ -842,6 +846,9 @@ def _normalize_reference_entry(parts: list[str]) -> str:
     entry = re.sub(r"(?<=\d)([-\u2010-\u2015])\s+(?=\d)", r"\1", entry)
     entry = _strip_author_running_footer_trailer(entry)
     entry = _strip_reference_entry_prefix(normalize_extracted_text(entry).replace("\n", " ")).strip()
+    entry = re.sub(r"^\s*_+(?=[A-Z])", "", entry)
+    if len(READABLE_WORD_RE.findall(_strip_markdown(entry))) < 2 and not REFERENCE_URL_DOI_RE.search(entry):
+        return ""
     return re.sub(r"(?<=\d)([-\u2010-\u2015])\s+(?=\d)", r"\1", entry)
 
 

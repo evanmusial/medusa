@@ -207,6 +207,8 @@ def test_extract_document_bibliography_splits_ocr_bare_initial_entry_and_strips_
                     "on Advanced Information Networking and Applications.pp: 997-1004. "
                     "A. J. Deepa and V. Kavitha / Procedia Engineering 38 (2012) 2063 - 2069 2069",
                 ),
+                (6, "A."),
+                (6, "J. Deepa and V. Kavitha / Procedia Engineering 38 (2012) 2063 - 2069 2069"),
                 (
                     7,
                     "7. W. Lee, S. Stolfo, and K. Mok, Mining Audit Data to Build Intrusion "
@@ -226,6 +228,7 @@ def test_extract_document_bibliography_splits_ocr_bare_initial_entry_and_strips_
     assert entries[0].startswith("R. Agrawal")
     assert entries[1].startswith("Khosravifar B and Bentahar J 2008")
     assert entries[2].startswith("W. Lee")
+    assert "A." not in entries
     assert "Procedia Engineering" not in entries[1]
 
 
