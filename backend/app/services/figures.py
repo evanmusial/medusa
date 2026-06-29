@@ -12,10 +12,137 @@ from app.services.extraction import normalize_extracted_text
 from app.services.extraction import ExtractedFigure, extract_pdf_figures, extract_pdf_figures_for_page
 from app.services.storage import get_storage_service
 
+FIGURE_MARKER_LINE_RE = re.compile(r"^\s*!\[[^\]\n]*\]\(medusa-figure:[A-Za-z0-9-]+\)\s*$")
+
 
 def figure_asset_key(document: Document, page_number: int, figure_index: int, extension: str) -> str:
     checksum = document.checksum_sha256
     return f"figures/{checksum[:2]}/{checksum}/page-{page_number:04d}-figure-{figure_index:03d}.{extension}"
+
+
+def _figure_marker(figure: Figure) -> str:
+    label = (figure.figure_label or figure.caption or f"Page {figure.page_number or '?'} figure").strip()
+    label = re.sub(r"\s+", " ", label).replace("[", "(").replace("]", ")")
+    return f"![{label}](medusa-figure:{figure.id})"
+
+
+def _strip_figure_markers(text: str | None) -> tuple[str, int]:
+    if not text:
+        return "", 0
+    normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+    removed = 0
+    kept_lines: list[str] = []
+    for line in normalized_text.split("\n"):
+        if FIGURE_MARKER_LINE_RE.match(line):
+            removed += 1
+            continue
+        kept_lines.append(line)
+    if not removed:
+        return normalized_text, 0
+    cleaned = "\n".join(kept_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, removed
+
+
+def strip_figure_markers_from_text(text: str | None) -> str:
+    return _strip_figure_markers(text)[0]
+
+
+def _normalized_for_match(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip().lower()
+
+
+def _target_line_for_figure(lines: list[str], figure: Figure) -> int | None:
+    candidates = [_normalized_for_match(figure.caption), _normalized_for_match(figure.figure_label)]
+    candidates = [candidate for candidate in candidates if candidate]
+    for candidate in candidates:
+        for index, line in enumerate(lines):
+            normalized_line = _normalized_for_match(line)
+            if candidate in normalized_line or normalized_line in candidate:
+                return index
+
+    geometry = figure.geometry or {}
+    bbox = geometry.get("bbox")
+    page_height = geometry.get("page_height")
+    try:
+        if isinstance(bbox, list) and len(bbox) >= 2 and page_height:
+            ratio = max(0.0, min(1.0, float(bbox[1]) / float(page_height)))
+            return min(len(lines), max(0, round(ratio * len(lines))))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return None
+
+
+def _insert_figure_marker(text: str, figure: Figure) -> str:
+    marker = _figure_marker(figure)
+    lines = text.split("\n") if text else []
+    target = _target_line_for_figure(lines, figure)
+    if target is None:
+        target = len(lines)
+
+    while target > 0 and lines[target - 1].strip():
+        target -= 1
+    if target > 0 and lines[target - 1].strip() != "":
+        lines.insert(target, "")
+        target += 1
+    lines.insert(target, marker)
+    if target + 1 < len(lines) and lines[target + 1].strip():
+        lines.insert(target + 1, "")
+    elif target + 1 == len(lines):
+        lines.append("")
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _figure_sort_y(figure: Figure) -> float:
+    bbox = (figure.geometry or {}).get("bbox")
+    try:
+        return float(bbox[1]) if isinstance(bbox, list) and len(bbox) >= 2 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _page_reading_text(page: object) -> str:
+    normalized_text = getattr(page, "normalized_text", None)
+    if normalized_text is not None:
+        return normalized_text or ""
+    return getattr(page, "text", None) or ""
+
+
+def _set_page_reading_text(page: object, text: str) -> None:
+    if getattr(page, "normalized_text", None) is not None:
+        setattr(page, "normalized_text", text)
+    else:
+        setattr(page, "text", text)
+
+
+def sync_document_figure_markers(document: Document) -> dict[str, int]:
+    """Keep Markdown figure markers in page text aligned with the current Figure rows."""
+    pages_by_number = {page.page_number: page for page in sorted(document.pages, key=lambda item: item.page_number)}
+    text_by_page: dict[int, str] = {}
+    removed_markers = 0
+    for page_number, page in pages_by_number.items():
+        cleaned, removed = _strip_figure_markers(_page_reading_text(page))
+        text_by_page[page_number] = cleaned
+        removed_markers += removed
+
+    marked = 0
+    figures = sorted(
+        (figure for figure in document.figures if figure.id and figure.page_number in pages_by_number),
+        key=lambda figure: (figure.page_number or 0, _figure_sort_y(figure), figure.figure_label or "", figure.id),
+    )
+    for figure in figures:
+        page_number = int(figure.page_number or 0)
+        text_by_page[page_number] = _insert_figure_marker(text_by_page.get(page_number, ""), figure)
+        marked += 1
+
+    pages_changed = 0
+    for page_number, page in pages_by_number.items():
+        next_text = text_by_page.get(page_number, "")
+        if next_text != _page_reading_text(page):
+            _set_page_reading_text(page, next_text)
+            pages_changed += 1
+
+    return {"figures_marked": marked, "markers_removed": removed_markers, "pages_changed": pages_changed}
 
 
 def _page_text(document: Document, page_number: int | None) -> str:
@@ -173,17 +300,19 @@ def _store_extracted_figures(
     return stored_figures
 
 
-def process_document_figures(db: Session, document: Document, pdf_path: Path) -> dict[str, int | list[dict[str, str]]]:
+def process_document_figures(db: Session, document: Document, pdf_path: Path) -> dict[str, object]:
     extracted = extract_pdf_figures(pdf_path)
     document.figures.clear()
     db.flush()
     _store_extracted_figures(db, document, extracted, extraction_scope="document")
     db.flush()
     context = enrich_figure_context(document)
+    inline_markers = sync_document_figure_markers(document)
+    db.flush()
     warnings: list[dict[str, str]] = []
     if not extracted and document.page_count:
         warnings.append({"code": "no_visual_assets_found", "message": "No extractable figure, chart, photo, or diagram regions were found."})
-    return {"figures": len(extracted), **context, "audit_warnings": warnings}
+    return {"figures": len(extracted), **context, "inline_markers": inline_markers, "audit_warnings": warnings}
 
 
 def preview_document_figures_page_from_storage(db: Session, document: Document, page_number: int) -> dict[str, object]:
@@ -268,6 +397,8 @@ def apply_document_figures_page_candidates(
             stored_figures.append(stored_figure)
         db.flush()
     context = enrich_figure_context(document)
+    inline_markers = sync_document_figure_markers(document)
+    db.flush()
     warnings: list[dict[str, str]] = []
     if not candidates:
         warnings.append({"code": "page_scan_discarded", "message": f"No page-scan candidates were kept for page {page_number}."})
@@ -279,6 +410,7 @@ def apply_document_figures_page_candidates(
         "created_figures": [_figure_payload(figure) for figure in stored_figures],
         "replaced_page_figures": before if replaced else [],
         **context,
+        "inline_markers": inline_markers,
         "audit_warnings": warnings,
     }
 
@@ -300,6 +432,8 @@ def process_document_figures_page(db: Session, document: Document, pdf_path: Pat
     else:
         created = []
     context = enrich_figure_context(document)
+    inline_markers = sync_document_figure_markers(document)
+    db.flush()
     warnings: list[dict[str, str]] = []
     if not extracted:
         warnings.append(
@@ -316,11 +450,12 @@ def process_document_figures_page(db: Session, document: Document, pdf_path: Pat
         "created_figures": created,
         "replaced_page_figures": before if replaced else [],
         **context,
+        "inline_markers": inline_markers,
         "audit_warnings": warnings,
     }
 
 
-def process_document_figures_from_storage(db: Session, document: Document) -> dict[str, int | list[dict[str, str]]]:
+def process_document_figures_from_storage(db: Session, document: Document) -> dict[str, object]:
     if not document.gcs_uri:
         return {"figures": 0}
     storage = get_storage_service()

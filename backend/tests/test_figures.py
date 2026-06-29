@@ -174,7 +174,7 @@ def test_extract_pdf_figures_for_page_scopes_to_one_page(tmp_path):
 def test_process_document_figures_stores_assets(monkeypatch, tmp_path):
     configure_local_storage(monkeypatch, tmp_path)
 
-    from app.models import Document
+    from app.models import Document, DocumentPage
     from app.services.figures import process_document_figures
 
     path = tmp_path / "figure.pdf"
@@ -182,6 +182,14 @@ def test_process_document_figures_stores_assets(monkeypatch, tmp_path):
     Session = make_session()
     with Session() as db:
         document = Document(title="Figure Paper", original_filename="figure.pdf", checksum_sha256="1" * 64)
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                text="Figure fixture\n\nFigure 1. Fixture diagram.",
+                low_text=False,
+                text_source="pymupdf",
+            )
+        )
         db.add(document)
         db.flush()
 
@@ -197,6 +205,58 @@ def test_process_document_figures_stores_assets(monkeypatch, tmp_path):
         assert document.figures[0].caption == "Figure 1. Fixture diagram."
         assert document.figures[0].geometry["source"] == "page_image"
         assert document.figures[0].geometry["bbox"]
+        assert "medusa-figure:" in (document.pages[0].text or "")
+
+
+def test_sync_document_figure_markers_inserts_and_removes_live_markers(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, DocumentPage, Figure
+    from app.services.figures import sync_document_figure_markers
+    from app.services.processing import document_reading_text
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Inline figures",
+            original_filename="inline.pdf",
+            checksum_sha256="c" * 64,
+            processing_status="ready",
+        )
+        page = DocumentPage(
+            page_number=1,
+            text="Opening paragraph.\n\nFigure 1. Fixture diagram.\n\nClosing paragraph.",
+            low_text=False,
+            text_source="pymupdf",
+        )
+        document.pages.append(page)
+        figure = Figure(
+            page_number=1,
+            figure_label="Figure 1",
+            caption="Figure 1. Fixture diagram.",
+            asset_uri="gs://bucket/figures/figure-1.png",
+            geometry={"bbox": [80, 90, 260, 240], "page_height": 400},
+        )
+        document.figures.append(figure)
+        db.add(document)
+        db.flush()
+
+        result = sync_document_figure_markers(document)
+        marker = f"![Figure 1](medusa-figure:{figure.id})"
+
+        assert result == {"figures_marked": 1, "markers_removed": 0, "pages_changed": 1}
+        assert marker in (page.text or "")
+        assert (page.text or "").index(marker) < (page.text or "").index("Figure 1. Fixture diagram.")
+        assert "medusa-figure:" not in document_reading_text(document)
+
+        document.figures.remove(figure)
+        db.delete(figure)
+        db.flush()
+        result = sync_document_figure_markers(document)
+
+        assert result == {"figures_marked": 0, "markers_removed": 1, "pages_changed": 1}
+        assert "medusa-figure:" not in (page.text or "")
 
 
 def test_process_document_figures_page_replaces_only_target_page(monkeypatch, tmp_path):

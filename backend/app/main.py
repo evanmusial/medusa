@@ -313,7 +313,7 @@ from app.services.maintenance import (
     maintenance_readiness,
 )
 from app.services.ai import get_ai_service
-from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage
+from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage, sync_document_figure_markers
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
@@ -7667,6 +7667,7 @@ def patch_figure(
     if not changed:
         return document_detail_out(document, db)
 
+    inline_markers = sync_document_figure_markers(document)
     document.search_text = rebuild_document_search_text(document)
     log_event(
         db,
@@ -7680,17 +7681,21 @@ def patch_figure(
             "figure_label": figure.figure_label,
             "caption": figure.caption,
             "gist": figure.gist,
+            "inline_markers": inline_markers,
         },
     )
     db.flush()
+    changed_fields = {"figures", "search_text"}
+    if inline_markers.get("pages_changed", 0):
+        changed_fields.add("pages")
     record_document_version(
         db,
         document=document,
         change_note=f"Updated extracted figure {figure.figure_label or figure.id}",
-        changed_fields={"figures", "search_text"},
+        changed_fields=changed_fields,
         before=before,
         after=document_correction_snapshot(document),
-        extra={"figure_update": {"figure_id": figure.id}},
+        extra={"figure_update": {"figure_id": figure.id, "inline_markers": inline_markers}},
     )
     record_manual_edit(
         db,
@@ -7731,6 +7736,7 @@ def delete_figure(
         document.figures.remove(figure)
     db.delete(figure)
     db.flush()
+    inline_markers = sync_document_figure_markers(document)
     document.search_text = rebuild_document_search_text(document)
     log_event(
         db,
@@ -7738,17 +7744,20 @@ def delete_figure(
         document=document,
         event_type="figure_delete",
         message=f"Deleted extracted figure {label}.",
-        payload={"figure": deleted_figure},
+        payload={"figure": deleted_figure, "inline_markers": inline_markers},
     )
     db.flush()
+    changed_fields = {"figures", "search_text"}
+    if inline_markers.get("pages_changed", 0):
+        changed_fields.add("pages")
     record_document_version(
         db,
         document=document,
         change_note=f"Deleted extracted figure {label}",
-        changed_fields={"figures", "search_text"},
+        changed_fields=changed_fields,
         before=before,
         after=document_correction_snapshot(document),
-        extra={"figure_delete": {"figure": deleted_figure}},
+        extra={"figure_delete": {"figure": deleted_figure, "inline_markers": inline_markers}},
     )
     record_manual_edit(
         db,
@@ -7843,11 +7852,15 @@ def apply_document_page_visual_scan(
         payload=result,
     )
     db.flush()
+    changed_fields = {"figures", "metadata_evidence", "search_text"}
+    inline_markers = result.get("inline_markers")
+    if isinstance(inline_markers, dict) and inline_markers.get("pages_changed", 0):
+        changed_fields.add("pages")
     record_document_version(
         db,
         document=document,
         change_note=f"Scanned page {payload.page_number} for visuals",
-        changed_fields={"figures", "metadata_evidence", "search_text"},
+        changed_fields=changed_fields,
         before=before,
         after=document_correction_snapshot(document),
         extra={"visual_page_scan": result},
@@ -8104,6 +8117,7 @@ def patch_document_page(
     if page.normalized_text != next_text or page.text_source != "manual":
         page.normalized_text = next_text
         page.text_source = "manual"
+        inline_markers = sync_document_figure_markers(document)
         document.search_text = rebuild_document_search_text(document)
         db.flush()
         page_after = document_page_snapshot(page)
@@ -8119,6 +8133,7 @@ def patch_document_page(
                 "page_number": page.page_number,
                 "page_before": page_before,
                 "page_after": page_after,
+                "inline_markers": inline_markers,
             },
         )
         record_manual_edit(
@@ -8171,6 +8186,9 @@ def scrub_document_text(
         )
 
     if scrub_count:
+        inline_markers = sync_document_figure_markers(document)
+        if inline_markers.get("pages_changed", 0):
+            changed_fields.add("pages")
         document.search_text = rebuild_document_search_text(document)
         changed_fields.add("search_text")
         db.flush()
@@ -8185,6 +8203,7 @@ def scrub_document_text(
                 "scrub_text": needle,
                 "scrub_count": scrub_count,
                 "pages": scrubbed_pages,
+                "inline_markers": inline_markers,
             },
         )
         record_manual_edit(

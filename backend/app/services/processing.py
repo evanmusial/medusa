@@ -44,7 +44,7 @@ from app.services.document_cache import (
     metadata_cache_path,
 )
 from app.services.extraction import extract_pdf_text, normalize_extracted_text, sanitize_extracted_text, split_text_into_chunks
-from app.services.figures import process_document_figures
+from app.services.figures import process_document_figures, strip_figure_markers_from_text
 from app.services.history import document_correction_snapshot, record_document_version
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
@@ -263,7 +263,8 @@ def _has_metadata_value(value: Any) -> bool:
 
 
 def preferred_page_text(page: DocumentPage) -> str:
-    return sanitize_extracted_text(page.normalized_text if page.normalized_text is not None else page.text or "").strip()
+    text = page.normalized_text if page.normalized_text is not None else page.text or ""
+    return sanitize_extracted_text(strip_figure_markers_from_text(text)).strip()
 
 
 def document_reading_text(document: Document) -> str:

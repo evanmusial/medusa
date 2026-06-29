@@ -1058,7 +1058,7 @@ def test_delete_figure_removes_row_and_records_history(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.main import delete_figure
-    from app.models import Document, DocumentVersion, Figure
+    from app.models import Document, DocumentPage, DocumentVersion, Figure
 
     deleted_assets = []
 
@@ -1088,17 +1088,29 @@ def test_delete_figure_removes_row_and_records_history(monkeypatch, tmp_path):
             asset_uri="gs://bucket/figures/figure-4.png",
         )
         db.add(figure)
+        db.flush()
+        document.pages.append(
+            DocumentPage(
+                page_number=4,
+                text=f"Before marker.\n\n![Figure 4](medusa-figure:{figure.id})\n\nAfter marker.",
+                low_text=False,
+                text_source="pymupdf",
+            )
+        )
         db.commit()
 
         updated = delete_figure(figure.id, object(), db)
         versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).all()
+        page = db.query(DocumentPage).filter(DocumentPage.document_id == document.id).one()
 
         assert updated.figures == []
         assert db.query(Figure).count() == 0
+        assert "medusa-figure:" not in (page.text or "")
         assert deleted_assets == ["gs://bucket/figures/figure-4.png"]
         assert "Extra extraction" not in (document.search_text or "")
         assert len(versions) == 1
         assert versions[0].change_note == "Deleted extracted figure Figure 4"
+        assert "pages" in versions[0].metadata_snapshot["changed_fields"]
         assert versions[0].metadata_snapshot["figure_delete"]["figure"]["figure_label"] == "Figure 4"
 
 

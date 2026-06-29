@@ -62,7 +62,7 @@ from app.services.processing import (
     rebuild_document_text_chunks,
 )
 from app.services.second_pass import clean_document_structure
-from app.services.figures import enrich_figure_context
+from app.services.figures import enrich_figure_context, sync_document_figure_markers
 from app.services.recommendations import refresh_document_recommendations
 from app.services.search import document_search_condition_and_rank, rebuild_document_search_text
 from app.services.tag_governance import apply_import_tag_governance
@@ -476,8 +476,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="visual_asset_context",
         label="Visual asset context",
-        version=1,
-        description="Link figures and tables to captions, nearby headings, surrounding paragraphs, and explicit references such as Figure 2 or Table 1.",
+        version=2,
+        description="Link figures and tables to captions, nearby headings, surrounding paragraphs, explicit references such as Figure 2 or Table 1, and parsed-text inline figure markers.",
     ),
     CapabilityDefinition(
         key="recommendations",
@@ -1864,6 +1864,7 @@ class ConcordanceProcessor:
 
     def _refresh_visual_context(self, document: Document) -> dict[str, Any]:
         result = enrich_figure_context(document)
+        result["inline_markers"] = sync_document_figure_markers(document)
         evidence = dict(document.metadata_evidence or {})
         evidence["visual_asset_context"] = result
         document.metadata_evidence = evidence
