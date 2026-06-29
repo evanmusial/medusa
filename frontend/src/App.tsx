@@ -4583,6 +4583,35 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
+const READER_FIGURE_MARKER_RE = /^!\[([^\]\n]*)\]\(medusa-figure:([A-Za-z0-9-]+)\)\s*$/;
+
+function readerFigureMarker(line: string): { altText: string; figureId: string } | null {
+  const match = line.trim().match(READER_FIGURE_MARKER_RE);
+  if (!match) return null;
+  return { altText: match[1].trim(), figureId: match[2] };
+}
+
+function figureDisplayText(figure: FigureRecord, fallback = "Extracted figure") {
+  return (figure.figure_label || figure.caption || figure.gist || fallback).trim();
+}
+
+function ReaderInlineFigure({ altText, figure, figureKey }: { altText: string; figure: FigureRecord; figureKey: string }) {
+  const label = figureDisplayText(figure, altText || "Extracted figure");
+  const caption = figure.caption || figure.gist || "";
+  const assetPath = `/api/figures/${figure.id}/asset`;
+  return (
+    <figure className="reader-inline-figure" key={figureKey}>
+      <a data-tooltip="Open this extracted figure asset in a new browser tab." href={assetPath} target="_blank" rel="noreferrer">
+        <img alt={label} decoding="async" loading="lazy" src={assetPath} />
+      </a>
+      <figcaption>
+        <strong>{label}</strong>
+        {caption && caption !== label ? <span>{caption}</span> : null}
+      </figcaption>
+    </figure>
+  );
+}
+
 function escapeClipboardHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -5060,7 +5089,17 @@ function renderMarkdownTable(table: MarkdownTable, keyPrefix: string) {
   );
 }
 
-function ReaderPageMarkdown({ content, empty, searchTerm = "" }: { content?: string | null; empty: string; searchTerm?: string }) {
+function ReaderPageMarkdown({
+  content,
+  empty,
+  figures = [],
+  searchTerm = "",
+}: {
+  content?: string | null;
+  empty: string;
+  figures?: FigureRecord[];
+  searchTerm?: string;
+}) {
   const source = decodeHtmlEntities(content || "")
     .replace(/\r/g, "")
     .trim();
@@ -5069,6 +5108,7 @@ function ReaderPageMarkdown({ content, empty, searchTerm = "" }: { content?: str
   const lines = source.split("\n");
   const blocks: ReactNode[] = [];
   let textLines: string[] = [];
+  const figuresById = new Map(figures.map((figure) => [figure.id, figure]));
 
   const flushText = () => {
     const text = textLines.join("\n").trim();
@@ -5085,6 +5125,17 @@ function ReaderPageMarkdown({ content, empty, searchTerm = "" }: { content?: str
 
   let index = 0;
   while (index < lines.length) {
+    const marker = readerFigureMarker(lines[index]);
+    if (marker) {
+      flushText();
+      const figure = figuresById.get(marker.figureId);
+      if (figure) {
+        const figureKey = `reader-figure-${blocks.length}-${figure.id}`;
+        blocks.push(<ReaderInlineFigure altText={marker.altText} figure={figure} figureKey={figureKey} key={figureKey} />);
+      }
+      index += 1;
+      continue;
+    }
     const tableMatch = readMarkdownTable(lines, index);
     if (tableMatch) {
       flushText();
@@ -13182,7 +13233,7 @@ function DocumentPanelContent({
               {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
             </div>
           ) : (
-            <ReaderPageMarkdown content={currentPageText} empty="No extracted text." searchTerm={readerSearchNeedle} />
+            <ReaderPageMarkdown content={currentPageText} empty="No extracted text." figures={document.figures} searchTerm={readerSearchNeedle} />
           )}
         </article>
       ) : (

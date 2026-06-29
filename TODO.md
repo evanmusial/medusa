@@ -58,7 +58,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add multi-pass visual asset extraction and coverage audit.
   - Acceptance: embedded images, displayed image regions, vector charts/plots/diagrams, photos, maps, full-page scans, and table regions are detected; crops include complete axes, legends, labels, and visual bounds when possible; duplicate/overlapping crops are reconciled; page rotation/orientation is preserved or corrected; every meaningful visual region is either extracted or flagged with an audit warning.
-  - Partial: local extraction covers embedded images, page image regions, and vector drawing clusters with captions, orientation metadata, durable assets, a basic no-assets-found warning, and Reader one-page Scan Page rescue that preserves other pages and records evidence. Remaining work is robust full-page scan/table-region coverage, durable user-drawn visual hints/bounding boxes, duplicate/incomplete crop audit, complete axes/legend expansion, and missed-region warnings.
+  - Partial: local extraction covers embedded images, page image regions, and vector drawing clusters with captions, orientation metadata, durable assets, inline parsed-text figure markers, a basic no-assets-found warning, and Reader one-page Scan Page rescue that preserves other pages and records evidence. Remaining work is robust full-page scan/table-region coverage, durable user-drawn visual hints/bounding boxes, duplicate/incomplete crop audit, complete axes/legend expansion, and missed-region warnings.
 
 - [ ] Add visual asset context and affordable visual model routing.
   - Acceptance: figures/tables link to captions, nearby headings, surrounding paragraphs, and explicit mentions such as `Figure 2`; searchable gists come from captions/local context first; cropped-region model calls use cheaper OpenAI/Google models when local context is insufficient; premium visual/document analysis requires Deep Review or explicit Concordance scope; every cloud call records provider/model/task/tokens/file bytes/status/duration/cost.
@@ -95,6 +95,7 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 - [ ] Add richer table geometry and layout rendering.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data, figure geometry can be rendered inline with parsed pages, and source regions can support future overlays/evidence views.
+  - Partial: extracted figures now sync private Markdown image markers into parsed page text and render inline in Reader Text with full-asset clickthrough. Remaining work is structured table geometry, source-region overlays/evidence views, and first-class table rendering.
 
 - [ ] Model richer table objects.
   - Acceptance: table rows/cells/captions/page regions are stored as structured data, while Markdown table text remains searchable.

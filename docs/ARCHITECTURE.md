@@ -1180,6 +1180,7 @@ Consequences:
 - `visual_asset_extraction` and `visual_asset_context` are Concordance capabilities so older documents can be upgraded from their durable original object without re-upload; legacy `figure_assets` requests are treated as a compatibility alias.
 - Visible PDF image blocks are stored from 300 DPI rendered page crops when available; raw embedded image bytes are only a fallback when no usable page crop can be rendered.
 - The detail pane shows extracted figure thumbnails through `/api/figures/{id}/asset`.
+- Figure extraction, page visual scans, figure relabeling, and figure deletion resync parsed-page Markdown image markers of the form `![Figure 1](medusa-figure:<id>)` so the Text reader can render only current live figure rows inline at their best-known caption/layout location.
 
 ### 2026-06-18: Metadata backup and storage manifest exports
 
@@ -1286,6 +1287,7 @@ Consequences:
 
 - `/api/documents/{document_id}` includes page text, source, low-text flags, and page image URI references.
 - The document pane can switch between the authenticated original PDF and parsed page text.
+- Parsed page text may include private `medusa-figure` Markdown image markers. The Reader resolves those markers against the document's current `Figure` rows, renders a constrained inline thumbnail for the Text pane, and links the thumbnail to the full authenticated figure asset route.
 - Reader Notes expose page-aware annotation capture and keep records backend-searchable; future work can map annotation geometry onto PDF overlays.
 - Low-text pages are visible in the reader, giving the future Google Vision OCR path an obvious review surface.
 
@@ -1542,3 +1544,17 @@ Consequences:
 - Mutating document endpoints return HTTP 423 while locked; bulk edits, Trash, duplicate resolution/dismissal, review-queue candidate acceptance, figure writes, annotations, Reader text edits/scrubs/restores, recommendations refresh, Inquests, field verification, and import overwrite must require unlock first.
 - Concordance scope planning excludes locked documents, and already-queued Concordance jobs for a locked document complete as skipped with a `concordance_skipped_locked` processing event.
 - The active lock icon uses its own subdued amber treatment. Verified DOI/APA/Bibliography badges and Library verified-state omission rules remain unchanged.
+
+### 2026-06-29: Inline Figures In Reader Text
+
+Decision: Keep extracted visual assets as durable `Figure` rows, but mark their positions in parsed page text with private Markdown image links such as `![Figure 1](medusa-figure:<figure_id>)`.
+
+Why: The Text reader should preserve the document's visual flow without converting figures into prose or requiring a separate figure list lookup. The marker keeps the internally derived text inspectable, copyable, and repairable while letting the Reader render the current cropped asset inline.
+
+Consequences:
+
+- Import-time figure extraction, Concordance visual extraction/context, Reader page-scan keep actions, figure relabeling, figure deletion, parsed-text page edits, and parsed-text Scrub all resync page-level markers from the current live `Figure` rows.
+- `visual_asset_context` capability version 2 is the retroactive marker-sync path for older documents that already have extracted `Figure` rows.
+- Marker placement prefers the extracted caption or label paragraph, then falls back to page geometry when available. The original caption text remains in the parsed text so visible labels and annotations are not erased.
+- The Reader resolves markers only when the referenced figure is present in the current document detail payload. Stale or deleted marker IDs are ignored in the frontend and removed by the next backend sync.
+- Inline Reader figures use the same authenticated `/api/figures/{figure_id}/asset` route as figure cards, render within the current Text pane, and open the full asset in a new browser tab when clicked.
