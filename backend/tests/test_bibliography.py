@@ -43,6 +43,68 @@ def test_extract_document_bibliography_from_page_text():
     assert result["evidence"]["entry_count_estimate"] == 2
 
 
+def test_extract_document_bibliography_handles_numbered_uppercase_section_heading():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Numbered Uppercase References Paper",
+        original_filename="numbered-uppercase-references.pdf",
+        checksum_sha256="1" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=3,
+            normalized_text=(
+                "The paper body ends here.\n"
+                "IV. ACKNOWLEDGEMENT\n"
+                "Authors thank the supporting staff.\n"
+                "V. REFERENCES [1] John McHugh, Alan Christie, Julia Allen,: The Role of Intrusion "
+                "Detection Systems, CERT coordination center, IEEE Software, Sep-Oct 2000, "
+                "0740-7459, pg 42-51. [2] Julia Allen, Alan Christie, William Fithen, "
+                "John McHugh, Jed Pickel, Ed Stoner,: State of the practice of Intrusion Detection "
+                "Technologies, Carnegie Melon Software Engineering Institute, Pittsburgh, PA 15213-3890. "
+                "[3] J.P. Anderson, Computer Security Threat Monitoring and Surveillance, tech. report, "
+                "James P. Anderson Co., Fort Washington, Pa.1980."
+            ),
+        )
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=4,
+            normalized_text=(
+                "[4] D.E. Denning, \"An Intrusion Detection Model,\" IEEE Trans. Software Eng., "
+                "Vol. SE-13, No. 2, Feb. 1987, pp. 222-232. [5] J. Allen et al., State of the "
+                "Practice of Intrusion Detection Technologies, Tech Report CMU/SEI-99-TR-028, "
+                "Carnegie Mellon Univ., Software Engineering Inst., Pittsburgh, 2000."
+            ),
+        )
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=5,
+            normalized_text=(
+                "*[6]* Snort---The open source intrusion detection system. (2002). Retrieved "
+                "February 13, 2003, from http://www.snort.org."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["source"] == "page_text"
+    assert result["evidence"]["page_start"] == 3
+    assert result["evidence"]["page_end"] == 5
+    assert result["evidence"]["entry_count_estimate"] == 6
+    assert len(entries) == 6
+    assert entries[0].startswith("John McHugh")
+    assert entries[1].startswith("Julia Allen")
+    assert entries[-1].startswith("Snort---The open source intrusion detection system")
+    assert not any(entry.startswith("[") or entry.startswith("*[") for entry in entries)
+    assert "ACKNOWLEDGEMENT" not in result["bibliography"]
+
+
 def test_extract_document_bibliography_prefers_pdf_span_markdown(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service

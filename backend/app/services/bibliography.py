@@ -8,13 +8,18 @@ from app.models import Document
 from app.services.extraction import normalize_extracted_text, sanitize_extracted_text
 
 
-REFERENCE_HEADING_RE = re.compile(r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\s*$", re.IGNORECASE)
+REFERENCE_SECTION_PREFIX = r"(?:(?:[IVXLC]+|\d+(?:\.\d+)*)\.\s+)?"
+REFERENCE_HEADING_RE = re.compile(
+    rf"^\s*{REFERENCE_SECTION_PREFIX}(?:references|bibliography|works\s+cited|literature\s+cited)\s*$",
+    re.IGNORECASE,
+)
 REFERENCE_HEADING_INLINE_RE = re.compile(
-    r"^\s*(?:references|bibliography|works\s+cited|literature\s+cited)\s*[:\-\u2013\u2014]\s+",
+    rf"^\s*{REFERENCE_SECTION_PREFIX}(?:references|bibliography|works\s+cited|literature\s+cited)\s*[:\-\u2013\u2014]\s+",
     re.IGNORECASE,
 )
 EMBEDDED_REFERENCE_HEADING_RE = re.compile(
-    r"\b(?:References|Bibliography|Works\s+Cited|Literature\s+Cited)\b"
+    r"\b(?:references|bibliography|works\s+cited|literature\s+cited)\b",
+    re.IGNORECASE,
 )
 REFERENCE_COUNT_BOILERPLATE_RE = re.compile(
     r"^\s*references\s*:\s*this\s+document\s+contains\s+references\s+to\s+\d+\s+other\s+documents?\.?\s*$",
@@ -38,6 +43,9 @@ REFERENCE_ENTRY_PREFIX_RE = re.compile(
     r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|"
     r"\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\]|"
     r"\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)"
+)
+MARKDOWN_WRAPPED_REFERENCE_ENTRY_PREFIX_RE = re.compile(
+    r"^\s*[*_`]+(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)[*_`]+(?:\s+|(?=[A-Z])|$)"
 )
 REFERENCE_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*]|\u2013|\u2014|\u2022|\u2023|\u2043|\u25e6)\s+")
 REFERENCE_AUTHOR_WORD = r"[A-Z][A-Za-z\u00c0-\u024f'`\u2019.-]+"
@@ -122,6 +130,9 @@ INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE = re.compile(
 INLINE_CITATION_KEY_START_CANDIDATE_RE = re.compile(
     r"\s+(?=\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\](?:\s+|(?=[A-Z])|$))"
 )
+INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE = re.compile(
+    r"\s+(?=(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)])(?:\s+|(?=[A-Z])|$))"
+)
 REFERENCE_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b")
 REFERENCE_URL_DOI_RE = re.compile(r"(?:https?://|doi:|10\.\d{4,9}/)", re.IGNORECASE)
 NON_REFERENCE_SECTION_TITLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]*")
@@ -186,6 +197,7 @@ def _strip_reference_list_marker(value: str) -> str:
 
 
 def _strip_reference_entry_prefix(value: str) -> str:
+    value = MARKDOWN_WRAPPED_REFERENCE_ENTRY_PREFIX_RE.sub("", value, count=1)
     return REFERENCE_ENTRY_PREFIX_RE.sub("", value, count=1).strip()
 
 
@@ -633,7 +645,9 @@ def _split_inline_reference_lines(line: str) -> list[str]:
         _strip_markdown(line).strip()
     ):
         stripped = _strip_reference_entry_prefix(_strip_markdown(line).strip())
-        if not REFERENCE_CONTINUATION_PREFIX_RE.match(stripped):
+        if not REFERENCE_CONTINUATION_PREFIX_RE.match(stripped) and not INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE.search(
+            line
+        ):
             return [line]
     split_offsets: list[int] = []
     matches = [
@@ -643,14 +657,23 @@ def _split_inline_reference_lines(line: str) -> list[str]:
         *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
         *INLINE_CITATION_KEY_START_CANDIDATE_RE.finditer(line),
+        *INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE.finditer(line),
     ]
     candidate_offsets = sorted({match.start() for match in matches})
     segment_start = 0
     for offset in candidate_offsets:
         prefix = line[segment_start:offset].strip()
-        if not REFERENCE_YEAR_RE.search(prefix):
+        prefix_plain = _strip_markdown(prefix).strip()
+        if not REFERENCE_YEAR_RE.search(prefix_plain):
+            prefix_without_marker = _strip_reference_entry_prefix(prefix_plain)
+            if not (
+                _line_starts_reference_marker(prefix_plain)
+                and len(READABLE_WORD_RE.findall(prefix_without_marker)) >= 6
+            ):
+                continue
+        if not prefix_plain:
             continue
-        if prefix.endswith((".", ".)", "〉", "}", "]")) or REFERENCE_URL_DOI_RE.search(prefix):
+        if prefix_plain.endswith((".", ".)", "〉", "}", "]")) or REFERENCE_URL_DOI_RE.search(prefix_plain):
             split_offsets.append(offset)
             segment_start = offset
     if not split_offsets:
