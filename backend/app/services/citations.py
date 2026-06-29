@@ -222,6 +222,31 @@ def _with_period(value: str) -> str:
     return value if value.endswith((".", "?", "!")) else f"{value}."
 
 
+def normalize_apa_page_range(value: Any) -> str:
+    text = _strip_terminal_period(str(value or ""))
+    if not text:
+        return ""
+    text = re.sub(r"\s*[-–—]\s*", "–", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _metadata_page_range(metadata: dict[str, Any]) -> str:
+    return normalize_apa_page_range(metadata.get("page") or metadata.get("pages") or "")
+
+
+def _normalize_apa_page_ranges_in_reference(reference: str) -> str:
+    def replace_after_comma(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}–{match.group(3)}"
+
+    def replace_after_page_label(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}–{match.group(3)}"
+
+    normalized = re.sub(r"(,\s*)(\d+)\s*[-–—]\s*(\d+)(?=[,.)])", replace_after_comma, reference)
+    normalized = re.sub(r"(?i)\b(pp?\.?\s*)(\d+)\s*[-–—]\s*(\d+)\b", replace_after_page_label, normalized)
+    return normalized
+
+
 def _doi_url(doi: Any) -> str:
     doi_text = decode_html_entities(doi)
     if not doi_text:
@@ -237,7 +262,7 @@ def _journal_publication_part(metadata: dict[str, Any]) -> str:
         return ""
     volume = _strip_terminal_period(str(metadata.get("volume") or ""))
     issue = _strip_terminal_period(str(metadata.get("issue") or ""))
-    pages = _strip_terminal_period(str(metadata.get("page") or metadata.get("pages") or metadata.get("article_number") or ""))
+    pages = normalize_apa_page_range(metadata.get("page") or metadata.get("pages") or metadata.get("article_number") or "")
     journal_volume = f"{journal}, {volume}" if volume else journal
     publication = f"*{journal_volume}*"
     if issue:
@@ -368,6 +393,9 @@ def _reference_list_is_plausible(reference_list: str, metadata: dict[str, Any]) 
         return False
     if title_words and not any(word in lowered for word in title_words):
         return False
+    pages = _metadata_page_range(metadata)
+    if pages and pages not in _normalize_apa_page_ranges_in_reference(reference_list):
+        return False
     return True
 
 
@@ -429,7 +457,7 @@ def validate_apa_citation_pair(
         if supplied_reference:
             warnings.append("reference_list_fallback")
     else:
-        normalized_reference = sentence_case_apa_reference_title(normalized_reference)
+        normalized_reference = _normalize_apa_page_ranges_in_reference(sentence_case_apa_reference_title(normalized_reference))
     fallback_in_text = _fallback_in_text_for_reference(metadata, normalized_reference)
     if not _in_text_is_plausible(normalized_in_text, metadata) or _pair_years_conflict(normalized_reference, normalized_in_text):
         normalized_in_text = fallback_in_text

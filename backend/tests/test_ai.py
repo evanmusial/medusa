@@ -238,6 +238,50 @@ def test_bibliography_author_loss_repair_includes_missing_author_evidence(monkey
     assert "Parker, D." in result["bibliography"]
 
 
+def test_bibliography_cleanup_reasoning_effort_is_optional(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("MEDUSA_OPENAI_BIBLIOGRAPHY_REASONING_EFFORT", "high")
+
+    from app.config import get_settings
+    from app.services.ai import AiService
+
+    class FakeResponses:
+        def __init__(self):
+            self.reasoning = None
+
+        def create(self, *, model, input, text, timeout, reasoning=None, prompt_cache_key=None, prompt_cache_retention=None):
+            del model, input, timeout, prompt_cache_key, prompt_cache_retention
+            self.reasoning = reasoning
+            schema_name = text["format"]["name"]
+            return SimpleNamespace(
+                id=f"resp_{schema_name}",
+                output_text=json.dumps(
+                    {
+                        "references": ["Lovelace, A. (1843). *Notes*. Journal."],
+                        "confidence": 0.91,
+                        "notes": [],
+                    }
+                ),
+                usage=SimpleNamespace(input_tokens=20, output_tokens=12, total_tokens=32),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service.normalize_bibliography(
+        "references.pdf",
+        "Lovelace, A. (1843). Notes. Journal.",
+        model="gpt-5-mini",
+    )
+
+    assert result["_openai"]["reasoning_effort"] == "high"
+    assert responses.reasoning == {"effort": "high"}
+
+
 def test_bibliography_sort_fallback_uses_surname_for_initials_first_entries():
     from app.services.ai import sorted_bibliography_entries
 
@@ -674,12 +718,16 @@ def test_ai_apa_citation_candidate_uses_compact_text_only_context(monkeypatch, t
     class FakeResponses:
         def __init__(self):
             self.calls: list[tuple[str, str, bool]] = []
+            self.reasoning = None
+            self.system_prompt = ""
             self.user_text = ""
 
-        def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
+        def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None, reasoning=None):
             del timeout, prompt_cache_key, prompt_cache_retention
             schema_name = text["format"]["name"]
             has_file = any(item.get("type") == "input_file" for item in input[1]["content"])
+            self.reasoning = reasoning
+            self.system_prompt = input[0]["content"]
             self.user_text = input[1]["content"][0]["text"]
             self.calls.append((schema_name, model, has_file))
             return SimpleNamespace(
@@ -720,13 +768,85 @@ def test_ai_apa_citation_candidate_uses_compact_text_only_context(monkeypatch, t
 
     assert result["apa_citation"] == "Lovelace, A. (1843). Notes."
     assert result["apa_in_text_citation"] == "(Lovelace, 1843)"
+    assert result["_openai"]["reasoning_effort"] == "high"
     assert responses.calls == [("medusa_apa_citation_candidate", "gpt-5.5", False)]
+    assert responses.reasoning == {"effort": "high"}
+    assert "use the DOI-specific bibliographic record" in responses.system_prompt
+    assert "page ranges with an en dash" in responses.system_prompt
+    assert "confident DOI-specific bibliographic knowledge" in responses.system_prompt
     assert "Known citation metadata" in responses.user_text
     assert "Crossref or DOI candidate evidence" in responses.user_text
     assert "10.1000/example" in responses.user_text
     assert "Document excerpts" in responses.user_text
     assert {record["task_key"] for record in usage_records} == {MODEL_APA_CITATION}
     assert usage_records[0]["input_file_bytes"] == 0
+
+
+def test_ai_apa_citation_candidate_reasoning_effort_can_be_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("MEDUSA_OPENAI_APA_REASONING_EFFORT", "off")
+
+    from app.config import get_settings
+    from app.services.ai import AiService
+
+    class FakeResponses:
+        def __init__(self):
+            self.reasoning_seen = "not-called"
+
+        def create(self, *, model, input, text, timeout, reasoning=None, prompt_cache_key=None, prompt_cache_retention=None):
+            del model, input, timeout, prompt_cache_key, prompt_cache_retention
+            self.reasoning_seen = reasoning
+            schema_name = text["format"]["name"]
+            return SimpleNamespace(
+                id=f"resp_{schema_name}",
+                output_text=json.dumps(
+                    {
+                        "apa_citation": "Lovelace, A. (1843). Notes.",
+                        "apa_in_text_citation": "(Lovelace, 1843)",
+                        "citation_warnings": [],
+                        "confidence": 0.82,
+                        "needs_review_reasons": [],
+                    }
+                ),
+                usage=SimpleNamespace(input_tokens=20, output_tokens=5, total_tokens=25),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+
+    result = service.generate_apa_citation_candidate(
+        "paper.pdf",
+        "Title page paragraph.",
+        {"title": "Notes", "authors": [{"given": "Ada", "family": "Lovelace"}], "publication_year": 1843},
+        model="gpt-5.5",
+    )
+
+    assert result["_openai"]["reasoning_effort"] is None
+    assert responses.reasoning_seen is None
+
+
+def test_ai_apa_reasoning_effort_is_only_for_gpt5_family(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import AiService
+    from app.services.analysis_models import MODEL_APA_CITATION, MODEL_BIBLIOGRAPHY_CLEANUP, MODEL_SUMMARY
+
+    get_settings.cache_clear()
+    service = AiService()
+
+    assert service._reasoning_effort_for_task(MODEL_APA_CITATION, "gpt-5.5") == "high"
+    assert service._reasoning_effort_for_task(MODEL_APA_CITATION, "gpt-5.5-pro") == "high"
+    assert service._reasoning_effort_for_task(MODEL_APA_CITATION, "gpt-4o") is None
+    assert service._reasoning_effort_for_task(MODEL_BIBLIOGRAPHY_CLEANUP, "gpt-5-mini") is None
+    assert service._reasoning_effort_for_task(MODEL_SUMMARY, "gpt-5.5") is None
+    assert service._reasoning_effort_for_task(MODEL_APA_CITATION, "gemini-2.5-flash") is None
 
 
 def test_ai_page_normalization_prompt_protects_graphic_assets(monkeypatch, tmp_path):

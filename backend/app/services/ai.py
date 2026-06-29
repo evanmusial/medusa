@@ -268,13 +268,16 @@ APA_CITATION_JUDGMENT_PROMPT = (
     "Generate and check an APA 7 citation candidate from the supplied citation metadata, matching evidence, "
     "and short document excerpts. Use only the supplied evidence. When DOI or Crossref evidence is present, treat it "
     "as the fastest route to the correct APA output only when its title, authors, year, or container agree with the "
-    "known document metadata and excerpts. If DOI evidence appears incomplete, stale, or for a different work, preserve "
-    "the best supported citation fields you can and explain the uncertainty in needs_review_reasons instead of blindly "
-    "citing the DOI. Return apa_citation as the reference-list entry and apa_in_text_citation as the matching parenthetical "
+    "known document metadata and excerpts. When a DOI strongly identifies the same work, use the DOI-specific "
+    "bibliographic record to complete standard citation fields such as page ranges or article numbers even when the "
+    "compact Crossref packet omits them; include page ranges with an en dash, for example 82–89. If DOI evidence appears "
+    "incomplete, stale, or for a different work, preserve the best supported citation fields you can and explain the "
+    "uncertainty in needs_review_reasons instead of blindly citing the DOI. Return apa_citation as the reference-list entry and apa_in_text_citation as the matching parenthetical "
     "in-text citation in this single response. Do not add field labels, headings, bullets, or code fences inside either "
     "citation string. If the evidence is insufficient or internally conflicting, return null for uncertain citation "
     "fields and explain the uncertainty in citation_warnings. Do not invent authors, year, venue, DOI, volume, issue, "
-    "pages, or URLs. Use Markdown-compatible italics where APA requires italicized publication elements. For APA "
+    "pages, or URLs; omit page ranges when neither supplied evidence nor confident DOI-specific bibliographic knowledge "
+    "supports them. Use Markdown-compatible italics where APA requires italicized publication elements. For APA "
     "reference-list entries, format the cited work title in sentence case; keep journal, magazine, newspaper, "
     "proceedings, and other container titles in title case."
 )
@@ -1203,6 +1206,7 @@ class AiService:
         result["_openai"] = {
             "model": selected_model,
             "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+            "reasoning_effort": self._reasoning_effort_for_task(MODEL_APA_CITATION, selected_model),
             "used_pdf_file": False,
         }
         return result
@@ -1265,6 +1269,7 @@ class AiService:
                 "model": selected_model,
                 "configured": True,
                 "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+                "reasoning_effort": self._reasoning_effort_for_task(MODEL_BIBLIOGRAPHY_CLEANUP, selected_model),
                 "input_characters": len(input_text),
             },
         }
@@ -1341,6 +1346,7 @@ class AiService:
                 "model": selected_model,
                 "configured": True,
                 "prompt_cache_key": self._normalize_prompt_cache_key(prompt_cache_key),
+                "reasoning_effort": self._reasoning_effort_for_task(MODEL_BIBLIOGRAPHY_CLEANUP, selected_model),
                 "input_characters": len(input_text),
             },
         }
@@ -1691,6 +1697,10 @@ class AiService:
             "prompt_cache_retention",
         ):
             cache_params["prompt_cache_retention"] = cache_retention
+        reasoning_effort = self._reasoning_effort_for_task(task_key, model)
+        reasoning_params: dict[str, Any] = {}
+        if reasoning_effort and self._responses_create_accepts(create_response, "reasoning"):
+            reasoning_params["reasoning"] = {"effort": reasoning_effort}
         try:
             with hard_timeout(timeout):
                 response = create_response(
@@ -1709,6 +1719,7 @@ class AiService:
                     },
                     timeout=timeout,
                     **cache_params,
+                    **reasoning_params,
                 )
             payload = json.loads(response.output_text)
             record_openai_usage(
@@ -1972,6 +1983,25 @@ class AiService:
             return None
         normalized = value.strip().lower()
         return normalized if normalized in {"in_memory", "24h"} else None
+
+    def _reasoning_effort_for_task(self, task_key: str | None, model: str | None) -> str | None:
+        if is_google_text_model(model):
+            return None
+        model_name = str(model or "").strip().lower()
+        if not model_name.startswith("gpt-5"):
+            return None
+        if task_key == MODEL_APA_CITATION:
+            value = self.settings.openai_apa_reasoning_effort
+        elif task_key == MODEL_BIBLIOGRAPHY_CLEANUP:
+            value = self.settings.openai_bibliography_reasoning_effort
+        else:
+            return None
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        if normalized in {"", "none", "off", "false", "0"}:
+            return None
+        return normalized if normalized in {"minimal", "low", "medium", "high"} else None
 
     @staticmethod
     def _responses_create_accepts(create_response: Any, parameter: str) -> bool:

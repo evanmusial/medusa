@@ -52,8 +52,33 @@ def test_format_apa_includes_journal_volume_issue_and_pages_as_markdown():
     assert citation == (
         "Axelrad, E. T., Sticha, P. J., & Brdiczka, O. (2013). "
         "A Bayesian network model for predicting insider threats. "
-        "*2013 IEEE Security and Privacy Workshops, 1*(2), 82-89. "
+        "*2013 IEEE Security and Privacy Workshops, 1*(2), 82–89. "
         "https://doi.org/10.1109/spw.2013.35"
+    )
+
+
+def test_format_apa_includes_proceedings_page_range_with_en_dash():
+    citation = format_apa_citation(
+        {
+            "title": "A Bayesian network model for predicting insider threats",
+            "authors": [
+                {"given": "Elise T.", "family": "Axelrad"},
+                {"given": "Paul J.", "family": "Sticha"},
+                {"given": "Oliver", "family": "Brdiczka"},
+                {"given": "Jianqiang", "family": "Shen"},
+            ],
+            "publication_year": 2013,
+            "journal": "2013 IEEE Security and Privacy Workshops",
+            "page": "82-89",
+            "doi": "10.1109/SPW.2013.35",
+        }
+    )
+
+    assert citation == (
+        "Axelrad, E. T., Sticha, P. J., Brdiczka, O., & Shen, J. (2013). "
+        "A Bayesian network model for predicting insider threats. "
+        "*2013 IEEE Security and Privacy Workshops*, 82–89. "
+        "https://doi.org/10.1109/SPW.2013.35"
     )
 
 
@@ -146,6 +171,88 @@ def test_validate_apa_citation_pair_sentence_cases_supplied_reference_title():
 
     assert pair.reference_list == "Bashah, N. (2007). Hybrid intelligent intrusion detection system. *World Academy of Science, Engineering and Technology*."
     assert pair.validation_warnings == []
+
+
+def test_validate_apa_citation_pair_requires_known_page_range():
+    metadata = {
+        "title": "A Bayesian network model for predicting insider threats",
+        "authors": [
+            {"given": "Elise T.", "family": "Axelrad"},
+            {"given": "Paul J.", "family": "Sticha"},
+            {"given": "Oliver", "family": "Brdiczka"},
+            {"given": "Jianqiang", "family": "Shen"},
+        ],
+        "publication_year": 2013,
+        "journal": "2013 IEEE Security and Privacy Workshops",
+        "page": "82-89",
+        "doi": "10.1109/SPW.2013.35",
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list=(
+            "Axelrad, E. T., Sticha, P. J., Brdiczka, O., & Shen, J. (2013). "
+            "A Bayesian Network Model for Predicting Insider Threats. "
+            "*2013 IEEE Security and Privacy Workshops*. https://doi.org/10.1109/SPW.2013.35"
+        ),
+        in_text="(Axelrad et al., 2013)",
+    )
+
+    assert ", 82–89." in pair.reference_list
+    assert pair.validation_warnings == ["reference_list_fallback"]
+
+
+def test_validate_apa_citation_pair_normalizes_model_page_range_dash():
+    metadata = {
+        "title": "A Bayesian network model for predicting insider threats",
+        "authors": [
+            {"given": "Elise T.", "family": "Axelrad"},
+            {"given": "Paul J.", "family": "Sticha"},
+            {"given": "Oliver", "family": "Brdiczka"},
+            {"given": "Jianqiang", "family": "Shen"},
+        ],
+        "publication_year": 2013,
+        "journal": "2013 IEEE Security and Privacy Workshops",
+        "page": "82-89",
+        "doi": "10.1109/SPW.2013.35",
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list=(
+            "Axelrad, E. T., Sticha, P. J., Brdiczka, O., & Shen, J. (2013). "
+            "A Bayesian Network Model for Predicting Insider Threats. "
+            "*2013 IEEE Security and Privacy Workshops*, 82-89. https://doi.org/10.1109/SPW.2013.35"
+        ),
+        in_text="(Axelrad et al., 2013)",
+    )
+
+    assert ", 82–89." in pair.reference_list
+    assert "82-89" not in pair.reference_list
+    assert pair.validation_warnings == []
+
+
+def test_validate_apa_citation_pair_does_not_rewrite_numeric_hyphen_inside_doi():
+    metadata = {
+        "title": "Example page range study",
+        "authors": [{"given": "Ada", "family": "Lovelace"}],
+        "publication_year": 1843,
+        "journal": "Example Journal",
+        "page": "12-18",
+        "doi": "10.1000/12-18",
+    }
+
+    pair = validate_apa_citation_pair(
+        metadata,
+        reference_list=(
+            "Lovelace, A. (1843). Example Page Range Study. "
+            "*Example Journal*, 12-18. https://doi.org/10.1000/12-18"
+        ),
+        in_text="(Lovelace, 1843)",
+    )
+
+    assert "*Example Journal*, 12–18." in pair.reference_list
+    assert "https://doi.org/10.1000/12-18" in pair.reference_list
 
 
 def test_validate_apa_citation_pair_falls_back_for_wrong_shape():

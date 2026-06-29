@@ -102,6 +102,14 @@ class Settings(BaseSettings):
         default="24h",
         validation_alias="MEDUSA_OPENAI_PROMPT_CACHE_RETENTION",
     )
+    openai_apa_reasoning_effort: str | None = Field(
+        default="high",
+        validation_alias="MEDUSA_OPENAI_APA_REASONING_EFFORT",
+    )
+    openai_bibliography_reasoning_effort: str | None = Field(
+        default="off",
+        validation_alias="MEDUSA_OPENAI_BIBLIOGRAPHY_REASONING_EFFORT",
+    )
     openai_page_normalization_timeout_seconds: float = Field(
         default=90.0,
         validation_alias="MEDUSA_OPENAI_PAGE_NORMALIZATION_TIMEOUT_SECONDS",

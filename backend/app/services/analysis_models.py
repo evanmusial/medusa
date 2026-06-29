@@ -108,7 +108,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_APA_CITATION,
         label="APA Citation Matching",
         model_kind="gpt",
-        description="Generates or checks evidence-bounded APA 7 reference-list and in-text citations, using DOI/Crossref evidence plus known title and author metadata to confirm matches before validation.",
+        description="Generates or checks evidence-bounded APA 7 reference-list and in-text citations with high OpenAI reasoning effort by default, using DOI/Crossref evidence plus known title and author metadata to confirm matches before validation.",
     ),
     AnalysisModelTask(
         key=MODEL_KEYWORDS_TOPICS,
@@ -126,7 +126,7 @@ ANALYSIS_MODEL_TASKS: tuple[AnalysisModelTask, ...] = (
         key=MODEL_BIBLIOGRAPHY_CLEANUP,
         label="Bibliography Cleanup",
         model_kind="gpt",
-        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default; author-loss cleanup gets a targeted repair retry before any GPT-5.4-mini safety retry.",
+        description="Cleans an extracted source reference list into one APA-style Markdown entry per source during ad hoc Bibliography Refresh. Imports stay on the local extractor by default; author-loss cleanup gets a targeted repair retry before any GPT-5.4-mini safety retry. Optional GPT-5-family reasoning can be enabled for expensive hard cases.",
     ),
     AnalysisModelTask(
         key=MODEL_FORMULA_CAPTURE,
