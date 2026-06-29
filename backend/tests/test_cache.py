@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -292,3 +294,161 @@ def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
     assert result["hydrated_keys"] == 9
     assert result["after"]["last_hydration_at"] == result["hydrated_at"]
     assert cache.hydrated_at == result["hydrated_at"]
+
+
+def test_hydrate_cache_default_document_limit_means_all(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document
+    from app.services import cache as cache_service
+    from app import main
+
+    class RecordingCache:
+        def __init__(self):
+            self.data = {}
+            self.hydrated_at = None
+
+        def get_json(self, key, family):
+            return ("hit", self.data[key]) if key in self.data else ("miss", None)
+
+        def set_json(self, key, family, payload, ttl_seconds, max_payload_bytes):
+            del family, ttl_seconds, max_payload_bytes
+            self.data[key] = payload
+            return "write"
+
+        def remember_refresh(self, refreshed_at=None):
+            return None
+
+        def last_refresh_at(self):
+            return None
+
+        def remember_hydration(self, hydrated_at=None):
+            self.hydrated_at = hydrated_at
+
+        def last_hydration_at(self):
+            return self.hydrated_at
+
+        def status(self):
+            return {
+                "backend": "recording",
+                "enabled": True,
+                "reachable": True,
+                "mode": "online",
+                "message": "Recording cache online.",
+                "key_count": len(self.data),
+            }
+
+    cache = RecordingCache()
+    monkeypatch.setattr(cache_service, "_cache_backend", cache)
+    monkeypatch.setattr(main.settings, "cache_hydrate_max_documents", 0)
+
+    Session = make_session()
+    with Session() as db:
+        for index in range(3):
+            db.add(
+                Document(
+                    title=f"Document {index}",
+                    original_filename=f"document-{index}.pdf",
+                    checksum_sha256=f"{index + 1}" * 64,
+                    processing_status="ready",
+                    page_count=index + 1,
+                )
+            )
+        db.commit()
+
+        result = main.hydrate_cache_payloads(db, include_saved_searches=False, page_size=25)
+
+    assert result["status"] == "complete"
+    assert result["document_count"] == 3
+    assert result["document_detail_keys"] == 3
+    assert result["hydrated_keys"] == 9
+
+
+def test_startup_cache_hydration_schedules_shared_hydrator(monkeypatch):
+    from app import main
+
+    calls = []
+    db_marker = object()
+
+    @contextmanager
+    def fake_session_scope():
+        yield db_marker
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    def fake_hydrate(db):
+        calls.append(db)
+        return {
+            "status": "complete",
+            "hydrated_keys": 1,
+            "document_count": 1,
+            "skipped_payloads": 0,
+            "errored_payloads": 0,
+        }
+
+    monkeypatch.setattr(main.settings, "cache_startup_hydrate", True)
+    monkeypatch.setattr(main, "session_scope", fake_session_scope)
+    monkeypatch.setattr(main, "hydrate_cache_payloads", fake_hydrate)
+    monkeypatch.setattr(main.threading, "Thread", ImmediateThread)
+
+    main.schedule_startup_cache_hydration()
+
+    assert calls == [db_marker]
+
+
+def test_startup_cache_hydration_retries_until_cache_reachable(monkeypatch):
+    from app import main
+
+    db_marker = object()
+    sleeps = []
+    results = [
+        {
+            "status": "skipped",
+            "message": "Valkey is configured but unreachable.",
+            "before": {"enabled": True, "reachable": False},
+        },
+        {
+            "status": "complete",
+            "hydrated_keys": 2,
+            "document_count": 1,
+            "skipped_payloads": 0,
+            "errored_payloads": 0,
+            "before": {"enabled": True, "reachable": True},
+        },
+    ]
+
+    @contextmanager
+    def fake_session_scope():
+        yield db_marker
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    def fake_hydrate(db):
+        assert db is db_marker
+        return results.pop(0)
+
+    monkeypatch.setattr(main.settings, "cache_startup_hydrate", True)
+    monkeypatch.setattr(main, "session_scope", fake_session_scope)
+    monkeypatch.setattr(main, "hydrate_cache_payloads", fake_hydrate)
+    monkeypatch.setattr(main.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(main, "sleep", lambda seconds: sleeps.append(seconds))
+
+    main.schedule_startup_cache_hydration()
+
+    assert results == []
+    assert sleeps == [main.CACHE_STARTUP_HYDRATE_RETRY_SECONDS]

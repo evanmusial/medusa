@@ -38,7 +38,7 @@ from app.services.citations import decode_html_entities, merge_citation_metadata
 from app.services.bibliography import _line_starts_reference_entry, extract_document_bibliography
 from app.services.composition import elapsed_ms, record_concordance_stage, record_import_erratum, stage_timer, sync_import_usage_composition
 from app.services.document_cache import ensure_document_pdf_bytes
-from app.services.document_visibility import filter_library_visible_documents
+from app.services.document_visibility import document_is_locked, filter_library_visible_documents
 from app.services.figures import process_document_figures_from_storage
 from app.services.formulas import capture_document_formulas
 from app.services.history import (
@@ -1134,7 +1134,7 @@ def _already_queued_or_running(db: Session, document_id: str, capability_key: st
 
 
 def documents_for_scope(db: Session, scope_type: str, scope_data: dict[str, Any]) -> list[Document]:
-    query = filter_library_visible_documents(db.query(Document))
+    query = filter_library_visible_documents(db.query(Document)).filter(Document.locked_at.is_(None))
     if scope_type == "library":
         pass
     elif scope_type == "documents":
@@ -1268,6 +1268,19 @@ class ConcordanceProcessor:
         if not document or document.deleted_at:
             job.status = "failed"
             job.last_error = "Document record is missing."
+            return
+        if document_is_locked(document):
+            job.status = "complete"
+            job.last_error = None
+            log_event(
+                db,
+                job=None,
+                document=document,
+                event_type="concordance_skipped_locked",
+                message=f"Concordance skipped {job.capability_key} because the document is locked.",
+                payload={"run_id": job.run_id, "capability_key": job.capability_key, "locked_at": document.locked_at.isoformat()},
+            )
+            db.commit()
             return
 
         try:

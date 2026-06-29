@@ -423,6 +423,69 @@ PORTFOLIO_ASSESSMENT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "summary": {"type": "string"},
+        "scorecard": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "description": {"type": "string"},
+                    "max_points": {"type": ["number", "null"]},
+                    "awarded_points": {"type": ["number", "null"]},
+                    "level": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                    "rationale": {"type": "string"},
+                    "evidence_labels": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "criterion",
+                    "description",
+                    "max_points",
+                    "awarded_points",
+                    "level",
+                    "confidence",
+                    "rationale",
+                    "evidence_labels",
+                ],
+            },
+        },
+        "grade_estimate": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "estimated_grade": {"type": ["string", "null"]},
+                "estimated_score": {"type": ["number", "null"]},
+                "scale": {"type": "string"},
+                "confidence": {"type": "number"},
+                "assumptions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["estimated_grade", "estimated_score", "scale", "confidence", "assumptions"],
+        },
+        "narrative_feedback": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "strengths": {"type": "array", "items": {"type": "string"}},
+                "concerns": {"type": "array", "items": {"type": "string"}},
+                "missing_evidence": {"type": "array", "items": {"type": "string"}},
+                "revision_priorities": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["strengths", "concerns", "missing_evidence", "revision_priorities"],
+        },
+        "revision_priorities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "priority": {"type": "string"},
+                    "rationale": {"type": "string"},
+                    "evidence_labels": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["priority", "rationale", "evidence_labels"],
+            },
+        },
         "findings": {
             "type": "array",
             "items": {
@@ -441,14 +504,26 @@ PORTFOLIO_ASSESSMENT_SCHEMA: dict[str, Any] = {
         "confidence": {"type": "number"},
         "limitations": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["summary", "findings", "confidence", "limitations"],
+    "required": [
+        "summary",
+        "scorecard",
+        "grade_estimate",
+        "narrative_feedback",
+        "revision_priorities",
+        "findings",
+        "confidence",
+        "limitations",
+    ],
 }
 
 PORTFOLIO_ASSESSMENT_PROMPT = (
-    "Review the supplied Portfolio version against its materials and Library evidence. Use only supplied evidence. "
-    "Create actionable findings about focus, completeness, quality, support, missing sources, and alignment with "
-    "rubrics or prompts. Cite evidence labels in each finding. Do not invent assignment requirements, paper claims, "
-    "or source support. Use severity info, warning, or critical."
+    "Review the supplied school-assignment Portfolio draft against its rubric, assignment prompt, guide materials, "
+    "feedback, Portfolio history, and Library/Recon evidence. Use only the supplied draft text, materials, and "
+    "evidence. Produce a rubric scorecard, narrative feedback, revision priorities, findings, and an overall grade "
+    "estimate with confidence and assumptions. Cite supplied evidence labels wherever possible. If rubric point "
+    "values are not present, provide qualitative levels and leave max_points, awarded_points, and estimated_score "
+    "null instead of inventing point totals. Do not invent assignment requirements, draft claims, source support, "
+    "or external facts. Use finding severity info, warning, or critical."
 )
 
 

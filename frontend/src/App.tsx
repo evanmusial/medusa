@@ -76,6 +76,7 @@ import {
   ListChecks,
   List,
   ListOrdered,
+  Lock,
   LogOut,
   MessageSquare,
   Merge,
@@ -100,6 +101,7 @@ import {
   Timer,
   Trash2,
   Underline,
+  Unlock,
   Upload,
   UploadCloud,
   Users,
@@ -2960,6 +2962,8 @@ function documentSummaryPatchFromDetail(document: DocumentDetail): Partial<Libra
     processing_status: document.processing_status,
     read_status: document.read_status,
     priority: document.priority,
+    is_locked: document.is_locked,
+    locked_at: document.locked_at,
     updated_at: document.updated_at,
     duplicate_count: document.duplicate_count,
     duplicate_reasons: document.duplicate_reasons,
@@ -9805,6 +9809,9 @@ function DocumentPanelContent({
   const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
+  const documentLocked = Boolean(document.is_locked);
+  const documentLockedReason = "this document is locked.";
+  const documentLockedTooltip = "Unlock this document before editing fields, refreshing derived content, or changing document properties.";
   const runConcordanceFeedback = useAsyncActionFeedback();
   const doiRefreshFeedback = useAsyncActionFeedback();
   const citationRefreshFeedback = useAsyncActionFeedback();
@@ -9822,6 +9829,21 @@ function DocumentPanelContent({
   const annotations = useQuery({
     queryKey: ["annotations", document.id],
     queryFn: () => api.annotations(document.id),
+  });
+  const updateDocumentLock = useMutation({
+    mutationFn: (isLocked: boolean) => api.updateDocumentLock(document.id, { is_locked: isLocked }),
+    onSuccess: (updatedDocument) => {
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      patchCachedDocumentSummaries(queryClient, {
+        id: updatedDocument.id,
+        is_locked: updatedDocument.is_locked,
+        locked_at: updatedDocument.locked_at,
+        updated_at: updatedDocument.updated_at,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
   const updateDocument = useMutation({
     mutationFn: (body: DocumentUpdatePayload) => api.updateDocument(document.id, body),
@@ -10456,6 +10478,21 @@ function DocumentPanelContent({
   }, [document.id]);
 
   useEffect(() => {
+    if (!documentLocked) return;
+    setEditing(false);
+    setEditingDoi(false);
+    setEditingSummary(false);
+    setEditingBibliography(false);
+    setEditingCitation(null);
+    setEditingPageId(null);
+    setEditingFigureId(null);
+    setDomainAssignOpen(false);
+    setAccessoryComposerOpen(false);
+    setVisualScanReview(null);
+    setSelectedVisualScanCandidateIds(new Set());
+  }, [documentLocked]);
+
+  useEffect(() => {
     if (!editingDoi) setDoiDraft(document.doi || "");
   }, [document.doi, editingDoi]);
 
@@ -10778,37 +10815,51 @@ function DocumentPanelContent({
     trackedTagRefreshJobs.length ? trackedTagRefreshJobs : tagRefreshJobsForDocument,
     tagRefreshBusy,
   );
-  const pageTextBusyReason = updatePageText.isPending
+  const pageTextBusyReason = documentLocked
+    ? documentLockedReason
+    : updatePageText.isPending
     ? "a parsed-text save is already running."
     : scrubText.isPending
       ? "a scrub edit is already running."
       : "";
-  const citationBusyReason = refreshCitation.isPending
+  const citationBusyReason = documentLocked
+    ? documentLockedReason
+    : refreshCitation.isPending
     ? "an APA citation refresh request is already starting."
     : citationRefreshActive || (citationRunId && !citationRunServerIdle)
       ? "a DOI or APA citation refresh is already queued or running for this document."
       : "";
-  const summaryRefreshBusyReason = refreshSummary.isPending
+  const summaryRefreshBusyReason = documentLocked
+    ? documentLockedReason
+    : refreshSummary.isPending
     ? "a summary refresh request is already starting."
     : summaryRefreshActive || (summaryRunId && !summaryRunServerIdle)
       ? "a summary refresh is already queued or running for this document."
       : "";
-  const bibliographyRefreshBusyReason = refreshBibliography.isPending
+  const bibliographyRefreshBusyReason = documentLocked
+    ? documentLockedReason
+    : refreshBibliography.isPending
     ? "a bibliography refresh request is already starting."
     : bibliographyRefreshActive || (bibliographyRunId && !bibliographyRunServerIdle)
       ? "a bibliography refresh is already queued or running for this document."
       : "";
-  const formulaCaptureBusyReason = captureFormulas.isPending
+  const formulaCaptureBusyReason = documentLocked
+    ? documentLockedReason
+    : captureFormulas.isPending
     ? "a formula capture request is already starting."
     : formulaCaptureActive || (formulaCaptureRunId && !formulaCaptureRunServerIdle)
       ? "formula capture is already queued or running for this document."
       : "";
-  const tagRefreshBusyReason = refreshTags.isPending
+  const tagRefreshBusyReason = documentLocked
+    ? documentLockedReason
+    : refreshTags.isPending
     ? "a tag refresh request is already starting."
     : tagRefreshActive || (tagRefreshRunId && !tagRefreshRunServerIdle)
       ? "a tag refresh is already queued or running for this document."
       : "";
-  const documentConcordanceBusyReason = runConcordance.isPending
+  const documentConcordanceBusyReason = documentLocked
+    ? documentLockedReason
+    : runConcordance.isPending
     ? "a document Concordance request is already starting."
     : documentConcordanceBusy
       ? "a document Concordance Run is already queued or running."
@@ -10853,11 +10904,17 @@ function DocumentPanelContent({
     if (!needle) return domainAssignOptions;
     return domainAssignOptions.filter((option) => `${option.name} ${option.meta || ""}`.toLocaleLowerCase().includes(needle));
   }, [domainAssignOptions, domainAssignSearch]);
-  const tagUpdateBusy = updateDocumentTags.isPending || tagRefreshBusy;
-  const tagUpdateBusyReason = updateDocumentTags.isPending
+  const tagUpdateBusy = documentLocked || updateDocumentTags.isPending || tagRefreshBusy;
+  const tagUpdateBusyReason = documentLocked
+    ? documentLockedReason
+    : updateDocumentTags.isPending
     ? "a tag update is already saving for this document."
     : "a tag refresh is already queued or running for this document.";
-  const domainUpdateBusyReason = updateDocumentDomains.isPending ? "a domain assignment update is already saving for this document." : "";
+  const domainUpdateBusyReason = documentLocked
+    ? documentLockedReason
+    : updateDocumentDomains.isPending
+      ? "a domain assignment update is already saving for this document."
+      : "";
 
   useEffect(() => {
     if (currentPage) setVisualScanPageDraft(String(currentPage.page_number));
@@ -11295,7 +11352,7 @@ function DocumentPanelContent({
   };
 
   const startPageTextEdit = () => {
-    if (!currentPage) return;
+    if (documentLocked || !currentPage) return;
     setEditingPageId(currentPage.id);
     setPageTextDraft(currentPageText);
     setPageTextError(null);
@@ -11310,7 +11367,7 @@ function DocumentPanelContent({
   };
 
   const savePageTextEdit = () => {
-    if (!currentPage || !pageTextEditing) return;
+    if (documentLocked || !currentPage || !pageTextEditing) return;
     updatePageText.mutate({ pageId: currentPage.id, normalizedText: pageTextDraft });
   };
 
@@ -11321,7 +11378,7 @@ function DocumentPanelContent({
   };
 
   const scrubSelectedText = () => {
-    if (!scrubNeedle || scrubMatchCount <= 0 || pageTextBusy) return;
+    if (documentLocked || !scrubNeedle || scrubMatchCount <= 0 || pageTextBusy) return;
     scrubText.mutate(scrubNeedle);
   };
 
@@ -11333,7 +11390,7 @@ function DocumentPanelContent({
   };
 
   const restoreSelectedHistoryVersion = () => {
-    if (!selectedHistoryVersion || !selectedHistoryRestorable || restoreHistoryVersion.isPending) return;
+    if (documentLocked || !selectedHistoryVersion || !selectedHistoryRestorable || restoreHistoryVersion.isPending) return;
     restoreHistoryVersion.mutate(selectedHistoryVersion.id);
   };
 
@@ -11387,6 +11444,7 @@ function DocumentPanelContent({
     kind === "reference" ? "apa_citation" : "apa_in_text_citation";
 
   const startCitationEdit = async (kind: CitationKind) => {
+    if (documentLocked) return;
     const verifiedField = citationVerificationField(kind);
     const ok = await confirmVerifiedFieldAction([verifiedField], {
       confirmLabel: "Edit Citation",
@@ -11408,6 +11466,7 @@ function DocumentPanelContent({
   };
 
   const saveCitationEdit = (kind: CitationKind) => {
+    if (documentLocked) return;
     updateCitation.mutate({
       kind,
       value: normalizeRichEditorMarkdown(citationDrafts[kind] || "", "compact"),
@@ -11418,6 +11477,7 @@ function DocumentPanelContent({
   const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
   const citationButtonBusy = (_kind: CitationKind) => citationBusy && citationRefreshTarget !== "doi";
   const checkCitation = async () => {
+    if (documentLocked) return;
     const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
       confirmLabel: "Refresh APA",
       message: "Refreshing can replace DOI and APA citation data. Verified status will be removed until you verify affected fields again.",
@@ -11429,6 +11489,7 @@ function DocumentPanelContent({
   };
   const doiCheckBusy = citationBusy && citationRefreshTarget === "doi";
   const checkDoi = async () => {
+    if (documentLocked) return;
     const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
       confirmLabel: "Refresh DOI",
       message: "Refreshing can replace DOI and APA citation data. Verified status will be removed until you verify affected fields again.",
@@ -11439,6 +11500,7 @@ function DocumentPanelContent({
     refreshCitation.mutate({ target: "doi", confirmVerified: true });
   };
   const startDoiEdit = async () => {
+    if (documentLocked) return;
     const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
       confirmLabel: "Edit DOI",
       message: "Saving DOI changes can update APA citation text. Verified status will be removed until you verify affected fields again.",
@@ -11458,10 +11520,11 @@ function DocumentPanelContent({
     setEditingDoi(false);
   };
   const saveDoiEdit = () => {
+    if (documentLocked) return;
     updateDoi.mutate({ value: doiDraft, confirmVerified: doiVerifiedEditConfirmed });
   };
   const markDocumentNoDoi = async () => {
-    if (markNoDoi.isPending || updateDoi.isPending || document.no_doi) return;
+    if (documentLocked || markNoDoi.isPending || updateDoi.isPending || document.no_doi) return;
     const ok = await confirmVerifiedFieldAction(["doi", "apa_citation", "apa_in_text_citation"], {
       confirmLabel: "Mark No DOI",
       message: "Marking No DOI clears the stored DOI and can update APA citation text. Verified status will be removed until you verify affected fields again.",
@@ -11475,6 +11538,7 @@ function DocumentPanelContent({
     if (document.rich_summary) void copyToClipboard("document-summary", decodeHtmlEntities(document.rich_summary));
   };
   const startSummaryEdit = () => {
+    if (documentLocked) return;
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
     setEditingSummary(true);
@@ -11486,13 +11550,15 @@ function DocumentPanelContent({
     setEditingSummary(false);
   };
   const saveSummaryEdit = () => {
+    if (documentLocked) return;
     updateSummary.mutate(summaryDraft);
   };
   const checkSummary = () => {
+    if (documentLocked) return;
     refreshSummary.mutate();
   };
   const startBibliographyEdit = async () => {
-    if (editingBibliography || updateBibliography.isPending) return;
+    if (documentLocked || editingBibliography || updateBibliography.isPending) return;
     let confirmed = false;
     if (bibliographyIsVerified) {
       const ok = await dialogs.confirm({
@@ -11519,17 +11585,19 @@ function DocumentPanelContent({
     setEditingBibliography(false);
   };
   const saveBibliographyEdit = () => {
+    if (documentLocked) return;
     updateBibliography.mutate({
       value: bibliographyDraft,
       confirmVerified: bibliographyIsVerified && bibliographyVerifiedEditConfirmed,
     });
   };
   const markBibliographyVerified = () => {
-    if (!document.bibliography || verifyBibliography.isPending) return;
+    if (documentLocked || !document.bibliography || verifyBibliography.isPending) return;
     setBibliographyEditError(null);
     verifyBibliography.mutate();
   };
   const checkBibliography = async () => {
+    if (documentLocked) return;
     let confirmVerified = false;
     if (bibliographyIsVerified) {
       const ok = await dialogs.confirm({
@@ -11547,6 +11615,7 @@ function DocumentPanelContent({
     refreshBibliography.mutate(confirmVerified);
   };
   const checkTags = async () => {
+    if (documentLocked) return;
     const ok = await dialogs.confirm({
       cancelLabel: "Cancel",
       confirmLabel: "Refresh Tags",
@@ -11617,6 +11686,7 @@ function DocumentPanelContent({
       setEditing(false);
       return;
     }
+    if (documentLocked) return;
     setEditing(true);
     window.requestAnimationFrame(() => titleEditInputRef.current?.focus());
   };
@@ -11626,7 +11696,7 @@ function DocumentPanelContent({
   };
 
   const toggleDocumentDomainAssignment = (domainId: string) => {
-    if (updateDocumentDomains.isPending) return;
+    if (documentLocked || updateDocumentDomains.isPending) return;
     const nextDomainIds = currentDomainIds.has(domainId)
       ? currentDomainIdList.filter((id) => id !== domainId)
       : [...currentDomainIdList, domainId];
@@ -11660,7 +11730,7 @@ function DocumentPanelContent({
 
   const figureEditBusy = updateFigure.isPending || deleteFigure.isPending;
   const startFigureEdit = (figure: FigureRecord) => {
-    if (figureEditBusy) return;
+    if (documentLocked || figureEditBusy) return;
     setFigureEditError(null);
     setEditingFigureId(figure.id);
     setFigureDrafts((current) => ({ ...current, [figure.id]: figureDraftFromFigure(figure) }));
@@ -11684,7 +11754,7 @@ function DocumentPanelContent({
     updateFigure.mutate({ figureId: figure.id, draft: figureDrafts[figure.id] || figureDraftFromFigure(figure) });
   };
   const deleteExtractedFigure = async (figure: FigureRecord) => {
-    if (figureEditBusy) return;
+    if (documentLocked || figureEditBusy) return;
     const label = figure.figure_label || `page ${figure.page_number || "?"} figure`;
     const ok = await dialogs.confirm({
       cancelLabel: "Keep",
@@ -11699,11 +11769,12 @@ function DocumentPanelContent({
   };
 
   const submitAccessorySummary = () => {
-    if (!accessoryPrompt.trim() || accessorySummaryBusy) return;
+    if (documentLocked || !accessoryPrompt.trim() || accessorySummaryBusy) return;
     createAccessorySummary.mutate();
   };
 
   const openInquestComposer = () => {
+    if (documentLocked) return;
     setAccessoryComposerOpen(true);
     window.requestAnimationFrame(() => accessoryPromptRef.current?.focus());
   };
@@ -11724,6 +11795,7 @@ function DocumentPanelContent({
   };
 
   const saveCorrection = async () => {
+    if (documentLocked) return;
     const nextAttributes: Record<string, unknown> = {};
     const draftAttributeNames = new Set(draft.attributes.map((attribute) => attribute.key.trim()).filter(Boolean));
     document.attributes.forEach((attribute) => {
@@ -11788,12 +11860,12 @@ function DocumentPanelContent({
     });
   };
   const setDocumentTags = (tagNames: string[]) => {
-    if (tagUpdateBusy) return;
+    if (documentLocked || tagUpdateBusy) return;
     updateDocumentTags.mutate(normalizedNameList(tagNames));
   };
   const addDocumentTag = () => {
     const name = tagNameDraft.trim();
-    if (!name || tagUpdateBusy) return;
+    if (documentLocked || !name || tagUpdateBusy) return;
     const normalizedKey = name.toLocaleLowerCase();
     if (currentTagNames.some((tagName) => tagName.toLocaleLowerCase() === normalizedKey)) {
       setTagNameDraft("");
@@ -11820,7 +11892,7 @@ function DocumentPanelContent({
     return `Verified by ${verificationUserForField(field) || "Medusa user"}${relative ? ` ${relative}` : ""}.`;
   };
   const markFieldVerified = (field: DocumentVerificationField) => {
-    if (!verificationValueForField(field) || verifyDocumentField.isPending) return;
+    if (documentLocked || !verificationValueForField(field) || verifyDocumentField.isPending) return;
     if (field === "doi") setDoiEditError(null);
     else if (field === "bibliography") setBibliographyEditError(null);
     else setCitationEditError(null);
@@ -11841,10 +11913,10 @@ function DocumentPanelContent({
       <button
         className="secondary-button compact field-verify-button"
         data-disabled-reason={
-          verifyDocumentField.isPending ? "the verification is already saving." : `this document does not have ${label} text to verify.`
+          documentLocked ? documentLockedReason : verifyDocumentField.isPending ? "the verification is already saving." : `this document does not have ${label} text to verify.`
         }
         data-tooltip={`Mark this document's ${label} field as manually verified.`}
-        disabled={!verificationValueForField(field) || verifyDocumentField.isPending}
+        disabled={documentLocked || !verificationValueForField(field) || verifyDocumentField.isPending}
         onClick={() => markFieldVerified(field)}
         type="button"
       >
@@ -11879,7 +11951,9 @@ function DocumentPanelContent({
         <button
           aria-expanded={domainAssignOpen}
           className="secondary-button compact"
+          data-disabled-reason={domainUpdateBusyReason}
           data-tooltip="Open the domain assignment popup for this document."
+          disabled={documentLocked}
           onClick={() =>
             setDomainAssignOpen((open) => {
               if (open) setDomainAssignSearch("");
@@ -11910,7 +11984,7 @@ function DocumentPanelContent({
                       <input
                         checked={assigned}
                         data-disabled-reason={domainUpdateBusyReason}
-                        disabled={updateDocumentDomains.isPending}
+                        disabled={documentLocked || updateDocumentDomains.isPending}
                         onChange={() => toggleDocumentDomainAssignment(option.id)}
                         type="checkbox"
                       />
@@ -11948,7 +12022,7 @@ function DocumentPanelContent({
               className={asyncFeedbackClass("icon-button compact", tagRefreshFeedback.feedback, tagRefreshBusy)}
               data-disabled-reason={tagRefreshBusyReason}
               data-tooltip="Replace this document's current tags by rerunning Tag Suggestions through the import-style existing-first governance scorer."
-              disabled={tagRefreshBusy}
+              disabled={documentLocked || tagRefreshBusy}
               onClick={checkTags}
               type="button"
             >
@@ -12037,9 +12111,9 @@ function DocumentPanelContent({
         >
           <input
             aria-label="DOI"
-            data-disabled-reason="the DOI change is already saving."
+            data-disabled-reason={documentLocked ? documentLockedReason : "the DOI change is already saving."}
             data-tooltip="Edit the document DOI; leave it blank to clear the stored DOI."
-            disabled={updateDoi.isPending}
+            disabled={documentLocked || updateDoi.isPending}
             onChange={(event) => {
               setDoiDraft(event.target.value);
               if (doiEditError) setDoiEditError(null);
@@ -12051,9 +12125,9 @@ function DocumentPanelContent({
           <div className="doi-editor-actions">
             <button
               className="primary-button compact"
-              data-disabled-reason="the DOI change is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the DOI change is already saving."}
               data-tooltip="Save this DOI to the document and refresh document search surfaces."
-              disabled={updateDoi.isPending}
+              disabled={documentLocked || updateDoi.isPending}
               type="submit"
             >
               <Save size={14} />
@@ -12061,9 +12135,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="secondary-button compact"
-              data-disabled-reason="the DOI change is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the DOI change is already saving."}
               data-tooltip="Discard the DOI draft and close DOI editing."
-              disabled={updateDoi.isPending}
+              disabled={documentLocked || updateDoi.isPending}
               onClick={cancelDoiEdit}
               type="button"
             >
@@ -12089,10 +12163,10 @@ function DocumentPanelContent({
         <button
           aria-label="Edit DOI"
           className="icon-button"
-          data-disabled-reason={updateDoi.isPending ? "the DOI change is already saving." : "the DOI editor is already open."}
+          data-disabled-reason={documentLocked ? documentLockedReason : updateDoi.isPending ? "the DOI change is already saving." : "the DOI editor is already open."}
           data-tooltip="Open DOI editing so you can add, correct, or clear the document DOI."
           onClick={() => void startDoiEdit()}
-          disabled={updateDoi.isPending || editingDoi}
+          disabled={documentLocked || updateDoi.isPending || editingDoi}
           type="button"
         >
           <Edit3 size={15} />
@@ -12104,7 +12178,7 @@ function DocumentPanelContent({
             data-disabled-reason={citationBusyReason}
             data-tooltip="Queue a DOI and APA citation refresh for this document using the selected APA model fallback."
             onClick={() => void checkDoi()}
-            disabled={citationBusy}
+            disabled={documentLocked || citationBusy}
             type="button"
           >
             <RefreshCw className={doiCheckBusy ? "spin" : ""} size={15} />
@@ -12117,14 +12191,16 @@ function DocumentPanelContent({
           data-disabled-reason={
             markNoDoi.isPending
               ? "the No DOI flag is already saving."
-              : updateDoi.isPending
+              : documentLocked
+                ? documentLockedReason
+                : updateDoi.isPending
                 ? "the DOI change is already saving."
                 : document.no_doi
                   ? "this document is already flagged as having no DOI."
                   : ""
           }
           data-tooltip={document.doi ? "Clear the stored DOI and flag this document as confirmed to have no DOI." : "Flag this document as confirmed to have no DOI without storing a placeholder value."}
-          disabled={markNoDoi.isPending || updateDoi.isPending || document.no_doi}
+          disabled={documentLocked || markNoDoi.isPending || updateDoi.isPending || document.no_doi}
           onClick={() => void markDocumentNoDoi()}
           type="button"
         >
@@ -12149,9 +12225,9 @@ function DocumentPanelContent({
           <div className="summary-editor-toolbar" aria-label="Summary formatting tools">
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Wrap the selected summary text in Markdown bold markers."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() => applySummaryInlineFormat("**", "**", "bold text")}
               type="button"
             >
@@ -12159,9 +12235,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Wrap the selected summary text in Markdown italic markers."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() => applySummaryInlineFormat("*", "*", "italic text")}
               type="button"
             >
@@ -12169,9 +12245,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Wrap the selected summary text in underline HTML tags."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() => applySummaryInlineFormat("<u>", "</u>", "underlined text")}
               type="button"
             >
@@ -12179,9 +12255,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Turn the selected summary lines into a Markdown bullet list."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() =>
                 applySummaryLineFormat((line) => {
                   const text = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
@@ -12194,9 +12270,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Turn the selected summary lines into a Markdown numbered list."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() =>
                 applySummaryLineFormat((line, index) => {
                   const text = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
@@ -12209,9 +12285,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Prefix selected summary lines with Markdown blockquote indentation."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() => applySummaryLineFormat((line) => (line.startsWith(">") ? line : `> ${line}`))}
               type="button"
             >
@@ -12219,9 +12295,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Remove one Markdown blockquote indentation marker from selected summary lines."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={() => applySummaryLineFormat((line) => line.replace(/^>\s?/, ""))}
               type="button"
             >
@@ -12229,9 +12305,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="icon-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Remove common Markdown and underline formatting markers from the summary draft."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={clearSummaryFormatting}
               type="button"
             >
@@ -12240,9 +12316,9 @@ function DocumentPanelContent({
           </div>
           <textarea
             aria-label="Summary Markdown"
-            data-disabled-reason="the summary edit is already saving."
+            data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
             data-tooltip="Edit the Markdown summary that appears in the document detail pane and contributes to search."
-            disabled={updateSummary.isPending}
+            disabled={documentLocked || updateSummary.isPending}
             onChange={(event) => {
               setSummaryDraft(event.target.value);
               if (summaryEditError) setSummaryEditError(null);
@@ -12253,9 +12329,9 @@ function DocumentPanelContent({
           <div className="summary-editor-actions">
             <button
               className="primary-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Save this edited summary to the document and refresh search."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               type="submit"
             >
               <Save size={14} />
@@ -12263,9 +12339,9 @@ function DocumentPanelContent({
             </button>
             <button
               className="secondary-button compact"
-              data-disabled-reason="the summary edit is already saving."
+              data-disabled-reason={documentLocked ? documentLockedReason : "the summary edit is already saving."}
               data-tooltip="Discard the summary draft and close summary editing."
-              disabled={updateSummary.isPending}
+              disabled={documentLocked || updateSummary.isPending}
               onClick={cancelSummaryEdit}
               type="button"
             >
@@ -12293,10 +12369,10 @@ function DocumentPanelContent({
         <button
           aria-label="Edit summary"
           className="icon-button"
-          data-disabled-reason={updateSummary.isPending ? "the summary edit is already saving." : "the summary editor is already open."}
+          data-disabled-reason={documentLocked ? documentLockedReason : updateSummary.isPending ? "the summary edit is already saving." : "the summary editor is already open."}
           data-tooltip="Open the Markdown summary editor for this document."
           onClick={startSummaryEdit}
-          disabled={updateSummary.isPending || editingSummary}
+          disabled={documentLocked || updateSummary.isPending || editingSummary}
           type="button"
         >
           <Edit3 size={15} />
@@ -12313,7 +12389,7 @@ function DocumentPanelContent({
             data-disabled-reason={summaryRefreshBusyReason}
             data-tooltip="Queue a summary-only Concordance refresh using the selected Summary model."
             onClick={checkSummary}
-            disabled={summaryRefreshBusy}
+            disabled={documentLocked || summaryRefreshBusy}
             type="button"
           >
             <RefreshCw className={summaryRefreshBusy ? "spin" : ""} size={15} />
@@ -12341,12 +12417,14 @@ function DocumentPanelContent({
             <button
               className="secondary-button compact bibliography-verify-button"
               data-disabled-reason={
-                verifyBibliography.isPending
+                documentLocked
+                  ? documentLockedReason
+                  : verifyBibliography.isPending
                   ? "the bibliography verification is already saving."
                   : "this document does not have an extracted bibliography to verify."
               }
               data-tooltip="Mark this document's Bibliography field as manually verified."
-              disabled={!document.bibliography || verifyBibliography.isPending}
+              disabled={documentLocked || !document.bibliography || verifyBibliography.isPending}
               onClick={markBibliographyVerified}
               type="button"
             >
@@ -12374,7 +12452,7 @@ function DocumentPanelContent({
             <MarkdownRichEditor
               ariaLabel="Bibliography Markdown"
               autoFocus
-              disabled={updateBibliography.isPending}
+              disabled={documentLocked || updateBibliography.isPending}
               onChange={(nextValue) => {
                 setBibliographyDraft(nextValue);
                 if (bibliographyEditError) setBibliographyEditError(null);
@@ -12386,9 +12464,9 @@ function DocumentPanelContent({
             <div className="summary-editor-actions">
               <button
                 className="primary-button compact"
-                data-disabled-reason="the bibliography edit is already saving."
+                data-disabled-reason={documentLocked ? documentLockedReason : "the bibliography edit is already saving."}
                 data-tooltip="Save this edited bibliography to the document and refresh search."
-                disabled={updateBibliography.isPending}
+                disabled={documentLocked || updateBibliography.isPending}
                 type="submit"
               >
                 <Save size={14} />
@@ -12396,9 +12474,9 @@ function DocumentPanelContent({
               </button>
               <button
                 className="secondary-button compact"
-                data-disabled-reason="the bibliography edit is already saving."
+                data-disabled-reason={documentLocked ? documentLockedReason : "the bibliography edit is already saving."}
                 data-tooltip="Discard the bibliography draft and close bibliography editing."
-                disabled={updateBibliography.isPending}
+                disabled={documentLocked || updateBibliography.isPending}
                 onClick={cancelBibliographyEdit}
                 type="button"
               >
@@ -12433,10 +12511,14 @@ function DocumentPanelContent({
             aria-label="Edit bibliography"
             className="icon-button"
             data-disabled-reason={
-              updateBibliography.isPending ? "the bibliography edit is already saving." : "the bibliography editor is already open."
+              documentLocked
+                ? documentLockedReason
+                : updateBibliography.isPending
+                  ? "the bibliography edit is already saving."
+                  : "the bibliography editor is already open."
             }
             data-tooltip="Open the Markdown bibliography editor for this document."
-            disabled={updateBibliography.isPending || editingBibliography}
+            disabled={documentLocked || updateBibliography.isPending || editingBibliography}
             onClick={() => void startBibliographyEdit()}
             type="button"
           >
@@ -12454,7 +12536,7 @@ function DocumentPanelContent({
               data-disabled-reason={bibliographyRefreshBusyReason}
               data-tooltip="Queue a bibliography Concordance refresh to re-extract this document's source reference list, then format it as alphabetized APA-style sources, one per line, with the selected Bibliography Cleanup model."
               onClick={checkBibliography}
-              disabled={bibliographyRefreshBusy}
+              disabled={documentLocked || bibliographyRefreshBusy}
               type="button"
             >
               <RefreshCw className={bibliographyRefreshBusy ? "spin" : ""} size={15} />
@@ -12488,7 +12570,7 @@ function DocumentPanelContent({
             <MarkdownRichEditor
               ariaLabel={`${title} text`}
               autoFocus
-              disabled={updateCitation.isPending}
+              disabled={documentLocked || updateCitation.isPending}
               lineBreakMode="compact"
               onChange={(nextValue) => {
                 setCitationDrafts((current) => ({ ...current, [kind]: nextValue }));
@@ -12501,9 +12583,9 @@ function DocumentPanelContent({
             <div className="citation-editor-actions">
               <button
                 className="primary-button compact"
-                data-disabled-reason="a citation edit is already saving."
+                data-disabled-reason={documentLocked ? documentLockedReason : "a citation edit is already saving."}
                 data-tooltip={`Save the edited ${title} text to this document.`}
-                disabled={updateCitation.isPending}
+                disabled={documentLocked || updateCitation.isPending}
                 type="submit"
               >
                 <Save size={14} />
@@ -12511,9 +12593,9 @@ function DocumentPanelContent({
               </button>
               <button
                 className="secondary-button compact"
-                data-disabled-reason="a citation edit is already saving."
+                data-disabled-reason={documentLocked ? documentLockedReason : "a citation edit is already saving."}
                 data-tooltip={`Discard the ${title} draft and close citation editing.`}
-                disabled={updateCitation.isPending}
+                disabled={documentLocked || updateCitation.isPending}
                 onClick={cancelCitationEdit}
                 type="button"
               >
@@ -12541,10 +12623,10 @@ function DocumentPanelContent({
           <button
             aria-label={`Edit ${title}`}
             className="icon-button"
-            data-disabled-reason={updateCitation.isPending ? "a citation edit is already saving." : "this citation editor is already open."}
+            data-disabled-reason={documentLocked ? documentLockedReason : updateCitation.isPending ? "a citation edit is already saving." : "this citation editor is already open."}
             data-tooltip={`Open the editor for the ${title} text.`}
             onClick={() => void startCitationEdit(kind)}
-            disabled={updateCitation.isPending || isEditing}
+            disabled={documentLocked || updateCitation.isPending || isEditing}
             type="button"
           >
             <Edit3 size={15} />
@@ -12556,7 +12638,7 @@ function DocumentPanelContent({
               data-disabled-reason={citationBusyReason}
               data-tooltip="Queue one APA citation refresh that regenerates and validates both the Reference List and In-Text Citation using DOI/Crossref evidence first and the selected APA model as fallback."
               onClick={() => void checkCitation()}
-              disabled={citationBusy}
+              disabled={documentLocked || citationBusy}
               type="button"
             >
               <RefreshCw className={busy ? "spin" : ""} size={15} />
@@ -12594,7 +12676,7 @@ function DocumentPanelContent({
     });
   };
   const keepSelectedVisualScanCandidates = () => {
-    if (!visualScanReview || selectedVisualScanCandidates.length <= 0 || applyVisualScan.isPending) return;
+    if (documentLocked || !visualScanReview || selectedVisualScanCandidates.length <= 0 || applyVisualScan.isPending) return;
     applyVisualScan.mutate({ pageNumber: visualScanReview.page_number, candidates: selectedVisualScanCandidates });
   };
   const discardVisualScanReview = () => {
@@ -12622,14 +12704,16 @@ function DocumentPanelContent({
             <button
               className="secondary-button compact"
               data-disabled-reason={
-                applyVisualScan.isPending
+                documentLocked
+                  ? documentLockedReason
+                  : applyVisualScan.isPending
                   ? "selected page visual candidates are already being kept."
                   : selectedVisualScanCount <= 0
                     ? "select at least one candidate to keep."
                     : ""
               }
               data-tooltip="Keep the selected candidates as this page's extracted figures and discard the rest."
-              disabled={applyVisualScan.isPending || selectedVisualScanCount <= 0}
+              disabled={documentLocked || applyVisualScan.isPending || selectedVisualScanCount <= 0}
               onClick={keepSelectedVisualScanCandidates}
               type="button"
             >
@@ -12687,7 +12771,7 @@ function DocumentPanelContent({
                   <label className={`visual-scan-candidate${selected ? " selected" : ""}`} key={candidate.candidate_id}>
                     <input
                       checked={selected}
-                      disabled={applyVisualScan.isPending}
+                      disabled={documentLocked || applyVisualScan.isPending}
                       onChange={() => toggleVisualScanCandidate(candidate.candidate_id)}
                       type="checkbox"
                     />
@@ -12953,7 +13037,7 @@ function DocumentPanelContent({
               className="primary-button compact"
               data-disabled-reason={pageTextBusyReason}
               data-tooltip="Save the edited parsed text for this page, rebuild document search, and record the change in history."
-              disabled={pageTextBusy}
+              disabled={documentLocked || pageTextBusy}
               onClick={savePageTextEdit}
               type="button"
             >
@@ -12964,7 +13048,7 @@ function DocumentPanelContent({
               className="secondary-button compact"
               data-disabled-reason={pageTextBusyReason}
               data-tooltip="Discard parsed page text edits and close the editor."
-              disabled={pageTextBusy}
+              disabled={documentLocked || pageTextBusy}
               onClick={cancelPageTextEdit}
               type="button"
             >
@@ -12976,9 +13060,9 @@ function DocumentPanelContent({
           <button
             aria-label="Edit parsed page text"
             className="icon-button compact"
-            data-disabled-reason={pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
+            data-disabled-reason={documentLocked ? documentLockedReason : pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
             data-tooltip="Open the parsed page text editor for the current page."
-            disabled={!currentPage || pageTextBusy}
+            disabled={documentLocked || !currentPage || pageTextBusy}
             onClick={startPageTextEdit}
             type="button"
           >
@@ -13021,7 +13105,7 @@ function DocumentPanelContent({
             <div className="reader-page-editor" data-escape-layer="expanded">
               <textarea
                 aria-label={`Extracted text for page ${currentPage.page_number}`}
-                disabled={pageTextBusy}
+                disabled={documentLocked || pageTextBusy}
                 onChange={(event) => {
                   setPageTextDraft(event.target.value);
                   updatePageTextSelection(event.currentTarget);
@@ -13035,14 +13119,16 @@ function DocumentPanelContent({
                 <button
                   className="secondary-button compact"
                   data-disabled-reason={
-                    pageTextBusy
+                    documentLocked
+                      ? documentLockedReason
+                      : pageTextBusy
                       ? pageTextBusyReason
                       : !scrubNeedle
                         ? "select exact text in the parsed page editor first."
                         : "the selected text does not appear in the parsed document text."
                   }
                   data-tooltip="Remove the selected exact text everywhere it appears in this document's parsed pages and record the edit in history."
-                  disabled={!scrubNeedle || scrubMatchCount <= 0 || pageTextBusy}
+                  disabled={documentLocked || !scrubNeedle || scrubMatchCount <= 0 || pageTextBusy}
                   onClick={scrubSelectedText}
                   type="button"
                 >
@@ -13321,7 +13407,9 @@ function DocumentPanelContent({
     <button
       aria-label={editing ? "Cancel document metadata editing" : "Edit document metadata"}
       className="icon-button"
+      data-disabled-reason={documentLocked ? documentLockedReason : ""}
       data-tooltip={editing ? "Close the document metadata correction form without saving." : "Open the document metadata correction form."}
+      disabled={documentLocked}
       onClick={toggleDocumentEditing}
       type="button"
     >
@@ -13358,7 +13446,9 @@ function DocumentPanelContent({
   const askButton = (
     <button
       className="secondary-button"
+      data-disabled-reason={documentLocked ? documentLockedReason : ""}
       data-tooltip="Ask a focused question about this document and save the answer as an Inquest."
+      disabled={documentLocked}
       onClick={openInquestComposer}
       type="button"
     >
@@ -13386,10 +13476,10 @@ function DocumentPanelContent({
     >
       <button
         className={asyncFeedbackClass("secondary-button", runConcordanceFeedback.feedback, documentConcordanceBusy)}
-        data-disabled-reason={documentConcordanceBusyReason}
+        data-disabled-reason={documentLocked ? documentLockedReason : documentConcordanceBusyReason}
         data-tooltip="Queue a document-scoped Concordance Run to bring this document up to the current selected capabilities."
         onClick={() => runConcordance.mutate()}
-        disabled={documentConcordanceBusy}
+        disabled={documentLocked || documentConcordanceBusy}
         type="button"
       >
         <RefreshCw className={documentConcordanceBusy ? "spin" : ""} size={15} />
@@ -13406,10 +13496,10 @@ function DocumentPanelContent({
     >
       <button
         className={asyncFeedbackClass("secondary-button", formulaCaptureFeedback.feedback, formulaCaptureBusy)}
-        data-disabled-reason={formulaCaptureBusyReason}
+        data-disabled-reason={documentLocked ? documentLockedReason : formulaCaptureBusyReason}
         data-tooltip="Queue a manual Formula Capture refinement for this document using the selected Formula Capture model."
         onClick={() => captureFormulas.mutate()}
-        disabled={formulaCaptureBusy}
+        disabled={documentLocked || formulaCaptureBusy}
         type="button"
       >
         <Sigma className={formulaCaptureBusy ? "spin" : ""} size={15} />
@@ -13428,10 +13518,26 @@ function DocumentPanelContent({
       <Download size={15} />
     </a>
   );
+  const lockDocumentButton = (
+    <button
+      aria-pressed={documentLocked}
+      aria-label={documentLocked ? "Unlock document" : "Lock document"}
+      className={documentLocked ? "icon-button document-lock-button active" : "icon-button document-lock-button"}
+      data-disabled-reason={updateDocumentLock.isPending ? "the document lock state is already saving." : ""}
+      data-tooltip={documentLocked ? "Unlock this document so fields, refreshes, and properties can be edited again." : "Lock this document to prevent edits, refreshes, Trash, and property changes."}
+      disabled={updateDocumentLock.isPending}
+      onClick={() => updateDocumentLock.mutate(!documentLocked)}
+      type="button"
+    >
+      {documentLocked ? <Lock className={updateDocumentLock.isPending ? "spin" : ""} size={15} /> : <Unlock size={15} />}
+    </button>
+  );
   const trashDocumentButton = onTrashDocument ? (
     <button
       className="secondary-button danger"
+      data-disabled-reason={documentLocked ? documentLockedReason : ""}
       data-tooltip="Move this document to Trash. Originals, stored assets, and history are preserved."
+      disabled={documentLocked}
       onClick={() => onTrashDocument(document)}
       type="button"
     >
@@ -13454,6 +13560,7 @@ function DocumentPanelContent({
       {editButton}
       {linkButton}
       {downloadOriginalLink}
+      {lockDocumentButton}
       {trashDocumentButton}
     </div>
   );
@@ -14830,7 +14937,7 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
   );
 }
 
-type PortfolioTab = "read" | "versions" | "materials" | "resources" | "assessments";
+type PortfolioTab = "read" | "versions" | "materials" | "resources" | "assessments" | "audit";
 
 const PORTFOLIO_TABS: Array<{ id: PortfolioTab; label: string }> = [
   { id: "read", label: "Read" },
@@ -14838,14 +14945,15 @@ const PORTFOLIO_TABS: Array<{ id: PortfolioTab; label: string }> = [
   { id: "materials", label: "Materials" },
   { id: "resources", label: "Resources" },
   { id: "assessments", label: "Assessments" },
+  { id: "audit", label: "Audit" },
 ];
 const PORTFOLIO_UPLOAD_ACCEPT =
   ".pdf,.docx,.rtf,.txt,.text,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf,text/plain,text/markdown";
 
 function portfolioStatusTone(status?: string | null): "neutral" | "good" | "warn" | "blue" {
-  if (status === "ready" || status === "complete" || status === "active") return "good";
-  if (status === "failed") return "warn";
-  if (status === "queued" || status === "running" || status === "staged") return "blue";
+  if (status === "ready" || status === "complete" || status === "active" || status === "verified") return "good";
+  if (status === "failed" || status === "anchor_failed" || status === "chain_failed") return "warn";
+  if (status === "queued" || status === "running" || status === "staged" || status === "anchor_pending") return "blue";
   return "neutral";
 }
 
@@ -14867,6 +14975,34 @@ function portfolioSuggestionScoreLabel(suggestion: PortfolioSuggestion) {
 function portfolioRunTitle(run: PortfolioAssessmentRun) {
   const model = run.model_ids.length === 1 ? run.model_ids[0] : `${run.model_ids.length} models`;
   return [run.mode.replace(/_/g, " "), model, backupDateLabel(run.completed_at || run.created_at)].filter(Boolean).join(" / ");
+}
+
+function portfolioTextValue(value: unknown, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function portfolioListValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => portfolioTextValue(item))
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
+}
+
+function portfolioGradeLabel(run: PortfolioAssessmentRun) {
+  const grade = run.grade_estimate || {};
+  const estimatedGrade = portfolioTextValue(grade.estimated_grade);
+  const estimatedScore = grade.estimated_score === null || grade.estimated_score === undefined ? "" : String(grade.estimated_score);
+  const scale = portfolioTextValue(grade.scale);
+  return [estimatedGrade || estimatedScore, scale].filter(Boolean).join(" / ") || "Grade estimate pending";
+}
+
+function portfolioAuditShortHash(value?: string | null) {
+  return value ? `${value.slice(0, 12)}...${value.slice(-8)}` : "No hash yet";
 }
 
 function portfolioFindingTone(severity: string): "neutral" | "good" | "warn" | "blue" {
@@ -15401,7 +15537,7 @@ function PortfolioView({
   const [versionLabel, setVersionLabel] = useState("");
   const [versionNote, setVersionNote] = useState("");
   const [materialFile, setMaterialFile] = useState<File | null>(null);
-  const [materialRole, setMaterialRole] = useState("reference");
+  const [materialRole, setMaterialRole] = useState("rubric");
   const [materialLabel, setMaterialLabel] = useState("");
   const [materialNotes, setMaterialNotes] = useState("");
   const [materialRequired, setMaterialRequired] = useState(false);
@@ -15413,6 +15549,7 @@ function PortfolioView({
   const materialFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const resourcesFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const assessmentFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const bundleFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const currentItems = items;
 
   useEffect(() => {
@@ -15567,6 +15704,23 @@ function PortfolioView({
     },
   });
 
+  const exportBundle = useMutation({
+    mutationFn: () => {
+      if (!selected) throw new Error("Select an assignment first");
+      return api.downloadPortfolioBundle(selected.id);
+    },
+    onSuccess: (result) => {
+      bundleFeedback.showSuccess();
+      setNotice(`Exported ${result.filename}`);
+      refreshPortfolio();
+    },
+    onError: (error) => {
+      const message = actionFailureMessage("Could not export Portfolio bundle", error);
+      bundleFeedback.showError(message);
+      setNotice(message);
+    },
+  });
+
   const handleCreateItem = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!newTitle.trim()) {
@@ -15596,20 +15750,20 @@ function PortfolioView({
         <div className="portfolio-list-head">
           <div>
             <h2>Portfolio</h2>
-            <span>{currentItems.length} item{currentItems.length === 1 ? "" : "s"}</span>
+            <span>{currentItems.length} assignment{currentItems.length === 1 ? "" : "s"}</span>
           </div>
           <Briefcase size={20} />
         </div>
         <form className="portfolio-create-form" onSubmit={handleCreateItem}>
           <input
-            data-tooltip="Name the Portfolio item before uploading versions or supporting materials."
-            placeholder="New item title"
+            data-tooltip="Name the school assignment before uploading drafts or supporting materials."
+            placeholder="Assignment title"
             value={newTitle}
             onChange={(event) => setNewTitle(event.target.value)}
           />
           <textarea
-            data-tooltip="Optional short context for this Portfolio item."
-            placeholder="Context"
+            data-tooltip="Brief assignment context, paper goal, constraints, or instructor notes."
+            placeholder="Brief / context"
             value={newDescription}
             onChange={(event) => setNewDescription(event.target.value)}
             rows={2}
@@ -15669,7 +15823,7 @@ function PortfolioView({
           ) : (
             <div className="empty-inline">
               <Briefcase size={17} />
-              <span>No Portfolio items match.</span>
+              <span>No assignments match.</span>
             </div>
           )}
         </div>
@@ -15704,6 +15858,19 @@ function PortfolioView({
                   <Download size={14} />
                   Download Source
                 </a>
+                <AsyncActionSlot busy={exportBundle.isPending} feedback={bundleFeedback.feedback} label="Portfolio bundle export in progress">
+                  <button
+                    className={asyncFeedbackClass("secondary-button compact", bundleFeedback.feedback, exportBundle.isPending)}
+                    data-disabled-reason="create or select an assignment first."
+                    data-tooltip="Download a ZIP bundle with all uploaded files, versions, assessments, manifests, checksums, and audit proofs."
+                    disabled={!selected || exportBundle.isPending}
+                    onClick={() => exportBundle.mutate()}
+                    type="button"
+                  >
+                    <Download size={14} />
+                    Export Bundle
+                  </button>
+                </AsyncActionSlot>
                 <button
                   className="secondary-button compact"
                   data-disabled-reason="at least two Portfolio versions are required."
@@ -15722,12 +15889,13 @@ function PortfolioView({
               </div>
             </div>
             {notice ? <p className="portfolio-notice">{notice}</p> : null}
+            <PortfolioAuditStrip item={selected} onOpenAudit={() => setActiveTab("audit")} />
             <form className="portfolio-version-upload" onSubmit={handleUploadVersion}>
               <label>
-                Version file
+                Draft file
                 <input
                   accept={PORTFOLIO_UPLOAD_ACCEPT}
-                  data-tooltip="Choose a PDF, DOCX, RTF, TXT, or Markdown file for the next immutable Portfolio version."
+                  data-tooltip="Choose a PDF, DOCX, RTF, TXT, or Markdown file for the next immutable assignment draft."
                   type="file"
                   onChange={(event) => setVersionFile(event.currentTarget.files?.[0] || null)}
                 />
@@ -15745,7 +15913,7 @@ function PortfolioView({
                 Note
                 <input
                   data-tooltip="Optional upload note stored with this version."
-                  placeholder="Revised methods"
+                  placeholder="Revision note"
                   value={versionNote}
                   onChange={(event) => setVersionNote(event.target.value)}
                 />
@@ -15758,7 +15926,7 @@ function PortfolioView({
                   type="submit"
                 >
                   <Upload size={14} />
-                  Upload Version
+                  Upload Draft
                 </button>
               </AsyncActionSlot>
             </form>
@@ -15816,7 +15984,15 @@ function PortfolioView({
                       <div>
                         <strong>{portfolioVersionLabel(version)}</strong>
                         <span>{portfolioSourceLabel(version)}</span>
-                        <small>{[backupDateLabel(version.created_at), version.upload_note].filter(Boolean).join(" / ")}</small>
+                        <small>
+                          {[
+                            backupDateLabel(version.created_at),
+                            version.upload_note,
+                            version.source_content_type !== "application/pdf" ? "generated preview available" : "source preview",
+                          ]
+                            .filter(Boolean)
+                            .join(" / ")}
+                        </small>
                       </div>
                       <StatusPill value={version.document?.processing_status || version.processing_status} tone={portfolioStatusTone(version.document?.processing_status || version.processing_status)} />
                       <div className="portfolio-row-actions">
@@ -15842,6 +16018,10 @@ function PortfolioView({
                           <Download size={14} />
                           Source
                         </a>
+                        <a className="secondary-button compact" href={`/api/portfolio/versions/${version.id}/preview?download=true`}>
+                          <FileText size={14} />
+                          Preview
+                        </a>
                       </div>
                     </article>
                   ))
@@ -15856,11 +16036,12 @@ function PortfolioView({
             {activeTab === "materials" ? <PortfolioMaterialList materials={currentMaterialRows} /> : null}
             {activeTab === "resources" ? <PortfolioSuggestionList suggestions={currentSuggestions} /> : null}
             {activeTab === "assessments" ? <PortfolioAssessmentList runs={currentRuns} /> : null}
+            {activeTab === "audit" ? <PortfolioAuditPanel item={selected} /> : null}
           </>
         ) : (
           <div className="empty-inline portfolio-empty">
             <Briefcase size={18} />
-            <span>Create a Portfolio item to begin.</span>
+            <span>Create an assignment to begin.</span>
           </div>
         )}
       </section>
@@ -15870,7 +16051,7 @@ function PortfolioView({
           <>
             <section className="portfolio-side-section">
               <div className="portfolio-side-head">
-                <h3>Materials</h3>
+                <h3>Context Materials</h3>
                 <span>{selected.materials.length}</span>
               </div>
               <form className="portfolio-material-form" onSubmit={handleUploadMaterial}>
@@ -15878,7 +16059,7 @@ function PortfolioView({
                   File
                   <input
                     accept={PORTFOLIO_UPLOAD_ACCEPT}
-                    data-tooltip="Choose a rubric, assignment prompt, reference, or feedback file."
+                    data-tooltip="Choose a rubric, assignment prompt, guide, reference, feedback, or source file."
                     type="file"
                     onChange={(event) => setMaterialFile(event.currentTarget.files?.[0] || null)}
                   />
@@ -15887,24 +16068,26 @@ function PortfolioView({
                   <label>
                     Role
                     <select value={materialRole} onChange={(event) => setMaterialRole(event.target.value)}>
-                      <option value="reference">Reference</option>
                       <option value="rubric">Rubric</option>
                       <option value="assignment">Assignment</option>
+                      <option value="guide">Guide</option>
+                      <option value="reference">Reference</option>
                       <option value="feedback">Feedback</option>
                       <option value="source">Source</option>
+                      <option value="other">Other</option>
                     </select>
                   </label>
                   <label>
                     Scope
                     <select value={materialVersionScope} onChange={(event) => setMaterialVersionScope(event.target.value)}>
-                      <option value="item">Item</option>
-                      <option value="current">Current version</option>
+                      <option value="item">Assignment</option>
+                      <option value="current">Current draft</option>
                     </select>
                   </label>
                 </div>
                 <input
                   data-tooltip="Optional material label."
-                  placeholder="Label"
+                  placeholder="Context label"
                   value={materialLabel}
                   onChange={(event) => setMaterialLabel(event.target.value)}
                 />
@@ -15931,7 +16114,7 @@ function PortfolioView({
                     type="submit"
                   >
                     <FolderPlus size={14} />
-                    Add Material
+                    Add Context
                   </button>
                 </AsyncActionSlot>
               </form>
@@ -16066,34 +16249,169 @@ function PortfolioAssessmentList({ runs, compact = false }: { runs: PortfolioAss
   return (
     <div className={`portfolio-assessment-list ${compact ? "compact" : ""}`}>
       {runs.length ? (
-        runs.map((run) => (
-          <article key={run.id} className="portfolio-assessment-row">
-            <div className="portfolio-assessment-head">
-              <div>
-                <strong>{portfolioRunTitle(run)}</strong>
-                <span>{run.summary || run.status}</span>
+        runs.map((run) => {
+          const strengths = portfolioListValue(run.narrative_feedback?.strengths);
+          const concerns = portfolioListValue(run.narrative_feedback?.concerns);
+          const missingEvidence = portfolioListValue(run.narrative_feedback?.missing_evidence);
+          const priorities = portfolioListValue(run.narrative_feedback?.revision_priorities);
+          const modelCount = portfolioTextValue(run.agreement?.completed_model_count, "0");
+          const failedModelCount = portfolioTextValue(run.agreement?.failed_model_count, "0");
+          return (
+            <article key={run.id} className="portfolio-assessment-row">
+              <div className="portfolio-assessment-head">
+                <div>
+                  <strong>{portfolioRunTitle(run)}</strong>
+                  <span>{run.summary || run.status}</span>
+                </div>
+                <StatusPill value={run.status} tone={portfolioStatusTone(run.status)} />
               </div>
-              <StatusPill value={run.status} tone={portfolioStatusTone(run.status)} />
-            </div>
-            {!compact ? (
-              <div className="portfolio-finding-list">
-                {run.findings.map((finding) => (
-                  <div key={finding.id} className="portfolio-finding-row">
-                    <StatusPill value={finding.severity} tone={portfolioFindingTone(finding.severity)} />
-                    <div>
-                      <strong>{finding.title}</strong>
-                      {finding.body ? <span>{finding.body}</span> : null}
+              <div className="portfolio-grade-strip">
+                <div>
+                  <span>Grade Estimate</span>
+                  <strong>{portfolioGradeLabel(run)}</strong>
+                </div>
+                <div>
+                  <span>Confidence</span>
+                  <strong>{portfolioTextValue(run.grade_estimate?.confidence, "n/a")}</strong>
+                </div>
+                <div>
+                  <span>Models</span>
+                  <strong>{modelCount}{failedModelCount !== "0" ? ` / ${failedModelCount} failed` : ""}</strong>
+                </div>
+              </div>
+              {compact ? (
+                priorities[0] ? <p className="portfolio-compact-note">{priorities[0]}</p> : null
+              ) : (
+                <>
+                  {run.scorecard.length ? (
+                    <div className="portfolio-scorecard">
+                      {run.scorecard.map((criterion, index) => {
+                        const maxPoints = criterion.max_points;
+                        const awardedPoints = criterion.awarded_points;
+                        const points =
+                          maxPoints !== null && maxPoints !== undefined
+                            ? `${portfolioTextValue(awardedPoints, "n/a")} / ${portfolioTextValue(maxPoints)}`
+                            : portfolioTextValue(criterion.level, "Qualitative");
+                        return (
+                          <div key={`${portfolioTextValue(criterion.criterion, "criterion")}-${index}`} className="portfolio-scorecard-row">
+                            <div>
+                              <strong>{portfolioTextValue(criterion.criterion, "Criterion")}</strong>
+                              <span>{portfolioTextValue(criterion.description)}</span>
+                            </div>
+                            <div>
+                              <strong>{points}</strong>
+                              <span>{portfolioTextValue(criterion.rationale)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
+                  ) : null}
+                  <div className="portfolio-feedback-grid">
+                    <PortfolioFeedbackBlock title="Strengths" values={strengths} />
+                    <PortfolioFeedbackBlock title="Concerns" values={concerns} />
+                    <PortfolioFeedbackBlock title="Missing Evidence" values={missingEvidence} />
+                    <PortfolioFeedbackBlock title="Revision Priorities" values={priorities} />
                   </div>
-                ))}
-              </div>
-            ) : null}
-          </article>
-        ))
+                  <div className="portfolio-finding-list">
+                    {run.findings.map((finding) => (
+                      <div key={finding.id} className="portfolio-finding-row">
+                        <StatusPill value={finding.severity} tone={portfolioFindingTone(finding.severity)} />
+                        <div>
+                          <strong>{finding.title}</strong>
+                          {finding.body ? <span>{finding.body}</span> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </article>
+          );
+        })
       ) : (
         <div className="empty-inline">
           <BrainCircuit size={17} />
           <span>No assessments yet.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioFeedbackBlock({ title, values }: { title: string; values: string[] }) {
+  return (
+    <div className="portfolio-feedback-block">
+      <strong>{title}</strong>
+      {values.length ? (
+        values.map((value, index) => <span key={`${title}-${index}`}>{value}</span>)
+      ) : (
+        <span>None recorded.</span>
+      )}
+    </div>
+  );
+}
+
+function PortfolioAuditStrip({ item, onOpenAudit }: { item: PortfolioItem; onOpenAudit: () => void }) {
+  const audit = item.audit_status;
+  return (
+    <div className="portfolio-audit-strip">
+      <div>
+        <KeyRound size={15} />
+        <span>Audit</span>
+        <strong>{portfolioAuditShortHash(audit.latest_event_hash)}</strong>
+      </div>
+      <div>
+        <Timer size={15} />
+        <span>{audit.latest_anchor_time ? backupDateLabel(audit.latest_anchor_time) : audit.latest_anchor_status || "anchor pending"}</span>
+      </div>
+      <StatusPill value={audit.verification_status} tone={portfolioStatusTone(audit.verification_status)} />
+      <button className="secondary-button compact" onClick={onOpenAudit} type="button">
+        <ListChecks size={14} />
+        Audit
+      </button>
+    </div>
+  );
+}
+
+function PortfolioAuditPanel({ item }: { item: PortfolioItem }) {
+  const audit = item.audit_status;
+  return (
+    <div className="portfolio-audit-panel">
+      <article className="portfolio-audit-card">
+        <div>
+          <span>Latest Event Hash</span>
+          <strong>{portfolioAuditShortHash(audit.latest_event_hash)}</strong>
+        </div>
+        <div>
+          <span>Events</span>
+          <strong>{audit.event_count}</strong>
+        </div>
+        <div>
+          <span>Timestamp Anchor</span>
+          <strong>{audit.latest_anchor_time ? backupDateLabel(audit.latest_anchor_time) : audit.latest_anchor_status || "Pending"}</strong>
+        </div>
+        <div>
+          <span>Verification</span>
+          <StatusPill value={audit.verification_status} tone={portfolioStatusTone(audit.verification_status)} />
+        </div>
+      </article>
+      {audit.errors?.length ? (
+        <div className="portfolio-finding-list">
+          {audit.errors.map((error, index) => (
+            <div className="portfolio-finding-row" key={index}>
+              <StatusPill value="chain issue" tone="warn" />
+              <div>
+                <strong>{portfolioTextValue(error.error, "Audit verification issue")}</strong>
+                <span>{JSON.stringify(error)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-inline">
+          <BadgeCheck size={17} />
+          <span>Local chain and signatures verify.</span>
         </div>
       )}
     </div>

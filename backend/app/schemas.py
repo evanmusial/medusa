@@ -638,6 +638,8 @@ class DocumentSummary(ApiModel):
     processing_status: str
     read_status: str
     priority: str
+    is_locked: bool = False
+    locked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     duplicate_count: int = 0
@@ -664,6 +666,8 @@ class DocumentListRow(ApiModel):
     processing_status: str
     read_status: str
     priority: str
+    is_locked: bool = False
+    locked_at: datetime | None = None
     updated_at: datetime
     duplicate_count: int = 0
     duplicate_reasons: list[str] = Field(default_factory=list)
@@ -914,6 +918,12 @@ class PortfolioAssessmentRunOut(ApiModel):
     status: str
     summary: str | None = None
     assessment_metadata: dict[str, Any] = Field(default_factory=dict)
+    scorecard: list[dict[str, Any]] = Field(default_factory=list)
+    grade_estimate: dict[str, Any] = Field(default_factory=dict)
+    narrative_feedback: dict[str, Any] = Field(default_factory=dict)
+    revision_priorities: list[dict[str, Any]] = Field(default_factory=list)
+    model_outputs: list[dict[str, Any]] = Field(default_factory=list)
+    agreement: dict[str, Any] = Field(default_factory=dict)
     last_error: str | None = None
     completed_at: datetime | None = None
     findings: list[PortfolioAssessmentFindingOut] = Field(default_factory=list)
@@ -941,6 +951,7 @@ class PortfolioItemOut(ApiModel):
     materials: list[PortfolioMaterialOut] = Field(default_factory=list)
     suggestions: list[PortfolioSuggestionOut] = Field(default_factory=list)
     assessment_runs: list[PortfolioAssessmentRunOut] = Field(default_factory=list)
+    audit_status: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -1131,6 +1142,10 @@ class DocumentPatch(BaseModel):
     domain_ids: list[str] | None = None
     project_ids: list[str] | None = None
     attribute_values: dict[str, Any] | None = None
+
+
+class DocumentLockPatch(BaseModel):
+    is_locked: bool
 
 
 class DocumentPagePatch(BaseModel):

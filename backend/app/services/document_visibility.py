@@ -18,6 +18,10 @@ def document_is_library_visible(document: Document | None) -> bool:
     )
 
 
+def document_is_locked(document: Document | None) -> bool:
+    return bool(document and document.locked_at is not None)
+
+
 def library_visible_document_filter():
     return and_(
         Document.deleted_at.is_(None),

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import mimetypes
 import re
 import secrets
 import threading
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Annotated, Any, Iterable
 from urllib.parse import quote
 
@@ -48,6 +50,8 @@ from app.models import (
     ProcessingEvent,
     PortfolioAssessmentFinding,
     PortfolioAssessmentRun,
+    PortfolioAuditAnchor,
+    PortfolioAuditEvent,
     PortfolioItem,
     PortfolioMaterial,
     PortfolioSuggestion,
@@ -110,6 +114,7 @@ from app.schemas import (
     DuplicateScanOut,
     DocumentCompositionOut,
     DocumentCacheStatusOut,
+    DocumentLockPatch,
     DocumentPatch,
     DocumentPagePatch,
     DocumentRecommendationDownloadCreate,
@@ -278,6 +283,7 @@ from app.services.document_cache import (
 )
 from app.services.document_visibility import (
     LIBRARY_VISIBLE_DOCUMENT_STATUSES,
+    document_is_locked,
     document_is_library_visible,
     filter_library_visible_documents,
     library_visible_document_filter,
@@ -341,6 +347,12 @@ from app.services.openai_usage import (
     estimated_cost_usd_for_record,
     openai_usage_summary,
     refresh_model_pricing,
+)
+from app.services.portfolio_audit import (
+    append_portfolio_audit_event,
+    maybe_anchor_portfolio_audit,
+    portfolio_audit_status,
+    verify_portfolio_audit_chain,
 )
 from app.services.performance import (
     begin_request_performance_stats,
@@ -434,7 +446,9 @@ IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
 DEFAULT_IMPORT_ESTIMATE_USD_PER_PAGE = 0.04
 PDF_PREVIEW_RENDER_SCALE = 2.5
 CACHE_HYDRATE_LIST_PAGE_SIZE = 50
-CACHE_HYDRATE_MAX_DOCUMENTS = 10000
+CACHE_HYDRATION_LOCK = threading.Lock()
+CACHE_STARTUP_HYDRATE_MAX_ATTEMPTS = 12
+CACHE_STARTUP_HYDRATE_RETRY_SECONDS = 2.5
 RECENT_AI_FAILURE_NOTICE_LIMIT = 8
 RECENT_AI_FAILURE_NOTICE_MAX_AGE = timedelta(minutes=30)
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
@@ -520,6 +534,7 @@ def on_startup() -> None:
     with session_scope() as db:
         ensure_admin_user(db)
         apply_valkey_maxmemory_preference(db)
+    schedule_startup_cache_hydration()
 
 
 @app.get("/api/runtime-location", response_model=RuntimeLocationOut)
@@ -1156,6 +1171,15 @@ def document_list_row_out(document: Document, projects: list[ProjectOut] | None 
             "no_doi": document_no_doi(document),
         }
     )
+
+
+def ensure_document_unlocked(document: Document, *, detail: str | None = None) -> None:
+    if document_is_locked(document):
+        raise HTTPException(
+            status_code=423,
+            detail=detail
+            or "Document is locked. Unlock it before changing document metadata, refreshes, or properties.",
+        )
 
 
 def parse_evidence_datetime(value: Any) -> datetime | None:
@@ -2822,17 +2846,36 @@ def refresh_cache(
     }
 
 
-@app.post("/api/cache/hydrate", response_model=CacheHydrateOut)
-def hydrate_cache(
-    _: Annotated[User, Depends(current_user)],
-    db: Annotated[Session, Depends(get_db)],
+def _cache_hydrate_document_limit(max_documents: int | None = None) -> int | None:
+    raw_value = settings.cache_hydrate_max_documents if max_documents is None else max_documents
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else None
+
+
+def _cache_hydrate_page_size(page_size: int | None = None) -> int:
+    raw_value = settings.cache_hydrate_page_size if page_size is None else page_size
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = CACHE_HYDRATE_LIST_PAGE_SIZE
+    return max(10, value)
+
+
+def hydrate_cache_payloads(
+    db: Session,
+    *,
     include_document_details: bool = True,
     include_saved_searches: bool = True,
-    max_documents: Annotated[int, Query(ge=1, le=CACHE_HYDRATE_MAX_DOCUMENTS)] = CACHE_HYDRATE_MAX_DOCUMENTS,
-    page_size: Annotated[int, Query(ge=10)] = CACHE_HYDRATE_LIST_PAGE_SIZE,
+    max_documents: int | None = None,
+    page_size: int | None = None,
+    request_metrics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     logger = logging.getLogger("medusa.cache")
-    before = cache_status_payload(db, request_metrics=route_performance_summary())
+    metrics = request_metrics or []
+    before = cache_status_payload(db, request_metrics=metrics)
     hydrated_at = utc_now()
     counters = {
         "hydrated_keys": 0,
@@ -2844,12 +2887,14 @@ def hydrate_cache(
         "skipped_payloads": 0,
         "errored_payloads": 0,
     }
+    document_limit = _cache_hydrate_document_limit(max_documents)
+    resolved_page_size = _cache_hydrate_page_size(page_size)
 
-    if not before.get("enabled") or not before.get("reachable"):
-        after = cache_status_payload(db, request_metrics=route_performance_summary())
+    if not CACHE_HYDRATION_LOCK.acquire(blocking=False):
+        after = cache_status_payload(db, request_metrics=metrics)
         return {
             "status": "skipped",
-            "message": before.get("message") or "Cache hydration skipped because the cache backend is unavailable.",
+            "message": "Cache hydration skipped because another hydration run is already active.",
             "hydrated_at": hydrated_at,
             "document_count": 0,
             **counters,
@@ -2857,188 +2902,274 @@ def hydrate_cache(
             "after": after,
         }
 
-    def record_write_status(status: str, bucket: str) -> None:
-        if status == "write":
-            counters["hydrated_keys"] += 1
-            counters[bucket] += 1
-        elif status == "bypass":
-            counters["skipped_payloads"] += 1
-        elif status == "error":
-            counters["errored_payloads"] += 1
-
-    def hydrate_payload(
-        *,
-        family: str,
-        revision_families: set[str],
-        key_parts: dict[str, Any],
-        loader,
-        bucket: str,
-    ) -> Any | None:
-        try:
-            status, result = warm_cache_payload_result(
-                db,
-                family=family,
-                revision_families=revision_families,
-                key_parts=key_parts,
-                loader=loader,
-            )
-            record_write_status(status, bucket)
-            return result
-        except Exception:
-            counters["errored_payloads"] += 1
-            logger.debug("Cache hydration failed for %s %s", family, key_parts, exc_info=True)
-            return None
-
-    def filter_value(filters: dict[str, Any] | None, key: str) -> str:
-        if not filters:
-            return ""
-        value = filters.get(key)
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        return ""
-
-    def hydrate_document_list_pages(
-        *,
-        q: str = "",
-        filters: dict[str, Any] | None = None,
-        saved_search: bool = False,
-    ) -> None:
-        offset = 0
-        while True:
-            domain_id = filter_value(filters, "domain_id")
-            tag_id = filter_value(filters, "tag_id")
-            read_status = filter_value(filters, "read_status")
-            priority = filter_value(filters, "priority")
-            citation_status = filter_value(filters, "citation_status")
-            duplicate_status = filter_value(filters, "duplicate_status")
-            health_status = filter_value(filters, "health_status")
-            key_parts = {
-                "q": q or "",
-                "domain_id": domain_id,
-                "tag_id": tag_id,
-                "read_status": read_status,
-                "priority": priority,
-                "citation_status": citation_status,
-                "duplicate_status": duplicate_status,
-                "health_status": health_status,
-                "all": False,
-                "offset": offset,
-                "limit": page_size,
+    try:
+        if not before.get("enabled") or not before.get("reachable"):
+            after = cache_status_payload(db, request_metrics=metrics)
+            return {
+                "status": "skipped",
+                "message": before.get("message") or "Cache hydration skipped because the cache backend is unavailable.",
+                "hydrated_at": hydrated_at,
+                "document_count": 0,
+                **counters,
+                "before": before,
+                "after": after,
             }
 
-            def load_page(offset: int = offset) -> DocumentListOut:
-                return document_list_rows_out(
+        def record_write_status(status: str, bucket: str) -> None:
+            if status == "write":
+                counters["hydrated_keys"] += 1
+                counters[bucket] += 1
+            elif status == "bypass":
+                counters["skipped_payloads"] += 1
+            elif status == "error":
+                counters["errored_payloads"] += 1
+
+        def hydrate_payload(
+            *,
+            family: str,
+            revision_families: set[str],
+            key_parts: dict[str, Any],
+            loader,
+            bucket: str,
+        ) -> Any | None:
+            try:
+                status, result = warm_cache_payload_result(
                     db,
-                    q=q,
-                    domain_id=domain_id,
-                    tag_id=tag_id,
-                    read_status=read_status,
-                    priority=priority,
-                    citation_status=citation_status,
-                    duplicate_status=duplicate_status,
-                    health_status=health_status,
-                    all_results=False,
-                    offset=offset,
-                    limit=page_size,
+                    family=family,
+                    revision_families=revision_families,
+                    key_parts=key_parts,
+                    loader=loader,
+                )
+                record_write_status(status, bucket)
+                return result
+            except Exception:
+                counters["errored_payloads"] += 1
+                logger.debug("Cache hydration failed for %s %s", family, key_parts, exc_info=True)
+                return None
+
+        def filter_value(filters: dict[str, Any] | None, key: str) -> str:
+            if not filters:
+                return ""
+            value = filters.get(key)
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, (int, float, bool)):
+                return str(value)
+            return ""
+
+        def hydrate_document_list_pages(
+            *,
+            q: str = "",
+            filters: dict[str, Any] | None = None,
+            saved_search: bool = False,
+        ) -> None:
+            offset = 0
+            while True:
+                domain_id = filter_value(filters, "domain_id")
+                tag_id = filter_value(filters, "tag_id")
+                read_status = filter_value(filters, "read_status")
+                priority = filter_value(filters, "priority")
+                citation_status = filter_value(filters, "citation_status")
+                duplicate_status = filter_value(filters, "duplicate_status")
+                health_status = filter_value(filters, "health_status")
+                key_parts = {
+                    "q": q or "",
+                    "domain_id": domain_id,
+                    "tag_id": tag_id,
+                    "read_status": read_status,
+                    "priority": priority,
+                    "citation_status": citation_status,
+                    "duplicate_status": duplicate_status,
+                    "health_status": health_status,
+                    "all": False,
+                    "offset": offset,
+                    "limit": resolved_page_size,
+                }
+
+                def load_page(offset: int = offset) -> DocumentListOut:
+                    return document_list_rows_out(
+                        db,
+                        q=q,
+                        domain_id=domain_id,
+                        tag_id=tag_id,
+                        read_status=read_status,
+                        priority=priority,
+                        citation_status=citation_status,
+                        duplicate_status=duplicate_status,
+                        health_status=health_status,
+                        all_results=False,
+                        offset=offset,
+                        limit=resolved_page_size,
+                    )
+
+                result = hydrate_payload(
+                    family="documents:list",
+                    revision_families={"library", "organization"},
+                    key_parts=key_parts,
+                    loader=load_page,
+                    bucket="saved_search_keys" if saved_search else "list_page_keys",
+                )
+                if not result or not getattr(result, "has_more", False):
+                    break
+                offset += resolved_page_size
+
+        for warmer in [
+            {
+                "family": "dashboard",
+                "revision_families": {"dashboard", "jobs", "library", "organization"},
+                "key_parts": {"endpoint": "dashboard"},
+                "loader": lambda: dashboard_out(db),
+                "bucket": "base_keys",
+            },
+            {
+                "family": "status:library_fun",
+                "revision_families": {"status", "library", "organization"},
+                "key_parts": {"endpoint": "library_fun_stats"},
+                "loader": lambda: library_fun_stats_out(db),
+                "bucket": "base_keys",
+            },
+            {
+                "family": "organization",
+                "revision_families": {"organization", "library"},
+                "key_parts": {"endpoint": "domains"},
+                "loader": lambda: domain_list_out(db),
+                "bucket": "organization_keys",
+            },
+            {
+                "family": "organization",
+                "revision_families": {"organization", "library"},
+                "key_parts": {"endpoint": "tags"},
+                "loader": lambda: tag_list_out(db),
+                "bucket": "organization_keys",
+            },
+            {
+                "family": "organization",
+                "revision_families": {"organization", "library"},
+                "key_parts": {"endpoint": "projects"},
+                "loader": lambda: project_list_out(db),
+                "bucket": "organization_keys",
+            },
+        ]:
+            hydrate_payload(**warmer)
+
+        hydrate_document_list_pages()
+        if include_saved_searches:
+            saved_searches = (
+                db.query(SavedSearch)
+                .filter(SavedSearch.deleted_at.is_(None))
+                .order_by(SavedSearch.sort_order, SavedSearch.name)
+                .all()
+            )
+            for saved_search in saved_searches:
+                hydrate_document_list_pages(q=saved_search.query or "", filters=saved_search.filters or {}, saved_search=True)
+
+        document_count = 0
+        if include_document_details:
+            document_query = (
+                filter_library_visible_documents(db.query(Document))
+                .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.versions))
+                .order_by(*document_title_order_columns(db))
+            )
+            if document_limit is not None:
+                document_query = document_query.limit(document_limit)
+            documents = document_query.all()
+            document_count = len(documents)
+            for document in documents:
+                hydrate_payload(
+                    family="documents:detail",
+                    revision_families={"document_detail", "organization"},
+                    key_parts={
+                        "document_id": document.id,
+                        "updated_at": document.updated_at.isoformat() if document.updated_at else "",
+                        "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
+                        "processing_status": document.processing_status,
+                    },
+                    loader=lambda document=document: document_detail_out(document, db),
+                    bucket="document_detail_keys",
                 )
 
-            result = hydrate_payload(
-                family="documents:list",
-                revision_families={"library", "organization"},
-                key_parts=key_parts,
-                loader=load_page,
-                bucket="saved_search_keys" if saved_search else "list_page_keys",
-            )
-            if not result or not getattr(result, "has_more", False):
-                break
-            offset += page_size
+        get_cache_backend().remember_hydration(hydrated_at)
+        after = cache_status_payload(db, request_metrics=metrics)
+        return {
+            "status": "complete",
+            "message": (
+                f"Hydrated {counters['hydrated_keys']} cache payloads from PostgreSQL"
+                f" for {document_count} document details."
+            ),
+            "hydrated_at": hydrated_at,
+            "document_count": document_count,
+            **counters,
+            "before": before,
+            "after": after,
+        }
+    finally:
+        CACHE_HYDRATION_LOCK.release()
 
-    for warmer in [
-        {
-            "family": "dashboard",
-            "revision_families": {"dashboard", "jobs", "library", "organization"},
-            "key_parts": {"endpoint": "dashboard"},
-            "loader": lambda: dashboard_out(db),
-            "bucket": "base_keys",
-        },
-        {
-            "family": "status:library_fun",
-            "revision_families": {"status", "library", "organization"},
-            "key_parts": {"endpoint": "library_fun_stats"},
-            "loader": lambda: library_fun_stats_out(db),
-            "bucket": "base_keys",
-        },
-        {
-            "family": "organization",
-            "revision_families": {"organization", "library"},
-            "key_parts": {"endpoint": "domains"},
-            "loader": lambda: domain_list_out(db),
-            "bucket": "organization_keys",
-        },
-        {
-            "family": "organization",
-            "revision_families": {"organization", "library"},
-            "key_parts": {"endpoint": "tags"},
-            "loader": lambda: tag_list_out(db),
-            "bucket": "organization_keys",
-        },
-        {
-            "family": "organization",
-            "revision_families": {"organization", "library"},
-            "key_parts": {"endpoint": "projects"},
-            "loader": lambda: project_list_out(db),
-            "bucket": "organization_keys",
-        },
-    ]:
-        hydrate_payload(**warmer)
 
-    hydrate_document_list_pages()
-    if include_saved_searches:
-        saved_searches = db.query(SavedSearch).filter(SavedSearch.deleted_at.is_(None)).order_by(SavedSearch.sort_order, SavedSearch.name).all()
-        for saved_search in saved_searches:
-            hydrate_document_list_pages(q=saved_search.query or "", filters=saved_search.filters or {}, saved_search=True)
+def schedule_startup_cache_hydration() -> None:
+    logger = logging.getLogger("medusa.cache")
+    if not settings.cache_startup_hydrate:
+        logger.info("Startup cache hydration disabled by MEDUSA_CACHE_STARTUP_HYDRATE.")
+        return
 
-    documents = []
-    if include_document_details:
-        documents = (
-            filter_library_visible_documents(db.query(Document))
-            .options(selectinload(Document.tags), selectinload(Document.domains), selectinload(Document.versions))
-            .order_by(*document_title_order_columns(db))
-            .limit(max_documents)
-            .all()
-        )
-        for document in documents:
-            hydrate_payload(
-                family="documents:detail",
-                revision_families={"document_detail", "organization"},
-                key_parts={
-                    "document_id": document.id,
-                    "updated_at": document.updated_at.isoformat() if document.updated_at else "",
-                    "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
-                    "processing_status": document.processing_status,
-                },
-                loader=lambda document=document: document_detail_out(document, db),
-                bucket="document_detail_keys",
-            )
+    def run() -> None:
+        try:
+            result: dict[str, Any] = {"status": "skipped", "message": "Startup cache hydration did not run."}
+            for attempt in range(1, CACHE_STARTUP_HYDRATE_MAX_ATTEMPTS + 1):
+                with session_scope() as db:
+                    result = hydrate_cache_payloads(db)
+                before = result.get("before") if isinstance(result.get("before"), dict) else {}
+                should_retry = (
+                    result.get("status") == "skipped"
+                    and bool(before.get("enabled"))
+                    and not bool(before.get("reachable"))
+                    and attempt < CACHE_STARTUP_HYDRATE_MAX_ATTEMPTS
+                )
+                if not should_retry:
+                    break
+                logger.info(
+                    "Startup cache hydration waiting for cache backend: attempt=%s/%s message=%s",
+                    attempt,
+                    CACHE_STARTUP_HYDRATE_MAX_ATTEMPTS,
+                    result.get("message"),
+                )
+                sleep(CACHE_STARTUP_HYDRATE_RETRY_SECONDS)
+            if result.get("status") == "complete":
+                logger.info(
+                    "Startup cache hydration complete: hydrated_keys=%s document_details=%s skipped_payloads=%s errored_payloads=%s",
+                    result.get("hydrated_keys"),
+                    result.get("document_count"),
+                    result.get("skipped_payloads"),
+                    result.get("errored_payloads"),
+                )
+            else:
+                logger.info("Startup cache hydration %s: %s", result.get("status"), result.get("message"))
+        except Exception:
+            logger.exception("Startup cache hydration failed.")
 
-    get_cache_backend().remember_hydration(hydrated_at)
-    after = cache_status_payload(db, request_metrics=route_performance_summary())
-    return {
-        "status": "complete",
-        "message": (
-            f"Hydrated {counters['hydrated_keys']} cache payloads from PostgreSQL"
-            f" for {len(documents)} document details."
-        ),
-        "hydrated_at": hydrated_at,
-        "document_count": len(documents),
-        **counters,
-        "before": before,
-        "after": after,
-    }
+    thread = threading.Thread(target=run, name="medusa-cache-startup-hydration", daemon=True)
+    thread.start()
+
+
+@app.post("/api/cache/hydrate", response_model=CacheHydrateOut)
+def hydrate_cache(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    include_document_details: bool = True,
+    include_saved_searches: bool = True,
+    max_documents: Annotated[int | None, Query(ge=0)] = None,
+    page_size: Annotated[int | None, Query(ge=10)] = None,
+) -> dict[str, Any]:
+    return hydrate_cache_payloads(
+        db,
+        include_document_details=include_document_details,
+        include_saved_searches=include_saved_searches,
+        max_documents=max_documents,
+        page_size=page_size,
+        request_metrics=route_performance_summary(),
+    )
 
 
 @app.get("/api/preferences", response_model=AppPreferencesOut)
@@ -4749,6 +4880,8 @@ def resolve_document_duplicate(
     duplicate_document = db.get(Document, payload.duplicate_document_id)
     if not document_is_library_visible(keep_document) or not document_is_library_visible(duplicate_document):
         raise HTTPException(status_code=404, detail="Duplicate pair not found")
+    ensure_document_unlocked(keep_document)
+    ensure_document_unlocked(duplicate_document)
     reasons = duplicate_match_reasons(document_duplicate_profile(keep_document), document_duplicate_profile(duplicate_document))
     if duplicate_match_score(reasons) <= 0:
         raise HTTPException(status_code=400, detail="Documents no longer match as duplicates")
@@ -4832,6 +4965,8 @@ def dismiss_document_duplicate(
     right_document = db.get(Document, payload.right_document_id)
     if not document_is_library_visible(left_document) or not document_is_library_visible(right_document):
         raise HTTPException(status_code=404, detail="Duplicate pair not found")
+    ensure_document_unlocked(left_document)
+    ensure_document_unlocked(right_document)
     if (
         right_document.id in duplicate_false_positive_document_ids(left_document)
         and left_document.id in duplicate_false_positive_document_ids(right_document)
@@ -4908,6 +5043,46 @@ def get_document_composition(
     return document_composition_summary(db, document)
 
 
+@app.post("/api/documents/{document_id}/lock", response_model=DocumentDetail)
+def set_document_lock(
+    document_id: str,
+    payload: DocumentLockPatch,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    next_locked_at = utc_now() if payload.is_locked else None
+    if bool(document.locked_at) == payload.is_locked:
+        return document_detail_out(document, db)
+
+    before = document_correction_snapshot(document)
+    document.locked_at = next_locked_at
+    db.flush()
+    operation = "document_lock" if payload.is_locked else "document_unlock"
+    message = "Locked document" if payload.is_locked else "Unlocked document"
+    record_document_version(
+        db,
+        document=document,
+        change_note=message,
+        changed_fields={"locked_at"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"operation": operation, "locked_at": next_locked_at.isoformat() if next_locked_at else None},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message=message,
+        metadata={"operation": operation, "locked_at": next_locked_at.isoformat() if next_locked_at else None},
+    )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
 @app.post("/api/documents/{document_id}/citation-refresh", response_model=ConcordanceRunOut)
 def refresh_document_citation(
     document_id: str,
@@ -4918,6 +5093,7 @@ def refresh_document_citation(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     verified_fields = verified_document_fields(document, ["doi", "apa_citation", "apa_in_text_citation"])
     if verified_fields:
         if not confirm_verified:
@@ -4954,6 +5130,7 @@ def refresh_document_citation(
 
 
 def mark_document_field_verified(db: Session, document: Document, field: str, user: User) -> DocumentDetail:
+    ensure_document_unlocked(document)
     config = DOCUMENT_FIELD_VERIFICATION_CONFIG.get(field)
     if not config:
         raise HTTPException(status_code=404, detail="Verification field not found")
@@ -5027,6 +5204,7 @@ def refresh_document_bibliography(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     if document_bibliography_is_verified(document):
         if not confirm_verified:
             raise HTTPException(status_code=409, detail="Confirm refreshing the manually verified bibliography before starting")
@@ -5091,6 +5269,7 @@ def _create_document_accessory_summary(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     try:
         summary = create_accessory_summary(
             db,
@@ -5124,6 +5303,7 @@ def patch_accessory_summary(
     summary = db.get(DocumentAccessorySummary, summary_id)
     if not summary or not document_is_library_visible(summary.document):
         raise HTTPException(status_code=404, detail="Accessory summary not found")
+    ensure_document_unlocked(summary.document)
     if payload.title is not None:
         title = " ".join(payload.title.strip().split())
         summary.title = title[:240] or None
@@ -5163,6 +5343,7 @@ def refresh_recommendations(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     if document.processing_status != "ready":
         raise HTTPException(status_code=409, detail="Recommendations are available after processing is complete")
     if not document_has_recommendation_inputs(document):
@@ -5274,12 +5455,17 @@ def portfolio_item_query(db: Session):
     )
 
 
+def attach_portfolio_audit_status(db: Session, item: PortfolioItem) -> PortfolioItem:
+    item.audit_status = portfolio_audit_status(db, item.id)
+    return item
+
+
 def portfolio_item_or_404(db: Session, portfolio_item_id: str) -> PortfolioItem:
     item = portfolio_item_query(db).filter(PortfolioItem.id == portfolio_item_id).one_or_none()
     if not item:
         raise HTTPException(status_code=404, detail="Portfolio item not found")
     sync_portfolio_processing_status(item)
-    return item
+    return attach_portfolio_audit_status(db, item)
 
 
 def portfolio_version_or_404(db: Session, version_id: str) -> PortfolioVersion:
@@ -5533,13 +5719,14 @@ def list_portfolio_items(
     items = portfolio_item_query(db).order_by(PortfolioItem.updated_at.desc(), PortfolioItem.title).all()
     for item in items:
         sync_portfolio_processing_status(item)
+        attach_portfolio_audit_status(db, item)
     return items
 
 
 @app.post("/api/portfolio", response_model=PortfolioItemOut)
 def create_portfolio_item(
     payload: PortfolioItemCreate,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> PortfolioItem:
     title = " ".join(payload.title.strip().split())
@@ -5553,6 +5740,23 @@ def create_portfolio_item(
         tag_ids=payload.tag_ids,
     )
     db.add(item)
+    db.flush()
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="item_created",
+        payload={
+            "title": item.title,
+            "description_sha256": hashlib.sha256((item.description or "").encode("utf-8")).hexdigest(),
+            "project_ids": item.project_ids,
+            "domain_ids": item.domain_ids,
+            "tag_ids": item.tag_ids,
+        },
+        subject_type="portfolio_item",
+        subject_id=item.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
     db.commit()
     return portfolio_item_or_404(db, item.id)
 
@@ -5570,10 +5774,19 @@ def get_portfolio_item(
 def update_portfolio_item(
     portfolio_item_id: str,
     payload: PortfolioItemPatch,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> PortfolioItem:
     item = portfolio_item_or_404(db, portfolio_item_id)
+    before = {
+        "title": item.title,
+        "description_sha256": hashlib.sha256((item.description or "").encode("utf-8")).hexdigest(),
+        "status": item.status,
+        "current_version_id": item.current_version_id,
+        "project_ids": item.project_ids,
+        "domain_ids": item.domain_ids,
+        "tag_ids": item.tag_ids,
+    }
     if payload.title is not None:
         title = " ".join(payload.title.strip().split())
         if not title:
@@ -5598,6 +5811,26 @@ def update_portfolio_item(
         item.domain_ids = payload.domain_ids
     if payload.tag_ids is not None:
         item.tag_ids = payload.tag_ids
+    after = {
+        "title": item.title,
+        "description_sha256": hashlib.sha256((item.description or "").encode("utf-8")).hexdigest(),
+        "status": item.status,
+        "current_version_id": item.current_version_id,
+        "project_ids": item.project_ids,
+        "domain_ids": item.domain_ids,
+        "tag_ids": item.tag_ids,
+    }
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="current_version_switched" if before["current_version_id"] != after["current_version_id"] else "item_updated",
+        payload={"before": before, "after": after},
+        version_id=item.current_version_id,
+        subject_type="portfolio_item",
+        subject_id=item.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
     db.commit()
     return portfolio_item_or_404(db, portfolio_item_id)
 
@@ -5605,7 +5838,7 @@ def update_portfolio_item(
 @app.post("/api/portfolio/{portfolio_item_id}/versions", response_model=PortfolioItemOut)
 async def upload_portfolio_version(
     portfolio_item_id: str,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
     file: Annotated[UploadFile, File()],
     label: Annotated[str | None, Form()] = None,
@@ -5664,6 +5897,27 @@ async def upload_portfolio_version(
             )
         )
     item.current_version_id = version.id
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="version_uploaded",
+        payload={
+            "version_id": version.id,
+            "version_number": version.version_number,
+            "label": version.label,
+            "source_filename": version.source_filename,
+            "source_content_type": version.source_content_type,
+            "source_size_bytes": version.source_size_bytes,
+            "source_checksum_sha256": version.source_checksum_sha256,
+            "parent_version_id": parent.id if parent else None,
+            "import_job_id": job.id,
+        },
+        version_id=version.id,
+        subject_type="portfolio_version",
+        subject_id=version.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
     db.commit()
     return portfolio_item_or_404(db, portfolio_item_id)
 
@@ -5671,7 +5925,7 @@ async def upload_portfolio_version(
 @app.post("/api/portfolio/{portfolio_item_id}/materials", response_model=PortfolioItemOut)
 async def upload_portfolio_material(
     portfolio_item_id: str,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
     file: Annotated[UploadFile, File()],
     role: Annotated[str, Form()] = "reference",
@@ -5721,6 +5975,30 @@ async def upload_portfolio_material(
         },
     )
     db.add(material)
+    db.flush()
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="material_uploaded",
+        payload={
+            "material_id": material.id,
+            "version_id": material.version_id,
+            "role": material.role,
+            "label": material.label,
+            "required_for_assessment": material.required_for_assessment,
+            "source_filename": prepared.source_filename,
+            "source_content_type": prepared.source_content_type,
+            "source_size_bytes": prepared.source_size_bytes,
+            "source_checksum_sha256": prepared.source_checksum_sha256,
+            "import_job_id": job.id,
+        },
+        version_id=material.version_id,
+        material_id=material.id,
+        subject_type="portfolio_material",
+        subject_id=material.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
     db.commit()
     return portfolio_item_or_404(db, portfolio_item_id)
 
@@ -5789,10 +6067,402 @@ def portfolio_material_source(
     return portfolio_document_response(material.document, filename=filename, content_type=content_type, download=download, uri=source_uri)
 
 
+def _portfolio_bundle_filename(value: str | None, fallback: str) -> str:
+    base = Path(value or fallback).name
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-._")
+    return (clean or fallback)[:180]
+
+
+def _portfolio_bundle_write_json(bundle: zipfile.ZipFile, path: str, value: Any) -> dict[str, Any]:
+    payload = json.dumps(jsonable_encoder(value), indent=2, sort_keys=True).encode("utf-8")
+    bundle.writestr(path, payload)
+    return {
+        "path": path,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "content_type": "application/json",
+    }
+
+
+def _portfolio_bundle_write_text(bundle: zipfile.ZipFile, path: str, value: str, content_type: str) -> dict[str, Any]:
+    payload = value.encode("utf-8")
+    bundle.writestr(path, payload)
+    return {
+        "path": path,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "content_type": content_type,
+    }
+
+
+def _portfolio_bundle_write_storage(
+    bundle: zipfile.ZipFile,
+    *,
+    path: str,
+    uri: str | None,
+    content_type: str,
+) -> dict[str, Any] | None:
+    if not uri:
+        return None
+    try:
+        payload = get_storage_service().get_bytes(uri)
+    except Exception as exc:
+        return {
+            "path": path,
+            "missing": True,
+            "error": str(exc),
+            "content_type": content_type,
+        }
+    bundle.writestr(path, payload)
+    return {
+        "path": path,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "content_type": content_type,
+    }
+
+
+def _portfolio_assessment_markdown(run: PortfolioAssessmentRun) -> str:
+    metadata = run.assessment_metadata or {}
+    lines = [f"# Portfolio Assessment {run.id}", "", run.summary or "No summary.", ""]
+    grade = metadata.get("grade_estimate") if isinstance(metadata.get("grade_estimate"), dict) else {}
+    if grade:
+        lines.extend(
+            [
+                "## Grade Estimate",
+                "",
+                f"- Estimated grade: {grade.get('estimated_grade') or 'Not estimated'}",
+                f"- Estimated score: {grade.get('estimated_score') if grade.get('estimated_score') is not None else 'Not estimated'}",
+                f"- Scale: {grade.get('scale') or 'Not specified'}",
+                f"- Confidence: {grade.get('confidence') if grade.get('confidence') is not None else 'Not specified'}",
+                "",
+            ]
+        )
+        assumptions = grade.get("assumptions") if isinstance(grade.get("assumptions"), list) else []
+        if assumptions:
+            lines.extend(["Assumptions:", ""])
+            lines.extend([f"- {assumption}" for assumption in assumptions])
+            lines.append("")
+    scorecard = metadata.get("scorecard") if isinstance(metadata.get("scorecard"), list) else []
+    if scorecard:
+        lines.extend(["## Scorecard", ""])
+        for item in scorecard:
+            if not isinstance(item, dict):
+                continue
+            points = "qualitative"
+            if item.get("max_points") is not None or item.get("awarded_points") is not None:
+                points = f"{item.get('awarded_points')}/{item.get('max_points')}"
+            lines.extend(
+                [
+                    f"### {item.get('criterion') or 'Criterion'}",
+                    "",
+                    f"- Points: {points}",
+                    f"- Level: {item.get('level') or 'Not specified'}",
+                    f"- Confidence: {item.get('confidence') if item.get('confidence') is not None else 'Not specified'}",
+                    "",
+                    str(item.get("rationale") or ""),
+                    "",
+                ]
+            )
+    feedback = metadata.get("narrative_feedback") if isinstance(metadata.get("narrative_feedback"), dict) else {}
+    for heading, key in (
+        ("Strengths", "strengths"),
+        ("Concerns", "concerns"),
+        ("Missing Evidence", "missing_evidence"),
+        ("Revision Priorities", "revision_priorities"),
+    ):
+        values = feedback.get(key) if isinstance(feedback.get(key), list) else []
+        if values:
+            lines.extend([f"## {heading}", ""])
+            lines.extend([f"- {value}" for value in values])
+            lines.append("")
+    if run.findings:
+        lines.extend(["## Findings", ""])
+        for finding in run.findings:
+            lines.extend([f"### {finding.title}", "", f"- Severity: {finding.severity}", f"- Category: {finding.category}", ""])
+            if finding.body:
+                lines.extend([finding.body, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_portfolio_bundle(db: Session, item: PortfolioItem) -> tuple[bytes, str, str]:
+    buffer = io.BytesIO()
+    file_entries: list[dict[str, Any]] = []
+    audit_chain = verify_portfolio_audit_chain(db, item.id)
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for version in sorted(item.versions, key=lambda row: row.version_number):
+            version_dir = f"versions/v{version.version_number:03d}-{version.id}"
+            source_name = _portfolio_bundle_filename(version.source_filename, f"version-{version.version_number}.bin")
+            source_entry = _portfolio_bundle_write_storage(
+                bundle,
+                path=f"{version_dir}/source/{source_name}",
+                uri=version.source_storage_uri or (version.document.gcs_uri if version.document else None),
+                content_type=version.source_content_type or "application/octet-stream",
+            )
+            if source_entry:
+                file_entries.append({**source_entry, "kind": "version_source", "version_id": version.id})
+            preview_uri = version.document.gcs_uri if version.document else None
+            if preview_uri and preview_uri != version.source_storage_uri:
+                preview_name = _portfolio_bundle_filename(version.document.original_filename if version.document else None, "generated-preview.pdf")
+                preview_entry = _portfolio_bundle_write_storage(
+                    bundle,
+                    path=f"{version_dir}/generated/{preview_name}",
+                    uri=preview_uri,
+                    content_type=version.document.content_type if version.document else "application/pdf",
+                )
+                if preview_entry:
+                    file_entries.append({**preview_entry, "kind": "version_generated", "version_id": version.id})
+
+        for material in sorted(item.materials, key=lambda row: (row.role, row.created_at)):
+            metadata = material.material_metadata or {}
+            material_dir = f"materials/{material.role}/{material.id}"
+            source_uri = metadata.get("source_storage_uri") if isinstance(metadata.get("source_storage_uri"), str) else None
+            source_name = _portfolio_bundle_filename(
+                str(metadata.get("source_filename") or (material.document.original_filename if material.document else "")),
+                "material.bin",
+            )
+            source_entry = _portfolio_bundle_write_storage(
+                bundle,
+                path=f"{material_dir}/source/{source_name}",
+                uri=source_uri or (material.document.gcs_uri if material.document else None),
+                content_type=str(metadata.get("source_content_type") or (material.document.content_type if material.document else "application/octet-stream")),
+            )
+            if source_entry:
+                file_entries.append({**source_entry, "kind": "material_source", "material_id": material.id, "role": material.role})
+            preview_uri = material.document.gcs_uri if material.document else None
+            if preview_uri and preview_uri != source_uri:
+                preview_name = _portfolio_bundle_filename(material.document.original_filename if material.document else None, "generated-preview.pdf")
+                preview_entry = _portfolio_bundle_write_storage(
+                    bundle,
+                    path=f"{material_dir}/generated/{preview_name}",
+                    uri=preview_uri,
+                    content_type=material.document.content_type if material.document else "application/pdf",
+                )
+                if preview_entry:
+                    file_entries.append({**preview_entry, "kind": "material_generated", "material_id": material.id, "role": material.role})
+
+        for run in sorted(item.assessment_runs, key=lambda row: row.created_at):
+            assessment_payload = {
+                "id": run.id,
+                "portfolio_item_id": run.portfolio_item_id,
+                "version_id": run.version_id,
+                "mode": run.mode,
+                "model_ids": run.model_ids,
+                "status": run.status,
+                "summary": run.summary,
+                "assessment_metadata": run.assessment_metadata,
+                "findings": [
+                    {
+                        "id": finding.id,
+                        "category": finding.category,
+                        "severity": finding.severity,
+                        "title": finding.title,
+                        "body": finding.body,
+                        "evidence": finding.evidence,
+                        "status": finding.status,
+                        "created_at": finding.created_at,
+                    }
+                    for finding in run.findings
+                ],
+                "completed_at": run.completed_at,
+                "created_at": run.created_at,
+            }
+            file_entries.append(_portfolio_bundle_write_json(bundle, f"assessments/{run.id}.json", assessment_payload))
+            file_entries.append(
+                _portfolio_bundle_write_text(
+                    bundle,
+                    f"assessments/{run.id}.md",
+                    _portfolio_assessment_markdown(run),
+                    "text/markdown",
+                )
+            )
+
+        resources_payload = [
+            {
+                "id": suggestion.id,
+                "version_id": suggestion.version_id,
+                "library_document_id": suggestion.library_document_id,
+                "source_type": suggestion.source_type,
+                "title": suggestion.title,
+                "source_url": suggestion.source_url,
+                "relation_family": suggestion.relation_family,
+                "score": float(suggestion.score) if suggestion.score is not None else None,
+                "status": suggestion.status,
+                "evidence": suggestion.evidence,
+            }
+            for suggestion in item.suggestions
+        ]
+        file_entries.append(_portfolio_bundle_write_json(bundle, "resources/library-suggestions.json", resources_payload))
+
+        audit_events = list(
+            db.execute(
+                select(PortfolioAuditEvent)
+                .where(PortfolioAuditEvent.portfolio_item_id == item.id)
+                .order_by(PortfolioAuditEvent.sequence)
+            ).scalars()
+        )
+        audit_lines = [
+            json.dumps(
+                jsonable_encoder(
+                    {
+                        "id": event.id,
+                        "event_type": event.event_type,
+                        "sequence": event.sequence,
+                        "canonical_payload": event.canonical_payload,
+                        "payload_sha256": event.payload_sha256,
+                        "previous_event_hash": event.previous_event_hash,
+                        "event_hash": event.event_hash,
+                        "signature_public_key_id": event.signature_public_key_id,
+                        "signature_algorithm": event.signature_algorithm,
+                        "signature": event.signature,
+                        "created_at": event.created_at,
+                    }
+                ),
+                sort_keys=True,
+            )
+            for event in audit_events
+        ]
+        file_entries.append(_portfolio_bundle_write_text(bundle, "audit/event-chain.jsonl", "\n".join(audit_lines) + "\n", "application/jsonl"))
+        anchors = list(
+            db.execute(
+                select(PortfolioAuditAnchor)
+                .where(PortfolioAuditAnchor.portfolio_item_id == item.id)
+                .order_by(PortfolioAuditAnchor.end_sequence, PortfolioAuditAnchor.created_at)
+            ).scalars()
+        )
+        file_entries.append(
+            _portfolio_bundle_write_json(
+                bundle,
+                "audit/timestamp-anchors.json",
+                [
+                    {
+                        "id": anchor.id,
+                        "root_event_id": anchor.root_event_id,
+                        "start_sequence": anchor.start_sequence,
+                        "end_sequence": anchor.end_sequence,
+                        "root_hash": anchor.root_hash,
+                        "tsa_url": anchor.tsa_url,
+                        "tsa_policy_oid": anchor.tsa_policy_oid,
+                        "tsa_serial_number": anchor.tsa_serial_number,
+                        "tsa_time": anchor.tsa_time,
+                        "request_sha256": anchor.request_sha256,
+                        "response_der_base64": anchor.response_der_base64,
+                        "verification_status": anchor.verification_status,
+                        "verification_error": anchor.verification_error,
+                        "last_verified_at": anchor.last_verified_at,
+                        "metadata": anchor.anchor_metadata,
+                    }
+                    for anchor in anchors
+                ],
+            )
+        )
+        public_keys = {
+            event.signature_public_key_id: ((event.canonical_payload or {}).get("signature") or {}).get("public_key_base64")
+            for event in audit_events
+            if isinstance(event.canonical_payload, dict)
+        }
+        file_entries.append(_portfolio_bundle_write_json(bundle, "audit/public-keys.json", public_keys))
+        file_entries.append(_portfolio_bundle_write_json(bundle, "audit/verification-summary.json", audit_chain))
+
+        manifest = {
+            "schema": "medusa.portfolio.bundle.v1",
+            "generated_at": utc_now(),
+            "portfolio_item": {
+                "id": item.id,
+                "title": item.title,
+                "description": item.description,
+                "status": item.status,
+                "current_version_id": item.current_version_id,
+                "project_ids": item.project_ids,
+                "domain_ids": item.domain_ids,
+                "tag_ids": item.tag_ids,
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+            },
+            "versions": [
+                {
+                    "id": version.id,
+                    "version_number": version.version_number,
+                    "label": version.label,
+                    "upload_note": version.upload_note,
+                    "document_id": version.document_id,
+                    "source_filename": version.source_filename,
+                    "source_content_type": version.source_content_type,
+                    "source_checksum_sha256": version.source_checksum_sha256,
+                    "source_checksum_md5": version.source_checksum_md5,
+                    "source_size_bytes": version.source_size_bytes,
+                    "processing_status": version.processing_status,
+                    "parent_version_ids": [edge.parent_version_id for edge in version.parent_edges],
+                    "created_at": version.created_at,
+                }
+                for version in sorted(item.versions, key=lambda row: row.version_number)
+            ],
+            "materials": [
+                {
+                    "id": material.id,
+                    "version_id": material.version_id,
+                    "document_id": material.document_id,
+                    "role": material.role,
+                    "label": material.label,
+                    "required_for_assessment": material.required_for_assessment,
+                    "notes": material.notes,
+                    "created_at": material.created_at,
+                }
+                for material in sorted(item.materials, key=lambda row: (row.role, row.created_at))
+            ],
+            "assessment_ids": [run.id for run in item.assessment_runs],
+            "file_entries": file_entries,
+            "audit": audit_chain,
+        }
+        manifest_entry = _portfolio_bundle_write_json(bundle, "manifest.json", manifest)
+        file_entries.append({**manifest_entry, "kind": "manifest"})
+
+    data = buffer.getvalue()
+    bundle_sha256 = hashlib.sha256(data).hexdigest()
+    filename = f"portfolio-{_portfolio_bundle_filename(item.title, item.id)}.zip"
+    return data, filename, bundle_sha256
+
+
+@app.post("/api/portfolio/{portfolio_item_id}/bundle")
+def export_portfolio_bundle(
+    portfolio_item_id: str,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> FastAPIResponse:
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="bundle_exported",
+        payload={
+            "version_count": len(item.versions),
+            "material_count": len(item.materials),
+            "assessment_count": len(item.assessment_runs),
+            "suggestion_count": len(item.suggestions),
+        },
+        subject_type="portfolio_bundle",
+        subject_id=item.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
+    maybe_anchor_portfolio_audit(db, item.id)
+    db.commit()
+    item = portfolio_item_or_404(db, portfolio_item_id)
+    data, filename, bundle_sha256 = build_portfolio_bundle(db, item)
+    return FastAPIResponse(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{quote(filename)}"',
+            "X-Medusa-Bundle-SHA256": bundle_sha256,
+        },
+    )
+
+
 @app.post("/api/portfolio/{portfolio_item_id}/suggestions/refresh", response_model=PortfolioSuggestionRefreshOut)
 def refresh_portfolio_suggestions(
     portfolio_item_id: str,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> PortfolioSuggestionRefreshOut:
     item = portfolio_item_or_404(db, portfolio_item_id)
@@ -5852,6 +6522,22 @@ def refresh_portfolio_suggestions(
         )
         db.add(suggestion)
         suggestions.append(suggestion)
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="resource_refresh",
+        payload={
+            "version_id": version.id,
+            "suggestion_count": len(suggestions),
+            "suggestion_ids": [suggestion.id for suggestion in suggestions],
+            "library_document_ids": [suggestion.library_document_id for suggestion in suggestions if suggestion.library_document_id],
+        },
+        version_id=version.id,
+        subject_type="portfolio_suggestions",
+        subject_id=version.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
     db.commit()
     rows = (
         db.query(PortfolioSuggestion)
@@ -5875,7 +6561,7 @@ def refresh_portfolio_suggestions(
 def create_portfolio_assessment(
     portfolio_item_id: str,
     payload: PortfolioAssessmentCreate,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> PortfolioAssessmentRun:
     item = portfolio_item_or_404(db, portfolio_item_id)
@@ -5999,7 +6685,6 @@ def create_portfolio_assessment(
             "The version has extracted text and at least one supporting material. Run a multi-model assessment when deeper scoring prompts are enabled.",
             {"word_count": word_count},
         )
-    model_assessment_result: dict[str, Any] | None = None
     material_items = [
         {
             "label": f"M{index}",
@@ -6011,40 +6696,91 @@ def create_portfolio_assessment(
         }
         for index, material in enumerate(materials[:8], start=1)
     ]
-    try:
-        model_assessment_result = get_ai_service().generate_portfolio_assessment(
-            item.title,
-            document_recon_text(document, max_chars=60_000),
-            material_items,
-            library_evidence_items,
-            model=model_ids[0],
-            usage_context=OpenAIUsageContext(document_id=document.id, source="portfolio", capability_key=MODEL_PORTFOLIO_ASSESSMENT),
-        )
-        for finding_payload in model_assessment_result.get("findings") or []:
-            raw_severity = str(finding_payload.get("severity") or "info").lower()
-            severity = raw_severity if raw_severity in {"info", "warning", "critical"} else "info"
-            add_finding(
-                str(finding_payload.get("category") or "model_review")[:80],
-                severity,
-                str(finding_payload.get("title") or "Model assessment finding")[:300],
-                str(finding_payload.get("body") or ""),
-                {
-                    "source": "model",
-                    "model": model_ids[0],
-                    "evidence_labels": finding_payload.get("evidence_labels") or [],
-                },
+    model_outputs: list[dict[str, Any]] = []
+    successful_outputs: list[dict[str, Any]] = []
+    draft_text = document_recon_text(document, max_chars=60_000)
+    for model_id in model_ids:
+        try:
+            result = get_ai_service().generate_portfolio_assessment(
+                item.title,
+                draft_text,
+                material_items,
+                library_evidence_items,
+                model=model_id,
+                usage_context=OpenAIUsageContext(document_id=document.id, source="portfolio", capability_key=MODEL_PORTFOLIO_ASSESSMENT),
             )
-    except Exception as exc:
-        model_assessment_result = {"fallback_reason": str(exc)}
+            output = {"model": model_id, "status": "complete", "output": result}
+            model_outputs.append(output)
+            successful_outputs.append(output)
+            for finding_payload in result.get("findings") or []:
+                raw_severity = str(finding_payload.get("severity") or "info").lower()
+                severity = raw_severity if raw_severity in {"info", "warning", "critical"} else "info"
+                add_finding(
+                    str(finding_payload.get("category") or "model_review")[:80],
+                    severity,
+                    str(finding_payload.get("title") or "Model assessment finding")[:300],
+                    str(finding_payload.get("body") or ""),
+                    {
+                        "source": "model",
+                        "model": model_id,
+                        "evidence_labels": finding_payload.get("evidence_labels") or [],
+                    },
+                )
+        except Exception as exc:
+            model_outputs.append({"model": model_id, "status": "failed", "error": str(exc)})
+
+    primary_result = successful_outputs[0]["output"] if successful_outputs else {}
+    scorecard = primary_result.get("scorecard") if isinstance(primary_result.get("scorecard"), list) else []
+    grade_estimate = primary_result.get("grade_estimate") if isinstance(primary_result.get("grade_estimate"), dict) else {}
+    narrative_feedback = (
+        primary_result.get("narrative_feedback") if isinstance(primary_result.get("narrative_feedback"), dict) else {}
+    )
+    revision_priorities = (
+        primary_result.get("revision_priorities") if isinstance(primary_result.get("revision_priorities"), list) else []
+    )
+    if not narrative_feedback:
+        narrative_feedback = {
+            "strengths": [],
+            "concerns": [finding.title for finding in findings if finding.severity in {"warning", "critical"}],
+            "missing_evidence": [],
+            "revision_priorities": [finding.title for finding in findings[:5]],
+        }
+    if not grade_estimate:
+        grade_estimate = {
+            "estimated_grade": None,
+            "scale": "qualitative",
+            "confidence": "low",
+            "assumptions": ["No model grade estimate was available; review findings qualitatively."],
+        }
+    agreement = {
+        "model_count": len(model_ids),
+        "completed_model_count": len(successful_outputs),
+        "failed_model_count": len([output for output in model_outputs if output.get("status") == "failed"]),
+        "primary_model": successful_outputs[0]["model"] if successful_outputs else None,
+        "grade_estimates": [
+            {
+                "model": output["model"],
+                "grade_estimate": output["output"].get("grade_estimate"),
+            }
+            for output in successful_outputs
+            if isinstance(output.get("output"), dict)
+        ],
+    }
 
     run.summary = (
-        str(model_assessment_result.get("summary"))
-        if model_assessment_result and model_assessment_result.get("summary")
+        str(primary_result.get("summary"))
+        if primary_result and primary_result.get("summary")
         else f"Portfolio assessment completed with {len(findings)} finding{'s' if len(findings) != 1 else ''}."
     )
     run.assessment_metadata = {
         "local_baseline": True,
         "model_ids": model_ids,
+        "scorecard": scorecard,
+        "grade_estimate": grade_estimate,
+        "narrative_feedback": narrative_feedback,
+        "revision_priorities": revision_priorities,
+        "model_outputs": model_outputs,
+        "agreement": agreement,
         "material_snapshot": [
             {
                 "id": material.id,
@@ -6058,9 +6794,32 @@ def create_portfolio_assessment(
         "suggestion_count": len(item.suggestions),
         "library_evidence_count": len(library_evidence_items),
         "library_evidence": library_evidence_items,
-        "model_assessment": model_assessment_result or {},
         "word_count": word_count,
     }
+    append_portfolio_audit_event(
+        db,
+        portfolio_item_id=item.id,
+        event_type="assessment_run_completed",
+        payload={
+            "assessment_run_id": run.id,
+            "version_id": version.id,
+            "mode": run.mode,
+            "model_ids": model_ids,
+            "status": run.status,
+            "summary_sha256": hashlib.sha256((run.summary or "").encode("utf-8")).hexdigest(),
+            "finding_count": len(findings),
+            "scorecard_count": len(scorecard),
+            "grade_estimate": grade_estimate,
+            "agreement": agreement,
+        },
+        version_id=version.id,
+        assessment_run_id=run.id,
+        subject_type="portfolio_assessment_run",
+        subject_id=run.id,
+        actor_type="user",
+        actor_id=getattr(user, "id", None),
+    )
+    maybe_anchor_portfolio_audit(db, item.id)
     db.commit()
     return (
         db.query(PortfolioAssessmentRun)
@@ -6781,6 +7540,7 @@ def create_annotation(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     annotation = Annotation(**payload.model_dump())
     document.annotations.append(annotation)
     db.flush()
@@ -6804,6 +7564,7 @@ def patch_annotation(
         setattr(annotation, key, value)
     document = db.get(Document, annotation.document_id)
     if document_is_library_visible(document):
+        ensure_document_unlocked(document)
         document.search_text = rebuild_document_search_text(document)
     db.commit()
     db.refresh(annotation)
@@ -6822,6 +7583,7 @@ def delete_annotation(
     annotation.deleted_at = utc_now()
     document = db.get(Document, annotation.document_id)
     if document_is_library_visible(document):
+        ensure_document_unlocked(document)
         document.search_text = rebuild_document_search_text(document)
     db.commit()
     return {"status": "deleted"}
@@ -6861,6 +7623,7 @@ def patch_figure(
     document = db.get(Document, figure.document_id) if figure else None
     if not figure or not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Figure not found")
+    ensure_document_unlocked(document)
 
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
@@ -6925,6 +7688,7 @@ def delete_figure(
     document = db.get(Document, figure.document_id) if figure else None
     if not figure or not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Figure not found")
+    ensure_document_unlocked(document)
 
     before = document_correction_snapshot(document)
     deleted_figure = {
@@ -7011,6 +7775,7 @@ def apply_document_page_visual_scan(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
 
     max_page = document.page_count or max((page.page_number for page in document.pages), default=0)
     if max_page and payload.page_number > max_page:
@@ -7089,6 +7854,7 @@ def patch_document(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
 
     data = payload.model_dump(exclude_unset=True)
     tag_ids = data.pop("tag_ids", None)
@@ -7298,6 +8064,7 @@ def patch_document_page(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     page = (
         db.query(DocumentPage)
         .filter(DocumentPage.id == page_id, DocumentPage.document_id == document.id)
@@ -7350,6 +8117,7 @@ def scrub_document_text(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     needle = payload.text.replace("\x00", "")
     if not needle.strip():
         raise HTTPException(status_code=400, detail="Scrub text cannot be blank")
@@ -7415,6 +8183,7 @@ def restore_document_version(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     version = db.get(DocumentVersion, version_id)
     if not version or version.document_id != document.id:
         raise HTTPException(status_code=404, detail="Document version not found")
@@ -7492,6 +8261,9 @@ def trash_documents_by_id(db: Session, document_ids: list[str], *, source: str) 
     )
     by_id = {document.id: document for document in documents}
     ordered_documents = [by_id[document_id] for document_id in unique_ids if document_id in by_id]
+    locked_documents = [document for document in ordered_documents if document_is_locked(document)]
+    if locked_documents:
+        raise HTTPException(status_code=423, detail="Unlock selected documents before moving them to Trash")
     trashed_at = utc_now()
     trashed_ids: list[str] = []
     for document in ordered_documents:
@@ -7559,6 +8331,8 @@ def bulk_update_documents(
     if not ids:
         raise HTTPException(status_code=400, detail="document_ids is required")
     documents = filter_library_visible_documents(db.query(Document)).filter(Document.id.in_(ids)).all()
+    if any(document_is_locked(document) for document in documents):
+        raise HTTPException(status_code=423, detail="Unlock selected documents before applying bulk edits")
     for document in documents:
         for key in ["read_status", "priority", "citation_status"]:
             if key in updates:
@@ -7592,6 +8366,8 @@ def cleanup_document_titles(
     updated = 0
     for document in documents:
         normalized_title = normalize_document_title_spacing(document.title)
+        if document_is_locked(document):
+            continue
         if not normalized_title or normalized_title == document.title:
             continue
         before = document_correction_snapshot(document)
@@ -7676,6 +8452,7 @@ def apply_attribute_defaults(db: Session, document: Document, attributes: dict[s
 
 
 def reset_document_for_overwrite(db: Session, document: Document) -> None:
+    ensure_document_unlocked(document, detail="Document is locked. Unlock it before overwriting it through Import.")
     before = document_correction_snapshot(document)
     db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).delete(synchronize_session=False)
     document.subtitle = None

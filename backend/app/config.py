@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     data_dir: Path = Field(default=Path("./data"), validation_alias="MEDUSA_DATA_DIR")
     local_storage_dir: Path = Field(default=Path("./data/originals"), validation_alias="MEDUSA_LOCAL_STORAGE_DIR")
+    portfolio_audit_key_path: Path | None = Field(default=None, validation_alias="MEDUSA_PORTFOLIO_AUDIT_KEY_PATH")
+    audit_timestamp_enabled: bool = Field(default=True, validation_alias="MEDUSA_AUDIT_TIMESTAMP_ENABLED")
+    audit_timestamp_urls: str = Field(default="", validation_alias="MEDUSA_AUDIT_TIMESTAMP_URLS")
+    audit_timestamp_timeout_seconds: float = Field(default=8.0, validation_alias="MEDUSA_AUDIT_TIMESTAMP_TIMEOUT_SECONDS")
     build_version: str | None = Field(default=None, validation_alias="MEDUSA_BUILD_VERSION")
     build_date: str | None = Field(default=None, validation_alias="MEDUSA_BUILD_DATE")
     build_hash: str | None = Field(default=None, validation_alias="MEDUSA_BUILD_HASH")
@@ -45,6 +49,9 @@ class Settings(BaseSettings):
     cache_url: str = Field(default="valkey://valkey:6379/0", validation_alias="MEDUSA_CACHE_URL")
     cache_ttl_seconds: int = Field(default=3600, validation_alias="MEDUSA_CACHE_TTL_SECONDS")
     cache_max_payload_bytes: int = Field(default=2_097_152, validation_alias="MEDUSA_CACHE_MAX_PAYLOAD_BYTES")
+    cache_startup_hydrate: bool = Field(default=True, validation_alias="MEDUSA_CACHE_STARTUP_HYDRATE")
+    cache_hydrate_max_documents: int = Field(default=0, validation_alias="MEDUSA_CACHE_HYDRATE_MAX_DOCUMENTS")
+    cache_hydrate_page_size: int = Field(default=50, validation_alias="MEDUSA_CACHE_HYDRATE_PAGE_SIZE")
     valkey_maxmemory: str = Field(default="8gb", validation_alias="MEDUSA_VALKEY_MAXMEMORY")
     metrics_internal_token: str | None = Field(default=None, validation_alias="MEDUSA_METRICS_INTERNAL_TOKEN")
     metrics_internal_snapshot_url: str = Field(

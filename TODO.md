@@ -126,12 +126,13 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
   - Acceptance: Find Resources combines local Library semantic/search matches with bounded external scholarly/web evidence, stores source/provider/evidence metadata in `PortfolioSuggestion`, and clearly separates Library-held, queued/imported, and external-only suggestions.
   - Partial: local Library suggestions now reuse Recon retrieval and store retrieved evidence snippets/page metadata on `PortfolioSuggestion`; external scholarly/web paths remain future work.
 
-- [ ] Add richer Portfolio Assessment prompts and multi-model comparison.
-  - Acceptance: Portfolio Assessment can run one selected model or multiple enabled models against the current version plus material snapshot; findings cite rubric/reference/prompt evidence, score quality/focus/completeness consistently, record usage/cost provenance, and show model agreement/disagreement without overwriting prior runs.
-  - Partial: Portfolio Assessment now includes material snapshots and selected Library evidence in a model-backed assessment call with local baseline fallback. Remaining work is multi-model comparison, richer scoring rubrics, visible agreement/disagreement, and deeper finding citations in the UI.
+- [ ] Calibrate Portfolio assessment against real school rubrics.
+  - Acceptance: Portfolio Assessment has fixture coverage for point-based rubrics, qualitative rubrics, assignment guides, instructor feedback, and multiple model outputs; UI shows clear grade assumptions, evidence labels, scorecard rows, revision priorities, and model agreement/disagreement without overwriting prior runs.
+  - Partial: Portfolio Assessment now returns structured scorecards, grade estimates, narrative feedback, revision priorities, per-model outputs, and agreement metadata using the current high-quality default model or Settings override. Remaining work is real-rubric calibration, deeper exact evidence labels, and cost/provenance UI polish.
 
-- [ ] Add Portfolio export/restore and backup coverage.
-  - Acceptance: metadata exports include Portfolio items, versions, edges, materials, suggestions, assessment runs/findings, source URIs, and hidden document references; restore preserves lineage and parks restored Portfolio processing jobs safely like import/Concordance jobs.
+- [ ] Add Portfolio bundle/restore operational drills.
+  - Acceptance: automated fixtures export a Portfolio bundle and metadata backup, restore into a clean database, verify all versions/materials/assessments/audit proofs round-trip, confirm private signing keys are absent, and confirm active Portfolio jobs remain parked unless explicitly reactivated.
+  - Partial: Portfolio bundle export now includes source/version/material files, generated previews, assessment reports, resource metadata, checksums, manifests, public keys, audit chain JSONL, timestamp-anchor proofs, and verification summary. Metadata export/restore includes Portfolio and audit rows while omitting private signing keys.
 
 - [ ] Add explicit include-Portfolio Concordance scopes.
   - Acceptance: Concordance can target Portfolio versions/materials only when the user explicitly chooses Portfolio, selected Portfolio items, or selected versions; default Library scopes remain Library-only.

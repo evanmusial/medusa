@@ -1,3 +1,7 @@
+import json
+import zipfile
+from io import BytesIO
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -195,3 +199,153 @@ def test_portfolio_suggestions_and_assessment_use_library_context(monkeypatch, t
     assert assessment.status == "complete"
     assert assessment.assessment_metadata["library_evidence_count"] == 1
     assert any(finding.category in {"materials", "rubric", "resources"} for finding in assessment.findings)
+
+
+def test_portfolio_audit_chain_signature_and_tamper_detection(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import PortfolioItem
+    from app.services.portfolio_audit import append_portfolio_audit_event, maybe_anchor_portfolio_audit, verify_portfolio_audit_chain
+
+    with Session() as db:
+        item = PortfolioItem(title="Audit Portfolio")
+        db.add(item)
+        db.flush()
+        first = append_portfolio_audit_event(
+            db,
+            portfolio_item_id=item.id,
+            event_type="item_created",
+            payload={"title": item.title},
+        )
+        second = append_portfolio_audit_event(
+            db,
+            portfolio_item_id=item.id,
+            event_type="item_updated",
+            payload={"status": "active"},
+        )
+        anchor = maybe_anchor_portfolio_audit(db, item.id)
+        db.commit()
+
+        verified = verify_portfolio_audit_chain(db, item.id)
+        assert verified["ok"] is True
+        assert verified["event_count"] == 2
+        assert second.previous_event_hash == first.event_hash
+        assert anchor is not None
+        assert anchor.verification_status == "anchor_pending"
+        assert anchor.root_hash == second.event_hash
+
+        tampered_payload = dict(first.canonical_payload)
+        tampered_payload["payload"] = {"title": "Changed after the fact"}
+        first.canonical_payload = tampered_payload
+        db.commit()
+
+        tampered = verify_portfolio_audit_chain(db, item.id)
+        assert tampered["ok"] is False
+        assert any(error["error"] == "payload_sha256_mismatch" for error in tampered["errors"])
+
+
+def test_portfolio_bundle_contains_sources_assessments_and_audit_without_private_key(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import export_portfolio_bundle
+    from app.models import Document, PortfolioAssessmentFinding, PortfolioAssessmentRun, PortfolioItem, PortfolioMaterial, PortfolioVersion
+
+    source_path = tmp_path / "draft-source.md"
+    source_path.write_bytes(b"# Draft\n\nEvidence synthesis.")
+    preview_path = tmp_path / "draft-preview.pdf"
+    preview_path.write_bytes(b"%PDF-1.4 draft preview")
+    rubric_path = tmp_path / "rubric.pdf"
+    rubric_path.write_bytes(b"%PDF-1.4 rubric")
+
+    with Session() as db:
+        draft = Document(
+            title="Draft",
+            document_kind="portfolio_version",
+            original_filename="draft-preview.pdf",
+            checksum_sha256="d" * 64,
+            processing_status="ready",
+            gcs_uri=str(preview_path),
+        )
+        rubric = Document(
+            title="Rubric",
+            document_kind="portfolio_material",
+            original_filename="rubric.pdf",
+            checksum_sha256="e" * 64,
+            processing_status="ready",
+            gcs_uri=str(rubric_path),
+        )
+        item = PortfolioItem(title="Cybersecurity Paper", description="School assignment")
+        db.add_all([draft, rubric, item])
+        db.flush()
+        version = PortfolioVersion(
+            portfolio_item_id=item.id,
+            document_id=draft.id,
+            version_number=1,
+            label="Draft 1",
+            source_filename="draft-source.md",
+            source_content_type="text/markdown",
+            source_checksum_sha256="d" * 64,
+            source_storage_uri=str(source_path),
+            source_size_bytes=source_path.stat().st_size,
+            processing_status="ready",
+        )
+        db.add(version)
+        db.flush()
+        item.current_version_id = version.id
+        material = PortfolioMaterial(
+            portfolio_item_id=item.id,
+            document_id=rubric.id,
+            role="rubric",
+            label="Course rubric",
+            required_for_assessment=True,
+            material_metadata={
+                "source_filename": "rubric.pdf",
+                "source_content_type": "application/pdf",
+                "source_checksum_sha256": "e" * 64,
+                "source_storage_uri": str(rubric_path),
+                "source_size_bytes": rubric_path.stat().st_size,
+            },
+        )
+        run = PortfolioAssessmentRun(
+            portfolio_item_id=item.id,
+            version_id=version.id,
+            mode="quality_review",
+            model_ids=["gpt-5.5"],
+            status="complete",
+            summary="Assessment summary",
+            assessment_metadata={
+                "scorecard": [{"criterion": "Evidence", "max_points": 10, "awarded_points": 8}],
+                "grade_estimate": {"estimated_grade": "B+", "scale": "letter", "confidence": 0.7},
+                "narrative_feedback": {"strengths": ["Clear evidence"], "revision_priorities": ["Tighten thesis"]},
+            },
+        )
+        db.add_all([material, run])
+        db.flush()
+        db.add(
+            PortfolioAssessmentFinding(
+                assessment_run_id=run.id,
+                category="rubric",
+                severity="warning",
+                title="Needs stronger thesis",
+                body="Tie evidence back to the claim.",
+            )
+        )
+        db.commit()
+
+        response = export_portfolio_bundle(item.id, object(), db)
+
+    archive = zipfile.ZipFile(BytesIO(response.body))
+    names = set(archive.namelist())
+    assert "manifest.json" in names
+    assert "resources/library-suggestions.json" in names
+    assert "audit/event-chain.jsonl" in names
+    assert "audit/public-keys.json" in names
+    assert "audit/timestamp-anchors.json" in names
+    assert any(name.endswith("/source/draft-source.md") for name in names)
+    assert any(name.endswith("/generated/draft-preview.pdf") for name in names)
+    assert any(name.startswith("materials/rubric/") and name.endswith("/source/rubric.pdf") for name in names)
+    assert any(name.startswith("assessments/") and name.endswith(".json") for name in names)
+    assert any(name.startswith("assessments/") and name.endswith(".md") for name in names)
+
+    manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["portfolio_item"]["title"] == "Cybersecurity Paper"
+    assert manifest["file_entries"]
+    assert b"PRIVATE KEY" not in response.body

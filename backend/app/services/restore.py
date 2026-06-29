@@ -29,6 +29,15 @@ from app.models import (
     ImportJob,
     Note,
     ProcessingEvent,
+    PortfolioAssessmentFinding,
+    PortfolioAssessmentRun,
+    PortfolioAuditAnchor,
+    PortfolioAuditEvent,
+    PortfolioItem,
+    PortfolioMaterial,
+    PortfolioSuggestion,
+    PortfolioVersion,
+    PortfolioVersionEdge,
     Project,
     ProjectBibliography,
     ProjectItem,
@@ -74,6 +83,15 @@ RESTORE_SECTIONS = [
     "documents",
     "projects",
     "project_bibliographies",
+    "portfolio_items",
+    "portfolio_versions",
+    "portfolio_version_edges",
+    "portfolio_materials",
+    "portfolio_suggestions",
+    "portfolio_assessment_runs",
+    "portfolio_assessment_findings",
+    "portfolio_audit_events",
+    "portfolio_audit_anchors",
     "notes",
     "app_preferences",
     "import_batches",
@@ -202,6 +220,11 @@ def restore_metadata_export(
         "openai_usage_records": {},
         "concordance_runs": {},
         "concordance_jobs": {},
+        "portfolio_items": {},
+        "portfolio_versions": {},
+        "portfolio_materials": {},
+        "portfolio_assessment_runs": {},
+        "portfolio_audit_events": {},
     }
     restored_counts = {section: 0 for section in RESTORE_SECTIONS}
     skipped_rows: dict[str, int] = {}
@@ -244,6 +267,60 @@ def restore_metadata_export(
         restored_counts["project_bibliographies"] = _restore_project_bibliographies(
             db,
             _section(data, "project_bibliographies"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["portfolio_items"] = _restore_portfolio_items(db, _section(data, "portfolio_items"), id_maps, preserve_ids)
+        restored_counts["portfolio_versions"], skipped_rows["portfolio_versions"] = _restore_portfolio_versions(
+            db,
+            _section(data, "portfolio_versions"),
+            id_maps,
+            preserve_ids,
+            park_active_jobs,
+        )
+        _restore_portfolio_current_versions(db, _section(data, "portfolio_items"), id_maps)
+        restored_counts["portfolio_version_edges"], skipped_rows["portfolio_version_edges"] = _restore_portfolio_version_edges(
+            db,
+            _section(data, "portfolio_version_edges"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["portfolio_materials"], skipped_rows["portfolio_materials"] = _restore_portfolio_materials(
+            db,
+            _section(data, "portfolio_materials"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["portfolio_suggestions"], skipped_rows["portfolio_suggestions"] = _restore_portfolio_suggestions(
+            db,
+            _section(data, "portfolio_suggestions"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["portfolio_assessment_runs"], skipped_rows["portfolio_assessment_runs"] = _restore_portfolio_assessment_runs(
+            db,
+            _section(data, "portfolio_assessment_runs"),
+            id_maps,
+            preserve_ids,
+            park_active_jobs,
+        )
+        restored_counts["portfolio_assessment_findings"], skipped_rows["portfolio_assessment_findings"] = (
+            _restore_portfolio_assessment_findings(
+                db,
+                _section(data, "portfolio_assessment_findings"),
+                id_maps,
+                preserve_ids,
+            )
+        )
+        restored_counts["portfolio_audit_events"], skipped_rows["portfolio_audit_events"] = _restore_portfolio_audit_events(
+            db,
+            _section(data, "portfolio_audit_events"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["portfolio_audit_anchors"], skipped_rows["portfolio_audit_anchors"] = _restore_portfolio_audit_anchors(
+            db,
+            _section(data, "portfolio_audit_anchors"),
             id_maps,
             preserve_ids,
         )
@@ -620,6 +697,417 @@ def _restore_project_bibliographies(
         _apply_timestamps(bibliography, row)
         count += 1
     return count
+
+
+def _restore_portfolio_items(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> int:
+    count = 0
+    for row in rows:
+        original_id = row.get("id")
+        title = row.get("title") or "Restored Assignment"
+        item = _get_existing(db, PortfolioItem, original_id)
+        if not item:
+            item = PortfolioItem(**_restore_kwargs(row, preserve_ids, title=title))
+            db.add(item)
+        item.title = title
+        item.description = row.get("description")
+        item.status = row.get("status") or "active"
+        item.current_version_id = None
+        item.project_ids = [id_maps["projects"].get(value, value) for value in row.get("project_ids") or []]
+        item.domain_ids = [id_maps["domains"].get(value, value) for value in row.get("domain_ids") or []]
+        item.tag_ids = [id_maps["tags"].get(value, value) for value in row.get("tag_ids") or []]
+        item.portfolio_metadata = row.get("metadata") or {}
+        _apply_timestamps(item, row)
+        db.flush()
+        if original_id:
+            id_maps["portfolio_items"][original_id] = item.id
+        count += 1
+    return count
+
+
+def _restore_portfolio_versions(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+    park_active_jobs: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        portfolio_item_id = id_maps["portfolio_items"].get(row.get("portfolio_item_id"))
+        document_id = id_maps["documents"].get(row.get("document_id"))
+        if not portfolio_item_id or not document_id:
+            skipped += 1
+            continue
+        version = _get_existing(db, PortfolioVersion, row.get("id"))
+        if not version:
+            version = PortfolioVersion(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    portfolio_item_id=portfolio_item_id,
+                    document_id=document_id,
+                    version_number=row.get("version_number") or 1,
+                    source_filename=row.get("source_filename") or "portfolio-source",
+                    source_content_type=row.get("source_content_type") or "application/octet-stream",
+                    source_checksum_sha256=row.get("source_checksum_sha256") or "",
+                    source_size_bytes=row.get("source_size_bytes") or 0,
+                )
+            )
+            db.add(version)
+        version.portfolio_item_id = portfolio_item_id
+        version.document_id = document_id
+        version.version_number = row.get("version_number") or version.version_number or 1
+        version.label = row.get("label")
+        version.upload_note = row.get("upload_note")
+        version.source_filename = row.get("source_filename") or version.source_filename
+        version.source_content_type = row.get("source_content_type") or version.source_content_type
+        version.source_checksum_sha256 = row.get("source_checksum_sha256") or version.source_checksum_sha256
+        version.source_checksum_md5 = row.get("source_checksum_md5")
+        version.source_storage_uri = row.get("source_storage_uri")
+        version.source_size_bytes = row.get("source_size_bytes") or 0
+        version.processing_status = _parked_status(row.get("processing_status"), park_active_jobs)
+        version.version_metadata = row.get("metadata") or {}
+        _apply_timestamps(version, row)
+        db.flush()
+        if row.get("id"):
+            id_maps["portfolio_versions"][row["id"]] = version.id
+        count += 1
+    return count, skipped
+
+
+def _restore_portfolio_current_versions(db: Session, rows: list[dict[str, Any]], id_maps: dict[str, dict[str, str]]) -> None:
+    for row in rows:
+        item_id = id_maps["portfolio_items"].get(row.get("id"))
+        version_id = id_maps["portfolio_versions"].get(row.get("current_version_id"))
+        if not item_id or not version_id:
+            continue
+        item = db.get(PortfolioItem, item_id)
+        if item:
+            item.current_version_id = version_id
+    db.flush()
+
+
+def _restore_portfolio_version_edges(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        parent_version_id = id_maps["portfolio_versions"].get(row.get("parent_version_id"))
+        child_version_id = id_maps["portfolio_versions"].get(row.get("child_version_id"))
+        if not parent_version_id or not child_version_id:
+            skipped += 1
+            continue
+        relation_type = row.get("relation_type") or "supersedes"
+        edge = _get_existing(db, PortfolioVersionEdge, row.get("id"))
+        if not edge:
+            edge = (
+                db.query(PortfolioVersionEdge)
+                .filter(
+                    PortfolioVersionEdge.parent_version_id == parent_version_id,
+                    PortfolioVersionEdge.child_version_id == child_version_id,
+                    PortfolioVersionEdge.relation_type == relation_type,
+                )
+                .one_or_none()
+            )
+        if not edge:
+            edge = PortfolioVersionEdge(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    parent_version_id=parent_version_id,
+                    child_version_id=child_version_id,
+                    relation_type=relation_type,
+                )
+            )
+            db.add(edge)
+        edge.parent_version_id = parent_version_id
+        edge.child_version_id = child_version_id
+        edge.relation_type = relation_type
+        edge.edge_metadata = row.get("metadata") or {}
+        _apply_timestamps(edge, row)
+        count += 1
+    db.flush()
+    return count, skipped
+
+
+def _restore_portfolio_materials(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        portfolio_item_id = id_maps["portfolio_items"].get(row.get("portfolio_item_id"))
+        document_id = id_maps["documents"].get(row.get("document_id"))
+        version_id = id_maps["portfolio_versions"].get(row.get("version_id")) if row.get("version_id") else None
+        if not portfolio_item_id or not document_id:
+            skipped += 1
+            continue
+        material = _get_existing(db, PortfolioMaterial, row.get("id"))
+        if not material:
+            material = PortfolioMaterial(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    portfolio_item_id=portfolio_item_id,
+                    document_id=document_id,
+                    role=row.get("role") or "reference",
+                )
+            )
+            db.add(material)
+        material.portfolio_item_id = portfolio_item_id
+        material.version_id = version_id
+        material.document_id = document_id
+        material.role = row.get("role") or "reference"
+        material.label = row.get("label")
+        material.required_for_assessment = bool(row.get("required_for_assessment"))
+        material.notes = row.get("notes")
+        material.material_metadata = row.get("metadata") or {}
+        _apply_timestamps(material, row)
+        db.flush()
+        if row.get("id"):
+            id_maps["portfolio_materials"][row["id"]] = material.id
+        count += 1
+    return count, skipped
+
+
+def _restore_portfolio_suggestions(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        portfolio_item_id = id_maps["portfolio_items"].get(row.get("portfolio_item_id"))
+        version_id = id_maps["portfolio_versions"].get(row.get("version_id")) if row.get("version_id") else None
+        library_document_id = id_maps["documents"].get(row.get("library_document_id")) or row.get("library_document_id")
+        if not portfolio_item_id:
+            skipped += 1
+            continue
+        suggestion = _get_existing(db, PortfolioSuggestion, row.get("id"))
+        if not suggestion:
+            suggestion = PortfolioSuggestion(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    portfolio_item_id=portfolio_item_id,
+                    source_type=row.get("source_type") or "library",
+                    title=row.get("title") or "Restored suggestion",
+                )
+            )
+            db.add(suggestion)
+        suggestion.portfolio_item_id = portfolio_item_id
+        suggestion.version_id = version_id
+        suggestion.library_document_id = library_document_id if library_document_id and db.get(Document, library_document_id) else None
+        suggestion.source_type = row.get("source_type") or "library"
+        suggestion.title = row.get("title") or suggestion.title
+        suggestion.source_url = row.get("source_url")
+        suggestion.relation_family = row.get("relation_family") or "closest"
+        suggestion.score = row.get("score")
+        suggestion.status = row.get("status") or "candidate"
+        suggestion.evidence = row.get("evidence") or {}
+        _apply_timestamps(suggestion, row)
+        count += 1
+    db.flush()
+    return count, skipped
+
+
+def _restore_portfolio_assessment_runs(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+    park_active_jobs: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        portfolio_item_id = id_maps["portfolio_items"].get(row.get("portfolio_item_id"))
+        version_id = id_maps["portfolio_versions"].get(row.get("version_id")) if row.get("version_id") else None
+        if not portfolio_item_id:
+            skipped += 1
+            continue
+        run = _get_existing(db, PortfolioAssessmentRun, row.get("id"))
+        if not run:
+            run = PortfolioAssessmentRun(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    portfolio_item_id=portfolio_item_id,
+                    mode=row.get("mode") or "quality_review",
+                )
+            )
+            db.add(run)
+        run.portfolio_item_id = portfolio_item_id
+        run.version_id = version_id
+        run.mode = row.get("mode") or "quality_review"
+        run.model_ids = row.get("model_ids") or []
+        run.status = _parked_status(row.get("status"), park_active_jobs)
+        run.summary = row.get("summary")
+        run.assessment_metadata = row.get("metadata") or {}
+        run.last_error = _restored_job_error(row.get("last_error"), row.get("status"), park_active_jobs)
+        run.completed_at = _dt(row.get("completed_at"))
+        _apply_timestamps(run, row)
+        db.flush()
+        if row.get("id"):
+            id_maps["portfolio_assessment_runs"][row["id"]] = run.id
+        count += 1
+    return count, skipped
+
+
+def _restore_portfolio_assessment_findings(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        assessment_run_id = id_maps["portfolio_assessment_runs"].get(row.get("assessment_run_id"))
+        if not assessment_run_id:
+            skipped += 1
+            continue
+        finding = _get_existing(db, PortfolioAssessmentFinding, row.get("id"))
+        if not finding:
+            finding = PortfolioAssessmentFinding(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    assessment_run_id=assessment_run_id,
+                    category=row.get("category") or "restored",
+                    title=row.get("title") or "Restored finding",
+                )
+            )
+            db.add(finding)
+        finding.assessment_run_id = assessment_run_id
+        finding.category = row.get("category") or "restored"
+        finding.severity = row.get("severity") or "info"
+        finding.title = row.get("title") or "Restored finding"
+        finding.body = row.get("body")
+        finding.evidence = row.get("evidence") or {}
+        finding.status = row.get("status") or "open"
+        _apply_timestamps(finding, row)
+        count += 1
+    db.flush()
+    return count, skipped
+
+
+def _restore_portfolio_audit_events(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        portfolio_item_id = id_maps["portfolio_items"].get(row.get("portfolio_item_id"))
+        if not portfolio_item_id:
+            skipped += 1
+            continue
+        event = _get_existing(db, PortfolioAuditEvent, row.get("id"))
+        if not event:
+            event = PortfolioAuditEvent(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    portfolio_item_id=portfolio_item_id,
+                    event_type=row.get("event_type") or "restored_event",
+                    sequence=row.get("sequence") or 1,
+                    canonical_payload=row.get("canonical_payload") or {},
+                    payload_sha256=row.get("payload_sha256") or "",
+                    event_hash=row.get("event_hash") or "",
+                    signature_public_key_id=row.get("signature_public_key_id") or "",
+                    signature=row.get("signature") or "",
+                )
+            )
+            db.add(event)
+        event.portfolio_item_id = portfolio_item_id
+        event.version_id = id_maps["portfolio_versions"].get(row.get("version_id")) if row.get("version_id") else None
+        event.material_id = id_maps["portfolio_materials"].get(row.get("material_id")) if row.get("material_id") else None
+        event.assessment_run_id = (
+            id_maps["portfolio_assessment_runs"].get(row.get("assessment_run_id")) if row.get("assessment_run_id") else None
+        )
+        event.event_type = row.get("event_type") or "restored_event"
+        event.sequence = row.get("sequence") or event.sequence or 1
+        event.subject_type = row.get("subject_type")
+        event.subject_id = row.get("subject_id")
+        event.actor_type = row.get("actor_type") or "system"
+        event.actor_id = row.get("actor_id")
+        event.occurred_at = _dt(row.get("occurred_at")) or event.occurred_at
+        event.canonical_payload = row.get("canonical_payload") or {}
+        event.payload_sha256 = row.get("payload_sha256") or event.payload_sha256
+        event.previous_event_hash = row.get("previous_event_hash")
+        event.event_hash = row.get("event_hash") or event.event_hash
+        event.signature_public_key_id = row.get("signature_public_key_id") or event.signature_public_key_id
+        event.signature_algorithm = row.get("signature_algorithm") or "ed25519"
+        event.signature = row.get("signature") or event.signature
+        _apply_timestamps(event, row)
+        db.flush()
+        if row.get("id"):
+            id_maps["portfolio_audit_events"][row["id"]] = event.id
+        count += 1
+    return count, skipped
+
+
+def _restore_portfolio_audit_anchors(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> tuple[int, int]:
+    count = 0
+    skipped = 0
+    for row in rows:
+        portfolio_item_id = id_maps["portfolio_items"].get(row.get("portfolio_item_id"))
+        if not portfolio_item_id:
+            skipped += 1
+            continue
+        anchor = _get_existing(db, PortfolioAuditAnchor, row.get("id"))
+        if not anchor:
+            anchor = PortfolioAuditAnchor(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    portfolio_item_id=portfolio_item_id,
+                    root_hash=row.get("root_hash") or "",
+                )
+            )
+            db.add(anchor)
+        anchor.portfolio_item_id = portfolio_item_id
+        anchor.root_event_id = id_maps["portfolio_audit_events"].get(row.get("root_event_id")) if row.get("root_event_id") else None
+        anchor.start_sequence = row.get("start_sequence")
+        anchor.end_sequence = row.get("end_sequence")
+        anchor.root_hash = row.get("root_hash") or anchor.root_hash
+        anchor.tsa_url = row.get("tsa_url")
+        anchor.tsa_policy_oid = row.get("tsa_policy_oid")
+        anchor.tsa_serial_number = row.get("tsa_serial_number")
+        anchor.tsa_time = _dt(row.get("tsa_time"))
+        anchor.request_sha256 = row.get("request_sha256")
+        anchor.response_der_base64 = row.get("response_der_base64")
+        anchor.verification_status = row.get("verification_status") or "anchor_pending"
+        anchor.verification_error = row.get("verification_error")
+        anchor.last_verified_at = _dt(row.get("last_verified_at"))
+        anchor.anchor_metadata = row.get("metadata") or {}
+        _apply_timestamps(anchor, row)
+        count += 1
+    db.flush()
+    return count, skipped
 
 
 def _restore_notes(
@@ -1015,6 +1503,7 @@ def _assign_document_fields(document: Document, row: dict[str, Any]) -> None:
     document.processing_status = row.get("processing_status") or "restored"
     document.read_status = row.get("read_status") or "unread"
     document.priority = row.get("priority") or "normal"
+    document.locked_at = _dt(row.get("locked_at"))
     document.search_text = row.get("search_text")
 
 

@@ -7404,7 +7404,7 @@ pre {
 }
 
 .portfolio-main-pane {
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
   padding: 12px;
 }
 
@@ -7724,6 +7724,109 @@ pre {
 .portfolio-finding-row:first-child {
   border-top: 0;
   padding-top: 0;
+}
+
+.portfolio-audit-strip,
+.portfolio-grade-strip,
+.portfolio-audit-card {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.portfolio-audit-strip {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 8px;
+}
+
+.portfolio-audit-strip > div,
+.portfolio-grade-strip > div,
+.portfolio-audit-card > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.portfolio-audit-strip > div:first-child,
+.portfolio-audit-strip > div:nth-child(2) {
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.portfolio-audit-strip span,
+.portfolio-grade-strip span,
+.portfolio-audit-card span,
+.portfolio-compact-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.portfolio-audit-strip strong,
+.portfolio-grade-strip strong,
+.portfolio-audit-card strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-grade-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 9px;
+}
+
+.portfolio-scorecard,
+.portfolio-feedback-grid,
+.portfolio-audit-panel {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.portfolio-scorecard-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.portfolio-scorecard-row:first-child {
+  border-top: 0;
+}
+
+.portfolio-scorecard-row > div,
+.portfolio-feedback-block {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.portfolio-feedback-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.portfolio-feedback-block {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 9px;
+}
+
+.portfolio-audit-card {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 10px;
 }
 
 .portfolio-empty {

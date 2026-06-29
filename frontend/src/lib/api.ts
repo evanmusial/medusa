@@ -26,6 +26,7 @@ import type {
   DocumentCacheStatus,
   DocumentComposition,
   DocumentFilters,
+  DocumentLockPayload,
   DocumentListResponse,
   DocumentListSort,
   DocumentPageUpdatePayload,
@@ -348,6 +349,8 @@ export const api = {
   cleanupDocumentTitles: () => request<{ updated: number }>("/api/documents/title-cleanup", { method: "POST" }),
   updateDocument: (id: string, body: DocumentUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  updateDocumentLock: (id: string, body: DocumentLockPayload) =>
+    request<DocumentDetail>(`/api/documents/${id}/lock`, { method: "POST", body: JSON.stringify(body) }),
   updateDocumentPageText: (documentId: string, pageId: string, body: DocumentPageUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${documentId}/pages/${pageId}`, { method: "PATCH", body: JSON.stringify(body) }),
   scrubDocumentText: (documentId: string, body: DocumentTextScrubPayload) =>
@@ -450,6 +453,27 @@ export const api = {
     request<PortfolioSuggestionRefresh>(`/api/portfolio/${id}/suggestions/refresh`, { method: "POST" }),
   createPortfolioAssessment: (id: string, body: PortfolioAssessmentPayload = {}) =>
     request<PortfolioAssessmentRun>(`/api/portfolio/${id}/assessments`, { method: "POST", body: JSON.stringify(body) }),
+  downloadPortfolioBundle: async (id: string) => {
+    const response = await fetch(apiPath(`/api/portfolio/${id}/bundle`), { method: "POST", credentials: "include" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      const detail = typeof body.detail === "string" ? body.detail : response.statusText;
+      throw new ApiError(detail || response.statusText || `HTTP ${response.status}`, response.status, `/api/portfolio/${id}/bundle`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] ? decodeURIComponent(match[1]) : `portfolio-${id}.zip`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    return { filename, sha256: response.headers.get("x-medusa-bundle-sha256") || undefined };
+  },
   annotations: (documentId: string) => request<Annotation[]>(`/api/documents/${documentId}/annotations`),
   createAnnotation: (documentId: string, body: AnnotationPayload) =>
     request<Annotation>(`/api/documents/${documentId}/annotations`, { method: "POST", body: JSON.stringify(body) }),

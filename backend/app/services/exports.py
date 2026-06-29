@@ -31,6 +31,15 @@ from app.models import (
     ImportJob,
     Note,
     ProcessingEvent,
+    PortfolioAssessmentFinding,
+    PortfolioAssessmentRun,
+    PortfolioAuditAnchor,
+    PortfolioAuditEvent,
+    PortfolioItem,
+    PortfolioMaterial,
+    PortfolioSuggestion,
+    PortfolioVersion,
+    PortfolioVersionEdge,
     Project,
     ProjectBibliography,
     ProjectItem,
@@ -124,6 +133,40 @@ def build_storage_manifest(db: Session) -> dict[str, Any]:
                         **_uri_parts(figure.asset_uri),
                     }
                 )
+
+    for version in db.query(PortfolioVersion).order_by(PortfolioVersion.created_at, PortfolioVersion.id).all():
+        if version.source_storage_uri:
+            objects.append(
+                {
+                    "kind": "portfolio_version_source",
+                    "portfolio_item_id": version.portfolio_item_id,
+                    "portfolio_version_id": version.id,
+                    "document_id": version.document_id,
+                    "filename": version.source_filename,
+                    "checksum_sha256": version.source_checksum_sha256,
+                    "checksum_md5": version.source_checksum_md5,
+                    "content_type": version.source_content_type,
+                    **_uri_parts(version.source_storage_uri),
+                }
+            )
+
+    for material in db.query(PortfolioMaterial).order_by(PortfolioMaterial.created_at, PortfolioMaterial.id).all():
+        metadata = material.material_metadata or {}
+        source_uri = metadata.get("source_storage_uri") if isinstance(metadata.get("source_storage_uri"), str) else None
+        if source_uri:
+            objects.append(
+                {
+                    "kind": "portfolio_material_source",
+                    "portfolio_item_id": material.portfolio_item_id,
+                    "portfolio_material_id": material.id,
+                    "document_id": material.document_id,
+                    "role": material.role,
+                    "filename": metadata.get("source_filename"),
+                    "checksum_sha256": metadata.get("source_checksum_sha256"),
+                    "content_type": metadata.get("source_content_type"),
+                    **_uri_parts(source_uri),
+                }
+            )
 
     counts = Counter(item["kind"] for item in objects)
     return {
@@ -278,6 +321,166 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
                 **_timestamps(bibliography),
             }
             for bibliography in db.query(ProjectBibliography).order_by(ProjectBibliography.created_at, ProjectBibliography.id).all()
+        ],
+        "portfolio_items": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "description": item.description,
+                "status": item.status,
+                "current_version_id": item.current_version_id,
+                "project_ids": item.project_ids,
+                "domain_ids": item.domain_ids,
+                "tag_ids": item.tag_ids,
+                "metadata": item.portfolio_metadata,
+                **_timestamps(item),
+                **_soft_delete(item),
+            }
+            for item in db.query(PortfolioItem).order_by(PortfolioItem.created_at, PortfolioItem.id).all()
+        ],
+        "portfolio_versions": [
+            {
+                "id": version.id,
+                "portfolio_item_id": version.portfolio_item_id,
+                "document_id": version.document_id,
+                "version_number": version.version_number,
+                "label": version.label,
+                "upload_note": version.upload_note,
+                "source_filename": version.source_filename,
+                "source_content_type": version.source_content_type,
+                "source_checksum_sha256": version.source_checksum_sha256,
+                "source_checksum_md5": version.source_checksum_md5,
+                "source_storage_uri": version.source_storage_uri,
+                "source_size_bytes": version.source_size_bytes,
+                "processing_status": version.processing_status,
+                "metadata": version.version_metadata,
+                **_timestamps(version),
+            }
+            for version in db.query(PortfolioVersion).order_by(PortfolioVersion.created_at, PortfolioVersion.id).all()
+        ],
+        "portfolio_version_edges": [
+            {
+                "id": edge.id,
+                "parent_version_id": edge.parent_version_id,
+                "child_version_id": edge.child_version_id,
+                "relation_type": edge.relation_type,
+                "metadata": edge.edge_metadata,
+                **_timestamps(edge),
+            }
+            for edge in db.query(PortfolioVersionEdge).order_by(PortfolioVersionEdge.created_at, PortfolioVersionEdge.id).all()
+        ],
+        "portfolio_materials": [
+            {
+                "id": material.id,
+                "portfolio_item_id": material.portfolio_item_id,
+                "version_id": material.version_id,
+                "document_id": material.document_id,
+                "role": material.role,
+                "label": material.label,
+                "required_for_assessment": material.required_for_assessment,
+                "notes": material.notes,
+                "metadata": material.material_metadata,
+                **_timestamps(material),
+                **_soft_delete(material),
+            }
+            for material in db.query(PortfolioMaterial).order_by(PortfolioMaterial.created_at, PortfolioMaterial.id).all()
+        ],
+        "portfolio_suggestions": [
+            {
+                "id": suggestion.id,
+                "portfolio_item_id": suggestion.portfolio_item_id,
+                "version_id": suggestion.version_id,
+                "library_document_id": suggestion.library_document_id,
+                "source_type": suggestion.source_type,
+                "title": suggestion.title,
+                "source_url": suggestion.source_url,
+                "relation_family": suggestion.relation_family,
+                "score": _value(suggestion.score),
+                "status": suggestion.status,
+                "evidence": suggestion.evidence,
+                **_timestamps(suggestion),
+            }
+            for suggestion in db.query(PortfolioSuggestion).order_by(PortfolioSuggestion.created_at, PortfolioSuggestion.id).all()
+        ],
+        "portfolio_assessment_runs": [
+            {
+                "id": run.id,
+                "portfolio_item_id": run.portfolio_item_id,
+                "version_id": run.version_id,
+                "mode": run.mode,
+                "model_ids": run.model_ids,
+                "status": run.status,
+                "summary": run.summary,
+                "metadata": run.assessment_metadata,
+                "last_error": run.last_error,
+                "completed_at": _value(run.completed_at),
+                **_timestamps(run),
+            }
+            for run in db.query(PortfolioAssessmentRun).order_by(PortfolioAssessmentRun.created_at, PortfolioAssessmentRun.id).all()
+        ],
+        "portfolio_assessment_findings": [
+            {
+                "id": finding.id,
+                "assessment_run_id": finding.assessment_run_id,
+                "category": finding.category,
+                "severity": finding.severity,
+                "title": finding.title,
+                "body": finding.body,
+                "evidence": finding.evidence,
+                "status": finding.status,
+                **_timestamps(finding),
+            }
+            for finding in db.query(PortfolioAssessmentFinding).order_by(
+                PortfolioAssessmentFinding.created_at,
+                PortfolioAssessmentFinding.id,
+            ).all()
+        ],
+        "portfolio_audit_events": [
+            {
+                "id": event.id,
+                "portfolio_item_id": event.portfolio_item_id,
+                "version_id": event.version_id,
+                "material_id": event.material_id,
+                "assessment_run_id": event.assessment_run_id,
+                "event_type": event.event_type,
+                "sequence": event.sequence,
+                "subject_type": event.subject_type,
+                "subject_id": event.subject_id,
+                "actor_type": event.actor_type,
+                "actor_id": event.actor_id,
+                "occurred_at": _value(event.occurred_at),
+                "canonical_payload": event.canonical_payload,
+                "payload_sha256": event.payload_sha256,
+                "previous_event_hash": event.previous_event_hash,
+                "event_hash": event.event_hash,
+                "signature_public_key_id": event.signature_public_key_id,
+                "signature_algorithm": event.signature_algorithm,
+                "signature": event.signature,
+                **_timestamps(event),
+            }
+            for event in db.query(PortfolioAuditEvent).order_by(PortfolioAuditEvent.created_at, PortfolioAuditEvent.id).all()
+        ],
+        "portfolio_audit_anchors": [
+            {
+                "id": anchor.id,
+                "portfolio_item_id": anchor.portfolio_item_id,
+                "root_event_id": anchor.root_event_id,
+                "start_sequence": anchor.start_sequence,
+                "end_sequence": anchor.end_sequence,
+                "root_hash": anchor.root_hash,
+                "tsa_url": anchor.tsa_url,
+                "tsa_policy_oid": anchor.tsa_policy_oid,
+                "tsa_serial_number": anchor.tsa_serial_number,
+                "tsa_time": _value(anchor.tsa_time),
+                "request_sha256": anchor.request_sha256,
+                "response_der_base64": anchor.response_der_base64,
+                "verification_status": anchor.verification_status,
+                "verification_error": anchor.verification_error,
+                "last_verified_at": _value(anchor.last_verified_at),
+                "metadata": anchor.anchor_metadata,
+                **_timestamps(anchor),
+            }
+            for anchor in db.query(PortfolioAuditAnchor).order_by(PortfolioAuditAnchor.created_at, PortfolioAuditAnchor.id).all()
         ],
         "app_preferences": [
             {
@@ -440,6 +643,7 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
             "session_tokens_included": False,
             "two_factor_secrets_included": False,
             "storage_credentials_included": False,
+            "audit_private_keys_included": False,
         },
         "counts": counts,
         "storage_manifest": build_storage_manifest(db),
@@ -481,6 +685,7 @@ def _document_export(document: Document) -> dict[str, Any]:
         "processing_status": document.processing_status,
         "read_status": document.read_status,
         "priority": document.priority,
+        "locked_at": _value(document.locked_at),
         "search_text": document.search_text,
         "domain_ids": [domain.id for domain in sorted(document.domains, key=lambda value: value.name)],
         "tag_ids": [tag.id for tag in sorted(document.tags, key=lambda value: value.name)],

@@ -1,6 +1,6 @@
 # Portfolio Roadmap
 
-Portfolio is Medusa's workspace for user-authored research and education documents. The first implementation establishes the durable container, hidden document processing, version lineage, materials, local resource suggestions, and baseline assessment ledger.
+Portfolio is Medusa's workspace for user-authored research and education documents, now centered on school-assignment iteration: assignment title/brief, draft versions, labeled context materials, Library resources, structured AI assessment, and tamper-evident bundle export.
 
 This roadmap tracks the gaps that should be filled after real use begins. Keep tactical task tracking in `TODO.md`; keep stable architecture and product contracts in `docs/ARCHITECTURE.md`; use this document for Portfolio-specific sequencing and acceptance notes.
 
@@ -11,9 +11,12 @@ This roadmap tracks the gaps that should be filled after real use begins. Keep t
 - Uploaded source files are preserved, while generated PDF/text mezzanines support preview, extraction, search text, and model context.
 - Portfolio versions and materials reuse hidden `Document` rows with `document_kind` values outside normal Library visibility.
 - `PortfolioVersionEdge` preserves version ancestry, with `supersedes` as the first relation.
-- Materials can attach rubrics, prompts, references, feedback, or source material at item or version scope.
+- Materials can attach rubrics, assignment prompts, guides, references, feedback, source material, or other context at item or version scope.
 - Find Resources currently uses local Library text/search evidence.
-- Assessments currently create baseline findings with selected-model provenance.
+- Assessments create local baseline findings plus model-backed rubric scorecards, narrative feedback, grade estimates, revision priorities, per-model outputs, and agreement metadata when multiple models are requested.
+- Portfolio audit events are canonicalized, SHA-256 hash-chained, signed with a local Ed25519 key, and optionally anchored through RFC 3161 timestamp authorities.
+- Portfolio bundle export streams an audited ZIP with source files, generated previews, assessment reports, resource metadata, manifests/checksums, public keys, event-chain JSONL, timestamp-anchor proofs, and verification summary.
+- Metadata export/restore includes Portfolio rows and audit proofs while omitting private signing keys.
 
 ## Near-Term Gaps
 
@@ -39,31 +42,30 @@ Acceptance:
 - External lookup is bounded, cancellable or retryable, and visible through processing events or an activity surface.
 - Existing Library documents remain the preferred source when they clearly match the Portfolio topic.
 
-### Rich Portfolio Assessment
+### Rich Portfolio Assessment Refinements
 
-The first assessment path records model selection and local baseline findings. The next version should use rubric/reference/material snapshots as evidence for deeper quality, focus, and completeness review.
+The core structured assessment path now exists. Remaining work is about calibration, comparison quality, and deeper evidence linking after real school use.
 
 Acceptance:
 
-- Portfolio Assessment can run one selected model or multiple enabled models for comparison.
-- Assessment prompts include the current version, selected materials, Library suggestions, and relevant Portfolio history.
-- Findings cite material/version evidence instead of returning generic advice.
-- Runs record usage/cost provenance and selected model ids.
-- Multi-model output shows agreement, disagreement, and confidence without overwriting prior runs.
+- Assessment calibration is tested against real rubrics with point totals, qualitative-only rubrics, and instructor feedback.
+- Findings cite exact material/version labels and page/snippet evidence where extraction supports it.
+- Multi-model comparison summarizes agreement/disagreement beyond completion counts and grade-estimate snapshots.
+- Runs expose usage/cost provenance in the UI beside selected model ids.
 - Assessment preserves old findings and lets future UI filter by run, model, category, severity, and status.
 
 ## Mid-Term Gaps
 
-### Export, Restore, And Backup Coverage
+### Bundle Export Polish And Restore Drills
 
-Portfolio data should round-trip through Medusa's metadata export/restore and backup routines.
+Portfolio data now round-trips through Medusa metadata export/restore and has a ZIP bundle endpoint. Remaining work is operational hardening.
 
 Acceptance:
 
-- Metadata export includes Portfolio items, versions, edges, materials, suggestions, assessment runs/findings, source URIs, hidden document references, and processing state.
-- Restore preserves lineage, material scope, source references, and current-version pointers.
-- Restored queued/running Portfolio processing jobs are parked safely like import and Concordance jobs unless explicitly reactivated.
-- Secret-bearing fields are rejected or omitted using the same safety rules as the rest of Medusa exports.
+- Add fixture-based restore drills that export a Portfolio item, restore into a clean database, and verify lineage, material scope, current-version pointer, audit chain verification, and parked active jobs.
+- Add large-bundle streaming tests so very large draft/material files do not require excessive memory.
+- Add a bundle manifest post-processing convention for recording the final ZIP SHA-256 without invalidating the ZIP hash itself.
+- Keep secret-bearing fields rejected or omitted using the same safety rules as the rest of Medusa exports.
 
 ### Explicit Portfolio Concordance Scopes
 

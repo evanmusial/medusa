@@ -1249,6 +1249,8 @@ export type DocumentSummary = {
   processing_status: string;
   read_status: string;
   priority: string;
+  is_locked: boolean;
+  locked_at?: string | null;
   created_at: string;
   updated_at: string;
   duplicate_count: number;
@@ -1270,6 +1272,8 @@ export type DocumentListRow = {
   processing_status: string;
   read_status: string;
   priority: string;
+  is_locked: boolean;
+  locked_at?: string | null;
   updated_at: string;
   duplicate_count: number;
   duplicate_reasons: string[];
@@ -1405,11 +1409,30 @@ export type PortfolioAssessmentRun = {
   status: string;
   summary?: string | null;
   assessment_metadata: Record<string, unknown>;
+  scorecard: Array<Record<string, unknown>>;
+  grade_estimate: Record<string, unknown>;
+  narrative_feedback: Record<string, unknown>;
+  revision_priorities: Array<Record<string, unknown>>;
+  model_outputs: Array<Record<string, unknown>>;
+  agreement: Record<string, unknown>;
   last_error?: string | null;
   completed_at?: string | null;
   findings: PortfolioAssessmentFinding[];
   created_at: string;
   updated_at: string;
+};
+
+export type PortfolioAuditStatus = {
+  verification_status: string;
+  event_count: number;
+  latest_sequence?: number | null;
+  latest_event_hash?: string | null;
+  latest_anchor_id?: string | null;
+  latest_anchor_status?: string | null;
+  latest_anchor_time?: string | null;
+  latest_anchor_root_hash?: string | null;
+  anchor_count: number;
+  errors: Array<Record<string, unknown>>;
 };
 
 export type PortfolioItem = {
@@ -1427,6 +1450,7 @@ export type PortfolioItem = {
   materials: PortfolioMaterial[];
   suggestions: PortfolioSuggestion[];
   assessment_runs: PortfolioAssessmentRun[];
+  audit_status: PortfolioAuditStatus;
   created_at: string;
   updated_at: string;
 };
@@ -1573,6 +1597,10 @@ export type DocumentUpdatePayload = Partial<DocumentDetail> & {
   confirm_verified_apa_citation_edit?: boolean;
   confirm_verified_apa_in_text_citation_edit?: boolean;
   confirm_verified_bibliography_edit?: boolean;
+};
+
+export type DocumentLockPayload = {
+  is_locked: boolean;
 };
 
 export type Project = {

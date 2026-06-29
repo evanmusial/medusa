@@ -498,6 +498,7 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)
     duplicate_reasons: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
     duplicate_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     domains: Mapped[list[Domain]] = relationship(secondary=document_domains, back_populates="documents")
     tags: Mapped[list[Tag]] = relationship(secondary=document_tags, back_populates="documents")
@@ -528,6 +529,10 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
         cascade="all, delete-orphan",
         foreign_keys="DocumentRecommendation.source_document_id",
     )
+
+    @property
+    def is_locked(self) -> bool:
+        return self.locked_at is not None
 
 
 class DocumentVersion(Base, TimestampMixin):
@@ -918,6 +923,16 @@ class PortfolioItem(Base, TimestampMixin, SoftDeleteMixin):
         cascade="all, delete-orphan",
         order_by="PortfolioAssessmentRun.created_at.desc()",
     )
+    audit_events: Mapped[list["PortfolioAuditEvent"]] = relationship(
+        back_populates="portfolio_item",
+        cascade="all, delete-orphan",
+        order_by="PortfolioAuditEvent.sequence",
+    )
+    audit_anchors: Mapped[list["PortfolioAuditAnchor"]] = relationship(
+        back_populates="portfolio_item",
+        cascade="all, delete-orphan",
+        order_by="PortfolioAuditAnchor.created_at.desc()",
+    )
     current_version: Mapped["PortfolioVersion | None"] = relationship(
         foreign_keys=[current_version_id],
         post_update=True,
@@ -1038,6 +1053,42 @@ class PortfolioAssessmentRun(Base, TimestampMixin):
         order_by="PortfolioAssessmentFinding.created_at",
     )
 
+    @property
+    def scorecard(self) -> list[dict[str, Any]]:
+        metadata = self.assessment_metadata if isinstance(self.assessment_metadata, dict) else {}
+        value = metadata.get("scorecard")
+        return value if isinstance(value, list) else []
+
+    @property
+    def grade_estimate(self) -> dict[str, Any]:
+        metadata = self.assessment_metadata if isinstance(self.assessment_metadata, dict) else {}
+        value = metadata.get("grade_estimate")
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def narrative_feedback(self) -> dict[str, Any]:
+        metadata = self.assessment_metadata if isinstance(self.assessment_metadata, dict) else {}
+        value = metadata.get("narrative_feedback")
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def revision_priorities(self) -> list[dict[str, Any]]:
+        metadata = self.assessment_metadata if isinstance(self.assessment_metadata, dict) else {}
+        value = metadata.get("revision_priorities")
+        return value if isinstance(value, list) else []
+
+    @property
+    def model_outputs(self) -> list[dict[str, Any]]:
+        metadata = self.assessment_metadata if isinstance(self.assessment_metadata, dict) else {}
+        value = metadata.get("model_outputs")
+        return value if isinstance(value, list) else []
+
+    @property
+    def agreement(self) -> dict[str, Any]:
+        metadata = self.assessment_metadata if isinstance(self.assessment_metadata, dict) else {}
+        value = metadata.get("agreement")
+        return value if isinstance(value, dict) else {}
+
 
 class PortfolioAssessmentFinding(Base, TimestampMixin):
     __tablename__ = "portfolio_assessment_findings"
@@ -1052,6 +1103,68 @@ class PortfolioAssessmentFinding(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(40), default="open", nullable=False, index=True)
 
     assessment_run: Mapped[PortfolioAssessmentRun] = relationship(back_populates="findings")
+
+
+class PortfolioAuditEvent(Base, TimestampMixin):
+    __tablename__ = "portfolio_audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    portfolio_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_versions.id", ondelete="SET NULL"), index=True)
+    material_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_materials.id", ondelete="SET NULL"), index=True)
+    assessment_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_assessment_runs.id", ondelete="SET NULL"), index=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_type: Mapped[str | None] = mapped_column(String(80), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    actor_type: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(String(120))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    canonical_payload: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    previous_event_hash: Mapped[str | None] = mapped_column(String(64))
+    event_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    signature_public_key_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    signature_algorithm: Mapped[str] = mapped_column(String(40), default="ed25519", nullable=False)
+    signature: Mapped[str] = mapped_column(Text, nullable=False)
+
+    portfolio_item: Mapped[PortfolioItem] = relationship(back_populates="audit_events")
+    version: Mapped[PortfolioVersion | None] = relationship()
+    material: Mapped[PortfolioMaterial | None] = relationship()
+    assessment_run: Mapped[PortfolioAssessmentRun | None] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_item_id", "sequence", name="uq_portfolio_audit_event_sequence"),
+        Index("ix_portfolio_audit_events_item_hash", "portfolio_item_id", "event_hash"),
+    )
+
+
+class PortfolioAuditAnchor(Base, TimestampMixin):
+    __tablename__ = "portfolio_audit_anchors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    portfolio_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolio_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    root_event_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("portfolio_audit_events.id", ondelete="SET NULL"), index=True)
+    start_sequence: Mapped[int | None] = mapped_column(Integer)
+    end_sequence: Mapped[int | None] = mapped_column(Integer, index=True)
+    root_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tsa_url: Mapped[str | None] = mapped_column(Text)
+    tsa_policy_oid: Mapped[str | None] = mapped_column(String(160))
+    tsa_serial_number: Mapped[str | None] = mapped_column(String(240))
+    tsa_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    request_sha256: Mapped[str | None] = mapped_column(String(64))
+    response_der_base64: Mapped[str | None] = mapped_column(Text)
+    verification_status: Mapped[str] = mapped_column(String(40), default="anchor_pending", nullable=False, index=True)
+    verification_error: Mapped[str | None] = mapped_column(Text)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    anchor_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    portfolio_item: Mapped[PortfolioItem] = relationship(back_populates="audit_anchors")
+    root_event: Mapped[PortfolioAuditEvent | None] = relationship()
+
+    __table_args__ = (
+        Index("ix_portfolio_audit_anchors_item_range", "portfolio_item_id", "start_sequence", "end_sequence"),
+    )
 
 
 class Project(Base, TimestampMixin, SoftDeleteMixin):
