@@ -1631,6 +1631,10 @@ textarea {
   background: var(--panel);
 }
 
+.library-grid.filters-collapsed {
+  grid-template-columns: minmax(360px, 1fr) 12px minmax(420px, var(--collapsed-detail-pane-width, 640px));
+}
+
 .library-grid.reader-mode {
   grid-template-columns: minmax(0, 1fr);
   height: 100%;
@@ -1650,6 +1654,35 @@ textarea {
 .filter-pane {
   padding: 10px 6px 10px 0;
   overflow: auto;
+}
+
+.filter-pane-heading {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pane-heading-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pane-heading-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-filter-toggle {
+  width: 32px;
+  min-width: 32px;
+  flex: 0 0 auto;
+}
+
+.list-toolbar > .library-filter-toggle {
+  margin-right: 2px;
 }
 
 .library-grid .filter-pane,
@@ -12992,6 +13025,10 @@ button.history-row,
 
   .library-grid {
     grid-template-columns: minmax(260px, var(--filter-pane-width, 280px)) 12px minmax(0, 1fr);
+  }
+
+  .library-grid.filters-collapsed {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .tags-workbench.has-optimization-pane .tags-layout {

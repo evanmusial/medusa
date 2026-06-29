@@ -398,6 +398,9 @@ const CITATION_CONVENTION_APA_7 = "apa_7";
 const FILTER_PANE_MIN = 260;
 const FILTER_PANE_DEFAULT = 280;
 const FILTER_PANE_MAX = 420;
+const FILTER_COLLAPSE_DETAIL_GAIN_RATIO = 0.68;
+const COLLAPSED_DETAIL_PANE_MIN = 420;
+const COLLAPSED_DETAIL_PANE_MAX = 860;
 const MIN_LIBRARY_PAGE_SIZE = 10;
 type LibraryPageSize = number;
 const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 50;
@@ -7527,6 +7530,7 @@ function LibraryView({
 }) {
   const [filterWidth, setFilterWidth] = useStoredPaneSize("medusa-filter-pane-width", FILTER_PANE_DEFAULT, FILTER_PANE_MIN, FILTER_PANE_MAX);
   const [detailWidth, setDetailWidth] = useStoredPaneSize("medusa-detail-pane-width", 384, 300, 560);
+  const [filtersCollapsed, setFiltersCollapsed] = useStoredBoolean("medusa-library-filters-collapsed", false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const rowsViewportRef = useRef<HTMLDivElement | null>(null);
   const selectedRowViewportTopRef = useRef<{ documentId: string; top: number } | null>(null);
@@ -7721,9 +7725,15 @@ function LibraryView({
     },
   });
   useEscapeLayer(readerOpen, () => onCloseReader(), ESCAPE_PRIORITY_READER);
+  const collapsedDetailWidth = clampNumber(
+    Math.round(detailWidth + filterWidth * FILTER_COLLAPSE_DETAIL_GAIN_RATIO),
+    COLLAPSED_DETAIL_PANE_MIN,
+    COLLAPSED_DETAIL_PANE_MAX,
+  );
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
+    "--collapsed-detail-pane-width": `${collapsedDetailWidth}px`,
   } as CSSProperties;
   const libraryDensity = normalizeLibraryDensity(preferences?.library_density);
   const libraryRowHeight = LIBRARY_ROW_HEIGHT_BY_DENSITY[libraryDensity];
@@ -8035,11 +8045,24 @@ function LibraryView({
   }
 
   return (
-    <section className={`library-grid library-density-${libraryDensity}${query.trim() ? " search-results-mode" : ""}`} style={paneStyle}>
+    <section className={`library-grid library-density-${libraryDensity}${query.trim() ? " search-results-mode" : ""}${filtersCollapsed ? " filters-collapsed" : ""}`} style={paneStyle}>
+      {!filtersCollapsed ? (
+        <>
       <aside className="filter-pane">
-        <div className="pane-heading">
-          <Filter size={17} />
-          Filters
+        <div className="pane-heading filter-pane-heading">
+          <span className="pane-heading-main">
+            <Filter size={17} />
+            <span>Filters</span>
+          </span>
+          <button
+            aria-label="Collapse Library filters"
+            className="icon-button compact library-filter-toggle"
+            data-tooltip="Collapse Library filters and give more room to the document list and preview pane."
+            onClick={() => setFiltersCollapsed(true)}
+            type="button"
+          >
+            <ChevronLeft size={17} />
+          </button>
         </div>
         <div className="filter-controls">
           <div className="filter-field">
@@ -8393,9 +8416,22 @@ function LibraryView({
         setValue={setFilterWidth}
         value={filterWidth}
       />
+        </>
+      ) : null}
       <section className="document-list">
         <div className="document-list-head">
           <div className="list-toolbar">
+            {filtersCollapsed ? (
+              <button
+                aria-label="Show Library filters"
+                className="icon-button compact library-filter-toggle"
+                data-tooltip="Show Library filters."
+                onClick={() => setFiltersCollapsed(false)}
+                type="button"
+              >
+                <Filter size={17} />
+              </button>
+            ) : null}
             <label className="select-all-row">
               <input
                 data-tooltip={allVisibleSelected ? "Clear the selection for every visible document." : "Select every visible document in the current Library result list."}
