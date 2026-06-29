@@ -14,7 +14,6 @@ import type {
 import { createPortal } from "react-dom";
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
-  Background,
   Controls,
   Handle,
   Position,
@@ -23,6 +22,7 @@ import {
   type EdgeProps,
   type Node as FlowNode,
   type NodeProps,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
@@ -3641,6 +3641,7 @@ const COMPOSITION_PIPELINE_ROW_GAP = 68;
 const COMPOSITION_PIPELINE_HANDLE_OFFSET = 6;
 const COMPOSITION_PIPELINE_ARROW_LENGTH = 14;
 const COMPOSITION_PIPELINE_ARROW_WIDTH = 12;
+const COMPOSITION_FLOW_FIT_OPTIONS = { padding: 0.08, minZoom: 0.12, maxZoom: 1 };
 
 function pipelineTone(entry: DocumentCompositionEntry) {
   if (entry.status === "failed" || entry.status === "error") return "error";
@@ -9570,7 +9571,31 @@ function CompositionDialog({
   const issues = composition?.errata || [];
   const estimateComparison = composition?.estimate_comparison || null;
   const pipelineGraph = useMemo(() => pipelineNodesAndEdges(pipeline), [pipeline]);
+  const [localTimeExpanded, setLocalTimeExpanded] = useState(false);
+  const flowViewportRef = useRef<HTMLDivElement | null>(null);
+  const flowInstanceRef = useRef<ReactFlowInstance<CompositionPipelineNode, Edge> | null>(null);
+  const fitCompositionFlow = useCallback((duration = 160) => {
+    window.requestAnimationFrame(() => {
+      flowInstanceRef.current?.fitView({ ...COMPOSITION_FLOW_FIT_OPTIONS, duration });
+    });
+  }, []);
   const duration = formatDuration(composition?.total_duration_seconds);
+  useEffect(() => {
+    if (!pipeline.length) return;
+    fitCompositionFlow(0);
+  }, [fitCompositionFlow, pipeline.length, pipelineGraph.nodes.length]);
+  useEffect(() => {
+    if (!pipeline.length || !flowViewportRef.current) return;
+    const element = flowViewportRef.current;
+    const handleResize = () => fitCompositionFlow(120);
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(handleResize) : null;
+    observer?.observe(element);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [fitCompositionFlow, pipeline.length]);
   useEscapeLayer(true, onClose, ESCAPE_PRIORITY_DIALOG);
   return (
     <div
@@ -9660,46 +9685,63 @@ function CompositionDialog({
                     </div>
                     <strong>{compositionEstimateStatusLabel(estimateComparison.status)}</strong>
                   </div>
-                  <div className="composition-estimate-grid">
-                    <div className="composition-estimate-row">
-                      <span>Estimated</span>
-                      <strong>{formatUsd(estimateComparison.estimated_cost_usd)}</strong>
-                      <small>
-                        {estimateComparison.estimated_page_count
-                          ? `${estimateComparison.estimated_page_count} pages`
-                          : "Page count unavailable"}
-                      </small>
-                    </div>
-                    <div className="composition-estimate-row">
-                      <span>Actual</span>
-                      <strong>{formatUsd(estimateComparison.actual_cost_usd)}</strong>
-                      <small>{estimateComparison.actual_cost_usd > 0 ? "Recorded model spend" : "Not recorded yet"}</small>
-                    </div>
-                    <div className="composition-estimate-row">
-                      <span>Difference</span>
-                      <strong>{formatSignedUsd(estimateComparison.variance_usd)}</strong>
-                      <small>{formatSignedPercent(estimateComparison.variance_percent)}</small>
-                    </div>
-                  </div>
+                  <table className="composition-estimate-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Estimated</th>
+                        <th scope="col">Actual</th>
+                        <th scope="col">Difference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="composition-estimate-values">
+                        <td>{formatUsd(estimateComparison.estimated_cost_usd)}</td>
+                        <td>{formatUsd(estimateComparison.actual_cost_usd)}</td>
+                        <td>{formatSignedUsd(estimateComparison.variance_usd)}</td>
+                      </tr>
+                      <tr className="composition-estimate-notes">
+                        <td>
+                          {estimateComparison.estimated_page_count
+                            ? `${estimateComparison.estimated_page_count} pages`
+                            : "Page count unavailable"}
+                        </td>
+                        <td>{estimateComparison.actual_cost_usd > 0 ? "Recorded model spend" : "Not recorded yet"}</td>
+                        <td>{formatSignedPercent(estimateComparison.variance_percent)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </section>
               ) : null}
-              <section className="composition-section composition-local-panel">
-                <div className="composition-section-title">
-                  <h3>Local Time</h3>
-                </div>
-                <div className="composition-local-grid">
-                  {localEntries.length ? (
-                    localEntries.map((entry) => (
-                      <div key={`${entry.stage_key}-${entry.method}`} className="composition-local-row">
-                        <span>{entry.stage_label}</span>
-                        <strong>{formatDurationMs(entry.duration_ms) || "0s"}</strong>
-                        <small>{entry.method || "local"}</small>
-                      </div>
-                    ))
-                  ) : (
-                    <span>No local timing records.</span>
-                  )}
-                </div>
+              <section className={`composition-section composition-local-panel ${localTimeExpanded ? "expanded" : "collapsed"}`}>
+                <button
+                  className="composition-disclosure composition-section-title"
+                  type="button"
+                  aria-expanded={localTimeExpanded}
+                  aria-controls="composition-local-time-panel"
+                  data-tooltip={localTimeExpanded ? "Collapse local timing records." : "Expand local timing records."}
+                  onClick={() => setLocalTimeExpanded((value) => !value)}
+                >
+                  <div>
+                    <h3>Local Time</h3>
+                    <span>{localEntries.length ? `${localEntries.length} timing records` : "No timing records"}</span>
+                  </div>
+                  <ChevronDown className="composition-disclosure-icon" size={16} />
+                </button>
+                {localTimeExpanded ? (
+                  <div id="composition-local-time-panel" className="composition-local-grid">
+                    {localEntries.length ? (
+                      localEntries.map((entry) => (
+                        <div key={`${entry.stage_key}-${entry.method}`} className="composition-local-row">
+                          <span>{entry.stage_label}</span>
+                          <strong>{formatDurationMs(entry.duration_ms) || "0s"}</strong>
+                          <small>{entry.method || "local"}</small>
+                        </div>
+                      ))
+                    ) : (
+                      <span>No local timing records.</span>
+                    )}
+                  </div>
+                ) : null}
               </section>
               {issues.length ? (
                 <section className="composition-section composition-issues-panel">
@@ -9720,19 +9762,19 @@ function CompositionDialog({
             </div>
             <section className="composition-section composition-pipeline-section">
               <div className="composition-section-title">
-                <h3>Pipeline</h3>
+                <h3>Document Accession</h3>
                 <span>{pipeline.length ? `${pipeline.length} recorded steps` : "No recorded steps"}</span>
               </div>
               {pipeline.length ? (
-                <div className="composition-flow-chart">
+                <div className="composition-flow-chart" ref={flowViewportRef}>
                   <ReactFlow
                     colorMode="system"
                     edges={pipelineGraph.edges}
                     elementsSelectable={false}
                     fitView
-                    fitViewOptions={{ padding: 0.04 }}
-                    maxZoom={1.3}
-                    minZoom={0.45}
+                    fitViewOptions={COMPOSITION_FLOW_FIT_OPTIONS}
+                    maxZoom={1}
+                    minZoom={0.12}
                     edgeTypes={compositionPipelineEdgeTypes}
                     nodeTypes={compositionPipelineNodeTypes}
                     nodes={pipelineGraph.nodes}
@@ -9742,11 +9784,18 @@ function CompositionDialog({
                     panOnDrag
                     preventScrolling={false}
                     proOptions={{ hideAttribution: true }}
+                    onInit={(instance) => {
+                      flowInstanceRef.current = instance;
+                      window.requestAnimationFrame(() => instance.fitView(COMPOSITION_FLOW_FIT_OPTIONS));
+                    }}
                     zoomOnDoubleClick={false}
                     zoomOnScroll={false}
                   >
-                    <Background gap={20} size={1} />
-                    <Controls position="bottom-right" showInteractive={false} />
+                    <Controls
+                      fitViewOptions={COMPOSITION_FLOW_FIT_OPTIONS}
+                      position="bottom-right"
+                      showInteractive={false}
+                    />
                   </ReactFlow>
                 </div>
               ) : (

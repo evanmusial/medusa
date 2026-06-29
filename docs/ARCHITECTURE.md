@@ -1460,7 +1460,7 @@ Consequences:
 
 - Imports write `DocumentCompositionRecord` rows for local stages, synced AI usage, warnings/errors, and manual citation/metadata edits.
 - `/api/documents/{document_id}/composition` summarizes those rows into cost entries, provider spend, local duration entries, pipeline chart steps, and processing issues. Cost entries and provider spend are priced usage, not visual guesses: sub-cent model or embedding calls remain listed and included in totals, while local stages only show configured fallback models when the model actually has a provider usage row. If no rows exist, the endpoint returns `available=false`.
-- The Library detail pane has a Composition button beside Edit/Concord/Reader/Related. It opens a centered modal with a Cost Composition pie chart, total known dollar cost, total import duration, provider breakdown, local time, processing issues, and a multi-row React Flow pipeline chart with contained stage nodes.
+- The Library detail pane has a Composition button beside Edit/Concord/Reader/Related. It opens a centered modal with a Cost Composition overview, total known dollar cost, total import duration, provider breakdown, Local Time collapsed behind an explicit disclosure, processing issues, and a multi-row React Flow Document Accession chart with contained stage nodes.
 - The header active-work progress slot is wider and includes current known import spend while imports are queued/running.
 - Metadata exports include composition rows; restore preserves their costs/tokens/stage metadata and clears raw usage-record pointers when usage rows are not part of the export.
 
@@ -1472,7 +1472,7 @@ Why: Pipeline provenance needs a real graph surface that can fit, pan, and zoom 
 
 Consequences:
 
-- The Composition modal uses read-only React Flow nodes and custom arrowed edges that draw a visible stroke from each source node border into the next target node border. React Flow handles are hidden anchor points, not visible connection controls. Pipeline steps remain ordered by import stage and same-stage task execution rather than alphabetic model names.
+- The Composition modal uses read-only React Flow nodes and custom arrowed edges that draw a subtle visible stroke from each source node into the next target node. React Flow handles are hidden anchor points, not visible connection controls. Document Accession steps remain ordered by import stage and same-stage task execution rather than alphabetic model names, and the viewport refits on open and resize so every recorded node is visible by default across screen sizes.
 - Processing Issues is reserved for warnings/errors; completed manual edits remain in the composition ledger but are not listed as issues.
 - The API field remains `errata` for compatibility, but product copy should use Processing Issues unless the backend contract is revised.
 

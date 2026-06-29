@@ -3077,9 +3077,8 @@ textarea {
 
 .composition-head {
   align-items: flex-start;
-  border-bottom: 1px solid var(--line);
   min-height: 0;
-  padding-bottom: 10px;
+  padding-bottom: 2px;
 }
 
 .composition-head span,
@@ -3097,7 +3096,15 @@ textarea {
 .composition-section-title h3 {
   margin: 0;
   color: var(--ink);
+  font-weight: 400;
   letter-spacing: 0;
+}
+
+.composition-dialog strong,
+.composition-dialog th,
+.composition-dialog td,
+.composition-dialog em {
+  font-weight: 400;
 }
 
 .composition-head h2 {
@@ -3112,7 +3119,7 @@ textarea {
 
 .composition-head span {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   text-transform: none;
 }
 
@@ -3145,16 +3152,16 @@ textarea {
 .composition-chart-panel,
 .composition-provider-panel,
 .composition-section {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 0;
   display: grid;
   gap: 12px;
-  padding: 14px;
+  padding: 0;
 }
 
 .composition-section-title strong {
   color: var(--ink);
-  font-size: 19px;
+  font-size: 15px;
 }
 
 .composition-pie-wrap {
@@ -3171,7 +3178,7 @@ textarea {
   display: grid;
   place-items: center;
   position: relative;
-  box-shadow: inset 0 0 0 1px var(--line);
+  box-shadow: none;
 }
 
 .composition-pie::after {
@@ -3180,7 +3187,7 @@ textarea {
   inset: clamp(26px, 1.9vw, 34px);
   border-radius: inherit;
   background: var(--panel);
-  box-shadow: inset 0 0 0 1px var(--line);
+  box-shadow: none;
 }
 
 .composition-pie span {
@@ -3188,13 +3195,12 @@ textarea {
   z-index: 1;
   color: var(--ink);
   font-size: 19px;
-  font-weight: 850;
+  font-weight: 400;
 }
 
 .composition-legend,
 .composition-provider-list,
-.composition-issue-list,
-.composition-estimate-grid {
+.composition-issue-list {
   display: grid;
   gap: 8px;
 }
@@ -3231,32 +3237,42 @@ textarea {
 .composition-local-row,
 .composition-issue-row,
 .composition-estimate-row {
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
+  border-top: 0;
+  padding-top: 0;
 }
 
-.composition-estimate-grid {
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
+.composition-estimate-table {
+  width: 100%;
+  min-width: 0;
+  border-collapse: collapse;
+  table-layout: fixed;
 }
 
-.composition-estimate-row {
-  display: grid;
-  gap: 3px;
+.composition-estimate-table th,
+.composition-estimate-table td {
+  padding: 3px 10px 3px 0;
+  text-align: left;
+  vertical-align: top;
 }
 
-.composition-estimate-row span,
-.composition-estimate-row strong {
+.composition-estimate-table th {
   color: var(--ink);
-}
-
-.composition-estimate-row span {
   font-size: 14px;
-  font-weight: 600;
-  text-transform: none;
+  line-height: 1.25;
 }
 
-.composition-estimate-row small {
+.composition-estimate-table td {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.composition-estimate-table th:last-child,
+.composition-estimate-table td:last-child {
+  padding-right: 0;
+}
+
+.composition-estimate-notes td {
   color: var(--muted);
   font-size: 13px;
 }
@@ -3277,8 +3293,36 @@ textarea {
 
 .composition-local-panel {
   min-height: 0;
-  flex: 1 1 auto;
   overflow: hidden;
+}
+
+.composition-local-panel.expanded {
+  flex: 1 1 auto;
+}
+
+.composition-local-panel.collapsed {
+  flex: 0 0 auto;
+}
+
+.composition-disclosure {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.composition-disclosure-icon {
+  color: var(--muted);
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+
+.composition-local-panel.expanded .composition-disclosure-icon {
+  transform: rotate(180deg);
 }
 
 .composition-issues-panel {
@@ -3297,7 +3341,7 @@ textarea {
 .composition-issue-row strong {
   color: var(--ink);
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 400;
 }
 
 .composition-pipeline-section {
@@ -3311,9 +3355,8 @@ textarea {
   min-height: 0;
   overflow: hidden;
   border-radius: 8px;
-  border: 1px solid var(--line);
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 72%, transparent), transparent 56%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 42%, transparent), transparent 62%),
     var(--panel);
 }
 
@@ -3335,7 +3378,7 @@ textarea {
 }
 
 .composition-flow-chart .react-flow__edge .react-flow__edge-path {
-  filter: drop-shadow(0 1px 1px rgb(15 23 42 / 0.12));
+  filter: none;
 }
 
 .composition-pipeline-edge {
@@ -3372,17 +3415,18 @@ textarea {
 }
 
 .composition-pipeline-edge-shadow {
-  stroke: rgb(15 23 42 / 0.14);
-  stroke-width: 6;
+  display: none;
 }
 
 .composition-pipeline-edge-path {
   stroke: currentColor;
-  stroke-width: 2.75;
+  stroke-width: 1.65;
+  opacity: 0.62;
 }
 
 .composition-pipeline-edge-arrow {
   fill: currentColor;
+  opacity: 0.62;
 }
 
 .composition-flow-chart .react-flow__controls {
@@ -3399,13 +3443,13 @@ textarea {
   box-sizing: border-box;
   position: relative;
   --node-accent: var(--primary);
-  border: 1px solid color-mix(in srgb, var(--node-accent) 30%, var(--line));
-  border-left: 5px solid var(--node-accent);
+  border: 0;
+  border-left: 3px solid color-mix(in srgb, var(--node-accent) 78%, var(--muted));
   border-radius: 8px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--node-accent) 10%, transparent), transparent 58%),
-    color-mix(in srgb, var(--panel) 96%, var(--node-accent));
-  box-shadow: 0 12px 24px rgb(15 23 42 / 0.10);
+    linear-gradient(135deg, color-mix(in srgb, var(--node-accent) 7%, transparent), transparent 58%),
+    color-mix(in srgb, var(--panel) 98%, var(--node-accent));
+  box-shadow: 0 10px 20px rgb(15 23 42 / 0.07);
   display: grid;
   align-content: start;
   gap: 8px;
@@ -3450,7 +3494,7 @@ textarea {
   font-size: 14px;
   letter-spacing: 0;
   line-height: 1.15;
-  font-weight: 600;
+  font-weight: 400;
   text-transform: none;
   color: color-mix(in srgb, var(--muted) 78%, var(--node-accent));
 }
@@ -3458,7 +3502,7 @@ textarea {
 .composition-pipeline-subtitle {
   color: var(--ink);
   font-size: 19px;
-  font-weight: 550;
+  font-weight: 400;
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
@@ -3478,14 +3522,14 @@ textarea {
 .composition-pipeline-node em {
   min-width: 0;
   max-width: 100%;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 999px;
   padding: 2px 7px;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
   color: var(--muted);
   font-size: 13px;
   font-style: normal;
-  font-weight: 500;
+  font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
