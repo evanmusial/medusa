@@ -3668,11 +3668,30 @@ textarea {
   white-space: nowrap;
 }
 
+.doc-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  min-width: 0;
+}
+
+.doc-row-title > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .doc-row .doc-row-title {
   color: var(--document-title-ink);
   font-size: 16px;
   font-weight: 560;
   line-height: 1.28;
+}
+
+.doc-row .doc-row-title-year {
+  flex: 0 0 auto;
+  font-weight: 400;
 }
 
 .library-density-compact .doc-row .doc-row-title {
@@ -3685,7 +3704,7 @@ textarea {
 
 .doc-row-byline {
   display: grid;
-  grid-template-columns: minmax(64px, 7ch) minmax(64px, 7ch) minmax(0, 1fr);
+  grid-template-columns: minmax(64px, 7ch) minmax(42px, 5ch) minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   color: var(--muted);
@@ -3735,7 +3754,7 @@ textarea {
 }
 
 .doc-row-pages,
-.doc-row-year {
+.doc-row-figures {
   width: max-content;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -3744,7 +3763,16 @@ textarea {
   text-align: left;
 }
 
+.doc-row-pages {
+  grid-column: 1;
+}
+
+.doc-row-figures {
+  grid-column: 2;
+}
+
 .doc-row-authors {
+  grid-column: 3;
   min-width: 0;
   color: var(--muted);
   text-align: left;

@@ -974,6 +974,12 @@ function pageCountMarker(document: LibraryDocumentRow) {
   return document.page_count > 0 ? `${document.page_count}p` : "?p";
 }
 
+function figureCountMarker(document: LibraryDocumentRow) {
+  if ("figure_count" in document && typeof document.figure_count === "number") return document.figure_count;
+  if ("figures" in document && Array.isArray(document.figures)) return document.figures.length;
+  return 0;
+}
+
 function recommendationAuthorLine(item: DocumentRecommendation) {
   const authors = item.authors || [];
   if (!authors.length) return "Unknown author";
@@ -8599,6 +8605,7 @@ function LibraryView({
           <div className="virtual-rows-spacer" style={{ height: virtualSpacerHeight }}>
           {virtualDocuments.map((item, virtualIndex) => {
             const actualIndex = virtualStartIndex + virtualIndex;
+            const figureCount = figureCountMarker(item);
             return (
             <div
               key={item.id}
@@ -8634,16 +8641,21 @@ function LibraryView({
                 href={pathForDocument(item.id)}
                 onClick={(event) => handleDocumentLinkClick(event, item.id)}
               >
-                <span className="doc-row-title">{item.title}</span>
+                <span className="doc-row-title">
+                  <span>{item.title}</span>
+                  {item.publication_year ? <span className="doc-row-title-year">({item.publication_year})</span> : null}
+                </span>
                 <span className="doc-row-byline">
                   <span className="doc-row-pages" aria-label={`Pages: ${pageCountMarker(item)}`}>
                     <FileText size={12} aria-hidden="true" />
                     <span>{pageCountMarker(item)}</span>
                   </span>
-                  <span className="doc-row-year" aria-label={`Year: ${item.publication_year || "n.d."}`}>
-                    <Calendar size={12} aria-hidden="true" />
-                    <span>{item.publication_year || "n.d."}</span>
-                  </span>
+                  {figureCount > 0 ? (
+                    <span className="doc-row-figures" aria-label={`Figures: ${figureCount}`}>
+                      <Image size={12} aria-hidden="true" />
+                      <span>{figureCount}</span>
+                    </span>
+                  ) : null}
                   <span className="doc-row-authors" aria-label={`Authors: ${authorLine(item)}`}>
                     <Users size={12} aria-hidden="true" />
                     <span>{authorLine(item)}</span>

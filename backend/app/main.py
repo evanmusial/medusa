@@ -911,6 +911,19 @@ def project_summaries_for_documents(db: Session, document_ids: list[str]) -> dic
     return summaries
 
 
+def figure_counts_for_documents(db: Session, document_ids: list[str]) -> dict[str, int]:
+    unique_document_ids = unique_preserve_order(document_ids)
+    if not unique_document_ids:
+        return {}
+    return {
+        document_id: int(count or 0)
+        for document_id, count in db.query(Figure.document_id, func.count(Figure.id))
+        .filter(Figure.document_id.in_(unique_document_ids))
+        .group_by(Figure.document_id)
+        .all()
+    }
+
+
 def apply_document_filters(
     query,
     db: Session,
@@ -1162,13 +1175,14 @@ def document_summary_out(
     )
 
 
-def document_list_row_out(document: Document, projects: list[ProjectOut] | None = None) -> DocumentListRow:
+def document_list_row_out(document: Document, projects: list[ProjectOut] | None = None, figure_count: int = 0) -> DocumentListRow:
     return DocumentListRow.model_validate(document).model_copy(
         update={
             "duplicate_count": int(document.duplicate_count or 0),
             "duplicate_reasons": list(document.duplicate_reasons or []),
             "projects": projects or [],
             "no_doi": document_no_doi(document),
+            "figure_count": figure_count,
         }
     )
 
@@ -4744,10 +4758,19 @@ def document_list_rows_out(
         limit = len(documents)
     else:
         documents = query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
-    project_map = project_summaries_for_documents(db, [document.id for document in documents])
+    document_ids = [document.id for document in documents]
+    project_map = project_summaries_for_documents(db, document_ids)
+    figure_count_map = figure_counts_for_documents(db, document_ids)
     revision_parts = [str(total_count), str(total_page_count), latest_updated.isoformat() if latest_updated else "none"]
     return DocumentListOut(
-        items=[document_list_row_out(document, project_map.get(document.id, [])) for document in documents],
+        items=[
+            document_list_row_out(
+                document,
+                project_map.get(document.id, []),
+                figure_count=figure_count_map.get(document.id, 0),
+            )
+            for document in documents
+        ],
         total_count=total_count,
         total_page_count=total_page_count,
         offset=offset,

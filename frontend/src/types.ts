@@ -1269,6 +1269,7 @@ export type DocumentListRow = {
   citation_status: string;
   no_doi: boolean;
   page_count: number;
+  figure_count: number;
   processing_status: string;
   read_status: string;
   priority: string;
