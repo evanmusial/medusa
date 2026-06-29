@@ -27,7 +27,7 @@ The server environment and override:
 - starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
 - optionally binds the Prometheus exporter through HAProxy TLS on `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT` when `docker-compose.metrics.yml` is included.
 
-Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. For the Dallas host, the planned public URL is `https://medusa.evan.engineer:3737`, the IPv4 bind IP is `23.227.185.85`, the IPv6 bind IP is `2604:4500:a:3fb::3737`, the CPU set is `2-7`, the document cache is `51200` MB, import worker concurrency is `2`, and the planned Prometheus exporter URL is `https://medusa.evan.engineer:43737/metrics`. `MEDUSA_ALLOWED_HOSTS=*` intentionally leaves frontend Host checks open during the migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
+Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. The checked-in placeholder profile uses `https://medusa.home.musial.io:3737` as the app URL, `0.0.0.0` as the IPv4 bind IP, loopback-only `::1` for the dedicated IPv6 bind, CPU set `2-7`, document cache `51200` MB, import worker concurrency `2`, and `https://medusa.home.musial.io:43737/metrics` as the Prometheus exporter URL when metrics are enabled. Keep `MEDUSA_ALLOWED_HOSTS` scoped to the chosen host unless you deliberately need a temporary open-host migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
 
 Before moving from the local machine, run:
 
@@ -104,7 +104,7 @@ MEDUSA_CERTBOT_EMAIL=admin@example.com deploy/server/medusa-certbot.sh issue
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-If Prometheus scraping should be enabled immediately, include the metrics overlay after creating `data/secrets/prometheus-token` and setting `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env`. The metrics overlay also refreshes HAProxy so `https://medusa.evan.engineer:43737` uses the existing certificate:
+If Prometheus scraping should be enabled immediately, include the metrics overlay after creating `data/secrets/prometheus-token` and setting `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env`. The metrics overlay also refreshes HAProxy so `https://medusa.home.musial.io:43737` uses the existing certificate:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-compose.metrics.yml up -d --build backend haproxy metrics-exporter
@@ -114,7 +114,7 @@ docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-comp
 11. Confirm health:
 
 ```bash
-curl -kfsS https://medusa.evan.engineer:3737/api/health
+curl -kfsS https://medusa.home.musial.io:3737/api/health
 ```
 
 The default `medusa-postgres` Docker named volume is host-local and is not copied by moving the checkout or `data/`. Use the full database backup/restore workflow as the system-of-record move.
