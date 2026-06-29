@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.schemas import ReleaseStatusOut, ReleaseVersionOut
+from app.schemas import ReleaseHistoryChangeOut, ReleaseHistoryEntryOut, ReleaseHistoryOut, ReleaseStatusOut, ReleaseVersionOut
 from app.services.maintenance import DEFAULT_IDLE_GRACE_SECONDS, maintenance_readiness
 
 
@@ -33,6 +33,10 @@ def _release_request_path() -> Path:
 
 def _release_check_request_path() -> Path:
     return get_settings().data_dir / "deploy" / "release-check-request.json"
+
+
+def _release_history_path() -> Path:
+    return get_settings().data_dir / "deploy" / "release-history.json"
 
 
 def _maintenance_request_path() -> Path:
@@ -91,6 +95,80 @@ def _version_from_payload(value: Any, *, fallback_source: str = "status-file") -
         built_at=built_at,
         source=source,
     )
+
+
+def _history_change_from_payload(value: Any) -> ReleaseHistoryChangeOut | None:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return ReleaseHistoryChangeOut(title=cleaned, description=cleaned) if cleaned else None
+    if not isinstance(value, dict):
+        return None
+    title = value.get("title")
+    description = value.get("description")
+    title = title.strip() if isinstance(title, str) else ""
+    description = description.strip() if isinstance(description, str) else ""
+    if not title and description:
+        title = description
+    if not description and title:
+        description = title
+    if not title or not description:
+        return None
+    return ReleaseHistoryChangeOut(title=title, description=description)
+
+
+def _history_entry_from_payload(value: Any) -> ReleaseHistoryEntryOut | None:
+    if not isinstance(value, dict):
+        return None
+    git_sha = value.get("git_sha")
+    git_sha = git_sha if isinstance(git_sha, str) and git_sha else None
+    git_sha_short = value.get("git_sha_short")
+    git_sha_short = git_sha_short if isinstance(git_sha_short, str) and git_sha_short else (git_sha[:12] if git_sha else None)
+    version = value.get("version")
+    version = version if isinstance(version, str) and version else None
+    if not git_sha and not version:
+        return None
+    released_at = _parse_datetime(value.get("released_at")) or _parse_datetime(value.get("recorded_at")) or _now()
+    commit_date = _parse_datetime(value.get("commit_date")) or _parse_datetime(value.get("built_at"))
+    changes_raw = value.get("changes")
+    changes = [
+        change
+        for change in (_history_change_from_payload(item) for item in (changes_raw if isinstance(changes_raw, list) else []))
+        if change is not None
+    ]
+    changed_files = value.get("changed_files")
+    previous_git_sha = value.get("previous_git_sha")
+    branch = value.get("branch")
+    source = value.get("source")
+    summary = value.get("summary")
+    return ReleaseHistoryEntryOut(
+        id=str(value.get("id") or git_sha or version),
+        released_at=released_at,
+        commit_date=commit_date,
+        version=version,
+        git_sha=git_sha,
+        git_sha_short=git_sha_short,
+        previous_git_sha=previous_git_sha if isinstance(previous_git_sha, str) and previous_git_sha else None,
+        branch=branch if isinstance(branch, str) and branch else None,
+        source=source if isinstance(source, str) and source else "release-agent",
+        summary=summary if isinstance(summary, str) and summary else None,
+        changes=changes,
+        changed_files=[str(path) for path in changed_files] if isinstance(changed_files, list) else [],
+    )
+
+
+def release_history() -> ReleaseHistoryOut:
+    payload = _read_json(_release_history_path())
+    entries_raw = payload.get("entries") if payload else []
+    entries = [
+        entry
+        for entry in (_history_entry_from_payload(item) for item in (entries_raw if isinstance(entries_raw, list) else []))
+        if entry is not None
+    ]
+    entries.sort(key=lambda entry: entry.released_at, reverse=True)
+    updated_at = _parse_datetime(payload.get("updated_at") if payload else None)
+    if updated_at is None and entries:
+        updated_at = entries[0].released_at
+    return ReleaseHistoryOut(updated_at=updated_at, entries=entries)
 
 
 def _runtime_version() -> ReleaseVersionOut:

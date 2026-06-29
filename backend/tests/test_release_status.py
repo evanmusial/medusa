@@ -226,3 +226,47 @@ def test_release_status_writes_check_and_maintenance_requests(monkeypatch, tmp_p
     assert maintenance_payload["force_window"] is True
 
     reset_settings_cache()
+
+
+def test_release_history_reads_agent_history_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    reset_settings_cache()
+
+    from app.services.release_status import release_history
+
+    write_status(
+        tmp_path / "data" / "deploy" / "release-history.json",
+        {
+            "schema_version": 1,
+            "updated_at": "2026-06-28T12:02:00+00:00",
+            "entries": [
+                {
+                    "id": "b" * 40,
+                    "released_at": "2026-06-28T12:01:00+00:00",
+                    "commit_date": "2026-06-28T12:00:00+00:00",
+                    "version": "20260628 (bbbbbbbbbbbb)",
+                    "git_sha": "b" * 40,
+                    "git_sha_short": "bbbbbbbbbbbb",
+                    "previous_git_sha": "a" * 40,
+                    "branch": "main",
+                    "source": "upgrade",
+                    "summary": "1 change from aaaaaaaaaaaa to bbbbbbbbbbbb.",
+                    "changes": [{"title": "Release History", "description": "Added release notes inside the app."}],
+                    "changed_files": ["frontend/src/App.tsx"],
+                }
+            ],
+        },
+    )
+
+    history = release_history()
+    assert history.updated_at and history.updated_at.isoformat() == "2026-06-28T12:02:00+00:00"
+    assert len(history.entries) == 1
+    entry = history.entries[0]
+    assert entry.released_at.isoformat() == "2026-06-28T12:01:00+00:00"
+    assert entry.git_sha == "b" * 40
+    assert entry.git_sha_short == "bbbbbbbbbbbb"
+    assert entry.previous_git_sha == "a" * 40
+    assert entry.changes[0].description == "Added release notes inside the app."
+    assert entry.changed_files == ["frontend/src/App.tsx"]
+
+    reset_settings_cache()

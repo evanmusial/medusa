@@ -87,6 +87,31 @@ export type ReleaseStatus = {
   docker_host_updates: string;
 };
 
+export type ReleaseHistoryChange = {
+  title: string;
+  description: string;
+};
+
+export type ReleaseHistoryEntry = {
+  id: string;
+  released_at: string;
+  commit_date?: string | null;
+  version?: string | null;
+  git_sha?: string | null;
+  git_sha_short?: string | null;
+  previous_git_sha?: string | null;
+  branch?: string | null;
+  source: string;
+  summary?: string | null;
+  changes: ReleaseHistoryChange[];
+  changed_files: string[];
+};
+
+export type ReleaseHistory = {
+  updated_at?: string | null;
+  entries: ReleaseHistoryEntry[];
+};
+
 export type AIFailureNotice = {
   id: string;
   created_at: string;

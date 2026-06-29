@@ -77,6 +77,7 @@ import type {
   ReconInquiryPayload,
   ReconRun,
   ReconRunPayload,
+  ReleaseHistory,
   ReleaseStatus,
   RuntimeLocation,
   SavedSearch,
@@ -162,6 +163,7 @@ export const api = {
     request<ReleaseStatus>(`/api/release/check?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
   requestMaintenanceRun: (clientVersion: string) =>
     request<ReleaseStatus>(`/api/release/maintenance?client_version=${encodeURIComponent(clientVersion)}`, { method: "POST" }),
+  releaseHistory: () => request<ReleaseHistory>("/api/release/history"),
   health: () => request<{ status: string; app: string }>(`/api/health?release_check=${Date.now()}`),
   cacheStatus: () => request<CacheStatus>("/api/cache/status"),
   hydrateCache: () => request<CacheHydrateResult>("/api/cache/hydrate", { method: "POST" }),

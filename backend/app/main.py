@@ -165,6 +165,7 @@ from app.schemas import (
     ProjectItemOut,
     ProjectItemPatch,
     ProjectOut,
+    ReleaseHistoryOut,
     ReleaseStatusOut,
     ReconEstimateOut,
     ReconInquiryCreate,
@@ -360,6 +361,7 @@ from app.services.recommendations import (
     resolve_doi_metadata_candidate,
 )
 from app.services.release_status import (
+    release_history,
     release_status,
     request_maintenance_run,
     request_release_check,
@@ -2346,6 +2348,13 @@ def disable_two_factor(
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.get("/api/release/history", response_model=ReleaseHistoryOut)
+def read_release_history(
+    _: Annotated[User, Depends(current_user)],
+) -> ReleaseHistoryOut:
+    return release_history()
 
 
 @app.get("/api/release/status", response_model=ReleaseStatusOut)

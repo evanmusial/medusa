@@ -79,6 +79,54 @@ def test_release_agent_classifies_safe_dependency_and_risky_runtime_updates(tmp_
     assert migration_change["backup_required"] is True
 
 
+def test_release_agent_appends_release_history_entries(tmp_path):
+    agent = load_release_agent()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_git(repo, "init")
+    run_git(repo, "config", "user.email", "test@example.invalid")
+    run_git(repo, "config", "user.name", "Medusa Test")
+    (repo / "app.py").write_text("print('base')\n")
+    base_sha = commit_all(repo, "base")
+    (repo / "app.py").write_text("print('release history')\n")
+    release_sha = commit_all(repo, "feat: add release history page")
+    args = SimpleNamespace(repo=repo, data_dir=tmp_path / "data", history_file=tmp_path / "release-history.json")
+    target = agent.release_version(repo, release_sha, "main", "git-local")
+
+    agent.append_release_history(
+        args,
+        previous_sha=base_sha,
+        target_sha=release_sha,
+        target=target,
+        source="upgrade",
+        classification={"changed_files": ["app.py"]},
+    )
+    agent.append_release_history(
+        args,
+        previous_sha=base_sha,
+        target_sha=release_sha,
+        target=target,
+        source="upgrade",
+        classification={"changed_files": ["app.py"]},
+    )
+
+    payload = json.loads(args.history_file.read_text())
+    assert payload["schema_version"] == agent.SCHEMA_VERSION
+    assert len(payload["entries"]) == 1
+    entry = payload["entries"][0]
+    assert entry["git_sha"] == release_sha
+    assert entry["git_sha_short"] == release_sha[:12]
+    assert entry["previous_git_sha"] == base_sha
+    assert entry["source"] == "upgrade"
+    assert entry["changed_files"] == ["app.py"]
+    assert entry["changes"] == [
+        {
+            "title": "add release history page",
+            "description": "Add release history page.",
+        }
+    ]
+
+
 def test_release_agent_does_not_run_compose_when_required_backup_gate_fails(monkeypatch, tmp_path):
     agent = load_release_agent()
     args = SimpleNamespace(

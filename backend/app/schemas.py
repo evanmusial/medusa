@@ -1713,6 +1713,31 @@ class ReleaseVersionOut(BaseModel):
     source: str = "unknown"
 
 
+class ReleaseHistoryChangeOut(BaseModel):
+    title: str
+    description: str
+
+
+class ReleaseHistoryEntryOut(BaseModel):
+    id: str
+    released_at: datetime
+    commit_date: datetime | None = None
+    version: str | None = None
+    git_sha: str | None = None
+    git_sha_short: str | None = None
+    previous_git_sha: str | None = None
+    branch: str | None = None
+    source: str = "release-agent"
+    summary: str | None = None
+    changes: list[ReleaseHistoryChangeOut] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+
+
+class ReleaseHistoryOut(BaseModel):
+    updated_at: datetime | None = None
+    entries: list[ReleaseHistoryEntryOut] = Field(default_factory=list)
+
+
 class ReleaseStatusOut(BaseModel):
     checked_at: datetime
     running: ReleaseVersionOut

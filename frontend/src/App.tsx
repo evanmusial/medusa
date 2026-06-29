@@ -175,6 +175,7 @@ import type {
   ReconEstimate,
   ReconInquiry,
   ReconRun,
+  ReleaseHistory,
   ReleaseStatus,
   SavedSearch,
   SlipstreamLease,
@@ -207,6 +208,7 @@ type View =
   | "stashes"
   | "budget"
   | "utilities"
+  | "release-history"
   | "status"
   | "settings";
 type NavCounts = Partial<Record<View, number>>;
@@ -755,6 +757,7 @@ const VIEW_PATHS: Record<View, string> = {
   stashes: "/stashes",
   budget: "/budget",
   utilities: "/utilities",
+  "release-history": "/release-history",
   status: "/status",
   settings: "/settings",
 };
@@ -773,6 +776,7 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   stashes: "DOI Stashes",
   budget: "Finances",
   utilities: "Utilities",
+  "release-history": "Release History",
   status: "Status",
   settings: "Settings",
 };
@@ -3098,6 +3102,15 @@ function CommandPalette({
         keywords: ["status", "health", "runtime", "system"],
         label: "Status",
         run: () => onOpenView("status"),
+        section: "Workspaces",
+      },
+      {
+        detail: activeView === "release-history" ? "Current workspace" : "Open release notes",
+        icon: Rocket,
+        id: "workspace-release-history",
+        keywords: ["release", "history", "notes", "changelog", "version"],
+        label: "Release History",
+        run: () => onOpenView("release-history"),
         section: "Workspaces",
       },
       {
@@ -5666,6 +5679,7 @@ function Header({
   onOpenCommandPalette,
   onOpenQueue,
   onOpenRecentDocument,
+  onOpenReleaseHistory,
   onOpenSettings,
   onOpenStatus,
   onHydrateCache,
@@ -5691,6 +5705,7 @@ function Header({
   onOpenCommandPalette: () => void;
   onOpenQueue: () => void;
   onOpenRecentDocument: (documentId: string) => void;
+  onOpenReleaseHistory: () => void;
   onOpenSettings: () => void;
   onOpenStatus: () => void;
   onHydrateCache: () => void;
@@ -5733,6 +5748,11 @@ function Header({
   const openCommandPaletteFromUserMenu = () => {
     setUserMenuOpen(false);
     onOpenCommandPalette();
+  };
+
+  const openReleaseHistoryFromUserMenu = () => {
+    setUserMenuOpen(false);
+    onOpenReleaseHistory();
   };
 
   const openRecentDocumentFromUserMenu = (documentId: string) => {
@@ -5874,6 +5894,16 @@ function Header({
                   ))}
                 </div>
               ) : null}
+              <div className="user-options-section" aria-label="Release History">
+                <div className="user-options-section-label">
+                  <Rocket size={14} aria-hidden="true" />
+                  <span>Release History</span>
+                </div>
+                <button className="user-options-menu-item" onClick={openReleaseHistoryFromUserMenu} role="menuitem" type="button">
+                  <ListChecks size={16} aria-hidden="true" />
+                  <span>View releases</span>
+                </button>
+              </div>
               <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
                 {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
                 <span>{theme === "day" ? "Night mode" : "Day mode"}</span>
@@ -21861,6 +21891,101 @@ function ValkeyResourceMonitor({ cache }: { cache?: CacheStatus }) {
   );
 }
 
+function ReleaseHistoryView() {
+  const historyQuery = useQuery({
+    queryKey: ["release-history"],
+    queryFn: api.releaseHistory,
+    refetchInterval: 60000,
+  });
+  const history: ReleaseHistory | undefined = historyQuery.data;
+  const entries = history?.entries || [];
+  const updatedLabel = history?.updated_at
+    ? `Updated ${releaseDateLabel(history.updated_at)}`
+    : historyQuery.isFetching
+      ? "Loading releases"
+      : "No recorded releases";
+
+  return (
+    <section className="workbench release-history-workbench">
+      <div className="release-history-panel">
+        <div className="panel-title-row release-history-title-row">
+          <div>
+            <h2>Release History</h2>
+            <span>{updatedLabel}</span>
+          </div>
+          <Rocket size={20} aria-hidden="true" />
+        </div>
+        {entries.length ? (
+          <div className="release-history-list">
+            {entries.map((entry) => {
+              const releaseTime = releaseDateLabel(entry.released_at);
+              const commitTime = releaseDateLabel(entry.commit_date);
+              const shortHash = entry.git_sha_short || entry.git_sha?.slice(0, 12) || "unknown";
+              const changedFiles = entry.changed_files || [];
+              return (
+                <article className="release-history-entry" key={entry.id}>
+                  <div className="release-history-entry-head">
+                    <div>
+                      <strong>{entry.version || shortHash}</strong>
+                      <span>
+                        {releaseTime || "Recorded release"}
+                        {entry.branch ? ` / ${entry.branch}` : ""}
+                      </span>
+                    </div>
+                    <code title={entry.git_sha || shortHash}>{shortHash}</code>
+                  </div>
+                  <div className="release-history-meta-grid">
+                    <div>
+                      <Calendar size={14} aria-hidden="true" />
+                      <span>Date and time</span>
+                      <strong>{releaseTime || "Unavailable"}</strong>
+                    </div>
+                    <div>
+                      <Archive size={14} aria-hidden="true" />
+                      <span>Commit</span>
+                      <strong>{commitTime || "Unavailable"}</strong>
+                    </div>
+                    <div>
+                      <ListChecks size={14} aria-hidden="true" />
+                      <span>Changed files</span>
+                      <strong>{formatMetric(changedFiles.length)}</strong>
+                    </div>
+                  </div>
+                  {entry.summary ? <p className="release-history-summary">{entry.summary}</p> : null}
+                  <div className="release-history-change-list">
+                    {(entry.changes.length ? entry.changes : [{ title: "Release applied", description: "Medusa was updated to this build." }]).map(
+                      (change, index) => (
+                        <div className="release-history-change" key={`${entry.id}-${index}`}>
+                          <strong>{change.title}</strong>
+                          <p>{change.description}</p>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                  {changedFiles.length ? (
+                    <div className="release-history-files" aria-label="Changed files">
+                      {changedFiles.slice(0, 6).map((path) => (
+                        <code key={path}>{path}</code>
+                      ))}
+                      {changedFiles.length > 6 ? <span>+{formatMetric(changedFiles.length - 6)} more</span> : null}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="release-history-empty">
+            <Rocket size={22} aria-hidden="true" />
+            <strong>{historyQuery.isFetching ? "Loading releases" : "No releases recorded yet"}</strong>
+            <span>{historyQuery.isError ? actionFailureMessage("Could not load release history", historyQuery.error) : "The next applied main release will appear here."}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: AppDialogController }) {
   const queryClient = useQueryClient();
   const releaseCheckFeedback = useAsyncActionFeedback({ errorMs: 9000 });
@@ -25518,6 +25643,7 @@ export default function App() {
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenQueue={() => void requestActiveViewChange("queue")}
         onOpenRecentDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
+        onOpenReleaseHistory={() => void requestActiveViewChange("release-history")}
         onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
         onHydrateCache={() => hydrateCache.mutate()}
@@ -25728,6 +25854,7 @@ export default function App() {
             preferences={preferences.data}
           />
         ) : null}
+        {activeView === "release-history" ? <ReleaseHistoryView /> : null}
         {activeView === "status" ? <StatusView dashboard={dashboard.data} dialogs={appDialogs} /> : null}
         {activeView === "settings" ? (
           <SettingsView

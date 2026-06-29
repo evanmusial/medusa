@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 
 SCHEMA_VERSION = 1
+MAX_RELEASE_HISTORY_ENTRIES = 120
 DEFAULT_MAINTENANCE_WINDOW = "03:00-06:00"
 DEFAULT_MAINTENANCE_TIMEZONE = "America/Indiana/Indianapolis"
 DEFAULT_IDLE_GRACE_SECONDS = 300
@@ -102,6 +103,10 @@ def maintenance_request_path(args: argparse.Namespace) -> Path:
     return resolved_data_dir(args) / "deploy" / "maintenance-request.json"
 
 
+def release_history_path(args: argparse.Namespace) -> Path:
+    return args.history_file or resolved_data_dir(args) / "deploy" / "release-history.json"
+
+
 def env_file_value(repo: Path, key: str) -> str | None:
     env_path = repo / ".env"
     try:
@@ -177,6 +182,81 @@ def release_version(repo: Path, sha: str, branch: str, source: str) -> dict[str,
         "built_at": committed_at,
         "source": source,
     }
+
+
+def _ensure_sentence(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned[:1].upper() + cleaned[1:]
+    return cleaned if cleaned.endswith((".", "!", "?")) else f"{cleaned}."
+
+
+def _human_release_subject(subject: str) -> str:
+    cleaned = re.sub(r"\s+", " ", subject).strip()
+    conventional = re.match(r"^(?P<kind>[a-z]+)(?:\([^)]+\))?!?:\s*(?P<summary>.+)$", cleaned, flags=re.IGNORECASE)
+    if conventional:
+        cleaned = conventional.group("summary").strip()
+    return cleaned
+
+
+def release_changes(repo: Path, previous_sha: str, target_sha: str) -> list[dict[str, str]]:
+    output = git(repo, "log", "--reverse", "--format=%H%x1f%s", f"{previous_sha}..{target_sha}", check=False)
+    changes: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        _sha, _, subject = line.partition("\x1f")
+        title = _human_release_subject(subject)
+        description = _ensure_sentence(title)
+        if not title or description in seen:
+            continue
+        seen.add(description)
+        changes.append({"title": title, "description": description})
+    return changes
+
+
+def append_release_history(
+    args: argparse.Namespace,
+    *,
+    previous_sha: str,
+    target_sha: str,
+    target: dict[str, Any],
+    source: str,
+    classification: dict[str, Any] | None = None,
+) -> None:
+    if previous_sha == target_sha:
+        return
+    path = release_history_path(args)
+    payload = read_json(path) or {}
+    entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
+    if any(isinstance(entry, dict) and entry.get("git_sha") == target_sha for entry in entries):
+        return
+    changes = release_changes(args.repo.resolve(), previous_sha, target_sha)
+    if not changes:
+        changes = [{"title": "Release applied", "description": "Medusa was updated to this build."}]
+    changed_files = (classification or {}).get("changed_files")
+    entry = {
+        "id": str(target.get("git_sha") or target_sha),
+        "released_at": utc_now(),
+        "commit_date": target.get("built_at"),
+        "version": target.get("version"),
+        "git_sha": target.get("git_sha") or target_sha,
+        "git_sha_short": target.get("git_sha_short") or target_sha[:12],
+        "previous_git_sha": previous_sha,
+        "branch": target.get("branch"),
+        "source": source,
+        "summary": f"{len(changes)} change{'s' if len(changes) != 1 else ''} from {previous_sha[:12]} to {target_sha[:12]}.",
+        "changes": changes,
+        "changed_files": changed_files if isinstance(changed_files, list) else _changed_files(args.repo.resolve(), previous_sha, target_sha),
+    }
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "updated_at": utc_now(),
+        "entries": [entry, *entries][:MAX_RELEASE_HISTORY_ENTRIES],
+    }
+    atomic_write_json(path, payload)
 
 
 def docker_host_versions(repo: Path) -> dict[str, str | None]:
@@ -707,9 +787,10 @@ def auto_maintenance(args: argparse.Namespace) -> int:
 
         branch = current_branch(repo)
         upstream = upstream_ref(repo, args.remote, branch, args.upstream)
-        current_sha = git(repo, "rev-parse", "HEAD")
+        previous_sha = git(repo, "rev-parse", "HEAD")
         available_sha = git(repo, "rev-parse", upstream)
-        if current_sha != available_sha:
+        applied_git_update = previous_sha != available_sha
+        if applied_git_update:
             update_maintenance_status(
                 args,
                 "applying",
@@ -766,6 +847,15 @@ def auto_maintenance(args: argparse.Namespace) -> int:
         )
         payload["maintenance"] = maintenance
         atomic_write_json(status_file_path(args), payload)
+        if applied_git_update:
+            append_release_history(
+                args,
+                previous_sha=previous_sha,
+                target_sha=target_sha,
+                target=target,
+                source="maintenance",
+                classification=classification,
+            )
         return 0
     except Exception as exc:
         payload = read_json(status_file_path(args)) or {}
@@ -885,6 +975,14 @@ def apply(args: argparse.Namespace) -> int:
         )
         payload["maintenance"] = maintenance
         atomic_write_json(status_file_path(args), payload)
+        append_release_history(
+            args,
+            previous_sha=current_sha,
+            target_sha=target_sha,
+            target=target,
+            source="upgrade",
+            classification=classification,
+        )
         request_path.unlink(missing_ok=True)
         return 0
     except Exception as exc:
@@ -913,6 +1011,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--data-dir", type=Path, default=Path("data"), help="Medusa ignored data directory.")
         command.add_argument("--status-file", type=Path, default=None, help="Release status JSON path.")
         command.add_argument("--request-file", type=Path, default=None, help="Release request JSON path.")
+        command.add_argument("--history-file", type=Path, default=None, help="Release history JSON path.")
         command.add_argument("--remote", default="origin", help="Git remote to fetch.")
         command.add_argument("--upstream", default=None, help="Git ref to compare/apply, overriding @{upstream}.")
         command.add_argument(
