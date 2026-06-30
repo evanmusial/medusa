@@ -5458,6 +5458,11 @@ textarea {
   font-size: 12px;
 }
 
+.doi-value code {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
 .doi-value span {
   color: var(--muted);
 }
