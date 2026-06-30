@@ -13810,7 +13810,7 @@ button.history-row,
   font-weight: 500;
 }
 
-/* Cloud Run has real controls, so it keeps a tighter form row than read-only facts. */
+/* Cloud Run has real controls, so it uses a quiet form rhythm instead of cramming every action into one row. */
 .cloud-run-settings-panel .panel-title-row span,
 .cloud-run-settings-panel p,
 .cloud-run-settings-panel .empty-note,
@@ -13829,12 +13829,12 @@ button.history-row,
 }
 
 .cloud-run-control-row {
-  grid-template-columns: max-content minmax(160px, 180px) minmax(280px, 360px) max-content;
+  grid-template-columns: repeat(2, minmax(260px, 340px));
   justify-content: start;
-  align-items: end;
-  gap: 14px;
+  align-items: start;
+  gap: 16px 28px;
   border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
-  padding-block: 12px;
+  padding-block: 16px;
 }
 
 .cloud-run-control-row label {
@@ -13845,12 +13845,18 @@ button.history-row,
 }
 
 .cloud-run-control-row .toggle-line {
-  min-height: 38px;
+  grid-column: 1 / -1;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
-  align-self: end;
+  align-self: start;
   gap: 9px;
-  padding-bottom: 1px;
+  padding-bottom: 0;
+}
+
+.cloud-run-control-row > label:nth-of-type(2),
+.cloud-run-control-row > label:nth-of-type(3) {
+  width: 100%;
 }
 
 .cloud-run-control-row .toggle-line input {
@@ -13860,14 +13866,20 @@ button.history-row,
 .cloud-run-control-row input[type="number"],
 .cloud-run-control-row select {
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   color: var(--ink);
   font-size: 15px;
   font-weight: 500;
 }
 
-.cloud-run-control-row .async-action-slot,
+.cloud-run-control-row .async-action-slot {
+  grid-column: 1 / -1;
+  width: max-content;
+  justify-self: start;
+}
+
 .cloud-run-control-row button {
+  min-height: 44px;
   width: max-content;
 }
 
