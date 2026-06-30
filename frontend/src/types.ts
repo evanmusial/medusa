@@ -1164,6 +1164,7 @@ export type DocumentPage = {
   page_number: number;
   text?: string | null;
   normalized_text?: string | null;
+  reader_text?: string | null;
   text_source: string;
   low_text: boolean;
   image_uri?: string | null;

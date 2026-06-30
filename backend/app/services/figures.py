@@ -115,6 +115,23 @@ def _set_page_reading_text(page: object, text: str) -> None:
         setattr(page, "text", text)
 
 
+def document_reader_text_by_page_number(document: Document) -> dict[int, str]:
+    """Return page reading text with live figure markers derived from current Figure rows."""
+    pages_by_number = {page.page_number: page for page in sorted(document.pages, key=lambda item: item.page_number)}
+    text_by_page: dict[int, str] = {
+        page_number: _strip_figure_markers(_page_reading_text(page))[0]
+        for page_number, page in pages_by_number.items()
+    }
+    figures = sorted(
+        (figure for figure in document.figures if figure.id and figure.page_number in pages_by_number),
+        key=lambda figure: (figure.page_number or 0, _figure_sort_y(figure), figure.figure_label or "", figure.id),
+    )
+    for figure in figures:
+        page_number = int(figure.page_number or 0)
+        text_by_page[page_number] = _insert_figure_marker(text_by_page.get(page_number, ""), figure)
+    return text_by_page
+
+
 def sync_document_figure_markers(document: Document) -> dict[str, int]:
     """Keep Markdown figure markers in page text aligned with the current Figure rows."""
     pages_by_number = {page.page_number: page for page in sorted(document.pages, key=lambda item: item.page_number)}

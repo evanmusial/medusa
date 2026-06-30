@@ -10748,7 +10748,7 @@ function DocumentPanelContent({
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
     [document.pages],
   );
-  const pageReadableText = (page: (typeof pages)[number]) => page.normalized_text ?? page.text ?? "";
+  const pageReadableText = (page: (typeof pages)[number]) => page.reader_text ?? page.normalized_text ?? page.text ?? "";
   const fullText = pages.map(pageReadableText).filter(Boolean).join("\n\n");
   const currentPageIndex = pages.length ? Math.min(readerPageIndex, pages.length - 1) : 0;
   const currentPage = pages[currentPageIndex];

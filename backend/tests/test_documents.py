@@ -1148,6 +1148,59 @@ def test_document_detail_schema_includes_parsed_pages(monkeypatch, tmp_path):
         assert detail.pages[0].page_number == 1
         assert detail.pages[0].text == "Parsed page text."
         assert detail.pages[0].normalized_text == "Readable page text."
+        assert detail.pages[0].reader_text is None
+
+
+def test_document_detail_out_derives_inline_figure_reader_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import document_detail_out
+    from app.models import Document, DocumentPage, Figure
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Figure Reader Paper",
+            original_filename="figure-reader.pdf",
+            checksum_sha256="f" * 64,
+            processing_status="ready",
+            page_count=1,
+        )
+        document.pages.append(
+            DocumentPage(
+                page_number=1,
+                text="Opening paragraph.\n\nFigure 1. Diagram caption.\n\nClosing paragraph.",
+                low_text=False,
+                text_source="pymupdf",
+            )
+        )
+        figure = Figure(
+            page_number=1,
+            figure_label="Figure 1",
+            caption="Figure 1. Diagram caption.",
+            asset_uri="gs://bucket/figures/figure-1.png",
+            geometry={"bbox": [40, 80, 240, 220], "page_height": 400},
+        )
+        document.figures.append(figure)
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        detail = document_detail_out(document, db)
+        marker = f"![Figure 1](medusa-figure:{figure.id})"
+
+        assert "medusa-figure:" not in (document.pages[0].text or "")
+        assert marker in (detail.pages[0].reader_text or "")
+        assert "Figure 1. Diagram caption." in (detail.pages[0].reader_text or "")
+        assert "medusa-figure:" not in (detail.pages[0].text or "")
+
+        document.figures.remove(figure)
+        db.delete(figure)
+        db.flush()
+        detail = document_detail_out(document, db)
+
+        assert "medusa-figure:" not in (detail.pages[0].reader_text or "")
 
 
 def test_document_detail_includes_bibliography_generated_time(monkeypatch, tmp_path):

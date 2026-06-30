@@ -549,6 +549,7 @@ class DocumentPageOut(ApiModel):
     page_number: int
     text: str | None = None
     normalized_text: str | None = None
+    reader_text: str | None = None
     text_source: str
     low_text: bool
     image_uri: str | None = None

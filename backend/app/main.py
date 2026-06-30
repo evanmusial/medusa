@@ -116,6 +116,7 @@ from app.schemas import (
     DocumentCacheStatusOut,
     DocumentLockPatch,
     DocumentPatch,
+    DocumentPageOut,
     DocumentPagePatch,
     DocumentRecommendationDownloadCreate,
     DocumentRecommendationDownloadOut,
@@ -313,7 +314,12 @@ from app.services.maintenance import (
     maintenance_readiness,
 )
 from app.services.ai import get_ai_service
-from app.services.figures import apply_document_figures_page_candidates, preview_document_figures_page_from_storage, sync_document_figure_markers
+from app.services.figures import (
+    apply_document_figures_page_candidates,
+    document_reader_text_by_page_number,
+    preview_document_figures_page_from_storage,
+    sync_document_figure_markers,
+)
 from app.services.processing import (
     apply_document_citations,
     document_metadata,
@@ -1352,6 +1358,13 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     apa_citation_verification = document_field_verification(document, "apa_citation")
     apa_in_text_citation_verification = document_field_verification(document, "apa_in_text_citation")
     bibliography_verification = document_bibliography_verification(document)
+    reader_text_by_page_number = document_reader_text_by_page_number(document)
+    pages = [
+        DocumentPageOut.model_validate(page).model_copy(
+            update={"reader_text": reader_text_by_page_number.get(page.page_number)}
+        )
+        for page in document.pages
+    ]
     return DocumentDetail.model_validate(document).model_copy(
         update={
             "duplicate_count": duplicate_summary.get("duplicate_count", 0),
@@ -1372,6 +1385,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             ),
             "bibliography_verified_at": bibliography_verification["verified_at"] if bibliography_verification else None,
             "bibliography_verified_by": bibliography_verification["verified_by"] if bibliography_verification else None,
+            "pages": pages,
             "versions": [document_version_out(version) for version in document.versions],
         }
     )
