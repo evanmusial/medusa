@@ -1254,6 +1254,14 @@ function citationProvenanceLabel(document: DocumentDetail, kind: CitationKind) {
   return citationText(document, kind) ? "gpt-5.5" : "not generated";
 }
 
+function documentPageImageVersion(document: DocumentDetail) {
+  return [document.checksum_sha256, document.checksum_md5, String(document.page_count || 0)].filter(Boolean).join(":") || document.updated_at;
+}
+
+function documentPageImageSrc(document: DocumentDetail, pageNumber: number) {
+  return `/api/documents/${document.id}/pages/${pageNumber}/image?v=${encodeURIComponent(documentPageImageVersion(document))}`;
+}
+
 function selectedAnalysisModel(preferences: AppPreferences | undefined, key: string, fallback: string) {
   const task = preferences?.analysis_model_tasks.find((item) => item.key === key);
   return preferences?.analysis_models[key] || task?.selected_model || task?.default_model || fallback;
@@ -13255,7 +13263,7 @@ function DocumentPanelContent({
             <div className="visual-scan-page-map">
               <img
                 alt={`Page ${visualScanReview.page_number} visual scan map`}
-                src={`/api/documents/${document.id}/pages/${visualScanReview.page_number}/image`}
+                src={documentPageImageSrc(document, visualScanReview.page_number)}
               />
               {visualScanReview.candidates.map((candidate) => {
                 const boxStyle = visualScanCandidateBoxStyle(candidate);
@@ -13383,7 +13391,7 @@ function DocumentPanelContent({
               <img
                 alt={`Page ${pageNumber} of ${document.title}`}
                 loading={renderPageStack && pageNumber > 2 ? "lazy" : "eager"}
-                src={`/api/documents/${document.id}/pages/${pageNumber}/image`}
+                src={documentPageImageSrc(document, pageNumber)}
               />
               <figcaption>Page {pageNumber}</figcaption>
             </figure>

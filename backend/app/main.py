@@ -7738,6 +7738,7 @@ def document_page_image(
     page_number: int,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    v: Annotated[str | None, Query()] = None,
 ) -> FastAPIResponse:
     if page_number < 1:
         raise HTTPException(status_code=400, detail="Page number must be at least 1")
@@ -7765,10 +7766,21 @@ def document_page_image(
         raise
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Could not render page image: {exc}") from exc
+    current_version = ":".join(
+        part
+        for part in (
+            document.checksum_sha256 or "",
+            document.checksum_md5 or "",
+            str(document.page_count or 0),
+        )
+        if part
+    ) or (document.updated_at.isoformat() if document.updated_at else document.id)
+    etag = hashlib.sha256(f"{document.id}:{page_number}:{current_version}:{PDF_PREVIEW_RENDER_SCALE}".encode("utf-8")).hexdigest()
+    cache_control = "private, max-age=86400, immutable" if v == current_version else "private, no-cache"
     return FastAPIResponse(
         content=png,
         media_type="image/png",
-        headers={"Cache-Control": "private, max-age=86400"},
+        headers={"Cache-Control": cache_control, "ETag": f'"{etag}"'},
     )
 
 

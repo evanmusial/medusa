@@ -8,6 +8,7 @@ from app.services.extraction import (
     rows_to_markdown,
     sanitize_extracted_text,
     split_text_into_chunks,
+    _is_first_page_publisher_furniture,
     _split_marker_paginated_markdown,
 )
 
@@ -44,6 +45,32 @@ def test_blocks_to_text_reads_two_columns_before_crossing_page():
         "Right two",
         "Right three",
     ]
+
+
+def test_blocks_to_text_splits_front_matter_before_intro_columns():
+    blocks = [
+        LayoutBlock(50, 40, 550, 70, "Full width article title"),
+        LayoutBlock(55, 100, 155, 110, "article info"),
+        LayoutBlock(210, 100, 290, 110, "abstract"),
+        LayoutBlock(55, 125, 155, 185, "Article history and keywords"),
+        LayoutBlock(210, 125, 570, 190, "Abstract body"),
+        LayoutBlock(55, 230, 120, 240, "1. Introduction"),
+        LayoutBlock(55, 255, 300, 330, "Left introduction body"),
+        LayoutBlock(325, 255, 570, 330, "Right introduction body"),
+    ]
+
+    text = blocks_to_text(blocks, page_width=600)
+    parts = text.split("\n\n")
+
+    assert parts[0] == "Full width article title"
+    assert parts.index("Abstract body") < parts.index("1. Introduction")
+    assert parts.index("Left introduction body") < parts.index("Right introduction body")
+
+
+def test_first_page_publisher_furniture_requires_small_uncaptioned_header_region():
+    assert _is_first_page_publisher_furniture((500, 60, 560, 130), page_width=600, page_height=800, has_caption=False)
+    assert not _is_first_page_publisher_furniture((100, 260, 500, 430), page_width=600, page_height=800, has_caption=False)
+    assert not _is_first_page_publisher_furniture((500, 60, 560, 130), page_width=600, page_height=800, has_caption=True)
 
 
 def test_rows_to_markdown_preserves_table_shape_and_escapes_pipes():

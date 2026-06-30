@@ -134,6 +134,21 @@ def _is_usable_graphic_bbox(
     return _bbox_width(bbox) >= min_width and _bbox_height(bbox) >= min_height
 
 
+def _is_first_page_publisher_furniture(
+    bbox: tuple[float, float, float, float],
+    *,
+    page_width: float,
+    page_height: float,
+    has_caption: bool,
+) -> bool:
+    if has_caption:
+        return False
+    if bbox[3] > page_height * 0.30:
+        return False
+    area_ratio = _bbox_area(bbox) / max(1.0, page_width * page_height)
+    return area_ratio < 0.03
+
+
 _UNSAFE_TEXT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MARKER_PAGE_BREAK_RE = re.compile(r"(?:^|\n)\s*(?P<page>\d+)\s*\n-{10,}\s*(?:\n|$)")
 RAW_TEXT_EXTRACTOR_MARKER = "marker"
@@ -397,6 +412,27 @@ def _emit_columns(blocks: list[LayoutBlock], split_at: float) -> list[LayoutBloc
     return sorted(left, key=lambda block: (block.y0, block.x0)) + sorted(right, key=lambda block: (block.y0, block.x0))
 
 
+def _vertical_bands(blocks: list[LayoutBlock]) -> list[list[LayoutBlock]]:
+    if not blocks:
+        return []
+    ordered = sorted(blocks, key=lambda block: (block.y0, block.x0))
+    heights = sorted(_bbox_height((block.x0, block.y0, block.x1, block.y1)) for block in ordered if _bbox_height((block.x0, block.y0, block.x1, block.y1)) > 0)
+    line_height = heights[len(heights) // 4] if heights else 12.0
+    break_gap = min(36.0, max(22.0, line_height * 2.0))
+    bands: list[list[LayoutBlock]] = []
+    current: list[LayoutBlock] = []
+    current_bottom = 0.0
+    for block in ordered:
+        if current and block.y0 - current_bottom > break_gap:
+            bands.append(current)
+            current = []
+        current.append(block)
+        current_bottom = max(current_bottom, block.y1)
+    if current:
+        bands.append(current)
+    return bands
+
+
 def order_blocks_for_reading(blocks: list[LayoutBlock], page_width: float) -> list[LayoutBlock]:
     if not blocks:
         return []
@@ -412,12 +448,14 @@ def order_blocks_for_reading(blocks: list[LayoutBlock], page_width: float) -> li
     for wide in sorted(full_width, key=lambda block: (block.y0, block.x0)):
         before = [block for block in remaining_columns if block.y0 < wide.y0]
         if before:
-            ordered.extend(_emit_columns(before, split_at))
+            for band in _vertical_bands(before):
+                ordered.extend(_emit_columns(band, split_at))
             before_ids = {id(block) for block in before}
             remaining_columns = [block for block in remaining_columns if id(block) not in before_ids]
         ordered.append(wide)
     if remaining_columns:
-        ordered.extend(_emit_columns(remaining_columns, split_at))
+        for band in _vertical_bands(remaining_columns):
+            ordered.extend(_emit_columns(band, split_at))
     return ordered
 
 
@@ -726,6 +764,7 @@ def extract_pdf_figures(
             drawing_candidates = [(bbox, "vector_graphic") for bbox in _drawing_bboxes(page, min_width=min_width, min_height=min_height)]
             candidates = _unique_graphic_candidates([*image_candidates, *drawing_candidates])
             page_figures: list[ExtractedFigure] = []
+            skipped_publisher_furniture = 0
             for figure_index, (bbox, source) in enumerate(candidates, start=1):
                 if source != "page_image" and not _is_usable_graphic_bbox(bbox, min_width=min_width, min_height=min_height):
                     continue
@@ -738,6 +777,14 @@ def extract_pdf_figures(
                 if len(data) < min_bytes:
                     continue
                 caption = _nearest_caption(captions, bbox)
+                if page_index == 1 and _is_first_page_publisher_furniture(
+                    bbox,
+                    page_width=float(page.rect.width),
+                    page_height=float(page.rect.height),
+                    has_caption=caption is not None,
+                ):
+                    skipped_publisher_furniture += 1
+                    continue
                 page_figures.append(
                     ExtractedFigure(
                         page_number=page_index,
@@ -753,17 +800,19 @@ def extract_pdf_figures(
                         source=source,
                     )
                 )
-            figures.extend(
-                page_figures
-                or _fallback_embedded_images(
-                    pdf,
-                    page,
-                    page_index,
-                    min_width=min_width,
-                    min_height=min_height,
-                    min_bytes=min_bytes,
+            if page_figures:
+                figures.extend(page_figures)
+            elif not skipped_publisher_furniture:
+                figures.extend(
+                    _fallback_embedded_images(
+                        pdf,
+                        page,
+                        page_index,
+                        min_width=min_width,
+                        min_height=min_height,
+                        min_bytes=min_bytes,
+                    )
                 )
-            )
     return figures
 
 
