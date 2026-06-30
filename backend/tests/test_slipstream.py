@@ -239,6 +239,24 @@ def test_claim_returns_one_active_lease_for_competing_clients(monkeypatch, tmp_p
         assert db.query(SlipstreamLease).filter_by(job_id=job.id, status="active").count() == 1
 
 
+def test_import_preprocess_claim_reaches_stored_jobs_behind_server_side_queue(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.services.slipstream import claim_next_job_lease
+
+    with Session() as db:
+        client, _, _, _ = registered_client(db, capabilities=["import_preprocess"], capacity=2)
+        for index in range(20):
+            _, _, queued_job = import_job(db, checksum=f"{index:064x}")
+            queued_job.current_step = "normalizing_pages"
+        _, _, stored_job = import_job(db, checksum=f"{21:064x}")
+
+        claimed = claim_next_job_lease(db, client=client, job_types=["import"])
+
+        assert claimed is not None
+        assert claimed["work"]["job_id"] == stored_job.id
+        assert claimed["work"]["work_kind"] == "import_preprocess"
+
+
 def test_heartbeat_extends_lease_and_expiry_requeues_job(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.models import SlipstreamLease, utc_now

@@ -351,6 +351,7 @@ def _query_import_candidates(
     exclude_ids: set[str] | None = None,
     use_lease_filter: bool = True,
     stale_after_seconds: int | None = None,
+    current_steps: set[str] | None = None,
 ):
     settings = get_settings()
     stale_cutoff = utc_now() - timedelta(seconds=max(1, stale_after_seconds or settings.worker_stale_job_seconds))
@@ -359,6 +360,12 @@ def _query_import_candidates(
         .filter(or_(ImportJob.status == "queued", _stale_job_filter(ImportJob, stale_cutoff)))
         .order_by(asc(ImportJob.created_at), asc(ImportJob.id))
     )
+    if current_steps:
+        normalized_steps = {str(step) for step in current_steps}
+        step_filter = ImportJob.current_step.in_(normalized_steps)
+        if "stored" in normalized_steps:
+            step_filter = or_(step_filter, ImportJob.current_step.is_(None))
+        query = query.filter(step_filter)
     if use_lease_filter:
         query = query.filter(~_job_has_active_lease(SLIPSTREAM_JOB_IMPORT, ImportJob.id))
     if exclude_ids:
@@ -631,6 +638,7 @@ def claim_next_job_lease(
             exclude_ids=exclude_import_ids,
             use_lease_filter=leases_available,
             stale_after_seconds=local_stale_after_seconds if worker_kind not in REMOTE_WORKER_KINDS else None,
+            current_steps=IMPORT_PREPROCESS_STEPS if import_work_kind == SLIPSTREAM_CAP_IMPORT_PREPROCESS else None,
         ):
             if import_work_kind == SLIPSTREAM_CAP_IMPORT_PREPROCESS and str(job.current_step or "stored") not in IMPORT_PREPROCESS_STEPS:
                 continue

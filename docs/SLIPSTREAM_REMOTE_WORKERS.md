@@ -48,6 +48,8 @@ The local Compose profile is `docker-compose.slipstream.yml`. The ignored `.env.
 
 The worker loop backs off after empty claim responses and transient server errors instead of immediately refilling every open concurrency slot. It also ramps claim attempts one at a time while still allowing up to the configured number of active jobs, so a multi-slot worker can process multiple documents concurrently without issuing simultaneous claim races every time capacity opens. This protects the main Medusa backend from tight claim polling when the queue is temporarily empty, when all eligible jobs are already leased, or when HAProxy/backend health is recovering. Check-in failures are logged and retried in-process so a short proxy outage does not create a container restart loop.
 
+Import-preprocess claims filter for preprocessing-eligible steps (`stored` and `extracting`) before applying the claim window. This matters because the central worker may have many `normalizing_pages` continuation jobs queued ahead of newly stored documents; those continuation jobs belong to the server and must not block laptop workers from reaching stored import jobs.
+
 ## Laptop Worker Profile
 
 This machine has 4 efficiency cores and 12 performance cores. The worker profile was initially tested at four concurrent jobs, then lowered after production showed FastAPI/DB-session saturation under four simultaneous remote claim and heartbeat streams. The current production-safe profile is set for:
