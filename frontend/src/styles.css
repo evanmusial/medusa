@@ -13804,6 +13804,85 @@ button.history-row,
   font-weight: 500;
 }
 
+/* Cloud Run has real controls, so it keeps a tighter form row than read-only facts. */
+.cloud-run-settings-panel .panel-title-row span,
+.cloud-run-settings-panel p,
+.cloud-run-settings-panel .empty-note,
+.cloud-run-settings-panel .slipstream-metric-grid span,
+.cloud-run-settings-panel .cloud-run-config-grid span,
+.cloud-run-settings-panel .cloud-run-row span {
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1.35;
+}
+
+.cloud-run-settings-panel .panel-title-row h2 {
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.cloud-run-control-row {
+  grid-template-columns: max-content minmax(160px, 180px) minmax(280px, 360px) max-content;
+  justify-content: start;
+  align-items: end;
+  gap: 14px;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  padding-block: 12px;
+}
+
+.cloud-run-control-row label {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.cloud-run-control-row .toggle-line {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  align-self: end;
+  gap: 9px;
+  padding-bottom: 1px;
+}
+
+.cloud-run-control-row .toggle-line input {
+  flex: 0 0 auto;
+}
+
+.cloud-run-control-row input[type="number"],
+.cloud-run-control-row select {
+  width: 100%;
+  min-height: 40px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.cloud-run-control-row .async-action-slot,
+.cloud-run-control-row button {
+  width: max-content;
+}
+
+.cloud-run-settings-panel .slipstream-metric-grid strong,
+.cloud-run-settings-panel .cloud-run-config-grid strong,
+.cloud-run-settings-panel .cloud-run-row strong {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.cloud-run-command-row {
+  min-height: 48px;
+}
+
+.cloud-run-command-row code {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
 @media (max-width: 1180px) {
   .topbar {
     grid-template-columns: minmax(190px, 240px) minmax(220px, 420px) minmax(0, 1fr);
