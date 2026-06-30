@@ -23,7 +23,15 @@ EMBEDDED_REFERENCE_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 REFERENCE_COUNT_BOILERPLATE_RE = re.compile(
-    r"^\s*references\s*:\s*this\s+document\s+contains\s+references\s+to\s+\d+\s+other\s+documents?\.?\s*$",
+    r"^\s*references\s*:\s*this\s+document\s+contains\s+references\s+to\s+\d+\s+other\s+documents?\b.*$",
+    re.IGNORECASE,
+)
+PUBLISHER_RECOMMENDATION_HEADING_RE = re.compile(
+    r"^\s*users\s+who\s+downloaded\s+this\s+article\s+also\s+downloaded\b",
+    re.IGNORECASE,
+)
+CITED_BY_SECTION_RE = re.compile(
+    r"^\s*(?:this\s+(?:article|document|chapter)|the\s+(?:article|document|chapter))\s+has\s+been\s+cited\s+by\b",
     re.IGNORECASE,
 )
 REFERENCE_METHOD_SECTION_RE = re.compile(
@@ -71,7 +79,7 @@ REFERENCE_INITIAL_AUTHOR_START_RE = re.compile(
     re.IGNORECASE,
 )
 REFERENCE_SURNAME_INITIALS_START_RE = re.compile(
-    rf"^\s*{REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.\s*){{1,5}}(?:,|\s+and\b).+",
+    rf"^\s*{REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.?\s*){{1,5}}(?:,|\s+and\b).+",
     re.IGNORECASE,
 )
 REFERENCE_SURNAME_BARE_INITIALS_YEAR_RE = re.compile(
@@ -90,7 +98,7 @@ REFERENCE_ORGANIZATION_DOT_YEAR_RE = re.compile(
 )
 REFERENCE_ORGANIZATION_PAREN_YEAR_RE = re.compile(
     rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
-    r"\((?:18|19|20)\d{2}[a-z]?\)\.?\s+"
+    r"\((?:18|19|20)\d{2}[a-z]?\)\.?,?\s+"
 )
 REFERENCE_LEGAL_CASE_START_RE = re.compile(
     r"^\s*(?:"
@@ -122,7 +130,7 @@ INLINE_REFERENCE_START_CANDIDATE_RE = re.compile(
     rf"\s+(?={REFERENCE_AUTHOR_WORD}(?:\s+{REFERENCE_AUTHOR_WORD}){{0,4}},\s+[^.?!]{{0,220}}\b(?:18|19|20)\d{{2}}[a-z]?\b)"
 )
 INLINE_SURNAME_INITIALS_START_CANDIDATE_RE = re.compile(
-    rf"\s+(?={REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.\s*){{1,6}}(?:,|\s+and\b|\s+&)[^\n]{{0,260}}?\b(?:18|19|20)\d{{2}}[a-z]?\b)",
+    rf"\s+(?={REFERENCE_AUTHOR_WORD},\s+(?:[A-Z]\.?\s*){{1,6}}(?:,|\s+and\b|\s+&)[^\n]{{0,260}}?\b(?:18|19|20)\d{{2}}[a-z]?\b)",
     re.IGNORECASE,
 )
 INLINE_SURNAME_BARE_INITIALS_YEAR_START_CANDIDATE_RE = re.compile(
@@ -140,7 +148,7 @@ INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE = re.compile(
 )
 INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE = re.compile(
     rf"\s+(?=(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
-    r"\((?:18|19|20)\d{2}[a-z]?\)\.?\s+)"
+    r"\((?:18|19|20)\d{2}[a-z]?\)\.?,?\s+)"
 )
 INLINE_CITATION_KEY_START_CANDIDATE_RE = re.compile(
     r"\s+(?=\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\](?:\s+|(?=[A-Z])|$))"
@@ -214,6 +222,7 @@ GARBLED_SYMBOL_RE = re.compile(r"[#@$%^&*=<>\\|~]{2,}|(?:[!?][!?#<>{}=])")
 VISUAL_OCR_TAIL_PAGE_LIMIT = 4
 VISUAL_OCR_RENDER_ZOOM = 2.0
 VISUAL_OCR_ERROR_MAX_LENGTH = 700
+VISUAL_OCR_TWO_COLUMN_SPLIT_FRACTION = 0.60
 
 
 class VisualOcrUnavailable(RuntimeError):
@@ -329,6 +338,8 @@ def _line_starts_reference_section(line: str) -> bool:
 
 def _line_stops_reference_section(line: str) -> bool:
     plain = _strip_markdown(line).strip()
+    if CITED_BY_SECTION_RE.match(plain) or PUBLISHER_RECOMMENDATION_HEADING_RE.match(plain):
+        return True
     if plain.lower() in {"table 1", "report documentation page"}:
         return True
     if bool(STOP_HEADING_RE.match(plain)) and len(plain.split()) <= 8:
@@ -349,7 +360,13 @@ def _trim_inline_reference_stop(line: str) -> tuple[str, bool]:
 
 def _line_is_page_furniture(line: str) -> bool:
     plain = _strip_markdown(line).strip()
-    return bool(PAGE_FURNITURE_RE.match(plain) or PAGE_NUMBER_RE.match(plain))
+    return bool(
+        PAGE_FURNITURE_RE.match(plain)
+        or PAGE_NUMBER_RE.match(plain)
+        or CITED_BY_SECTION_RE.match(plain)
+        or PUBLISHER_RECOMMENDATION_HEADING_RE.match(plain)
+        or REFERENCE_COUNT_BOILERPLATE_RE.match(plain)
+    )
 
 
 def _reference_section_inline_text(line: str) -> str:
@@ -711,34 +728,56 @@ def _visual_ocr_pdf_page_lines(path: Path) -> tuple[list[tuple[int, str]], list[
     return rows, page_numbers
 
 
-def _visual_ocr_bibliography_from_pdf(path: Path) -> dict[str, Any]:
-    try:
-        page_rows, attempted_pages = _visual_ocr_pdf_page_lines(path)
-    except VisualOcrUnavailable as exc:
-        return {
-            "bibliography": None,
-            "evidence": {
-                "source": "visual_ocr",
-                "status": "ocr_unavailable",
-                "error": str(exc)[:VISUAL_OCR_ERROR_MAX_LENGTH],
-            },
-        }
-    except Exception as exc:
-        return {
-            "bibliography": None,
-            "evidence": {
-                "source": "visual_ocr",
-                "status": "ocr_error",
-                "error": str(exc)[:VISUAL_OCR_ERROR_MAX_LENGTH],
-            },
-        }
+def _visual_ocr_pdf_page_lines_column_ordered(path: Path) -> tuple[list[tuple[int, str]], list[int]]:
+    import fitz
 
+    from app.services.ocr import OcrService
+
+    ocr = OcrService()
+    if not getattr(ocr, "available", False):
+        raise VisualOcrUnavailable("OCR is not configured.")
+
+    rows: list[tuple[int, str]] = []
+    with fitz.open(path) as pdf:
+        page_numbers = _visual_ocr_candidate_pages(len(pdf))
+        with TemporaryDirectory(prefix="medusa-bibliography-ocr-columns-") as temp_dir:
+            temp_root = Path(temp_dir)
+            for page_number in page_numbers:
+                page = pdf[page_number - 1]
+                rect = page.rect
+                split_x = rect.x0 + (rect.width * VISUAL_OCR_TWO_COLUMN_SPLIT_FRACTION)
+                clips = [
+                    fitz.Rect(rect.x0, rect.y0, split_x, rect.y1),
+                    fitz.Rect(split_x, rect.y0, rect.x1, rect.y1),
+                ]
+                for column_index, clip in enumerate(clips):
+                    pixmap = page.get_pixmap(
+                        matrix=fitz.Matrix(VISUAL_OCR_RENDER_ZOOM, VISUAL_OCR_RENDER_ZOOM),
+                        clip=clip,
+                        alpha=False,
+                    )
+                    image_path = temp_root / f"page-{page_number}-column-{column_index}.png"
+                    pixmap.save(image_path)
+                    text = ocr.image_to_text(image_path) or ""
+                    for line in sanitize_extracted_text(text).replace("\r\n", "\n").replace("\r", "\n").splitlines():
+                        if line.strip():
+                            rows.append((page_number, line.strip()))
+    return rows, page_numbers
+
+
+def _visual_ocr_result_from_page_rows(
+    page_rows: list[tuple[int, str]],
+    attempted_pages: list[int],
+    *,
+    layout: str,
+) -> dict[str, Any]:
     evidence_base: dict[str, Any] = {
         "source": "visual_ocr",
         "page_start": min(attempted_pages) if attempted_pages else None,
         "page_end": max(attempted_pages) if attempted_pages else None,
         "pages_attempted": attempted_pages,
         "ocr_line_count": len(page_rows),
+        "ocr_layout": layout,
     }
     if not page_rows:
         return {"bibliography": None, "evidence": {**evidence_base, "status": "empty"}}
@@ -764,6 +803,49 @@ def _visual_ocr_bibliography_from_pdf(path: Path) -> dict[str, Any]:
             "entry_count_estimate": _entry_count(text),
         },
     }
+
+
+def _visual_ocr_bibliography_from_pdf(path: Path) -> dict[str, Any]:
+    try:
+        page_rows, attempted_pages = _visual_ocr_pdf_page_lines(path)
+    except VisualOcrUnavailable as exc:
+        return {
+            "bibliography": None,
+            "evidence": {
+                "source": "visual_ocr",
+                "status": "ocr_unavailable",
+                "error": str(exc)[:VISUAL_OCR_ERROR_MAX_LENGTH],
+            },
+        }
+    except Exception as exc:
+        return {
+            "bibliography": None,
+            "evidence": {
+                "source": "visual_ocr",
+                "status": "ocr_error",
+                "error": str(exc)[:VISUAL_OCR_ERROR_MAX_LENGTH],
+            },
+        }
+
+    full_page_result = _visual_ocr_result_from_page_rows(page_rows, attempted_pages, layout="full_page")
+    if full_page_result.get("bibliography"):
+        return full_page_result
+
+    try:
+        column_rows, column_attempted_pages = _visual_ocr_pdf_page_lines_column_ordered(path)
+    except Exception:
+        return full_page_result
+
+    column_result = _visual_ocr_result_from_page_rows(
+        column_rows,
+        column_attempted_pages,
+        layout="two_column",
+    )
+    if column_result.get("bibliography"):
+        column_evidence = dict(column_result.get("evidence") or {})
+        column_evidence["fallback_from_visual_ocr"] = full_page_result.get("evidence") or {}
+        return {"bibliography": column_result.get("bibliography"), "evidence": column_evidence}
+    return full_page_result
 
 
 def _with_visual_ocr_not_found_evidence(base: dict[str, Any], visual_ocr: dict[str, Any]) -> dict[str, Any]:
@@ -866,7 +948,12 @@ def _split_inline_reference_lines(line: str) -> list[str]:
                 continue
         if not prefix_plain:
             continue
-        if prefix_plain.endswith((".", ".)", "〉", "}", "]")) or REFERENCE_URL_DOI_RE.search(prefix_plain):
+        ends_after_page_span = _reference_text_ends_after_page_span(prefix_plain)
+        if (
+            prefix_plain.endswith((".", ".)", "〉", "}", "]"))
+            or REFERENCE_URL_DOI_RE.search(prefix_plain)
+            or ends_after_page_span
+        ):
             split_offsets.append(offset)
             segment_start = offset
     if not split_offsets:
@@ -882,6 +969,16 @@ def _split_inline_reference_lines(line: str) -> list[str]:
     if final:
         parts.append(final)
     return parts
+
+
+def _reference_text_ends_after_page_span(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:pp?\.?|pages?)\s*[\d\s,;:.\-\u2010-\u2015]+[,;]$",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _normalize_reference_entry(parts: list[str]) -> str:
@@ -907,7 +1004,7 @@ def _reference_entry_has_terminal_evidence(parts: list[str]) -> bool:
     if not REFERENCE_YEAR_RE.search(text_without_prefix):
         return False
     if text_without_prefix.endswith((",", ";", ":")):
-        return False
+        return _reference_text_ends_after_page_span(text_without_prefix)
     return bool(
         REFERENCE_URL_DOI_RE.search(text_without_prefix)
         or re.search(r"[.!?\]\)\u3009\u232a\u27e9\u300b]$", text_without_prefix)

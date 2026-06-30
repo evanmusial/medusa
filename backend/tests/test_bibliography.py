@@ -176,6 +176,85 @@ def test_extract_document_bibliography_uses_visual_ocr_tail_pages(monkeypatch, t
     assert result["bibliography"].splitlines()[0].startswith("D. Denning")
 
 
+def test_extract_document_bibliography_uses_column_ocr_when_full_page_ocr_mixes_columns(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Two Column OCR References Paper",
+        original_filename="two-column-ocr-references.pdf",
+        checksum_sha256="4" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=11, normalized_text="@ H%',, 4!!(# BB? ==!\" A & -? I.A\"A"))
+    pdf_path = tmp_path / "references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(bibliography_service, "_formatted_bibliography_from_pdf", lambda _path: None)
+    monkeypatch.setattr(
+        bibliography_service,
+        "_visual_ocr_pdf_page_lines",
+        lambda _path: (
+            [
+                (11, "References International Conference on Multimedia"),
+                (11, "Communications, Southampton, UK, pp. 131-5."),
+                (12, "This article has been cited by:"),
+                (12, "1. Unrelated Citing Article. 2014. Information & Management 51, 138-151."),
+            ],
+            [9, 10, 11, 12],
+        ),
+    )
+    monkeypatch.setattr(
+        bibliography_service,
+        "_visual_ocr_pdf_page_lines_column_ordered",
+        lambda _path: (
+            [
+                (11, "References"),
+                (11, "Anderson, J.P. (1980), Computer Security Threat Monitoring and Surveillance, James P."),
+                (11, "Anderson Co., April, Fort Washington, PA."),
+                (11, "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford."),
+                (11, "Brunnstein, K., Fischer-Hubner, S. and Swimmer, M. (1990), Classification of computer anomalies."),
+                (
+                    11,
+                    "Gliss, H. (1990), A survey of computer abuse, in Proceedings of Compsec 90 International, "
+                    "10-12 October, London, pp. 495-517, Haga, W.J. and Zviran, M. (1991), "
+                    "Question-and-answer passwords: an empirical evaluation, Information Systems, Vol. 16 No. 3, pp. 335-43.",
+                ),
+                (
+                    11,
+                    "Mukherjee, B., Heberlein, L.T. and Levitt, K.N. (1994), Network intrusion detection, "
+                    "IEEE Networks, Vol. 8 No. 3, pp. 26-41. National Computing Centre (1998), "
+                    "BISS '98 Information Security. The True Cost to Business, National Computing Centre Limited, "
+                    "Manchester, UK. Warren, M.J, Sanders, P.W. and Gaunt, P.N. (1995), Participational management.",
+                ),
+                (12, "This article has been cited by:"),
+                (12, "1. Unrelated Citing Article. 2014. Information & Management 51, 138-151."),
+            ],
+            [9, 10, 11, 12],
+        ),
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path), visual_ocr=True)
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["source"] == "visual_ocr"
+    assert result["evidence"]["ocr_layout"] == "two_column"
+    assert result["evidence"]["page_start"] == 11
+    assert result["evidence"]["page_end"] == 11
+    assert entries == [
+        "Anderson, J.P. (1980), Computer Security Threat Monitoring and Surveillance, James P. Anderson Co., April, Fort Washington, PA.",
+        "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford.",
+        "Brunnstein, K., Fischer-Hubner, S. and Swimmer, M. (1990), Classification of computer anomalies.",
+        "Gliss, H. (1990), A survey of computer abuse, in Proceedings of Compsec 90 International, 10-12 October, London, pp. 495-517,",
+        "Haga, W.J. and Zviran, M. (1991), Question-and-answer passwords: an empirical evaluation, Information Systems, Vol. 16 No. 3, pp. 335-43.",
+        "Mukherjee, B., Heberlein, L.T. and Levitt, K.N. (1994), Network intrusion detection, IEEE Networks, Vol. 8 No. 3, pp. 26-41.",
+        "National Computing Centre (1998), BISS '98 Information Security. The True Cost to Business, National Computing Centre Limited, Manchester, UK.",
+        "Warren, M.J, Sanders, P.W. and Gaunt, P.N. (1995), Participational management.",
+    ]
+    assert "This article has been cited by" not in result["bibliography"]
+    assert "Unrelated Citing Article" not in result["bibliography"]
+
+
 def test_extract_document_bibliography_splits_ocr_bare_initial_entry_and_strips_footer(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service
@@ -1066,6 +1145,54 @@ def test_extract_document_bibliography_rejects_publisher_reference_count_front_m
         "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford.",
     ]
     assert "Users who downloaded" not in result["bibliography"]
+
+
+def test_extract_document_bibliography_stops_before_emerald_cited_by_tail(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Emerald References Paper",
+        original_filename="emerald-references.pdf",
+        checksum_sha256="7" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=1, normalized_text="References\nPlain fallback."))
+    pdf_path = tmp_path / "emerald-references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (
+                1,
+                "References: this document contains references to 16 other documents. "
+                "To copy this document: permissions@emeraldinsight.com",
+            ),
+            (1, "Users who downloaded this article also downloaded:"),
+            (1, '(2005), "Unrelated publisher recommendation", Management Decision, Vol. 43.'),
+            (11, "References"),
+            (11, "Anderson, J.P. (1980), Computer Security Threat Monitoring and Surveillance, James P."),
+            (11, "Anderson Co., April, Fort Washington, PA."),
+            (11, "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford."),
+            (12, "This article has been cited by:"),
+            (12, "1. Richard Baskerville, Paolo Spagnoletti, Jongwoo Kim. 2014. Incident-centered information security."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+
+    assert result["evidence"]["page_start"] == 11
+    assert result["evidence"]["page_end"] == 11
+    assert result["bibliography"].splitlines() == [
+        "Anderson, J.P. (1980), Computer Security Threat Monitoring and Surveillance, James P. Anderson Co., April, Fort Washington, PA.",
+        "Bishop, C.M. (1995), Neural Networks for Pattern Recognition, Oxford University Press, Oxford.",
+    ]
+    assert "permissions@emeraldinsight.com" not in result["bibliography"]
+    assert "Users who downloaded" not in result["bibliography"]
+    assert "This article has been cited by" not in result["bibliography"]
+    assert "Richard Baskerville" not in result["bibliography"]
 
 
 def test_extract_document_bibliography_marks_symbol_heavy_text_for_ocr():
