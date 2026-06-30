@@ -20,7 +20,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response as FastAPIResponse
 from sqlalchemy import case, func, or_, select, text
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload, load_only, selectinload
 
 from app.config import get_settings
 from app.database import engine, get_db, init_db, is_postgres, session_scope
@@ -957,6 +957,50 @@ def apply_document_filters(
     if citation_status:
         query = query.filter(Document.citation_status == citation_status)
     return query, search_rank
+
+
+DOCUMENT_LIST_ROW_COLUMNS = (
+    Document.id,
+    Document.title,
+    Document.authors,
+    Document.publication_year,
+    Document.rich_summary,
+    Document.citation_status,
+    Document.doi,
+    Document.metadata_evidence,
+    Document.page_count,
+    Document.processing_status,
+    Document.read_status,
+    Document.priority,
+    Document.locked_at,
+    Document.updated_at,
+    Document.duplicate_count,
+    Document.duplicate_reasons,
+)
+
+
+def document_list_row_load_options():
+    return (
+        load_only(*DOCUMENT_LIST_ROW_COLUMNS),
+        selectinload(Document.tags),
+        selectinload(Document.domains),
+    )
+
+
+def document_page_boundary_title(query, order_columns: Iterable[Any], index: int) -> str | None:
+    if index < 0:
+        return None
+    title = (
+        query.order_by(None)
+        .order_by(*order_columns)
+        .with_entities(Document.title)
+        .offset(index)
+        .limit(1)
+        .scalar()
+    )
+    if not title:
+        return None
+    return str(title)
 
 
 def document_title_order_columns(db: Session):
@@ -2933,10 +2977,12 @@ def refresh_cache(
                 "duplicate_status": "",
                 "health_status": "",
                 "all": False,
+                "focus_document_id": "",
                 "offset": 0,
                 "limit": 50,
+                "sort": "title",
             },
-            "loader": lambda: document_list_rows_out(db, offset=0, limit=50),
+            "loader": lambda: document_list_rows_out(db, offset=0, limit=50, sort="title"),
         },
     ]
     for warmer in warmers:
@@ -3096,8 +3142,10 @@ def hydrate_cache_payloads(
                     "duplicate_status": duplicate_status,
                     "health_status": health_status,
                     "all": False,
+                    "focus_document_id": "",
                     "offset": offset,
                     "limit": resolved_page_size,
+                    "sort": "title",
                 }
 
                 def load_page(offset: int = offset) -> DocumentListOut:
@@ -3114,6 +3162,7 @@ def hydrate_cache_payloads(
                         all_results=False,
                         offset=offset,
                         limit=resolved_page_size,
+                        sort="title",
                     )
 
                 result = hydrate_payload(
@@ -4819,7 +4868,7 @@ def document_list_rows_out(
     sort: str = "title",
 ) -> DocumentListOut:
     normalized_sort = sort if sort in {"title", "date", "page_count"} else "title"
-    query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
+    query = filter_library_visible_documents(db.query(Document))
     query, search_rank = apply_document_filters(
         query,
         db,
@@ -4836,11 +4885,16 @@ def document_list_rows_out(
         query = query.filter(Document.duplicate_count == 0)
     query = apply_document_health_filter(query, health_status)
 
-    total_count = int(query.order_by(None).count())
-    total_page_count = int(query.order_by(None).with_entities(func.coalesce(func.sum(Document.page_count), 0)).scalar() or 0)
-    latest_updated = query.order_by(None).with_entities(func.max(Document.updated_at)).scalar()
+    total_count, total_page_count, latest_updated = query.order_by(None).with_entities(
+        func.count(Document.id),
+        func.coalesce(func.sum(Document.page_count), 0),
+        func.max(Document.updated_at),
+    ).one()
+    total_count = int(total_count or 0)
+    total_page_count = int(total_page_count or 0)
     order_columns = [search_rank.desc()] if search_rank is not None else []
     order_columns.extend(document_list_order_columns(db, normalized_sort))
+    row_query = query.options(*document_list_row_load_options())
     focus_index: int | None = None
     if focus_document_id:
         ordered_ids = [row[0] for row in query.order_by(None).order_by(*order_columns).with_entities(Document.id).all()]
@@ -4850,12 +4904,22 @@ def document_list_rows_out(
             focus_index = None
         if focus_index is not None and not all_results and not (offset <= focus_index < offset + limit):
             offset = (focus_index // limit) * limit
+    previous_page_boundary_title = None
+    next_page_boundary_title = None
     if all_results:
         offset = 0
-        documents = query.order_by(None).order_by(*order_columns).all()
+        documents = row_query.order_by(None).order_by(*order_columns).all()
         limit = len(documents)
     else:
-        documents = query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
+        if offset > 0:
+            previous_page_boundary_title = document_page_boundary_title(query, order_columns, max(0, offset - limit))
+        if offset + limit < total_count:
+            next_page_boundary_title = document_page_boundary_title(
+                query,
+                order_columns,
+                min(offset + limit * 2, total_count) - 1,
+            )
+        documents = row_query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
     document_ids = [document.id for document in documents]
     project_map = project_summaries_for_documents(db, document_ids)
     figure_count_map = figure_counts_for_documents(db, document_ids)
@@ -4877,6 +4941,8 @@ def document_list_rows_out(
         revision=":".join(revision_parts),
         focus_document_id=focus_document_id,
         focus_index=focus_index,
+        previous_page_boundary_title=previous_page_boundary_title,
+        next_page_boundary_title=next_page_boundary_title,
     )
 
 

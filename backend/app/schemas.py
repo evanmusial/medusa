@@ -693,6 +693,8 @@ class DocumentListOut(BaseModel):
     revision: str
     focus_document_id: str | None = None
     focus_index: int | None = None
+    previous_page_boundary_title: str | None = None
+    next_page_boundary_title: str | None = None
 
 
 class DocumentDetail(DocumentSummary):

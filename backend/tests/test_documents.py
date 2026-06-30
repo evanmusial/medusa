@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 
@@ -879,6 +879,7 @@ def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
         limited_documents = list_documents(object(), db, limit=80)
         first_page = list_document_rows(object(), db, limit=40)
         second_page = list_document_rows(object(), db, offset=40, limit=40)
+        last_page = list_document_rows(object(), db, offset=120, limit=40)
         all_page = list_document_rows(object(), db, offset=40, limit=40, all_results=True)
         focused_document_id = db.query(Document.id).filter(Document.title == "Document 087").scalar()
         focused_page = list_document_rows(object(), db, limit=40, focus_document_id=focused_document_id)
@@ -896,20 +897,89 @@ def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
     assert first_page.offset == 0
     assert first_page.limit == 40
     assert first_page.has_more is True
+    assert first_page.previous_page_boundary_title is None
+    assert first_page.next_page_boundary_title == "Document 079"
     assert len(second_page.items) == 40
     assert second_page.offset == 40
     assert second_page.has_more is True
+    assert second_page.previous_page_boundary_title == "Document 000"
+    assert second_page.next_page_boundary_title == "Document 119"
+    assert len(last_page.items) == 5
+    assert last_page.offset == 120
+    assert last_page.has_more is False
+    assert last_page.previous_page_boundary_title == "Document 080"
+    assert last_page.next_page_boundary_title is None
     assert len(all_page.items) == 125
     assert all_page.offset == 0
     assert all_page.limit == 125
     assert all_page.has_more is False
+    assert all_page.previous_page_boundary_title is None
+    assert all_page.next_page_boundary_title is None
     assert focused_page.focus_document_id == focused_document_id
     assert focused_page.focus_index == 87
     assert focused_page.offset == 80
+    assert focused_page.previous_page_boundary_title == "Document 040"
+    assert focused_page.next_page_boundary_title == "Document 124"
     assert [document.title for document in focused_page.items][:2] == ["Document 080", "Document 081"]
     assert any(document.id == focused_document_id for document in focused_page.items)
     assert missing_focus_page.focus_index is None
     assert missing_focus_page.offset == 0
+
+
+def test_document_list_rows_omits_heavy_text_columns(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_document_rows
+    from app.models import Document
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(
+                    title="Compact row",
+                    original_filename="compact-row.pdf",
+                    checksum_sha256="a" * 64,
+                    processing_status="ready",
+                    search_text="heavy search text " * 1000,
+                    bibliography="heavy bibliography " * 1000,
+                    apa_citation="heavy citation " * 1000,
+                    apa_in_text_citation="heavy in-text citation " * 1000,
+                ),
+                Document(
+                    title="Second row",
+                    original_filename="second-row.pdf",
+                    checksum_sha256="b" * 64,
+                    processing_status="ready",
+                    search_text="more heavy search text " * 1000,
+                ),
+            ]
+        )
+        db.commit()
+
+        statements: list[str] = []
+
+        def record_select(_conn, _cursor, statement, _parameters, _context, _executemany):
+            normalized = " ".join(str(statement).lower().split())
+            if normalized.startswith("select"):
+                statements.append(normalized)
+
+        bind = db.get_bind()
+        event.listen(bind, "before_cursor_execute", record_select)
+        try:
+            page = list_document_rows(object(), db, limit=1)
+        finally:
+            event.remove(bind, "before_cursor_execute", record_select)
+
+    assert len(page.items) == 1
+    row_selects = [statement for statement in statements if " from documents " in statement and " limit " in statement]
+    assert row_selects
+    row_select = row_selects[-1]
+    assert "documents.search_text" not in row_select
+    assert "documents.bibliography" not in row_select
+    assert "documents.apa_citation" not in row_select
+    assert "documents.apa_in_text_citation" not in row_select
 
 
 def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):

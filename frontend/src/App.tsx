@@ -235,6 +235,11 @@ type BackgroundJob = {
   createdAt: number;
   completedAt?: number;
 };
+type ActionProgressState = {
+  progress: number;
+  running: boolean;
+  visible: boolean;
+};
 type ConcordanceActivitySnapshot = {
   activeJobs: number;
   dashboardFetchedAt: number;
@@ -479,6 +484,9 @@ const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const ASYNC_ACTION_MESSAGE_MAX_WIDTH = 360;
+const ACTION_PROGRESS_INTERVAL_MS = 180;
+const ACTION_PROGRESS_EASING_MS = 4200;
+const ACTION_PROGRESS_COMPLETE_MS = 900;
 const BACKGROUND_JOB_RETENTION_MS = 18000;
 const BACKGROUND_JOB_MISSING_SERVER_GRACE_MS = 10000;
 const BACKGROUND_JOB_SERVER_IDLE_GRACE_MS = 10000;
@@ -1697,6 +1705,59 @@ function useAsyncActionFeedbackMap() {
   };
 }
 
+function useActionProgress(active: boolean): ActionProgressState {
+  const [state, setState] = useState<ActionProgressState>({ progress: 0, running: false, visible: false });
+  const startedAtRef = useRef<number | null>(null);
+  const completeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (completeTimerRef.current !== null) {
+      window.clearTimeout(completeTimerRef.current);
+      completeTimerRef.current = null;
+    }
+
+    if (active) {
+      if (startedAtRef.current === null) startedAtRef.current = Date.now();
+      const updateProgress = () => {
+        const startedAt = startedAtRef.current ?? Date.now();
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        const eased = 1 + (1 - Math.exp(-elapsed / ACTION_PROGRESS_EASING_MS)) * 98;
+        setState({ progress: progressPercent(Math.min(99, eased)), running: true, visible: true });
+      };
+      updateProgress();
+      const interval = window.setInterval(updateProgress, ACTION_PROGRESS_INTERVAL_MS);
+      return () => window.clearInterval(interval);
+    }
+
+    if (startedAtRef.current !== null) {
+      startedAtRef.current = null;
+      setState({ progress: 100, running: false, visible: true });
+      completeTimerRef.current = window.setTimeout(() => {
+        completeTimerRef.current = null;
+        setState({ progress: 0, running: false, visible: false });
+      }, ACTION_PROGRESS_COMPLETE_MS);
+      return () => {
+        if (completeTimerRef.current !== null) {
+          window.clearTimeout(completeTimerRef.current);
+          completeTimerRef.current = null;
+        }
+      };
+    }
+
+    setState((current) => (current.visible || current.progress ? { progress: 0, running: false, visible: false } : current));
+    return undefined;
+  }, [active]);
+
+  useEffect(
+    () => () => {
+      if (completeTimerRef.current !== null) window.clearTimeout(completeTimerRef.current);
+    },
+    [],
+  );
+
+  return state;
+}
+
 function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | null, busy = false) {
   return [className, busy ? "async-feedback-progress" : "", feedback ? `async-feedback-${feedback.tone}` : ""]
     .filter(Boolean)
@@ -2902,6 +2963,10 @@ function libraryListScopeKey(query: string, filters: DocumentFilters, pageSize: 
     pageSize,
     sort,
   ]);
+}
+
+function paginationTitleHint(title?: string | null) {
+  return Array.from((title || "").trim()).slice(0, 3).join("");
 }
 
 function selectOptionSearchText(option: SelectMenuOption) {
@@ -5819,6 +5884,8 @@ function Login() {
 function Header({
   backgroundJobs,
   cacheHydrating,
+  cacheHydrateProgress,
+  cacheRefreshProgress,
   cacheRefreshing,
   cacheStatus,
   completedImport,
@@ -5845,6 +5912,8 @@ function Header({
 }: {
   backgroundJobs: BackgroundJob[];
   cacheHydrating: boolean;
+  cacheHydrateProgress: ActionProgressState;
+  cacheRefreshProgress: ActionProgressState;
   cacheRefreshing: boolean;
   cacheStatus?: CacheStatus;
   completedImport?: IngestionHistory | null;
@@ -5932,6 +6001,14 @@ function Header({
   const cacheUsagePercent = cacheMemoryPercent(cacheStatus);
   const cacheGlanceTone = valkeyResourceTone(cacheUsagePercent);
   const cacheGlanceMeterStyle = { "--user-cache-used": `${progressPercent(cacheUsagePercent ?? 0)}%` } as CSSProperties;
+  const cacheRefreshPercent = cacheRefreshProgress.visible ? cacheRefreshProgress.progress : null;
+  const cacheHydratePercent = cacheHydrateProgress.visible ? cacheHydrateProgress.progress : null;
+  const cacheRefreshProgressStyle = cacheRefreshProgress.visible
+    ? ({ "--user-cache-action-progress": `${cacheRefreshProgress.progress}%` } as CSSProperties)
+    : undefined;
+  const cacheHydrateProgressStyle = cacheHydrateProgress.visible
+    ? ({ "--user-cache-action-progress": `${cacheHydrateProgress.progress}%` } as CSSProperties)
+    : undefined;
   const cacheGlance = cacheStatus
     ? cacheStatus.reachable
       ? cacheUsagePercent !== null
@@ -6009,13 +6086,51 @@ function Header({
                   </div>
                 </div>
               </div>
-              <button className="user-options-menu-item" disabled={cacheActionBusy} onClick={refreshCacheFromUserMenu} role="menuitem" type="button">
+              <button
+                className={`user-options-menu-item user-options-cache-action${cacheRefreshProgress.visible ? " in-flight" : ""}`}
+                disabled={cacheActionBusy}
+                onClick={refreshCacheFromUserMenu}
+                role="menuitem"
+                style={cacheRefreshProgressStyle}
+                type="button"
+              >
+                {cacheRefreshProgress.visible ? (
+                  <span
+                    aria-label={`Cache refresh progress: ${cacheRefreshProgress.progress}%`}
+                    aria-valuemax={100}
+                    aria-valuemin={0}
+                    aria-valuenow={cacheRefreshProgress.progress}
+                    className="user-options-menu-item-progress"
+                    role="progressbar"
+                  >
+                    <span />
+                  </span>
+                ) : null}
                 <RefreshCw className={cacheRefreshing ? "spin" : ""} size={16} aria-hidden="true" />
-                <span>{cacheRefreshing ? "Refreshing cache" : "Refresh Cache"}</span>
+                <span>{cacheRefreshPercent !== null ? `Refresh Cache (${cacheRefreshPercent}%)` : "Refresh Cache"}</span>
               </button>
-              <button className="user-options-menu-item" disabled={cacheActionBusy} onClick={hydrateCacheFromUserMenu} role="menuitem" type="button">
+              <button
+                className={`user-options-menu-item user-options-cache-action${cacheHydrateProgress.visible ? " in-flight" : ""}`}
+                disabled={cacheActionBusy}
+                onClick={hydrateCacheFromUserMenu}
+                role="menuitem"
+                style={cacheHydrateProgressStyle}
+                type="button"
+              >
+                {cacheHydrateProgress.visible ? (
+                  <span
+                    aria-label={`Cache hydration progress: ${cacheHydrateProgress.progress}%`}
+                    aria-valuemax={100}
+                    aria-valuemin={0}
+                    aria-valuenow={cacheHydrateProgress.progress}
+                    className="user-options-menu-item-progress"
+                    role="progressbar"
+                  >
+                    <span />
+                  </span>
+                ) : null}
                 <UploadCloud className={cacheHydrating ? "spin" : ""} size={16} aria-hidden="true" />
-                <span>{cacheHydrating ? "Hydrating cache" : "Hydrate Cache"}</span>
+                <span>{cacheHydratePercent !== null ? `Hydrate Cache (${cacheHydratePercent}%)` : "Hydrate Cache"}</span>
               </button>
               <button className="user-options-menu-item" onClick={openCommandPaletteFromUserMenu} role="menuitem" type="button">
                 <Search size={16} aria-hidden="true" />
@@ -7624,6 +7739,9 @@ function LibraryView({
   pageOffset,
   pageLimit,
   pageSize,
+  pageTurnPending,
+  previousPageBoundaryTitle,
+  nextPageBoundaryTitle,
   sortKey,
   hasMoreDocuments,
   onPreviousPage,
@@ -7661,6 +7779,9 @@ function LibraryView({
   pageOffset: number;
   pageLimit: number;
   pageSize: LibraryPageSize;
+  pageTurnPending: boolean;
+  previousPageBoundaryTitle?: string | null;
+  nextPageBoundaryTitle?: string | null;
   sortKey: DocumentListSort;
   hasMoreDocuments: boolean;
   onPreviousPage: () => void;
@@ -7913,6 +8034,8 @@ function LibraryView({
   const currentResultPage =
     totalDocumentCount > 0 ? Math.min(totalResultPages, Math.floor(pageOffset / effectivePageLimit) + 1) : 0;
   const pageCountLabel = `${formatWholeNumber(currentResultPage)} of ${formatWholeNumber(totalResultPages)}`;
+  const previousPageHint = !pageTurnPending && pageOffset > 0 ? paginationTitleHint(previousPageBoundaryTitle) : "";
+  const nextPageHint = !pageTurnPending && hasMoreDocuments ? paginationTitleHint(nextPageBoundaryTitle) : "";
   const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
   const effectiveRowsViewportHeight = measuredRowsViewportHeight || libraryRowHeight * 12;
   const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
@@ -8663,24 +8786,26 @@ function LibraryView({
                 <button
                   aria-label="Previous Library result page"
                   className="icon-button compact library-page-arrow"
-                  data-disabled-reason={pageOffset <= 0 ? "already at the first result window." : ""}
+                  data-disabled-reason={pageTurnPending ? "the requested result window is still loading." : pageOffset <= 0 ? "already at the first result window." : ""}
                   data-tooltip="Load the previous Library result window."
-                  disabled={pageOffset <= 0}
+                  disabled={pageTurnPending || pageOffset <= 0}
                   onClick={onPreviousPage}
                   type="button"
                 >
                   <ArrowLeft size={18} strokeWidth={3} />
+                  {previousPageHint ? <span className="library-page-arrow-label">{previousPageHint}</span> : null}
                 </button>
                 <span className="library-page-count">{pageCountLabel}</span>
                 <button
                   aria-label="Next Library result page"
                   className="icon-button compact library-page-arrow"
-                  data-disabled-reason={!hasMoreDocuments ? "already at the last result window." : ""}
+                  data-disabled-reason={pageTurnPending ? "the requested result window is still loading." : !hasMoreDocuments ? "already at the last result window." : ""}
                   data-tooltip="Load the next Library result window."
-                  disabled={!hasMoreDocuments}
+                  disabled={pageTurnPending || !hasMoreDocuments}
                   onClick={onNextPage}
                   type="button"
                 >
+                  {nextPageHint ? <span className="library-page-arrow-label">{nextPageHint}</span> : null}
                   <ArrowRight size={18} strokeWidth={3} />
                 </button>
               </div>
@@ -25786,6 +25911,8 @@ export default function App() {
       void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
     },
   });
+  const cacheRefreshProgress = useActionProgress(refreshCache.isPending);
+  const cacheHydrateProgress = useActionProgress(hydrateCache.isPending);
   const confirmReleaseReload = useCallback(() => {
     return appDialogs.confirm({
       cancelLabel: "Not Yet",
@@ -25836,10 +25963,11 @@ export default function App() {
   const libraryTotalPageCount = libraryDocumentList.data?.total_page_count ?? 0;
   const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? libraryDocumentList.data?.offset ?? libraryOffset;
   const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryDocumentList.data?.limit ?? libraryPageSize);
+  const libraryPageTurnPending = Boolean(libraryPageTurnIntent);
   const libraryHasMoreDocuments = libraryTotalDocumentCount > libraryDisplayOffset + libraryDisplayLimit;
   useEffect(() => {
     const page = libraryDocumentList.data;
-    if (!page || !libraryPageTurnIntent || page.offset !== libraryPageTurnIntent.offset) return;
+    if (!page || libraryDocumentList.isPlaceholderData || !libraryPageTurnIntent || page.offset !== libraryPageTurnIntent.offset) return;
     setLibraryPageTurnIntent(null);
     if (selectedId && page.items.some((item) => item.id === selectedId)) return;
     const topDocument = page.items[0];
@@ -25851,10 +25979,10 @@ export default function App() {
     setLibraryDocumentMode("detail");
     setLibraryScrollTargetId(topDocument.id);
     syncBrowserUrlForDocument(topDocument.id, "replace", "detail");
-  }, [libraryDocumentList.data, libraryPageTurnIntent, selectedId]);
+  }, [libraryDocumentList.data, libraryDocumentList.isPlaceholderData, libraryPageTurnIntent, selectedId]);
   useEffect(() => {
     const page = libraryDocumentList.data;
-    if (!page) return;
+    if (!page || libraryDocumentList.isPlaceholderData) return;
     if (page.offset !== libraryOffset) {
       setLibraryOffset(page.offset);
       return;
@@ -25866,7 +25994,7 @@ export default function App() {
       setLibraryFocusDocumentId(null);
       setLibraryScrollTargetId((current) => (current === libraryFocusDocumentId ? null : current));
     }
-  }, [libraryDocumentList.data, libraryFocusDocumentId, libraryOffset]);
+  }, [libraryDocumentList.data, libraryDocumentList.isPlaceholderData, libraryFocusDocumentId, libraryOffset]);
 
   const activeTitleSubject = useMemo(() => {
     if (activeView === "library") {
@@ -26455,7 +26583,29 @@ export default function App() {
     dashboard.data?.active_accessory_summary_jobs ?? 0,
     dashboard.dataUpdatedAt,
   );
+  const cacheActionBackgroundJobs: BackgroundJob[] = [];
+  if (cacheRefreshProgress.visible) {
+    cacheActionBackgroundJobs.push({
+      id: "cache-refresh",
+      label: "Refresh Cache",
+      detail: cacheRefreshProgress.running ? "Invalidating response-cache payloads" : "Finishing",
+      status: "running",
+      progress: cacheRefreshProgress.progress,
+      createdAt: Date.now(),
+    });
+  }
+  if (cacheHydrateProgress.visible) {
+    cacheActionBackgroundJobs.push({
+      id: "cache-hydrate",
+      label: "Hydrate Cache",
+      detail: cacheHydrateProgress.running ? "Preloading common cache entries" : "Finishing",
+      status: "running",
+      progress: cacheHydrateProgress.progress,
+      createdAt: Date.now(),
+    });
+  }
   const visibleBackgroundJobs = [
+    ...cacheActionBackgroundJobs,
     ...activeBackupBackgroundJobs,
     ...backgroundJobs,
     ...activeServerBackgroundJobs,
@@ -26475,6 +26625,8 @@ export default function App() {
       <Header
         backgroundJobs={visibleBackgroundJobs}
         cacheHydrating={hydrateCache.isPending}
+        cacheHydrateProgress={cacheHydrateProgress}
+        cacheRefreshProgress={cacheRefreshProgress}
         cacheRefreshing={refreshCache.isPending}
         cacheStatus={cacheStatus.data}
         completedImport={completedIngestionNotice}
@@ -26540,6 +26692,9 @@ export default function App() {
             pageOffset={libraryDisplayOffset}
             pageLimit={libraryDisplayLimit}
             pageSize={libraryPageSize}
+            pageTurnPending={libraryPageTurnPending}
+            previousPageBoundaryTitle={libraryDocumentList.data?.previous_page_boundary_title}
+            nextPageBoundaryTitle={libraryDocumentList.data?.next_page_boundary_title}
             sortKey={librarySort}
             hasMoreDocuments={libraryHasMoreDocuments}
             onPreviousPage={() => {

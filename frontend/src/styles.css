@@ -1000,6 +1000,8 @@ textarea {
 .user-options-menu-item {
   width: 100%;
   min-height: 34px;
+  position: relative;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
@@ -1016,9 +1018,20 @@ textarea {
   cursor: pointer;
 }
 
+.user-options-menu-item > svg,
+.user-options-menu-item > span:not(.user-options-menu-item-progress),
+.user-options-menu-item > small {
+  position: relative;
+  z-index: 1;
+}
+
 .user-options-menu-item:disabled {
   cursor: default;
   opacity: 0.68;
+}
+
+.user-options-menu-item.in-flight:disabled {
+  opacity: 1;
 }
 
 .user-options-menu-item small {
@@ -1038,11 +1051,36 @@ textarea {
   background: transparent;
 }
 
-.user-options-menu-item span {
+.user-options-menu-item > span:not(.user-options-menu-item-progress) {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.user-options-menu-item-progress {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.user-options-menu-item-progress span {
+  display: block;
+  width: var(--user-cache-action-progress, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--blue) 14%, transparent) 0%,
+    color-mix(in srgb, var(--teal) 22%, transparent) 50%,
+    color-mix(in srgb, var(--blue) 14%, transparent) 100%
+  );
+  background-size: 180% 100%;
+  animation: work-progress-pulse 1.6s linear infinite;
+  transition: width 160ms ease;
 }
 
 .user-options-recent {
@@ -2779,9 +2817,18 @@ textarea {
 }
 
 .library-page-arrow {
-  width: 34px;
+  width: auto;
   min-width: 34px;
-  padding: 0;
+  gap: 4px;
+  padding: 0 7px;
+}
+
+.library-page-arrow-label {
+  min-width: 1.75em;
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .bulk-multi-select {
@@ -3731,6 +3778,10 @@ textarea {
   font-size: 16px;
   font-weight: 560;
   line-height: 1.28;
+}
+
+.doc-row .doc-row-title > span {
+  color: inherit;
 }
 
 .doc-row .doc-row-title-year {
