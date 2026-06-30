@@ -8813,7 +8813,7 @@ pre {
 }
 
 .job-copy > span,
-.job-copy > small {
+.job-status-summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -8826,7 +8826,11 @@ pre {
 }
 
 .job-copy > .job-status-detail {
+  display: grid;
+  gap: 5px;
   font-weight: 500;
+  overflow: visible;
+  white-space: normal;
 }
 
 .job-status-detail strong {
@@ -8834,11 +8838,60 @@ pre {
   font-weight: 800;
 }
 
-.job-worker-label {
-  display: block;
-  margin-top: 2px;
+.job-status-summary {
+  min-width: 0;
+}
+
+.job-pipeline-indicators {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.job-pipeline-chip {
+  min-width: 0;
+  max-width: min(360px, 100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--blue) 22%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 72%, var(--blue) 8%);
   color: var(--muted);
-  font-weight: 600;
+  padding: 3px 7px 3px 6px;
+  line-height: 1;
+}
+
+.job-pipeline-chip svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.job-pipeline-chip > span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.job-pipeline-chip > span > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.job-pipeline-chip strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .inline-form {

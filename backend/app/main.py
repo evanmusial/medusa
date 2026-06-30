@@ -10489,7 +10489,7 @@ def _worker_location_label(lease: SlipstreamLease | None) -> str | None:
     if not lease:
         return None
     if lease.worker_kind == "local":
-        return "Local worker"
+        return "Medusa"
     name = lease.client.name if lease.client else lease.client_id or "client"
     if lease.worker_kind == CLOUD_RUN_WORKER_KIND:
         return f"Cloud Run: {name}"

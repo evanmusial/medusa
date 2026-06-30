@@ -4072,19 +4072,53 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
   const model = modelDisplayName(job.current_model);
   const cost = formatUsd(job.estimated_cost_usd ?? 0);
   const preset = job.processing_preset_name ? ` / ${job.processing_preset_name}` : "";
-  const execution = importJobExecutionLabel(job);
+  const execution = importJobExecutionLabel(job) || "Execution pending";
+  const executionDisplay = importJobExecutionDisplayLabel(execution);
   const nextStage = job.next_stage || importJobStage(job);
   return (
     <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : importJobEstimateTitle(job)}>
-      <strong>{status}</strong>
-      {model ? ` (${model})` : ""}
-      {` (${importJobEstimatePrefix(job)}${cost}${preset})`}
-      <span className="job-worker-label">
-        {execution ? `Execution: ${execution}` : "Execution pending"}
-        {nextStage ? ` / Next: ${nextStage}` : ""}
+      <span className="job-status-summary">
+        <strong>{status}</strong>
+        {model ? ` (${model})` : ""}
+        {` (${importJobEstimatePrefix(job)}${cost}${preset})`}
+      </span>
+      <span className="job-pipeline-indicators">
+        <span className="job-pipeline-chip" data-tooltip={`Worker or extraction location: ${execution}`}>
+          <Server size={13} />
+          <span>
+            <span>Worker</span>
+            <strong>{executionDisplay}</strong>
+          </span>
+        </span>
+        {nextStage ? (
+          <span className="job-pipeline-chip" data-tooltip={`Next import stage: ${nextStage}`}>
+            <CornerDownRight size={13} />
+            <span>
+              <span>Next</span>
+              <strong>{nextStage}</strong>
+            </span>
+          </span>
+        ) : null}
       </span>
     </small>
   );
+}
+
+function shortWorkerName(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.includes(".") && !/^\d+(?:\.\d+){3}$/.test(trimmed)) return trimmed.split(".")[0] || trimmed;
+  return trimmed;
+}
+
+function importJobExecutionDisplayLabel(label: string) {
+  const normalized = label.replace(/^Local worker\b/, "Medusa");
+  const heartbeatIndex = normalized.indexOf(", heartbeat ");
+  const base = heartbeatIndex >= 0 ? normalized.slice(0, heartbeatIndex) : normalized;
+  const suffix = heartbeatIndex >= 0 ? normalized.slice(heartbeatIndex) : "";
+  const workerMatch = base.match(/^(Slipstream|Cloud Run):\s*(.+)$/);
+  if (!workerMatch) return `${base}${suffix}`;
+  return `${workerMatch[1]}: ${shortWorkerName(workerMatch[2])}${suffix}`;
 }
 
 function importJobExecutionLabel(job: ImportJob) {
@@ -4098,7 +4132,7 @@ function importJobExecutionLabel(job: ImportJob) {
 function importJobWorkerLabel(job: ImportJob) {
   if (job.status !== "running" || !job.assigned_worker_kind) return "";
   const heartbeat = job.lease_heartbeat_at ? `, heartbeat ${relativeTimeLabel(job.lease_heartbeat_at)}` : "";
-  if (job.assigned_worker_kind === "local") return `Local worker${heartbeat}`;
+  if (job.assigned_worker_kind === "local") return `Medusa${heartbeat}`;
   const name = job.assigned_client_name || job.assigned_client_id || "client";
   if (job.assigned_worker_kind === "cloud_run") return `Cloud Run: ${name}${heartbeat}`;
   return `Slipstream: ${name}${heartbeat}`;
@@ -19956,7 +19990,7 @@ function QueueView({
   jobs,
   jobsError,
   jobsLoading,
-  knownQueueCount = 0,
+  knownQueueCount,
 }: {
   ingestionHistory: IngestionHistory[];
   items: CitationCandidate[];
@@ -20017,12 +20051,14 @@ function QueueView({
     },
   });
   const queueJobs = orderedImportJobs(jobs.filter(isQueueImportJob));
-  const queueLoadCount = Math.max(knownQueueCount, queueJobs.length);
+  const queueCountKnown = typeof knownQueueCount === "number";
+  const knownQueueIsEmpty = queueCountKnown && knownQueueCount === 0;
+  const queueLoadCount = Math.max(knownQueueCount ?? 0, queueJobs.length);
   const queueLoadLabel = queueLoadCount
     ? `Loading ${formatMetric(queueLoadCount)} import job${queueLoadCount === 1 ? "" : "s"}`
     : "Loading import jobs";
-  const showQueueLoading = Boolean(jobsLoading && !queueJobs.length);
-  const queueLoadError = jobsError && !queueJobs.length ? actionFailureMessage("Could not load import jobs", jobsError) : "";
+  const showQueueLoading = Boolean(jobsLoading && !queueJobs.length && !knownQueueIsEmpty);
+  const queueLoadError = jobsError && !queueJobs.length && !knownQueueIsEmpty ? actionFailureMessage("Could not load import jobs", jobsError) : "";
   const stagedQueueJobs = queueJobs.filter((job) => job.status === "staged");
   const costPreviewQueueJobs = queueJobs.filter(isImportCostPreviewJob);
   const failedQueueJobs = queueJobs.filter((job) => job.status === "failed");
@@ -27875,7 +27911,7 @@ export default function App() {
             jobs={jobs.data || []}
             jobsError={jobs.error}
             jobsLoading={jobs.isFetching && !jobs.data}
-            knownQueueCount={dashboard.data?.queue_import_jobs ?? 0}
+            knownQueueCount={dashboard.data?.queue_import_jobs}
           />
         ) : null}
         {activeView === "activity" ? (

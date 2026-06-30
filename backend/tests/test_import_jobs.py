@@ -102,6 +102,50 @@ def test_staged_import_job_has_default_cost_estimate(monkeypatch, tmp_path):
     assert rows[0]["estimated_cost_usd"] > 0
 
 
+def test_running_import_job_reports_worker_and_next_stage(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import list_import_jobs
+    from app.models import Document, ImportBatch, ImportJob, SlipstreamLease, utc_now
+
+    now = utc_now()
+    with Session() as db:
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        document = Document(
+            title="Running",
+            original_filename="running.pdf",
+            checksum_sha256="e" * 64,
+            page_count=5,
+        )
+        job = ImportJob(
+            batch=batch,
+            document=document,
+            status="running",
+            current_step="normalizing_pages",
+            locked_at=now - timedelta(minutes=2),
+        )
+        db.add_all([batch, document, job])
+        db.flush()
+        db.add(
+            SlipstreamLease(
+                worker_kind="local",
+                job_type="import",
+                job_id=job.id,
+                status="active",
+                lease_token_hash="local-lease",
+                claimed_at=now - timedelta(minutes=2),
+                heartbeat_at=now - timedelta(seconds=20),
+                expires_at=now + timedelta(minutes=2),
+            )
+        )
+        db.commit()
+
+        rows = list_import_jobs(object(), db)
+
+    row = next(item for item in rows if item["id"] == job.id)
+    assert row["execution_location"] == "Medusa"
+    assert row["next_stage"] == "Normalize pages centrally"
+
+
 def test_staged_documents_stay_out_of_library_surfaces(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import dashboard, domain_out, get_document, list_documents, list_import_jobs, tag_out
