@@ -436,8 +436,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="page_text_normalization",
         label="Page text normalization",
-        version=3,
-        description="Conform extracted page text into standard readable flow across columns and around graphics without converting graphics to text.",
+        version=4,
+        description="Conform extracted page text into standard readable flow across columns, front-matter bands, and around graphics without converting graphics to text.",
     ),
     CapabilityDefinition(
         key="search_index",
@@ -472,8 +472,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="visual_asset_extraction",
         label="Visual asset extraction",
-        version=2,
-        description="Run the second-pass 300 DPI visual extractor/audit for images, charts, vector graphics, diagrams, photos, maps, scans, and unclaimed visual regions.",
+        version=3,
+        description="Run the second-pass 300 DPI visual extractor/audit for images, charts, vector graphics, diagrams, photos, maps, scans, and unclaimed visual regions while suppressing first-page publisher furniture.",
     ),
     CapabilityDefinition(
         key="visual_asset_context",
@@ -506,7 +506,7 @@ TAG_REFRESH_CAPABILITY = CapabilityDefinition(
 LEGACY_FIGURE_ASSETS_CAPABILITY = CapabilityDefinition(
     key="figure_assets",
     label="Figure assets",
-    version=4,
+    version=5,
     description="Legacy alias for visual asset extraction.",
 )
 
