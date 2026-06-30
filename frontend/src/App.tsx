@@ -19177,7 +19177,21 @@ function ProjectsView({
   );
 }
 
-function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: IngestionHistory[]; items: CitationCandidate[]; jobs: ImportJob[] }) {
+function QueueView({
+  ingestionHistory,
+  items,
+  jobs,
+  jobsError,
+  jobsLoading,
+  knownQueueCount = 0,
+}: {
+  ingestionHistory: IngestionHistory[];
+  items: CitationCandidate[];
+  jobs: ImportJob[];
+  jobsError?: unknown;
+  jobsLoading?: boolean;
+  knownQueueCount?: number;
+}) {
   const queryClient = useQueryClient();
   const [queueActionMessage, setQueueActionMessage] = useState("");
   const cancelFeedback = useAsyncActionFeedbackMap();
@@ -19230,6 +19244,12 @@ function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: Ingest
     },
   });
   const queueJobs = orderedImportJobs(jobs.filter(isQueueImportJob));
+  const queueLoadCount = Math.max(knownQueueCount, queueJobs.length);
+  const queueLoadLabel = queueLoadCount
+    ? `Loading ${formatMetric(queueLoadCount)} import job${queueLoadCount === 1 ? "" : "s"}`
+    : "Loading import jobs";
+  const showQueueLoading = Boolean(jobsLoading && !queueJobs.length);
+  const queueLoadError = jobsError && !queueJobs.length ? actionFailureMessage("Could not load import jobs", jobsError) : "";
   const stagedQueueJobs = queueJobs.filter((job) => job.status === "staged");
   const costPreviewQueueJobs = queueJobs.filter(isImportCostPreviewJob);
   const failedQueueJobs = queueJobs.filter((job) => job.status === "failed");
@@ -19286,9 +19306,11 @@ function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: Ingest
     rescueJob.isPending ||
     cancelJob.isPending;
   const queueStatusText = queueActionMessage
-    || (queueJobs.length
-      ? `${queueJobs.length} active or waiting; ${importQueueEstimateLabel(costPreviewQueueJobs)}`
-      : "No import jobs waiting");
+    || (showQueueLoading
+      ? queueLoadLabel
+      : queueLoadError || (queueJobs.length
+        ? `${queueJobs.length} active or waiting; ${importQueueEstimateLabel(costPreviewQueueJobs)}`
+        : "No import jobs waiting"));
 
   return (
     <section className="workbench queue-workbench">
@@ -19355,7 +19377,7 @@ function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: Ingest
             <Inbox size={20} />
           </div>
         </div>
-        <div className="queue-job-list">
+        <div className="queue-job-list" aria-busy={showQueueLoading || undefined}>
           {queueJobs.map((job) => {
             const cancelDisabled = !canCancelImportJob(job) || bulkActionBusy;
             const cancelFeedbackForJob = cancelFeedback.feedbackFor(job.id);
@@ -19380,7 +19402,9 @@ function QueueView({ ingestionHistory, items, jobs }: { ingestionHistory: Ingest
               />
             );
           })}
-          {!queueJobs.length ? <p className="empty-note">The import queue is clear.</p> : null}
+          {showQueueLoading ? <p className="empty-note">{queueLoadLabel}...</p> : null}
+          {!showQueueLoading && queueLoadError ? <p className="empty-note">{queueLoadError}</p> : null}
+          {!showQueueLoading && !queueLoadError && !queueJobs.length ? <p className="empty-note">The import queue is clear.</p> : null}
         </div>
       </section>
       <section className="queue-panel">
@@ -25630,7 +25654,8 @@ export default function App() {
   const needsProjects =
     activeView === "library" || activeView === "import" || activeView === "projects" || activeView === "notes" || activeView === "recon" || activeView === "settings";
   const needsSavedSearches = activeView === "library" || activeView === "recon" || activeView === "settings" || commandPaletteOpen;
-  const needsImportJobs = activeView === "import" || activeView === "queue" || activeView === "activity" || activeView === "health" || activeView === "portfolio";
+  const needsImportJobsSurface =
+    activeView === "import" || activeView === "queue" || activeView === "activity" || activeView === "health" || activeView === "portfolio";
   const needsSelectedDocument = Boolean(selectedId && (activeView === "library" || activeView === "settings"));
   const activeLocalBackgroundJobs = backgroundJobsHaveActiveWork(backgroundJobs);
   const documentQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
@@ -25675,6 +25700,8 @@ export default function App() {
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeLibraryListWork = (dashboard.data?.active_import_jobs ?? 0) > 0;
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
+  const dashboardHasImportRows = (dashboard.data?.queue_import_jobs ?? 0) > 0 || (dashboard.data?.active_import_jobs ?? 0) > 0;
+  const needsImportJobs = needsImportJobsSurface || dashboardHasImportRows;
   const needsConcordanceData =
     activeView === "settings" ||
     activeView === "activity" ||
@@ -26806,7 +26833,16 @@ export default function App() {
             onTitleSubjectChange={(subject) => updateViewTitleSubject("tags", subject)}
           />
         ) : null}
-        {activeView === "queue" ? <QueueView ingestionHistory={ingestionHistory.data || []} items={review.data || []} jobs={jobs.data || []} /> : null}
+        {activeView === "queue" ? (
+          <QueueView
+            ingestionHistory={ingestionHistory.data || []}
+            items={review.data || []}
+            jobs={jobs.data || []}
+            jobsError={jobs.error}
+            jobsLoading={jobs.isFetching && !jobs.data}
+            knownQueueCount={dashboard.data?.queue_import_jobs ?? 0}
+          />
+        ) : null}
         {activeView === "activity" ? (
           <ActivityView
             backupRuns={backupRuns.data || []}
