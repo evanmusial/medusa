@@ -10,8 +10,7 @@ This is the routing map for future Codex work in Medusa. The README is intention
 - `README.md`: concise product introduction, Cool Features showcase, and non-technical facts for humans encountering Medusa.
 - `docs/ARCHITECTURE.md`: living product, UX, backend, persistence, processing, storage, safety, and operational architecture record. Update this when implementation changes materially affect app behavior or system design.
 - `TODO.md`: planned-work ledger for unfinished work, acceptance criteria, partial-completion notes, and explicitly deferred implementation.
-- `docs/LOCAL_OPERATIONS.md`: local setup, credentials, runtime commands, development commands, tests, backup/restore, metrics, worker, Slipstream, and safety operations.
-- `docs/CLOUD_RUN_WORKER_POOL.md`: Cloud Run worker-pool design, defaults, IAM boundary, cost model, implementation notes, and verification checklist.
+- `docs/LOCAL_OPERATIONS.md`: local setup, credentials, runtime commands, development commands, tests, backup/restore, metrics, local workers, cloud worker pools, Slipstream, and safety operations.
 
 ## README Cleanup Map
 
@@ -27,7 +26,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 | GCS, OpenAI, Gemini, recommendation, DOI, and credential settings | `docs/LOCAL_OPERATIONS.md` | Exact env-var examples live here; routing strategy and model choices belong in `docs/AI_COST_ROUTING.md`. |
 | Detailed AI behavior, citation/tag/summary defaults, provider-routing rationale, and cost strategy | `docs/ARCHITECTURE.md` and `docs/AI_COST_ROUTING.md` | Use architecture for current behavior contracts and cost-routing for model strategy. |
 | Slipstream local/remote runner commands and worker recovery settings | `docs/LOCAL_OPERATIONS.md` | Architecture-level Slipstream contracts remain in `docs/ARCHITECTURE.md`; unfinished Slipstream work stays in `TODO.md`. |
-| Cloud Run worker-pool design, IAM, cost model, defaults, and implementation checklist | `docs/CLOUD_RUN_WORKER_POOL.md` | Exact local env defaults and command snippets also live in `docs/LOCAL_OPERATIONS.md`; current architecture contracts still belong in `docs/ARCHITECTURE.md`. |
+| Cloud container worker pools, Cloud Run defaults, IAM, cost model, and command snippets | `docs/LOCAL_OPERATIONS.md` | Current architecture contracts still belong in `docs/ARCHITECTURE.md`; create a dedicated worker-pool doc before linking one here. |
 | Backend/frontend/worker development commands and verification commands | `docs/LOCAL_OPERATIONS.md` | Keep test commands current with project practice. |
 | Backup, restore, metadata export restore, portability reminders | `docs/LOCAL_OPERATIONS.md` | Host move and release-agent details belong in `docs/PORTABLE_DEPLOYMENT.md`. |
 | Dependency maintenance policy and Renovate behavior | `docs/DEPENDENCY_UPDATE_PLAN.md` | Keep routine update plans out of README. |
@@ -46,7 +45,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 ## Processing And Intelligence
 
 - `docs/AI_COST_ROUTING.md`: model/provider routing, cost-control strategy, implemented defaults, and candidate routes.
-- `docs/CLOUD_RUN_WORKER_POOL.md`: default-disabled Cloud Run worker-pool implementation notes, cost model, IAM boundary, and acceptance checklist.
+- `docs/LOCAL_OPERATIONS.md`: default-disabled cloud worker-pool notes, Cloud Run cost model, IAM boundary, command snippets, and Slipstream runner operations.
 - `docs/SECOND_PASS_DOCUMENT_PROCESSING.md`: second-pass extraction and cleanup design.
 - `docs/TAG_GOVERNANCE.md`: tag suggestion, scoring, governance, merge, relationship, pruning, and Optimize behavior.
 

@@ -15,6 +15,7 @@ Medusa is built for one serious reader who wants their corpus to stay under thei
 - **Reader plus repair loop.** Read the original and parsed text side by side, search within a document, edit extracted pages, keep notes, and preserve history as the record improves.
 - **Citation work that admits uncertainty.** APA references, in-text citations, DOI evidence, publication metadata, and bibliographies can be refreshed, edited, verified, or sent to review.
 - **Concordance Runs.** New extraction and enrichment abilities can be applied to old documents without re-uploading them, so the Library keeps getting better over time.
+- **Flexible processing power.** Imports and upgrades can run on the Medusa host, burst through cloud container workers such as GCP Cloud Run or AWS Fargate, or spread to other enrolled machines through Slipstream.
 - **Research organization cockpit.** Domains, Tags, saved searches, priorities, read state, custom attributes, duplicate review, and bulk editing make large collections manageable.
 - **Smart tag governance.** Tag suggestions are treated as candidates, checked against the existing taxonomy, and routed through reviewable merge, alias, relationship, and cleanup workflows.
 - **Related-paper discovery.** Medusa can turn one document into a set of useful leads, hide papers already in the Library, stash DOI candidates, and queue open PDFs through the normal import path.
@@ -31,6 +32,10 @@ Medusa is built for one serious reader who wants their corpus to stay under thei
 Medusa begins with a staging area, not a blind import button. New sources can be reviewed, labeled, checked for duplicates, and released only when the batch is ready.
 
 Once processing starts, Medusa turns source material into a usable research record. Originals are preserved, files are checked against the existing corpus, pages are extracted or transcribed into searchable reading text, and rough source material is broken into working metadata: title, authors, publication venue, year, DOI, abstract, page count, references, bibliography, figures, captions, keywords, topics, and processing evidence.
+
+Processing does not have to live on one machine. Medusa can process documents locally on the server or computer hosting the container, use cloud container workers such as GCP Cloud Run or AWS Fargate for burst capacity, and enroll other laptops, desktops, servers, or spare machines through Slipstream. These modes can run at the same time, with configurable concurrency, worker capacity, leases, heartbeats, and queue coordination so jobs move quickly without double-processing the same document.
+
+Remote processing is designed around a secure control plane. Slipstream clients use outbound HTTPS, one-time enrollment, signed requests, scoped capabilities, lease expiry, and central result validation. Remote workers do not need direct database access or provider credentials; Medusa keeps secrets, final writes, provenance, and review state under the central app's control.
 
 The document then becomes more than a PDF in a folder. Medusa generates summaries, APA reference-list entries, APA in-text citations, DOI evidence, bibliography candidates, related-paper leads, tag suggestions, domain/project context, and figure records that can be searched, reviewed, corrected, or refreshed later. Work in progress stays out of the Library until it is ready.
 
