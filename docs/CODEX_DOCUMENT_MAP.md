@@ -8,6 +8,7 @@ This is the routing map for future Codex work in Medusa. The README is intention
 
 - `AGENTS.md`: repo-specific Codex rules. Read this first when present.
 - `README.md`: concise product introduction, Cool Features showcase, and non-technical facts for humans encountering Medusa.
+- `docs/QUICK_START.md`: exact short local setup path, first run, LLM keys, and current storage-backend credential setup.
 - `docs/ARCHITECTURE.md`: living product, UX, backend, persistence, processing, storage, safety, and operational architecture record. Update this when implementation changes materially affect app behavior or system design.
 - `TODO.md`: planned-work ledger for unfinished work, acceptance criteria, partial-completion notes, and explicitly deferred implementation.
 - `docs/LOCAL_OPERATIONS.md`: local setup, credentials, runtime commands, development commands, tests, backup/restore, metrics, local workers, cloud worker pools, Slipstream, and safety operations.
@@ -19,9 +20,10 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 | Former README material | Current home | Notes |
 | --- | --- | --- |
 | Product one-liner, core value, Cool Features showcase, and non-technical workflow facts | `README.md` | Keep this concise, human-facing, and showcase-oriented. |
+| First-run local setup and minimal credential path | `docs/QUICK_START.md` | Keep this exact, runnable, and short; move broader operations to `docs/LOCAL_OPERATIONS.md`. |
 | README logo/showcase image | `docs/assets/medusa-emblem-blue.png` | Blue transparent variant derived from the real app emblem for GitHub light/dark readability. |
 | Long implemented-feature inventory | `docs/ARCHITECTURE.md` | The architecture record owns current feature contracts and behavior details. |
-| Quick Start, Docker Compose startup, TLS certificate setup, login defaults | `docs/LOCAL_OPERATIONS.md` | Keep exact commands and local setup here. |
+| Docker Compose startup, TLS certificate setup, login defaults | `docs/QUICK_START.md` and `docs/LOCAL_OPERATIONS.md` | Quick Start owns the shortest happy path; Local Operations owns the full runbook. |
 | HAProxy, Valkey, metrics, cache hydration, operational env vars | `docs/LOCAL_OPERATIONS.md` | Server-specific variants belong in `docs/PORTABLE_DEPLOYMENT.md`. |
 | GCS, OpenAI, Gemini, recommendation, DOI, and credential settings | `docs/LOCAL_OPERATIONS.md` | Exact env-var examples live here; routing strategy and model choices belong in `docs/AI_COST_ROUTING.md`. |
 | Detailed AI behavior, citation/tag/summary defaults, provider-routing rationale, and cost strategy | `docs/ARCHITECTURE.md` and `docs/AI_COST_ROUTING.md` | Use architecture for current behavior contracts and cost-routing for model strategy. |

@@ -59,6 +59,7 @@ The app keeps model work accountable. Provider, model, task, cost, evidence, fai
 
 The main README is intentionally a product showcase. Technical design, operating commands, implementation plans, and future-work notes live under `docs/`.
 
+- [Quick Start](docs/QUICK_START.md) walks through local setup, first run, LLM keys, and storage credentials.
 - [Codex Document Map](docs/CODEX_DOCUMENT_MAP.md) explains which document owns which kind of project knowledge.
 - [Local Operations](docs/LOCAL_OPERATIONS.md) covers local setup, runtime commands, credentials, development commands, backup/restore, metrics, and safety behavior.
 - [Architecture Record](docs/ARCHITECTURE.md) is the living product and technical design record.
