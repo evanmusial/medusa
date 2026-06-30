@@ -1,0 +1,68 @@
+# Codex Document Map
+
+Last updated: 2026-06-30
+
+This is the routing map for future Codex work in Medusa. The README is intentionally a product showcase; do not put architecture notes, technical plans, operating commands, setup guides, or backlog details there.
+
+## Start Here
+
+- `AGENTS.md`: repo-specific Codex rules. Read this first when present.
+- `README.md`: concise product introduction, Cool Features showcase, and non-technical facts for humans encountering Medusa.
+- `docs/ARCHITECTURE.md`: living product, UX, backend, persistence, processing, storage, safety, and operational architecture record. Update this when implementation changes materially affect app behavior or system design.
+- `TODO.md`: planned-work ledger for unfinished work, acceptance criteria, partial-completion notes, and explicitly deferred implementation.
+- `docs/LOCAL_OPERATIONS.md`: local setup, credentials, runtime commands, development commands, tests, backup/restore, metrics, worker, Slipstream, and safety operations.
+- `docs/CLOUD_RUN_WORKER_POOL.md`: Cloud Run worker-pool design, defaults, IAM boundary, cost model, implementation notes, and verification checklist.
+
+## README Cleanup Map
+
+The README was intentionally narrowed to product orientation. Keep using this routing when future changes need to add or move information:
+
+| Former README material | Current home | Notes |
+| --- | --- | --- |
+| Product one-liner, core value, Cool Features showcase, and non-technical workflow facts | `README.md` | Keep this concise, human-facing, and showcase-oriented. |
+| README logo/showcase image | `docs/assets/medusa-emblem-blue.png` | Blue transparent variant derived from the real app emblem for GitHub light/dark readability. |
+| Long implemented-feature inventory | `docs/ARCHITECTURE.md` | The architecture record owns current feature contracts and behavior details. |
+| Quick Start, Docker Compose startup, TLS certificate setup, login defaults | `docs/LOCAL_OPERATIONS.md` | Keep exact commands and local setup here. |
+| HAProxy, Valkey, metrics, cache hydration, operational env vars | `docs/LOCAL_OPERATIONS.md` | Server-specific variants belong in `docs/PORTABLE_DEPLOYMENT.md`. |
+| GCS, OpenAI, Gemini, recommendation, DOI, and credential settings | `docs/LOCAL_OPERATIONS.md` | Exact env-var examples live here; routing strategy and model choices belong in `docs/AI_COST_ROUTING.md`. |
+| Detailed AI behavior, citation/tag/summary defaults, provider-routing rationale, and cost strategy | `docs/ARCHITECTURE.md` and `docs/AI_COST_ROUTING.md` | Use architecture for current behavior contracts and cost-routing for model strategy. |
+| Slipstream local/remote runner commands and worker recovery settings | `docs/LOCAL_OPERATIONS.md` | Architecture-level Slipstream contracts remain in `docs/ARCHITECTURE.md`; unfinished Slipstream work stays in `TODO.md`. |
+| Cloud Run worker-pool design, IAM, cost model, defaults, and implementation checklist | `docs/CLOUD_RUN_WORKER_POOL.md` | Exact local env defaults and command snippets also live in `docs/LOCAL_OPERATIONS.md`; current architecture contracts still belong in `docs/ARCHITECTURE.md`. |
+| Backend/frontend/worker development commands and verification commands | `docs/LOCAL_OPERATIONS.md` | Keep test commands current with project practice. |
+| Backup, restore, metadata export restore, portability reminders | `docs/LOCAL_OPERATIONS.md` | Host move and release-agent details belong in `docs/PORTABLE_DEPLOYMENT.md`. |
+| Dependency maintenance policy and Renovate behavior | `docs/DEPENDENCY_UPDATE_PLAN.md` | Keep routine update plans out of README. |
+| Safety model for staged imports, queue visibility, leases, maintenance, release requests | `docs/LOCAL_OPERATIONS.md` and `docs/ARCHITECTURE.md` | Operations guide explains what to do; architecture explains durable design constraints. |
+| Future plans, partial work, acceptance criteria, and planned enhancements | `TODO.md` or a feature-specific docs file | Do not place plans in README. |
+
+## Product And Design Records
+
+- `docs/ARCHITECTURE.md`: canonical current-state design and architecture.
+- `docs/NATURAL_EXTENSIONS.md`: speculative product extension ideas before they become committed roadmap or implementation work.
+- `docs/PERFORMANCE_ROADMAP.md`: performance and scaling notes.
+- `docs/RECON.md`: Recon workspace planning, scope, and future implementation notes.
+- `docs/PORTFOLIO.md`: Portfolio module contract and current behavior.
+- `docs/PORTFOLIO_ROADMAP.md`: Portfolio-specific sequencing and acceptance notes.
+
+## Processing And Intelligence
+
+- `docs/AI_COST_ROUTING.md`: model/provider routing, cost-control strategy, implemented defaults, and candidate routes.
+- `docs/CLOUD_RUN_WORKER_POOL.md`: default-disabled Cloud Run worker-pool implementation notes, cost model, IAM boundary, and acceptance checklist.
+- `docs/SECOND_PASS_DOCUMENT_PROCESSING.md`: second-pass extraction and cleanup design.
+- `docs/TAG_GOVERNANCE.md`: tag suggestion, scoring, governance, merge, relationship, pruning, and Optimize behavior.
+
+## Operations
+
+- `docs/LOCAL_OPERATIONS.md`: day-to-day local run and development operations.
+- `docs/PORTABLE_DEPLOYMENT.md`: moving Medusa between hosts, server-specific Compose overlays, certbot, release-agent, systemd, and portability checks.
+- `docs/DEPENDENCY_UPDATE_PLAN.md`: Renovate and dependency maintenance policy.
+
+## Where New Notes Belong
+
+- Put product scope, navigation, workflow, UX contract, service boundary, API, persistence, job, storage, auth, security, backup, or runtime decisions in `docs/ARCHITECTURE.md`.
+- Put unfinished work, acceptance criteria, partial completion, or explicitly deferred items in `TODO.md`.
+- Put broad future ideas in `docs/NATURAL_EXTENSIONS.md` until they graduate into the architecture record or TODO ledger.
+- Put feature-specific roadmaps in a named feature document when the scope is too large for one TODO item.
+- Put local commands, environment variables, startup/shutdown, credential placement, backup/restore drills, and developer commands in `docs/LOCAL_OPERATIONS.md`.
+- Put server move, host-agent, certbot, and systemd details in `docs/PORTABLE_DEPLOYMENT.md`.
+- Put cost/model/provider strategy in `docs/AI_COST_ROUTING.md`.
+- Keep `README.md` focused on what Medusa is, what it helps with, and which features are worth showing off.
