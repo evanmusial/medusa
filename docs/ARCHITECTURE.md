@@ -405,7 +405,7 @@ Secrets:
 Network:
 
 - The app listens externally on HTTPS port `3737` through the HAProxy service.
-- HAProxy terminates TLS for `medusa.home.musial.io`, redirects plain HTTP requests on the same port to `https://medusa.home.musial.io:3737`, routes `/api/*` to the internal backend service on `backend:8000`, and proxies browser shell/assets to the internal frontend service on `frontend:3737`.
+- HAProxy terminates TLS for `medusa.home.musial.io`, redirects plain HTTP requests on the same port to `https://medusa.home.musial.io:3737`, routes `/api/*` to the internal backend service on `backend:8000`, and proxies browser shell/assets to the internal frontend service on `frontend:3737`. The HAProxy app and metrics server lines use the Docker DNS resolver with no stale initial address so release/maintenance container recreation cannot leave the public proxy pinned to an old backend, frontend, or metrics container IP.
 - Backend, worker, database, frontend, and HAProxy stats are internal Docker services.
 - The optional Prometheus exporter is not part of the browser/API exposure path. When enabled with `docker-compose.metrics.yml`, HAProxy publishes only `/metrics` and `/healthz` on `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT`, terminates TLS with the existing Medusa certificate, and routes to the private exporter container. `/metrics` requires `MEDUSA_METRICS_BEARER_TOKEN` or `MEDUSA_METRICS_BEARER_TOKEN_FILE` unless `MEDUSA_METRICS_REQUIRE_AUTH=false` is set for a deliberately private lab network. Prometheus should scrape it once per minute or slower. Expensive corpus, storage, and optional Docker metrics are rendered into a Valkey-backed snapshot on exporter startup and refreshed out-of-band by `MEDUSA_METRICS_HEAVY_TTL_SECONDS`, so routine scrapes do not run wide PostgreSQL aggregation. GCS bucket inventory and object-cost metrics are intentionally excluded so observability cannot become a storage-listing cost source.
 - Slipstream clients use outbound HTTPS polling to the central app. They never accept inbound connections, never connect to PostgreSQL, and must sign request paths that claim work, heartbeat, read artifacts, write events, upload results, or fail a lease. TLS is required by default; deployments behind a trusted proxy must preserve `X-Forwarded-Proto: https` for Slipstream routes.
@@ -514,6 +514,18 @@ High-value next steps:
 - Add Playwright smoke tests for login, import, library search, citation copy, project bibliography, and day/night modes.
 
 ## Decision Log
+
+### 2026-06-30: HAProxy Docker DNS re-resolution for app services
+
+Decision: Make HAProxy use the Docker DNS resolver for the internal frontend and backend application servers, matching the existing metrics-exporter pattern.
+
+Why: A backend or frontend container can be recreated during release or maintenance while HAProxy keeps running. Without per-server resolver wiring, HAProxy can keep health-checking a stale container IP, mark `medusa_backend` down with connection-refused failures, and serve the built frontend shell while `/api/*` returns `503`, leaving browsers stuck on the startup loading screen.
+
+Consequences:
+
+- `medusa_frontend`, `medusa_backend`, and `medusa_metrics` HAProxy server lines all resolve through Docker DNS and require a fresh address at startup.
+- Restarting only HAProxy remains a valid immediate recovery when an already-running proxy is pinned to a stale address, but future config reloads and container starts should re-resolve service names without a full stack restart.
+- Release and maintenance health checks continue to verify both `/api/health` and the browser shell through the public proxy.
 
 ### 2026-06-30: In-place Library document replacement
 
