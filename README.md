@@ -62,31 +62,31 @@ Medusa is built as a dense research cockpit: library triage, document repair, pr
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/assets/screenshots/library-reader-preview.png" alt="Medusa Library with a selected document and original PDF preview" width="100%">
+      <img src="docs/assets/screenshots/library-reader-preview-redacted.png" alt="Medusa Library with a selected document and original PDF preview" width="100%">
       <br><strong>Library and PDF preview</strong>
     </td>
     <td width="50%">
-      <img src="docs/assets/screenshots/library-metadata.png" alt="Medusa Library detail pane with domains, tags, DOI, APA citation, and summary controls" width="100%">
+      <img src="docs/assets/screenshots/library-metadata-redacted.png" alt="Medusa Library detail pane with domains, tags, DOI, APA citation, and summary controls" width="100%">
       <br><strong>Metadata, citations, and tags</strong>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/assets/screenshots/library-figures.png" alt="Medusa Library detail pane showing extracted figure records" width="100%">
+      <img src="docs/assets/screenshots/library-figures-redacted.png" alt="Medusa Library detail pane showing extracted figure records" width="100%">
       <br><strong>Extracted figures</strong>
     </td>
     <td width="50%">
-      <img src="docs/assets/screenshots/import-queue.png" alt="Medusa Import Queue with active Slipstream jobs and queued documents" width="100%">
+      <img src="docs/assets/screenshots/import-queue-redacted.png" alt="Medusa Import Queue with active Slipstream jobs and queued documents" width="100%">
       <br><strong>Import queue and remote workers</strong>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/assets/screenshots/concordance-runs-dark.png" alt="Medusa Concordance Runs screen in night mode with capability upgrade options" width="100%">
+      <img src="docs/assets/screenshots/concordance-runs-dark-redacted.png" alt="Medusa Concordance Runs screen in night mode with capability upgrade options" width="100%">
       <br><strong>Concordance Runs</strong>
     </td>
     <td width="50%">
-      <img src="docs/assets/screenshots/finances-dashboard.png" alt="Medusa Finances dashboard showing AI cost trends, model rollups, and recent calls" width="100%">
+      <img src="docs/assets/screenshots/finances-dashboard-redacted.png" alt="Medusa Finances dashboard showing AI cost trends, model rollups, and recent calls" width="100%">
       <br><strong>Cost and usage visibility</strong>
     </td>
   </tr>
