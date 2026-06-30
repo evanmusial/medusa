@@ -21836,8 +21836,10 @@ function BudgetView() {
 }
 
 function BackupSizeTrend({ points }: { points: BackupSizeTrendPoint[] }) {
-  const width = 640;
+  const chartFrameRef = useRef<HTMLDivElement | null>(null);
+  const [chartWidth, setChartWidth] = useState(640);
   const height = 170;
+  const width = chartWidth;
   const padding = { top: 18, right: 18, bottom: 28, left: 42 };
   const latest = points[points.length - 1];
   const minSize = points.length ? Math.min(...points.map((point) => point.sizeBytes)) : 0;
@@ -21868,6 +21870,21 @@ function BackupSizeTrend({ points }: { points: BackupSizeTrendPoint[] }) {
     : "No completed backups with size yet";
   const firstDate = backupShortDateLabel(points[0]?.timestamp);
   const lastDate = backupShortDateLabel(latest?.timestamp);
+  useEffect(() => {
+    const element = chartFrameRef.current;
+    if (!element) return;
+    const updateWidth = () => {
+      setChartWidth(Math.max(280, Math.round(element.clientWidth || 640)));
+    };
+    updateWidth();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateWidth) : null;
+    observer?.observe(element);
+    window.addEventListener("resize", updateWidth);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateWidth);
+    };
+  }, [coordinates.length]);
 
   return (
     <div className="backup-trend">
@@ -21880,26 +21897,27 @@ function BackupSizeTrend({ points }: { points: BackupSizeTrendPoint[] }) {
       </div>
       {coordinates.length ? (
         <>
-          <svg
-            aria-label="Completed database backup sizes over time"
-            className="backup-trend-chart"
-            preserveAspectRatio="none"
-            role="img"
-            viewBox={`0 0 ${width} ${height}`}
-          >
-            {[0, 0.5, 1].map((ratio) => {
-              const y = padding.top + ratio * (height - padding.top - padding.bottom);
-              return <line className="backup-trend-grid" key={ratio} x1={padding.left} x2={width - padding.right} y1={y} y2={y} />;
-            })}
-            <line className="backup-trend-axis-line" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
-            <line className="backup-trend-axis-line" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
-            <path className="backup-trend-line" d={linePath} />
-            {coordinates.map((point) => (
-              <circle className="backup-trend-point" cx={point.x} cy={point.y} key={point.id} r={4}>
-                <title>{`${backupDateLabel(point.timestamp)} - ${formatFileSize(point.sizeBytes)} - ${point.detail}`}</title>
-              </circle>
-            ))}
-          </svg>
+          <div className="backup-trend-chart-frame" ref={chartFrameRef}>
+            <svg
+              aria-label="Completed database backup sizes over time"
+              className="backup-trend-chart"
+              role="img"
+              viewBox={`0 0 ${width} ${height}`}
+            >
+              {[0, 0.5, 1].map((ratio) => {
+                const y = padding.top + ratio * (height - padding.top - padding.bottom);
+                return <line className="backup-trend-grid" key={ratio} x1={padding.left} x2={width - padding.right} y1={y} y2={y} />;
+              })}
+              <line className="backup-trend-axis-line" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
+              <line className="backup-trend-axis-line" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+              <path className="backup-trend-line" d={linePath} />
+              {coordinates.map((point) => (
+                <circle className="backup-trend-point" cx={point.x} cy={point.y} key={point.id} r={4}>
+                  <title>{`${backupDateLabel(point.timestamp)} - ${formatFileSize(point.sizeBytes)} - ${point.detail}`}</title>
+                </circle>
+              ))}
+            </svg>
+          </div>
           <div className="backup-trend-axis">
             <span>{firstDate}</span>
             <span>{lastDate && lastDate !== firstDate ? lastDate : ""}</span>
