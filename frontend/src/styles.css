@@ -3838,7 +3838,7 @@ textarea {
 }
 
 .doc-row-summary {
-  --doc-row-summary-lines: 2;
+  --doc-row-summary-lines: var(--library-summary-lines, 2);
   grid-column: 2 / -1;
   min-width: 0;
   margin-top: -3px;
@@ -3856,11 +3856,11 @@ textarea {
 }
 
 .library-density-compact .doc-row-summary {
-  --doc-row-summary-lines: 1;
+  --doc-row-summary-lines: var(--library-summary-lines, 1);
 }
 
 .library-density-reading .doc-row-summary {
-  --doc-row-summary-lines: 3;
+  --doc-row-summary-lines: var(--library-summary-lines, 3);
 }
 
 .doc-row-summary .markdown-content.compact > p,

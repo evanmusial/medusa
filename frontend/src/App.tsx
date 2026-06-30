@@ -413,16 +413,36 @@ const LIBRARY_SORT_OPTIONS: Array<{ value: DocumentListSort; label: string }> = 
   { value: "page_count", label: "Page count" },
 ];
 type LibraryDensity = "compact" | "comfortable" | "reading";
+type LibraryPreviewCapacity = "standard" | "roomy" | "expansive";
 const DEFAULT_LIBRARY_DENSITY: LibraryDensity = "comfortable";
 const LIBRARY_DENSITY_OPTIONS: Array<{ value: LibraryDensity; label: string; description: string }> = [
   { value: "compact", label: "Compact", description: "Tighter rows for fast scanning." },
   { value: "comfortable", label: "Comfortable", description: "The current balanced Library row spacing." },
   { value: "reading", label: "Reading", description: "More summary room for browsing dense papers." },
 ];
-const LIBRARY_ROW_HEIGHT_BY_DENSITY: Record<LibraryDensity, number> = {
-  compact: 88,
-  comfortable: 118,
-  reading: 154,
+const LIBRARY_PREVIEW_CAPACITY_STANDARD_WIDTH = 960;
+const LIBRARY_PREVIEW_CAPACITY_STANDARD_HEIGHT = 840;
+const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_WIDTH = 1280;
+const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_HEIGHT = 1020;
+const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
+  LibraryDensity,
+  Record<LibraryPreviewCapacity, { rowHeight: number; summaryLines: number; excerptChars: number }>
+> = {
+  compact: {
+    standard: { rowHeight: 88, summaryLines: 1, excerptChars: 220 },
+    roomy: { rowHeight: 110, summaryLines: 2, excerptChars: 340 },
+    expansive: { rowHeight: 110, summaryLines: 2, excerptChars: 420 },
+  },
+  comfortable: {
+    standard: { rowHeight: 118, summaryLines: 2, excerptChars: 320 },
+    roomy: { rowHeight: 144, summaryLines: 3, excerptChars: 560 },
+    expansive: { rowHeight: 170, summaryLines: 4, excerptChars: 760 },
+  },
+  reading: {
+    standard: { rowHeight: 154, summaryLines: 3, excerptChars: 520 },
+    roomy: { rowHeight: 182, summaryLines: 4, excerptChars: 760 },
+    expansive: { rowHeight: 210, summaryLines: 5, excerptChars: 960 },
+  },
 };
 type DetailStickyField = "title" | "authors" | "year" | "doi" | "priority" | "status";
 const DETAIL_STICKY_FIELD_OPTIONS: Array<{ value: DetailStickyField; label: string }> = [
@@ -634,6 +654,16 @@ function parseLibraryPageSize(value: string | null): LibraryPageSize {
 
 function normalizeLibraryDensity(value?: string | null): LibraryDensity {
   return LIBRARY_DENSITY_OPTIONS.some((option) => option.value === value) ? (value as LibraryDensity) : DEFAULT_LIBRARY_DENSITY;
+}
+
+function libraryPreviewCapacityForViewport(width: number, height: number): LibraryPreviewCapacity {
+  if (width >= LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_WIDTH && height >= LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_HEIGHT) {
+    return "expansive";
+  }
+  if (width >= LIBRARY_PREVIEW_CAPACITY_STANDARD_WIDTH && height >= LIBRARY_PREVIEW_CAPACITY_STANDARD_HEIGHT) {
+    return "roomy";
+  }
+  return "standard";
 }
 
 function normalizeDetailStickyFields(value?: string[] | null): DetailStickyField[] {
@@ -7644,6 +7674,7 @@ function LibraryView({
   const selectedRowViewportTopRef = useRef<{ documentId: string; top: number } | null>(null);
   const [rowsScrollTop, setRowsScrollTop] = useState(0);
   const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
+  const [rowsViewportWidth, setRowsViewportWidth] = useState(0);
   const [saveName, setSaveName] = useState("");
   const [editingSavedSearchId, setEditingSavedSearchId] = useState<string | null>(null);
   const [editingSavedSearchName, setEditingSavedSearchName] = useState("");
@@ -7840,13 +7871,19 @@ function LibraryView({
     COLLAPSED_DETAIL_PANE_MIN,
     COLLAPSED_DETAIL_PANE_MAX,
   );
+  const libraryDensity = normalizeLibraryDensity(preferences?.library_density);
+  const measuredRowsViewportWidth = rowsViewportWidth || rowsViewportRef.current?.clientWidth || 0;
+  const measuredRowsViewportHeight = rowsViewportHeight || rowsViewportRef.current?.clientHeight || 0;
+  const libraryPreviewCapacity = libraryPreviewCapacityForViewport(measuredRowsViewportWidth, measuredRowsViewportHeight);
+  const libraryRowPreview = LIBRARY_ROW_PREVIEW_BY_DENSITY[libraryDensity][libraryPreviewCapacity];
+  const libraryRowHeight = libraryRowPreview.rowHeight;
+  const librarySummaryExcerptChars = libraryRowPreview.excerptChars;
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
     "--detail-pane-width": `${detailWidth}px`,
     "--collapsed-detail-pane-width": `${collapsedDetailWidth}px`,
+    "--library-summary-lines": String(libraryRowPreview.summaryLines),
   } as CSSProperties;
-  const libraryDensity = normalizeLibraryDensity(preferences?.library_density);
-  const libraryRowHeight = LIBRARY_ROW_HEIGHT_BY_DENSITY[libraryDensity];
   const sortedDocuments = useMemo(() => [...documents], [documents]);
   const selectedLockedCount = sortedDocuments.filter((item) => item.is_locked && selectedIds.includes(item.id)).length;
   const selectedLockedReason =
@@ -7869,7 +7906,7 @@ function LibraryView({
     totalDocumentCount > 0 ? Math.min(totalResultPages, Math.floor(pageOffset / effectivePageLimit) + 1) : 0;
   const pageCountLabel = `${formatWholeNumber(currentResultPage)} of ${formatWholeNumber(totalResultPages)}`;
   const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
-  const effectiveRowsViewportHeight = rowsViewportHeight || rowsViewportRef.current?.clientHeight || libraryRowHeight * 12;
+  const effectiveRowsViewportHeight = measuredRowsViewportHeight || libraryRowHeight * 12;
   const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
   const virtualStartIndex = Math.max(0, Math.floor(boundedRowsScrollTop / libraryRowHeight) - LIBRARY_ROW_OVERSCAN);
   const virtualEndIndex = Math.min(
@@ -7927,7 +7964,10 @@ function LibraryView({
   useEffect(() => {
     const element = rowsViewportRef.current;
     if (!element) return;
-    const updateSize = () => setRowsViewportHeight(element.clientHeight);
+    const updateSize = () => {
+      setRowsViewportHeight(element.clientHeight);
+      setRowsViewportWidth(element.clientWidth);
+    };
     updateSize();
     const resizeObserver = new ResizeObserver(updateSize);
     resizeObserver.observe(element);
@@ -8747,7 +8787,7 @@ function LibraryView({
                 {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
               </div>
               <div className="doc-row-summary">
-                <MarkdownBlock compact content={markdownExcerpt(item.rich_summary || "", 320)} empty="Summary pending." />
+                <MarkdownBlock compact content={markdownExcerpt(item.rich_summary || "", librarySummaryExcerptChars)} empty="Summary pending." />
               </div>
             </div>
             );
