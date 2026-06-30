@@ -13494,6 +13494,316 @@ button.history-row,
   border-radius: 0;
 }
 
+/* Settings and Utilities share a quieter configuration workbench language. */
+.settings-grid,
+.utilities-panel {
+  gap: 0;
+}
+
+.utilities-workbench {
+  justify-items: stretch;
+}
+
+.utilities-panel {
+  width: 100%;
+}
+
+.settings-grid > div,
+.utilities-section {
+  border-top: 1px solid color-mix(in srgb, var(--line) 48%, transparent);
+  border-bottom: 0;
+  background: transparent;
+  padding: 18px 0;
+}
+
+.settings-grid > div:first-of-type,
+.utilities-panel > .panel-title-row + .utilities-section {
+  border-top: 0;
+  padding-top: 8px;
+}
+
+.settings-grid .panel-title-row,
+.utilities-panel > .panel-title-row,
+.utility-section-title {
+  align-items: flex-start;
+}
+
+.settings-grid .panel-title-row > svg,
+.utility-section-title > svg,
+.utilities-panel > .panel-title-row > svg {
+  color: var(--muted);
+  opacity: 0.72;
+}
+
+.settings-grid h2,
+.utilities-panel h2,
+.utility-section-title h3 {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 560;
+  line-height: 1.2;
+}
+
+.settings-grid .panel-title-row span,
+.utilities-panel .panel-title-row span,
+.settings-grid p,
+.settings-grid label,
+.settings-grid legend {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.38;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-grid strong,
+.utilities-panel strong {
+  font-weight: 500;
+}
+
+.preference-control label,
+.citation-convention-control legend,
+.preference-choice-group legend,
+.radio-row,
+.checkbox-row,
+.cloud-run-control-row label,
+.slipstream-enrollment-row label,
+.model-task-label {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.preference-control label strong {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.preference-choice-group small,
+.preference-choice-group p,
+.models-note,
+.model-pricing-status p,
+.gcs-lifecycle-heading span,
+.gcs-lifecycle-heading small,
+.gcs-lifecycle-rule small {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.worker-capacity-note,
+.cloud-run-config-grid > div,
+.slipstream-metric-grid > div,
+.scope-summary,
+.concordance-estimate-panel,
+.backup-action-block,
+.restore-action-block,
+.backup-trend,
+.container-control-row {
+  border: 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 0;
+}
+
+.utilities-status-grid,
+.backup-status-grid,
+.bulk-intake-summary,
+.container-footprint-grid,
+.usage-metric-grid,
+.cloud-run-config-grid,
+.slipstream-metric-grid,
+.concordance-estimate-summary {
+  gap: 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  padding-block: 8px;
+}
+
+.utilities-status-grid > div,
+.backup-status-grid > div,
+.bulk-intake-summary > div,
+.container-footprint-card,
+.usage-metric-grid > div,
+.cloud-run-config-grid > div,
+.slipstream-metric-grid > div,
+.concordance-estimate-summary > div {
+  min-height: 0;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 12px;
+}
+
+.utilities-status-grid > div:first-child,
+.backup-status-grid > div:first-child,
+.bulk-intake-summary > div:first-child,
+.container-footprint-card:first-child,
+.usage-metric-grid > div:first-child,
+.cloud-run-config-grid > div:first-child,
+.slipstream-metric-grid > div:first-child,
+.concordance-estimate-summary > div:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.utilities-status-grid strong,
+.backup-status-grid strong,
+.bulk-intake-summary strong,
+.container-footprint-card strong,
+.usage-metric-grid strong,
+.cloud-run-config-grid strong,
+.slipstream-metric-grid strong,
+.concordance-estimate-summary strong,
+.database-size-readout strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.utilities-status-grid span,
+.backup-status-grid span,
+.bulk-intake-summary span,
+.container-footprint-card span,
+.container-footprint-card em,
+.usage-metric-grid span,
+.cloud-run-config-grid span,
+.slipstream-metric-grid span,
+.concordance-estimate-summary span,
+.database-size-readout span {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.database-size-readout,
+.database-maintenance-progress {
+  border: 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 0;
+}
+
+.database-maintenance-progress {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+}
+
+.database-maintenance-progress span,
+.database-maintenance-progress strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.utilities-action-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  padding-block: 8px;
+}
+
+.utility-action-block {
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 12px;
+}
+
+.utility-action-block:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.utility-action-block strong,
+.container-control-row strong,
+.backup-action-block strong,
+.restore-action-heading strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.utility-action-block span,
+.container-control-row span,
+.backup-action-block span,
+.restore-action-heading span,
+.backup-size-estimate {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.container-footprint-card {
+  min-height: 0;
+  grid-template-columns: 22px minmax(0, 1fr);
+}
+
+.container-footprint-card > svg {
+  color: var(--muted);
+}
+
+.container-path-row,
+.container-version-row,
+.ingestion-history-row,
+.backup-history-row,
+.haproxy-stat-row,
+.run-row,
+.cloud-run-row,
+.slipstream-row,
+.capability-grid article {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.container-path-list,
+.container-version-list,
+.ingestion-history-list,
+.backup-history-list,
+.haproxy-stat-list,
+.run-history,
+.cloud-run-list,
+.slipstream-list {
+  gap: 0;
+}
+
+.container-path-row:first-child,
+.container-version-row:first-child,
+.ingestion-history-row:first-child,
+.backup-history-row:first-child,
+.haproxy-stat-row:first-child,
+.run-row:first-child,
+.cloud-run-row:first-child,
+.slipstream-row:first-child {
+  border-top: 0;
+}
+
+.backup-history-row.header,
+.run-row.header {
+  border-top: 0;
+  color: var(--muted);
+}
+
+.backup-trend-empty {
+  border: 0;
+  border-block: 1px dashed color-mix(in srgb, var(--line) 56%, transparent);
+  border-radius: 0;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.import-preset-grid fieldset {
+  border-color: color-mix(in srgb, var(--line) 42%, transparent);
+  background: transparent;
+}
+
+.legacy-export-actions a {
+  font-size: 14px;
+  font-weight: 500;
+}
+
 @media (max-width: 1180px) {
   .topbar {
     grid-template-columns: minmax(190px, 240px) minmax(220px, 420px) minmax(0, 1fr);
