@@ -2258,6 +2258,11 @@ class SlipstreamClientOut(ApiModel):
     version: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     capacity: int
+    max_capacity: int = 1
+    allowed_capabilities: list[str] = Field(default_factory=list)
+    active_lease_count: int = 0
+    available_capacity: int = 0
+    last_detail: str | None = None
     status: str
     last_check_in_at: datetime | None = None
     online: bool = False
@@ -2269,11 +2274,15 @@ class SlipstreamClientOut(ApiModel):
 class SlipstreamEnrollmentCreate(BaseModel):
     label: str | None = None
     ttl_minutes: int = 60
+    capabilities: list[str] = Field(default_factory=lambda: ["import_preprocess"])
+    max_capacity: int = 1
 
 
 class SlipstreamEnrollmentOut(BaseModel):
     id: str
     label: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    max_capacity: int = 1
     status: str
     expires_at: datetime
     used_at: datetime | None = None
@@ -2311,6 +2320,7 @@ class SlipstreamFailCreate(BaseModel):
 
 class SlipstreamResultCreate(BaseModel):
     idempotency_key: str | None = None
+    result_kind: str | None = None
     current_step: str | None = None
     document: dict[str, Any] = Field(default_factory=dict)
     pages: list[dict[str, Any]] = Field(default_factory=list)
@@ -2339,6 +2349,9 @@ class SlipstreamWorkOut(BaseModel):
     job_type: str
     job_id: str
     lease_id: str
+    worker_kind: str = "slipstream"
+    work_kind: str = "generic"
+    result_mode: str = "complete"
     document_id: str | None = None
     document_title: str | None = None
     original_filename: str | None = None

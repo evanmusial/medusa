@@ -762,6 +762,8 @@ class SlipstreamEnrollment(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     label: Mapped[str | None] = mapped_column(String(160))
+    capabilities: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    max_capacity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

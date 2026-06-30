@@ -190,7 +190,7 @@ export const api = {
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
   libraryFunStats: () => request<LibraryFunStats>("/api/status/library-fun"),
   slipstreamStatus: () => request<SlipstreamStatus>("/api/slipstream/status"),
-  createSlipstreamEnrollment: (body: { label?: string | null; ttl_minutes?: number }) =>
+  createSlipstreamEnrollment: (body: { label?: string | null; ttl_minutes?: number; capabilities?: string[]; max_capacity?: number }) =>
     request<SlipstreamEnrollment>("/api/slipstream/enrollments", { method: "POST", body: JSON.stringify(body) }),
   disableSlipstreamClient: (id: string) =>
     request<SlipstreamStatus>(`/api/slipstream/clients/${id}/disable`, { method: "POST" }).then(() => api.slipstreamStatus()),

@@ -404,6 +404,8 @@ from app.services.slipstream import (
     artifact_for_lease,
     cancel_lease,
     claim_next_job_lease,
+    clamp_client_capabilities,
+    clamp_client_capacity,
     client_out,
     complete_lease_from_result,
     create_enrollment,
@@ -2227,7 +2229,13 @@ def create_slipstream_enrollment(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    enrollment, token = create_enrollment(db, label=payload.label, ttl_minutes=payload.ttl_minutes)
+    enrollment, token = create_enrollment(
+        db,
+        label=payload.label,
+        ttl_minutes=payload.ttl_minutes,
+        capabilities=payload.capabilities,
+        max_capacity=payload.max_capacity,
+    )
     db.commit()
     db.refresh(enrollment)
     return enrollment_out(enrollment, token=token)
@@ -2238,7 +2246,7 @@ def list_slipstream_clients(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> list[dict[str, Any]]:
-    return [client_out(client) for client in db.query(SlipstreamClient).order_by(SlipstreamClient.created_at.asc()).all()]
+    return [client_out(client, db=db) for client in db.query(SlipstreamClient).order_by(SlipstreamClient.created_at.asc()).all()]
 
 
 @app.post("/api/slipstream/clients/{client_id}/disable", response_model=SlipstreamClientOut)
@@ -2253,7 +2261,7 @@ def disable_slipstream_client(
     revoke_client(db, client, disable_only=True)
     db.commit()
     db.refresh(client)
-    return client_out(client)
+    return client_out(client, db=db)
 
 
 @app.post("/api/slipstream/clients/{client_id}/revoke", response_model=SlipstreamClientOut)
@@ -2268,7 +2276,7 @@ def revoke_slipstream_client(
     revoke_client(db, client)
     db.commit()
     db.refresh(client)
-    return client_out(client)
+    return client_out(client, db=db)
 
 
 @app.post("/api/slipstream/leases/{lease_id}/cancel", response_model=SlipstreamLeaseOut)
@@ -2305,7 +2313,7 @@ def register_slipstream_client(
         raise http_error_for_slipstream(exc) from exc
     db.commit()
     db.refresh(client)
-    return client_out(client)
+    return client_out(client, db=db)
 
 
 @app.post("/api/slipstream/check-in", response_model=SlipstreamClientOut)
@@ -2318,16 +2326,16 @@ def check_in_slipstream_client(
     if payload.version is not None:
         client.version = payload.version
     if payload.capabilities is not None:
-        client.capabilities = payload.capabilities
+        client.capabilities = clamp_client_capabilities(client, payload.capabilities)
     if payload.capacity is not None:
-        client.capacity = max(1, payload.capacity)
+        client.capacity = clamp_client_capacity(client, payload.capacity)
     if payload.metadata:
         metadata = dict(client.client_metadata or {})
         metadata.update(payload.metadata)
         client.client_metadata = metadata
     db.commit()
     db.refresh(client)
-    return client_out(client)
+    return client_out(client, db=db)
 
 
 @app.post("/api/slipstream/leases/claim", response_model=SlipstreamClaimOut)

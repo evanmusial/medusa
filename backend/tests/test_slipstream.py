@@ -48,19 +48,20 @@ def sign(private_key, *, method="POST", path="/api/slipstream/check-in", timesta
     return body_hash, signature
 
 
-def registered_client(db, *, name="remote-1"):
+def registered_client(db, *, name="remote-1", capabilities=None, capacity=1):
     from app.services.slipstream import create_enrollment, register_client
 
+    capabilities = capabilities or ["import", "concordance"]
     private_key, public_key = keypair()
-    enrollment, token = create_enrollment(db, label=name)
+    enrollment, token = create_enrollment(db, label=name, capabilities=capabilities, max_capacity=capacity)
     client = register_client(
         db,
         enrollment_token=token,
         name=name,
         public_key=public_key,
         version="pytest",
-        capabilities=["import", "concordance"],
-        capacity=1,
+        capabilities=capabilities,
+        capacity=capacity,
     )
     return client, private_key, enrollment, token
 
@@ -119,6 +120,7 @@ def test_enrollment_token_is_single_use_and_expires(monkeypatch, tmp_path):
 
         client = register_client(db, enrollment_token=token, name="Worker", public_key=public_key)
         assert client.status == "active"
+        assert client.capabilities == ["import_preprocess"]
 
         with pytest.raises(SlipstreamAuthError):
             register_client(db, enrollment_token=token, name="Worker again", public_key=public_key)
@@ -127,6 +129,29 @@ def test_enrollment_token_is_single_use_and_expires(monkeypatch, tmp_path):
         expired.expires_at = utc_now() - timedelta(seconds=1)
         with pytest.raises(SlipstreamAuthError):
             register_client(db, enrollment_token=expired_token, name="Late", public_key=public_key)
+
+
+def test_enrollment_capability_and_capacity_limits_are_enforced(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.services.slipstream import clamp_client_capabilities, clamp_client_capacity, create_enrollment, register_client
+
+    with Session() as db:
+        _, token = create_enrollment(db, label="laptop", capabilities=["import_preprocess"], max_capacity=4)
+        _, public_key = keypair()
+
+        client = register_client(
+            db,
+            enrollment_token=token,
+            name="Laptop",
+            public_key=public_key,
+            capabilities=["import", "concordance", "import_preprocess"],
+            capacity=12,
+        )
+
+        assert client.capabilities == ["import_preprocess"]
+        assert client.capacity == 4
+        assert clamp_client_capabilities(client, ["concordance", "import_preprocess"]) == ["import_preprocess"]
+        assert clamp_client_capacity(client, 9) == 4
 
 
 def test_signature_verification_rejects_replay_skew_and_revoked_clients(monkeypatch, tmp_path):
@@ -241,6 +266,28 @@ def test_heartbeat_extends_lease_and_expiry_requeues_job(monkeypatch, tmp_path):
         assert document.processing_status == "queued"
 
 
+def test_active_lease_with_requeued_job_is_expired(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import SlipstreamLease
+    from app.services.slipstream import claim_next_job_lease, expire_stale_leases
+
+    with Session() as db:
+        client, _, _, _ = registered_client(db)
+        _, document, job = import_job(db)
+        claimed = claim_next_job_lease(db, client=client, job_types=["import"])
+        lease = db.get(SlipstreamLease, claimed["lease"]["id"])
+
+        job.status = "queued"
+        job.locked_at = None
+        document.processing_status = "queued"
+        db.flush()
+        expired_count = expire_stale_leases(db)
+
+        assert expired_count == 1
+        assert lease.status == "expired"
+        assert job.status == "queued"
+
+
 def test_canceled_and_revoked_leases_stop_followup_work(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.models import utc_now
@@ -353,6 +400,53 @@ def test_slipstream_import_result_is_idempotent_and_updates_processing_state(mon
         assert db.query(DocumentPage).filter_by(document_id=document.id, page_number=1).one().text == "alpha beta"
         assert db.query(DocumentCompositionRecord).filter_by(document_id=document.id).count() == 1
         assert db.query(ProcessingEvent).filter_by(import_job_id=job.id, event_type="slipstream_job_complete").count() == 1
+
+
+def test_slipstream_import_preprocess_result_requeues_for_central_processing(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import DocumentCompositionRecord, DocumentPage, ProcessingEvent, SlipstreamLease
+    from app.services.slipstream import claim_next_job_lease, complete_lease_from_result
+
+    with Session() as db:
+        client, _, _, _ = registered_client(db, capabilities=["import_preprocess"], capacity=4)
+        batch, document, job = import_job(db)
+        claimed = claim_next_job_lease(db, client=client, job_types=["import"])
+        lease = db.get(SlipstreamLease, claimed["lease"]["id"])
+
+        assert claimed["work"]["work_kind"] == "import_preprocess"
+        assert claimed["work"]["result_mode"] == "partial"
+        assert lease.payload["work_kind"] == "import_preprocess"
+
+        complete_lease_from_result(
+            db,
+            lease,
+            manifest={
+                "idempotency_key": claimed["work"]["idempotency_key"],
+                "result_kind": "import_preprocess",
+                "current_step": "normalizing_pages",
+                "document": {"page_count": 1, "search_text": "remote raw"},
+                "pages": [{"page_number": 1, "text": "remote raw", "text_source": "marker"}],
+                "composition": [
+                    {
+                        "record_kind": "remote_stage",
+                        "stage_key": "slipstream_import_preprocess",
+                        "stage_label": "Slipstream import preprocessing",
+                        "provider": "slipstream",
+                        "status": "complete",
+                    }
+                ],
+                "metadata": {"preprocess_evidence": {"actual_extractor": "marker"}},
+            },
+        )
+
+        assert lease.status == "complete"
+        assert job.status == "queued"
+        assert job.current_step == "normalizing_pages"
+        assert document.processing_status == "queued"
+        assert batch.completed_files == 0
+        assert db.query(DocumentPage).filter_by(document_id=document.id, page_number=1).one().text == "remote raw"
+        assert db.query(DocumentCompositionRecord).filter_by(document_id=document.id, stage_key="slipstream_import_preprocess").count() == 1
+        assert db.query(ProcessingEvent).filter_by(import_job_id=job.id, event_type="slipstream_import_preprocess_complete").count() == 1
 
 
 def test_slipstream_concordance_result_refreshes_capability_progress(monkeypatch, tmp_path):

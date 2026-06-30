@@ -1,4 +1,5 @@
 .env
+.env.slipstream
 .venv/
 __pycache__/
 .pytest_cache/

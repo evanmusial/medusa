@@ -24338,6 +24338,7 @@ function SlipstreamSettingsPanel() {
   const queryClient = useQueryClient();
   const [enrollmentLabel, setEnrollmentLabel] = useState("");
   const [enrollmentTtl, setEnrollmentTtl] = useState(60);
+  const [enrollmentCapacity, setEnrollmentCapacity] = useState(4);
   const [createdEnrollment, setCreatedEnrollment] = useState<string | null>(null);
   const enrollmentFeedback = useAsyncActionFeedback();
   const clientActionFeedback = useAsyncActionFeedbackMap();
@@ -24349,7 +24350,13 @@ function SlipstreamSettingsPanel() {
   });
   const slipstream = status.data;
   const createEnrollment = useMutation({
-    mutationFn: () => api.createSlipstreamEnrollment({ label: enrollmentLabel.trim() || null, ttl_minutes: enrollmentTtl }),
+    mutationFn: () =>
+      api.createSlipstreamEnrollment({
+        label: enrollmentLabel.trim() || null,
+        ttl_minutes: enrollmentTtl,
+        capabilities: ["import_preprocess"],
+        max_capacity: enrollmentCapacity,
+      }),
     onSuccess: (enrollment) => {
       enrollmentFeedback.showSuccess();
       setCreatedEnrollment(enrollment.token || "");
@@ -24446,6 +24453,16 @@ function SlipstreamSettingsPanel() {
             value={enrollmentTtl}
           />
         </label>
+        <label>
+          Slots
+          <input
+            data-tooltip="Set the maximum concurrent jobs this enrollment can run."
+            min={1}
+            onChange={(event) => setEnrollmentCapacity(Math.max(1, Number(event.target.value) || 1))}
+            type="number"
+            value={enrollmentCapacity}
+          />
+        </label>
         <AsyncActionSlot busy={createEnrollment.isPending} feedback={enrollmentFeedback.feedback} label="Slipstream enrollment creation in progress">
           <button
             className={asyncFeedbackClass("secondary-button", enrollmentFeedback.feedback, createEnrollment.isPending)}
@@ -24484,6 +24501,7 @@ function SlipstreamSettingsPanel() {
                 <span>{client.online ? "online" : client.last_check_in_at ? `last ${relativeTimeLabel(client.last_check_in_at)}` : "not checked in"}</span>
               </div>
               <StatusPill value={client.status} tone={client.status === "active" ? "good" : "neutral"} />
+              <span>{`${formatMetric(client.active_lease_count)} active / ${formatMetric(client.capacity)} slots`}</span>
               <span>{client.capabilities.join(", ") || "no capabilities"}</span>
               <AsyncActionSlot busy={busy} feedback={feedback} label="Slipstream client action in progress">
                 <button

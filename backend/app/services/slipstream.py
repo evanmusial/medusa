@@ -41,8 +41,13 @@ from app.services.processing import import_processing_preset_for_job, refresh_im
 
 SLIPSTREAM_JOB_IMPORT = "import"
 SLIPSTREAM_JOB_CONCORDANCE = "concordance"
+SLIPSTREAM_CAP_IMPORT_PREPROCESS = "import_preprocess"
 ACTIVE_LEASE_STATUS = "active"
 TERMINAL_LEASE_STATUSES = {"complete", "failed", "expired", "canceled"}
+REMOTE_WORKER_KINDS = {"slipstream"}
+ALLOWED_SLIPSTREAM_CAPABILITIES = {SLIPSTREAM_CAP_IMPORT_PREPROCESS, SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE}
+DEFAULT_SLIPSTREAM_CAPABILITIES = [SLIPSTREAM_CAP_IMPORT_PREPROCESS]
+IMPORT_PREPROCESS_STEPS = {"stored", "extracting"}
 
 
 class SlipstreamError(ValueError):
@@ -167,11 +172,78 @@ def _aware_datetime(value: datetime | None) -> datetime | None:
     return value
 
 
-def create_enrollment(db: Session, *, label: str | None = None, ttl_minutes: int = 60) -> tuple[SlipstreamEnrollment, str]:
+def normalize_capabilities(values: list[str] | tuple[str, ...] | None, *, default: list[str] | None = None) -> list[str]:
+    normalized: list[str] = []
+    for value in values or default or []:
+        key = str(value or "").strip().lower()
+        if key in ALLOWED_SLIPSTREAM_CAPABILITIES and key not in normalized:
+            normalized.append(key)
+    return normalized or list(default or DEFAULT_SLIPSTREAM_CAPABILITIES)
+
+
+def enrollment_capabilities(enrollment: SlipstreamEnrollment) -> list[str]:
+    return normalize_capabilities(enrollment.capabilities, default=DEFAULT_SLIPSTREAM_CAPABILITIES)
+
+
+def client_allowed_capabilities(client: SlipstreamClient) -> list[str]:
+    metadata = dict(client.client_metadata or {})
+    return normalize_capabilities(metadata.get("allowed_capabilities"), default=normalize_capabilities(client.capabilities, default=DEFAULT_SLIPSTREAM_CAPABILITIES))
+
+
+def client_max_capacity(client: SlipstreamClient) -> int:
+    metadata = dict(client.client_metadata or {})
+    try:
+        return max(1, int(metadata.get("max_capacity") or client.capacity or 1))
+    except (TypeError, ValueError):
+        return max(1, int(client.capacity or 1))
+
+
+def clamp_client_capabilities(client: SlipstreamClient, requested: list[str] | None) -> list[str]:
+    allowed = client_allowed_capabilities(client)
+    requested_caps = normalize_capabilities(requested, default=allowed)
+    clamped = [capability for capability in requested_caps if capability in allowed]
+    return clamped or allowed
+
+
+def clamp_client_capacity(client: SlipstreamClient, requested: int | None) -> int:
+    try:
+        value = max(1, int(requested or 1))
+    except (TypeError, ValueError):
+        value = 1
+    return min(value, client_max_capacity(client))
+
+
+def client_job_types(client: SlipstreamClient) -> set[str]:
+    capabilities = set(clamp_client_capabilities(client, client.capabilities))
+    job_types: set[str] = set()
+    if SLIPSTREAM_CAP_IMPORT_PREPROCESS in capabilities or SLIPSTREAM_JOB_IMPORT in capabilities:
+        job_types.add(SLIPSTREAM_JOB_IMPORT)
+    if SLIPSTREAM_JOB_CONCORDANCE in capabilities:
+        job_types.add(SLIPSTREAM_JOB_CONCORDANCE)
+    return job_types
+
+
+def client_import_work_kind(client: SlipstreamClient) -> str:
+    capabilities = set(clamp_client_capabilities(client, client.capabilities))
+    if SLIPSTREAM_CAP_IMPORT_PREPROCESS in capabilities:
+        return SLIPSTREAM_CAP_IMPORT_PREPROCESS
+    return SLIPSTREAM_JOB_IMPORT
+
+
+def create_enrollment(
+    db: Session,
+    *,
+    label: str | None = None,
+    ttl_minutes: int = 60,
+    capabilities: list[str] | None = None,
+    max_capacity: int = 1,
+) -> tuple[SlipstreamEnrollment, str]:
     token = secrets.token_urlsafe(32)
     enrollment = SlipstreamEnrollment(
         token_hash=token_hash(token),
         label=label,
+        capabilities=normalize_capabilities(capabilities, default=DEFAULT_SLIPSTREAM_CAPABILITIES),
+        max_capacity=max(1, int(max_capacity or 1)),
         status="pending",
         expires_at=utc_now() + timedelta(minutes=max(1, ttl_minutes)),
     )
@@ -203,15 +275,22 @@ def register_client(
         enrollment.status = "expired"
         raise SlipstreamAuthError("Slipstream enrollment token has expired.")
     _load_public_key(public_key)
+    allowed_capabilities = enrollment_capabilities(enrollment)
+    requested_capabilities = normalize_capabilities(capabilities, default=allowed_capabilities)
+    client_capabilities = [capability for capability in requested_capabilities if capability in allowed_capabilities] or allowed_capabilities
+    max_capacity = max(1, int(enrollment.max_capacity or 1))
+    client_metadata = dict(metadata or {})
+    client_metadata["allowed_capabilities"] = allowed_capabilities
+    client_metadata["max_capacity"] = max_capacity
     client = SlipstreamClient(
         name=name.strip() or "Slipstream client",
         public_key=public_key.strip(),
         version=version,
-        capabilities=capabilities or [SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE],
-        capacity=max(1, int(capacity or 1)),
+        capabilities=client_capabilities,
+        capacity=min(max(1, int(capacity or 1)), max_capacity),
         status="active",
         last_check_in_at=utc_now(),
-        client_metadata=metadata or {},
+        client_metadata=client_metadata,
     )
     db.add(client)
     db.flush()
@@ -317,17 +396,22 @@ def expire_stale_leases(db: Session) -> int:
     expired = 0
     leases = (
         db.query(SlipstreamLease)
-        .filter(SlipstreamLease.status == ACTIVE_LEASE_STATUS, SlipstreamLease.expires_at < now)
+        .filter(SlipstreamLease.status == ACTIVE_LEASE_STATUS)
         .order_by(asc(SlipstreamLease.expires_at))
         .limit(100)
         .all()
     )
     local_cutoff = now - timedelta(seconds=max(1, settings.worker_stale_job_seconds))
     for lease in leases:
+        job = _lease_job(db, lease)
+        lease_expires_at = _aware_datetime(lease.expires_at)
+        expired_by_time = bool(lease_expires_at and lease_expires_at < now)
+        job_running = bool(job is not None and getattr(job, "status", None) == "running")
+        if not expired_by_time and job_running:
+            continue
         if lease.worker_kind == "local":
-            job = _lease_job(db, lease)
             locked_at = _aware_datetime(getattr(job, "locked_at", None))
-            if job is not None and getattr(job, "status", None) == "running" and locked_at and locked_at >= local_cutoff:
+            if expired_by_time and job is not None and getattr(job, "status", None) == "running" and locked_at and locked_at >= local_cutoff:
                 lease.heartbeat_at = locked_at
                 lease.expires_at = locked_at + timedelta(seconds=max(1, settings.worker_stale_job_seconds))
                 continue
@@ -383,9 +467,12 @@ def _claim_candidate(
     client: SlipstreamClient | None,
     worker_kind: str,
     ttl_seconds: int,
+    payload: dict[str, Any] | None = None,
 ) -> tuple[SlipstreamLease, str] | None:
     now = utc_now()
     lease_token = secrets.token_urlsafe(32)
+    lease_payload = {"idempotency_key": f"{job_type}:{job.id}:{now.timestamp()}"}
+    lease_payload.update(payload or {})
     lease = SlipstreamLease(
         client_id=client.id if client else None,
         worker_kind=worker_kind,
@@ -396,7 +483,7 @@ def _claim_candidate(
         claimed_at=now,
         heartbeat_at=now,
         expires_at=now + timedelta(seconds=max(1, ttl_seconds)),
-        payload={"idempotency_key": f"{job_type}:{job.id}:{now.timestamp()}"},
+        payload=lease_payload,
     )
     try:
         with db.begin_nested():
@@ -427,7 +514,8 @@ def _claim_candidate(
                     },
                 )
             )
-        if worker_kind == "slipstream":
+        if worker_kind in REMOTE_WORKER_KINDS:
+            work_kind = str(lease.payload.get("work_kind") or job_type)
             db.add(
                 ProcessingEvent(
                     import_job_id=job.id,
@@ -439,6 +527,7 @@ def _claim_candidate(
                         "client_id": client.id if client else None,
                         "client_name": client.name if client else "Local worker",
                         "worker_kind": worker_kind,
+                        "work_kind": work_kind,
                     },
                 )
             )
@@ -513,29 +602,39 @@ def claim_next_job_lease(
     leases_available = slipstream_tables_available(db)
     if leases_available:
         expire_stale_leases(db)
-    if worker_kind == "slipstream":
+    if worker_kind in REMOTE_WORKER_KINDS:
         if not settings.slipstream_enabled:
             raise SlipstreamError("Slipstream is disabled.")
         if not leases_available:
             raise SlipstreamError("Slipstream tables are unavailable.")
         if not client:
             raise SlipstreamAuthError("Slipstream client is required.")
+        client.capabilities = clamp_client_capabilities(client, client.capabilities)
+        client.capacity = clamp_client_capacity(client, client.capacity)
         if active_client_leases(db, client.id) >= max(1, client.capacity):
             return None
-        allowed_job_types = set(job_types or client.capabilities or [SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE])
+        allowed_job_types = client_job_types(client)
+        requested_job_types = {str(job_type).strip().lower() for job_type in job_types or [] if str(job_type).strip().lower() in {SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE}}
+        if requested_job_types:
+            allowed_job_types &= requested_job_types
+        if not allowed_job_types:
+            return None
         ttl_seconds = settings.slipstream_lease_ttl_seconds
     else:
         allowed_job_types = set(job_types or [SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE])
         ttl_seconds = settings.worker_stale_job_seconds
 
     if SLIPSTREAM_JOB_IMPORT in allowed_job_types:
+        import_work_kind = client_import_work_kind(client) if worker_kind in REMOTE_WORKER_KINDS and client else SLIPSTREAM_JOB_IMPORT
         for job in _query_import_candidates(
             db,
             exclude_ids=exclude_import_ids,
             use_lease_filter=leases_available,
-            stale_after_seconds=local_stale_after_seconds if worker_kind != "slipstream" else None,
+            stale_after_seconds=local_stale_after_seconds if worker_kind not in REMOTE_WORKER_KINDS else None,
         ):
-            if not leases_available and worker_kind != "slipstream":
+            if import_work_kind == SLIPSTREAM_CAP_IMPORT_PREPROCESS and str(job.current_step or "stored") not in IMPORT_PREPROCESS_STEPS:
+                continue
+            if not leases_available and worker_kind not in REMOTE_WORKER_KINDS:
                 return legacy_local_claim_response(db, job_type=SLIPSTREAM_JOB_IMPORT, job=job)
             claimed = _claim_candidate(
                 db,
@@ -544,6 +643,10 @@ def claim_next_job_lease(
                 client=client,
                 worker_kind=worker_kind,
                 ttl_seconds=ttl_seconds,
+                payload={
+                    "work_kind": import_work_kind,
+                    "result_mode": "partial" if import_work_kind == SLIPSTREAM_CAP_IMPORT_PREPROCESS else "complete",
+                },
             )
             if claimed:
                 lease, lease_token = claimed
@@ -553,9 +656,9 @@ def claim_next_job_lease(
         for job in _query_concordance_candidates(
             db,
             use_lease_filter=leases_available,
-            stale_after_seconds=local_stale_after_seconds if worker_kind != "slipstream" else None,
+            stale_after_seconds=local_stale_after_seconds if worker_kind not in REMOTE_WORKER_KINDS else None,
         ):
-            if not leases_available and worker_kind != "slipstream":
+            if not leases_available and worker_kind not in REMOTE_WORKER_KINDS:
                 return legacy_local_claim_response(db, job_type=SLIPSTREAM_JOB_CONCORDANCE, job=job)
             claimed = _claim_candidate(
                 db,
@@ -564,6 +667,7 @@ def claim_next_job_lease(
                 client=client,
                 worker_kind=worker_kind,
                 ttl_seconds=ttl_seconds,
+                payload={"work_kind": SLIPSTREAM_JOB_CONCORDANCE, "result_mode": "complete"},
             )
             if claimed:
                 lease, lease_token = claimed
@@ -603,13 +707,22 @@ def lease_out(lease: SlipstreamLease) -> dict[str, Any]:
     }
 
 
-def client_out(client: SlipstreamClient) -> dict[str, Any]:
+def client_out(client: SlipstreamClient, *, db: Session | None = None) -> dict[str, Any]:
+    active_count = active_client_leases(db, client.id) if db is not None else 0
+    max_capacity = client_max_capacity(client)
+    capacity = min(max(1, int(client.capacity or 1)), max_capacity)
+    metadata = dict(client.client_metadata or {})
     return {
         "id": client.id,
         "name": client.name,
         "version": client.version,
         "capabilities": client.capabilities,
-        "capacity": client.capacity,
+        "capacity": capacity,
+        "max_capacity": max_capacity,
+        "allowed_capabilities": client_allowed_capabilities(client),
+        "active_lease_count": active_count,
+        "available_capacity": max(0, capacity - active_count),
+        "last_detail": metadata.get("last_detail"),
         "status": client.status,
         "last_check_in_at": client.last_check_in_at,
         "online": client_is_online(client),
@@ -623,6 +736,8 @@ def enrollment_out(enrollment: SlipstreamEnrollment, *, token: str | None = None
     return {
         "id": enrollment.id,
         "label": enrollment.label,
+        "capabilities": enrollment_capabilities(enrollment),
+        "max_capacity": max(1, int(enrollment.max_capacity or 1)),
         "status": enrollment.status,
         "expires_at": enrollment.expires_at,
         "used_at": enrollment.used_at,
@@ -654,7 +769,7 @@ def slipstream_status(db: Session) -> dict[str, Any]:
         "heartbeat_seconds": get_settings().slipstream_heartbeat_seconds,
         "lease_ttl_seconds": get_settings().slipstream_lease_ttl_seconds,
         "require_tls": get_settings().slipstream_require_tls,
-        "clients": [client_out(client) for client in clients],
+        "clients": [client_out(client, db=db) for client in clients],
         "active_leases": [lease_out(lease) for lease in active_leases],
         "online_client_count": sum(1 for client in clients if client_is_online(client)),
         "active_lease_count": len(active_leases),
@@ -673,16 +788,20 @@ def work_bundle(db: Session, lease: SlipstreamLease) -> dict[str, Any]:
     base_url = (get_settings().slipstream_public_base_url or "").rstrip("/")
     artifact_path = f"/api/slipstream/leases/{lease.id}/artifact"
     artifact_url = f"{base_url}{artifact_path}" if base_url else artifact_path
+    lease_payload = dict(lease.payload or {})
     bundle: dict[str, Any] = {
         "job_type": lease.job_type,
         "job_id": job.id,
         "lease_id": lease.id,
+        "worker_kind": lease.worker_kind,
+        "work_kind": lease_payload.get("work_kind") or lease.job_type,
+        "result_mode": lease_payload.get("result_mode") or "complete",
         "document_id": getattr(job, "document_id", None),
         "document_title": document.title if document else None,
         "original_filename": document.original_filename if document else None,
         "checksum_sha256": checksum,
         "artifact_url": artifact_url,
-        "idempotency_key": lease.payload.get("idempotency_key") or f"{lease.job_type}:{job.id}:{lease.id}",
+        "idempotency_key": lease_payload.get("idempotency_key") or f"{lease.job_type}:{job.id}:{lease.id}",
         "model_preferences": model_preferences,
         "capability_versions": _capability_versions(),
     }
@@ -760,7 +879,7 @@ def record_client_event(db: Session, lease: SlipstreamLease, *, event_type: str,
             level=level,
             event_type=event_type or "slipstream_client_event",
             message=message or "Slipstream client event.",
-            payload={"lease_id": lease.id, "client_id": lease.client_id, **(payload or {})},
+            payload={"lease_id": lease.id, "client_id": lease.client_id, "worker_kind": lease.worker_kind, **(payload or {})},
         )
     )
     heartbeat_lease(db, lease)
@@ -774,22 +893,35 @@ def fail_lease(db: Session, lease: SlipstreamLease, *, error: str, payload: dict
     if not job:
         db.flush()
         return lease_out(lease)
-    job.status = "failed"
+    lease_payload = dict(lease.payload or {})
+    requeue_import = lease.job_type == SLIPSTREAM_JOB_IMPORT and lease_payload.get("work_kind") == SLIPSTREAM_CAP_IMPORT_PREPROCESS
+    job.status = "queued" if requeue_import else "failed"
     job.locked_at = None
     job.last_error = error
     if lease.job_type == SLIPSTREAM_JOB_IMPORT and isinstance(job, ImportJob):
         if job.document:
-            job.document.processing_status = "failed"
+            job.document.processing_status = "queued" if requeue_import else "failed"
         if job.batch:
             refresh_import_batch_progress(db, job.batch)
         db.add(
             ProcessingEvent(
                 import_job_id=job.id,
                 document_id=job.document_id,
-                level="error",
-                event_type="slipstream_job_failed",
-                message="Slipstream client reported a job failure.",
-                payload={"lease_id": lease.id, "client_id": lease.client_id, "error": error, **(payload or {})},
+                level="warning" if requeue_import else "error",
+                event_type="slipstream_import_preprocess_failed" if requeue_import else "slipstream_job_failed",
+                message=(
+                    "Slipstream import preprocessing failed and the job was returned to the central queue."
+                    if requeue_import
+                    else "Slipstream client reported a job failure."
+                ),
+                payload={
+                    "lease_id": lease.id,
+                    "client_id": lease.client_id,
+                    "worker_kind": lease.worker_kind,
+                    "work_kind": lease_payload.get("work_kind"),
+                    "error": error,
+                    **(payload or {}),
+                },
             )
         )
     elif lease.job_type == SLIPSTREAM_JOB_CONCORDANCE and isinstance(job, ConcordanceJob):
@@ -832,6 +964,23 @@ def _apply_document_patch(document: Document, patch: dict[str, Any]) -> None:
         **(evidence.get("slipstream_result") or {}),
         "applied_at": utc_now().isoformat(),
         "fields": sorted(key for key in patch if key in DOCUMENT_PATCH_FIELDS),
+    }
+    document.metadata_evidence = evidence
+
+
+def _apply_result_metadata(document: Document, metadata: dict[str, Any], *, lease: SlipstreamLease, result_kind: str) -> None:
+    if not metadata:
+        return
+    evidence = dict(document.metadata_evidence or {})
+    evidence_key = "slipstream_import_preprocess" if result_kind == SLIPSTREAM_CAP_IMPORT_PREPROCESS else "slipstream_result_metadata"
+    evidence[evidence_key] = {
+        **(evidence.get(evidence_key) or {}),
+        "applied_at": utc_now().isoformat(),
+        "lease_id": lease.id,
+        "client_id": lease.client_id,
+        "worker_kind": lease.worker_kind,
+        "result_kind": result_kind,
+        **metadata,
     }
     document.metadata_evidence = evidence
 
@@ -909,7 +1058,7 @@ def _apply_composition(db: Session, document: Document, job: ImportJob | Concord
                 started_at=_parse_datetime(row.get("started_at")),
                 completed_at=_parse_datetime(row.get("completed_at")) or utc_now(),
                 message=row.get("message"),
-                record_metadata={"lease_id": lease.id, "client_id": lease.client_id, **(row.get("metadata") or {})},
+                record_metadata={"lease_id": lease.id, "client_id": lease.client_id, "worker_kind": lease.worker_kind, **(row.get("metadata") or {})},
             )
         )
 
@@ -931,9 +1080,13 @@ def complete_lease_from_result(db: Session, lease: SlipstreamLease, *, manifest:
     if not job or not document:
         raise SlipstreamError("Slipstream lease job or document is missing.")
 
+    lease_payload = dict(lease.payload or {})
+    result_kind = str(manifest.get("result_kind") or lease_payload.get("work_kind") or lease.job_type).strip()
     document_patch = manifest.get("document") if isinstance(manifest.get("document"), dict) else {}
     if document_patch:
         _apply_document_patch(document, document_patch)
+    result_metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    _apply_result_metadata(document, result_metadata, lease=lease, result_kind=result_kind)
     pages = manifest.get("pages") if isinstance(manifest.get("pages"), list) else []
     _apply_pages(db, document, pages)
     capabilities = manifest.get("capabilities") if isinstance(manifest.get("capabilities"), list) else []
@@ -947,20 +1100,31 @@ def complete_lease_from_result(db: Session, lease: SlipstreamLease, *, manifest:
     lease.last_error = None
 
     if lease.job_type == SLIPSTREAM_JOB_IMPORT and isinstance(job, ImportJob):
-        job.current_step = str(manifest.get("current_step") or "complete")
-        job.status = "complete"
+        is_preprocess_result = result_kind == SLIPSTREAM_CAP_IMPORT_PREPROCESS
+        job.current_step = "normalizing_pages" if is_preprocess_result else str(manifest.get("current_step") or "complete")
+        job.status = "queued" if is_preprocess_result else "complete"
         job.locked_at = None
         job.last_error = None
-        document.processing_status = "ready"
+        document.processing_status = "queued" if is_preprocess_result else "ready"
         if job.batch:
             refresh_import_batch_progress(db, job.batch)
         db.add(
             ProcessingEvent(
                 import_job_id=job.id,
                 document_id=job.document_id,
-                event_type="slipstream_job_complete",
-                message="Slipstream client result was applied.",
-                payload={"lease_id": lease.id, "client_id": lease.client_id, "idempotency_key": lease.result_idempotency_key},
+                event_type="slipstream_import_preprocess_complete" if is_preprocess_result else "slipstream_job_complete",
+                message=(
+                    "Slipstream import preprocessing was applied; central processing will resume."
+                    if is_preprocess_result
+                    else "Slipstream client result was applied."
+                ),
+                payload={
+                    "lease_id": lease.id,
+                    "client_id": lease.client_id,
+                    "worker_kind": lease.worker_kind,
+                    "work_kind": result_kind,
+                    "idempotency_key": lease.result_idempotency_key,
+                },
             )
         )
     elif lease.job_type == SLIPSTREAM_JOB_CONCORDANCE and isinstance(job, ConcordanceJob):

@@ -10065,6 +10065,22 @@ pre {
   gap: 12px;
 }
 
+.toggle-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--button-control-height);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.compact-toggle {
+  min-height: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .slipstream-metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -13589,6 +13605,7 @@ button.history-row,
   .preferences-panel,
   .account-settings-panel,
   .storage-settings-panel,
+  .slipstream-settings-panel,
   .model-settings-panel,
   .openai-usage-panel,
   .budget-panel,

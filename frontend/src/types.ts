@@ -264,6 +264,11 @@ export type SlipstreamClient = {
   version?: string | null;
   capabilities: string[];
   capacity: number;
+  max_capacity: number;
+  allowed_capabilities: string[];
+  active_lease_count: number;
+  available_capacity: number;
+  last_detail?: string | null;
   status: string;
   last_check_in_at?: string | null;
   online: boolean;
@@ -305,6 +310,8 @@ export type SlipstreamStatus = {
 export type SlipstreamEnrollment = {
   id: string;
   label?: string | null;
+  capabilities: string[];
+  max_capacity: number;
   status: string;
   expires_at: string;
   used_at?: string | null;

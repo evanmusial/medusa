@@ -1,0 +1,80 @@
+# Slipstream Remote Worker Rollout
+
+This note tracks the Slipstream-only remote worker work being built for Medusa production. It records what is changing, why it is shaped this way, how the local laptop worker is enrolled, and where operator decisions remain.
+
+## Scope
+
+- Build Slipstream remote workers only. Cloud Run is intentionally out of scope and should not be part of this rollout.
+- Keep the main FastAPI backend as the Slipstream control plane instead of introducing a second public IP, port, or service.
+- Let remote workers check in over the existing authenticated HTTPS application boundary and claim only server-authorized work.
+- Enroll this laptop as a remote worker with capacity for up to 4 concurrent jobs.
+- Prefer this laptop's 12 performance cores and avoid the 4 efficiency cores where the runtime can express affinity.
+
+## Architecture
+
+The production backend remains the single coordinator. Remote workers connect outbound to the public Medusa HTTPS origin, register with one-time enrollment tokens, and then sign check-in, claim, heartbeat, result, and failure requests with their Ed25519 worker key. PostgreSQL remains the quorum authority through `SlipstreamLease` rows and the active-lease uniqueness constraint.
+
+This avoids a dedicated worker service because the main backend already owns session/auth middleware, queue state, storage routes, import job transitions, and processing events. A separate port or service would add firewall, TLS, routing, auth, and deployment surface without improving the current trust or quorum model. The likely future reason to split it out would be a very large worker fleet or a separate operational team boundary; that is not the current use case.
+
+## Data Model
+
+Slipstream enrollments now include:
+
+- `capabilities`: the allowed work kinds for a client. The initial capability is `import_preprocess`.
+- `max_capacity`: the highest concurrency a client may request.
+
+Clients store server-clamped capability and capacity metadata. A worker can ask for fewer slots than the enrollment allows, but not more. The server reports active and available capacity in admin client responses.
+
+The migration is `20260630_0033_slipstream_enrollment_limits.py`; existing enrollments are backfilled to `["import_preprocess"]` and capacity `1`.
+
+## Work Contract
+
+Remote Slipstream workers currently claim only import-preprocess work. That means:
+
+1. The server assigns an eligible queued import job whose document original is already stored.
+2. The worker downloads the authenticated original through the server.
+3. The worker extracts raw per-page text and search text using the configured raw-text extractor.
+4. The worker returns a typed partial manifest containing extracted pages, composition evidence, and metadata.
+5. The server applies the partial result, completes the remote lease, and requeues the import at `normalizing_pages`.
+6. The central worker owns all enrichment, model calls, citation/tag logic, indexing, durable storage completion, and final document readiness.
+
+This keeps remote laptops useful for CPU-heavy extraction while keeping credentials, OpenAI calls, GCS mutation, metadata authority, and final import state inside production.
+
+## Client Runner
+
+`backend/app/slipstream/client.py` is the remote worker entrypoint. It can enroll with a one-time token, persist its key/client id under the ignored worker state directory, check in on a fixed interval, maintain up to the configured concurrent leases, heartbeat while work is running, and safely report results or failures.
+
+The local Compose profile is `docker-compose.slipstream.yml`. The ignored `.env.slipstream` file holds the production URL, enrollment token during first boot, worker name, capacity, concurrency, poll interval, heartbeat interval, and CPU selection hints. `.env.slipstream.example` documents the expected values without secrets.
+
+## Laptop Worker Profile
+
+This machine has 4 efficiency cores and 12 performance cores. The worker profile is set for:
+
+- capacity: `4`
+- local concurrency: `4`
+- CPU budget: `12`
+- requested CPU set: `4-15`
+
+On Linux containers the client attempts `os.sched_setaffinity` for the requested CPU set. On macOS direct-host runs it attempts a high QoS class through `pthread_set_qos_class_self_np`. Docker Desktop does not provide a perfect physical P-core pinning contract, so this is best-effort: Compose constrains the worker to a 12-CPU budget, and the process requests CPUs `4-15` inside the runtime when the runtime supports it.
+
+## Production Steps
+
+1. Commit and push the Slipstream changes.
+2. Fast-forward the production checkout.
+3. Enable Slipstream in production `.env` with TLS required and the public base URL set to the production HTTPS origin.
+4. Rebuild/restart the production application and run migrations.
+5. Verify `/api/health`.
+6. Create a one-time enrollment token for the laptop with `import_preprocess` and max capacity `4`.
+7. Write the ignored local `.env.slipstream` file.
+8. Start `docker compose -f docker-compose.slipstream.yml up --build -d`.
+9. Confirm the client appears online, checks in regularly, and can claim up to 4 eligible jobs.
+
+## Verification
+
+Focused backend coverage includes Slipstream enrollment clamping, stale active lease repair, and partial import-preprocess result application. Frontend verification builds the Settings surface without Cloud Run controls. Production verification should check health, migration state, Slipstream configuration, client online status, active leases, and import queue progress after the laptop worker starts.
+
+## Decisions Still Needed
+
+- Whether this laptop worker should run only on demand or be left running whenever Docker Desktop is up.
+- Whether future Slipstream capabilities should remain extraction-only or expand into other safe local-only Concordance work.
+- Whether to add an operating-system launch agent later so the worker starts automatically after login.
