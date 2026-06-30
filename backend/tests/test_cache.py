@@ -138,6 +138,29 @@ def test_cache_revision_hooks_bump_dashboard_for_usage_rows(monkeypatch, tmp_pat
     assert revisions["jobs"] == 1
 
 
+def test_cache_revision_bumps_use_canonical_lock_order(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.services import cache
+
+    Session = make_session()
+    seen: list[str] = []
+    original_insert_statement = cache._insert_statement
+
+    def tracking_insert_statement(session, family, reason):
+        seen.append(family)
+        return original_insert_statement(session, family, reason)
+
+    monkeypatch.setattr(cache, "_insert_statement", tracking_insert_statement)
+
+    with Session() as db:
+        cache.bump_cache_revisions(db, {"status", "jobs", "library", "dashboard"}, reason="test")
+        db.commit()
+
+    assert seen == ["library", "dashboard", "status", "jobs"]
+
+
 def test_null_cache_is_a_bypass():
     from app.services.cache import NullCache
 

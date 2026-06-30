@@ -406,7 +406,8 @@ def _insert_statement(session: Session, family: str, reason: str | None):
 
 
 def bump_cache_revisions(session: Session, families: list[str] | tuple[str, ...] | set[str], reason: str | None = None) -> None:
-    unique_families = [family for family in dict.fromkeys(families) if family in CACHE_ALL_REVISION_FAMILIES]
+    requested_families = {family for family in families if family in CACHE_ALL_REVISION_FAMILIES}
+    unique_families = [family for family in CACHE_ALL_REVISION_FAMILIES if family in requested_families]
     if not unique_families:
         return
     if not _cache_revision_table_available(session):
