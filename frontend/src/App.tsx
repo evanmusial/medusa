@@ -14995,7 +14995,17 @@ function formatRelationshipType(value: string) {
   return value.replace(/_/g, " ");
 }
 
-function StashesView({ stashes }: { stashes: DoiStash[] }) {
+function StashesView({
+  error,
+  isLoading,
+  knownCount,
+  stashes,
+}: {
+  error?: Error | null;
+  isLoading?: boolean;
+  knownCount?: number;
+  stashes: DoiStash[];
+}) {
   const [lane, setLane] = useStoredString<StashLane>(
     "medusa-stash-lane-v1",
     "wishlist",
@@ -15174,17 +15184,32 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
     createManualStash.mutate(doi);
   };
   const activeLane = STASH_LANE_OPTIONS.find((option) => option.id === lane) || STASH_LANE_OPTIONS[0];
+  const loadingLabel = knownCount && knownCount > 0 ? `Loading ${knownCount} stash${knownCount === 1 ? "" : "es"}` : "Loading stashes";
+  const errorLabel = error ? actionFailureMessage("Could not load stashes", error) : "";
+  const hasStashRows = stashes.length > 0;
+  const stashSummary =
+    isLoading && !hasStashRows
+      ? loadingLabel
+      : errorLabel && !hasStashRows
+        ? errorLabel
+        : hasStashRows
+          ? `${laneCounts.wishlist} wishlist / ${laneCounts.open_pdf} open PDF / ${laneCounts.imported} in Library`
+          : "No stashed DOI leads yet";
+  const emptyMessage =
+    isLoading && !hasStashRows
+      ? loadingLabel
+      : errorLabel && !hasStashRows
+        ? errorLabel
+        : lane === "all"
+          ? "Stashed DOI recommendations will appear here."
+          : `No ${activeLane.label.toLocaleLowerCase()} stashes right now.`;
 
   return (
     <section className="workbench stashes-view">
       <div className="stashes-head">
         <div>
           <h2>Acquisition Stashes</h2>
-          <p>
-            {stashes.length
-              ? `${laneCounts.wishlist} wishlist / ${laneCounts.open_pdf} open PDF / ${laneCounts.imported} in Library`
-              : "No stashed DOI leads yet"}
-          </p>
+          <p>{stashSummary}</p>
         </div>
         <div className="stash-sort-controls" aria-label="Sort stashes">
           <ArrowUpDown size={15} />
@@ -15478,12 +15503,8 @@ function StashesView({ stashes }: { stashes: DoiStash[] }) {
         </div>
       ) : (
         <div className="empty-inline">
-          <Bookmark size={17} />
-          <span>
-            {lane === "all"
-              ? "Stashed DOI recommendations will appear here."
-              : `No ${activeLane.label.toLocaleLowerCase()} stashes right now.`}
-          </span>
+          {isLoading && !hasStashRows ? <RefreshCw className="spin" size={17} /> : <Bookmark size={17} />}
+          <span>{emptyMessage}</span>
         </div>
       )}
     </section>
@@ -26532,6 +26553,8 @@ export default function App() {
     "--accent": activeAccent,
     "--accent-soft": accentSoftColor(activeAccent, theme),
   } as CSSProperties;
+  const loadedStashCount = stashes.data?.length;
+  const knownStashCount = activeView === "stashes" && loadedStashCount !== undefined ? loadedStashCount : (dashboard.data?.stashes ?? 0);
   const navCounts: NavCounts = {
     library: dashboard.data?.documents ?? 0,
     domains: dashboard.data?.domains ?? domains.data?.length ?? 0,
@@ -26548,7 +26571,7 @@ export default function App() {
       (healthDocuments.data || []).filter((document) => document.duplicate_count > 0).length,
     notes: dashboard.data?.notes ?? notes.data?.length ?? 0,
     import: dashboard.data?.active_import_jobs ?? 0,
-    stashes: dashboard.data?.stashes ?? stashes.data?.length ?? 0,
+    stashes: knownStashCount,
     portfolio: portfolioItems.data?.length ?? 0,
     recon: reconInquiries.data?.length ?? 0,
   };
@@ -26813,7 +26836,14 @@ export default function App() {
             onOpenView={(view) => void requestActiveViewChange(view)}
           />
         ) : null}
-        {activeView === "stashes" ? <StashesView stashes={stashes.data || []} /> : null}
+        {activeView === "stashes" ? (
+          <StashesView
+            error={stashes.error}
+            isLoading={stashes.isFetching && !stashes.data}
+            knownCount={knownStashCount}
+            stashes={stashes.data || []}
+          />
+        ) : null}
         {activeView === "portfolio" ? (
           <PortfolioView
             items={portfolioItems.data || []}
