@@ -22,6 +22,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 | Product one-liner, core value, Cool Features showcase, and non-technical workflow facts | `README.md` | Keep this concise, human-facing, and showcase-oriented. |
 | First-run local setup and minimal credential path | `docs/QUICK_START.md` | Keep this exact, runnable, and short; move broader operations to `docs/LOCAL_OPERATIONS.md`. |
 | README logo/showcase image | `docs/assets/medusa-emblem-blue.png` | Blue transparent variant derived from the real app emblem for GitHub light/dark readability. |
+| README screenshots | `docs/assets/screenshots/*.png` | Optimized public showcase screenshots used only by `README.md`; keep captions in README and avoid adding operating notes around the images. |
 | Long implemented-feature inventory | `docs/ARCHITECTURE.md` | The architecture record owns current feature contracts and behavior details. |
 | Docker Compose startup, TLS certificate setup, login defaults | `docs/QUICK_START.md` and `docs/LOCAL_OPERATIONS.md` | Quick Start owns the shortest happy path; Local Operations owns the full runbook. |
 | HAProxy, Valkey, metrics, cache hydration, operational env vars | `docs/LOCAL_OPERATIONS.md` | Server-specific variants belong in `docs/PORTABLE_DEPLOYMENT.md`. |
