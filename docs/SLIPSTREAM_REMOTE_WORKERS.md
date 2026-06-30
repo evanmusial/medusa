@@ -1,10 +1,10 @@
-# Slipstream Remote Worker Rollout
+# Slipstream And Cloud Run Remote Worker Rollout
 
-This note tracks the Slipstream-only remote worker work being built for Medusa production. It records what is changing, why it is shaped this way, how the local laptop worker is enrolled, and where operator decisions remain.
+This note tracks the Slipstream remote worker work being built for Medusa production, including Cloud Run worker pools as a disabled-by-default Slipstream runner profile. It records what is changing, why it is shaped this way, how the local laptop worker is enrolled, and where operator decisions remain.
 
 ## Scope
 
-- Build Slipstream remote workers only. Cloud Run is intentionally out of scope and should not be part of this rollout.
+- Build Slipstream remote workers as the shared foundation, then add Cloud Run worker pools as a default-disabled runner profile instead of a second queue.
 - Keep the main FastAPI backend as the Slipstream control plane instead of introducing a second public IP, port, or service.
 - Let remote workers check in over the existing authenticated HTTPS application boundary and claim only server-authorized work.
 - Enroll this laptop as a remote worker. It was originally allowed up to 4 concurrent jobs, but the active local profile is now capped at 2 concurrent jobs after production load testing.
@@ -29,7 +29,7 @@ The migration is `20260630_0033_slipstream_enrollment_limits.py`; existing enrol
 
 ## Work Contract
 
-Remote Slipstream workers currently claim only import-preprocess work. That means:
+Remote Slipstream workers currently claim only import-preprocess work. Cloud Run v1 uses the same scope. That means:
 
 1. The server assigns an eligible queued import job whose document original is already stored.
 2. The worker downloads the authenticated original through the server.
@@ -51,6 +51,12 @@ The worker loop backs off after empty claim responses and transient server error
 Import-preprocess claims filter for preprocessing-eligible steps (`stored` and `extracting`) before applying the claim window. This matters because the central worker may have many `normalizing_pages` continuation jobs queued ahead of newly stored documents; those continuation jobs belong to the server and must not block laptop workers from reaching stored import jobs.
 
 Heartbeat requests are best-effort progress/liveness telemetry. A transient heartbeat failure is logged, but the worker continues processing and lets the final result or explicit failure report decide the lease outcome.
+
+Cloud Run uses the same client with `python -m app.slipstream.client --cloud-run`. In that mode the worker reads the registered `client_id` and Ed25519 private key from Secret Manager, uses `/tmp` scratch storage, claims with `worker_kind=cloud_run`, defaults to one active lease per process, and returns a `provider=cloud_run` runtime Composition row. Cloud Run workers do not receive PostgreSQL, OpenAI, Gemini, Google Vision, or GCS credentials.
+
+Settings exposes Cloud Run as a separate capacity control next to local import workers and online Slipstream clients. It is disabled by default, uses numeric concurrency to represent desired worker-pool instances, and treats disabled as a target of `0`. The sane default flavor is Economy (`1 vCPU`, `2 GiB`), import-only, max `4` instances, and target concurrency `1` when enabled; the dropdown can also save Balanced, Performance, or High Memory shapes.
+
+At current `us-central1` worker-pool rates, the default shape costs about `$0.000823/minute`, `$0.0494/hour`, and `$0.0041` for a five-minute typical document before model/OCR costs. The UI shows these estimates and generates deploy/update command text, but Medusa does not execute cloud scaling commands itself.
 
 ## Laptop Worker Profile
 
@@ -77,7 +83,7 @@ On Linux containers the client attempts `os.sched_setaffinity` for the requested
 
 ## Verification
 
-Focused backend coverage includes Slipstream enrollment clamping, stale active lease repair, and partial import-preprocess result application. Frontend verification builds the Settings surface without Cloud Run controls. Production verification should check health, migration state, Slipstream configuration, client online status, active leases, and import queue progress after the laptop worker starts.
+Focused backend coverage includes Slipstream enrollment clamping, stale active lease repair, partial import-preprocess result application, Cloud Run default preferences, disabled-claim rejection, default cost formulas, and scale-to-zero blocking while active Cloud Run leases exist. Frontend verification builds the Settings surface with Cloud Run disabled by default. Production verification should check health, migration state, Slipstream configuration, client online status, active leases, Cloud Run target command text, and import queue progress after the laptop worker or Cloud Run worker starts.
 
 ## Decisions Still Needed
 

@@ -45,6 +45,9 @@ GOOGLE_SERVICE_ACCOUNT_KEY = "google_service_account"
 IMPORT_PROCESSING_PRESETS_KEY = "import_processing_presets"
 DEFAULT_IMPORT_PROCESSING_PRESET_KEY = "default_import_processing_preset_id"
 SECOND_PASS_PROCESSING_ENABLED_KEY = "second_pass_processing_enabled"
+CLOUD_RUN_WORKERS_ENABLED_KEY = "cloud_run_workers_enabled"
+CLOUD_RUN_WORKER_CONCURRENCY_KEY = "cloud_run_worker_concurrency"
+CLOUD_RUN_WORKER_FLAVOR_KEY = "cloud_run_worker_flavor"
 
 MIN_IMPORT_WORKER_CONCURRENCY = 1
 RECOMMENDED_IMPORT_WORKER_CONCURRENCY = 4
@@ -70,6 +73,37 @@ IMPORT_PROCESSING_BALANCED_ID = "balanced"
 IMPORT_PROCESSING_STRICT_LOCAL_ID = "strict_local"
 IMPORT_PROCESSING_DEEP_REVIEW_ID = "deep_review"
 DEFAULT_IMPORT_PROCESSING_PRESET_ID = IMPORT_PROCESSING_BALANCED_ID
+DEFAULT_CLOUD_RUN_WORKER_FLAVOR = "economy"
+CLOUD_RUN_WORKER_FLAVORS: dict[str, dict[str, Any]] = {
+    "economy": {
+        "key": "economy",
+        "label": "Economy",
+        "description": "Lowest-cost import preprocessing for small batches.",
+        "cpu": 1.0,
+        "memory_gib": 2.0,
+    },
+    "balanced": {
+        "key": "balanced",
+        "label": "Balanced",
+        "description": "More headroom for larger PDFs and burst imports.",
+        "cpu": 2.0,
+        "memory_gib": 4.0,
+    },
+    "performance": {
+        "key": "performance",
+        "label": "Performance",
+        "description": "Faster preprocessing for large batch windows.",
+        "cpu": 4.0,
+        "memory_gib": 8.0,
+    },
+    "high_memory": {
+        "key": "high_memory",
+        "label": "High Memory",
+        "description": "Extra memory for unusually large or image-heavy PDFs.",
+        "cpu": 4.0,
+        "memory_gib": 16.0,
+    },
+}
 LEGACY_ANALYSIS_MODEL_DEFAULTS = {
     MODEL_BIBLIOGRAPHY_CLEANUP: {"gpt-5.4-nano"},
 }
@@ -90,6 +124,9 @@ SAFE_PREFERENCE_KEYS = {
     IMPORT_PROCESSING_PRESETS_KEY,
     DEFAULT_IMPORT_PROCESSING_PRESET_KEY,
     SECOND_PASS_PROCESSING_ENABLED_KEY,
+    CLOUD_RUN_WORKERS_ENABLED_KEY,
+    CLOUD_RUN_WORKER_CONCURRENCY_KEY,
+    CLOUD_RUN_WORKER_FLAVOR_KEY,
     *(f"{ANALYSIS_MODEL_KEY_PREFIX}{task.key}" for task in ANALYSIS_MODEL_TASKS),
 }
 
@@ -355,6 +392,27 @@ def clamp_import_worker_concurrency(value: Any, default: int = MIN_IMPORT_WORKER
     except (TypeError, ValueError):
         parsed = default
     return max(MIN_IMPORT_WORKER_CONCURRENCY, parsed)
+
+
+def clamp_cloud_run_worker_concurrency(value: Any, default: int = MIN_IMPORT_WORKER_CONCURRENCY) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(MIN_IMPORT_WORKER_CONCURRENCY, parsed)
+
+
+def normalize_cloud_run_worker_flavor(value: Any, default: str = DEFAULT_CLOUD_RUN_WORKER_FLAVOR) -> str:
+    key = str(value or "").strip().lower().replace("-", "_")
+    return key if key in CLOUD_RUN_WORKER_FLAVORS else default
+
+
+def cloud_run_worker_flavor_options() -> list[dict[str, Any]]:
+    return [dict(CLOUD_RUN_WORKER_FLAVORS[key]) for key in ("economy", "balanced", "performance", "high_memory")]
+
+
+def cloud_run_worker_flavor_spec(value: Any) -> dict[str, Any]:
+    return dict(CLOUD_RUN_WORKER_FLAVORS[normalize_cloud_run_worker_flavor(value)])
 
 
 def clamp_document_cache_size_mb(value: Any, default: int = DEFAULT_DOCUMENT_CACHE_SIZE_MB) -> int:
@@ -623,6 +681,18 @@ def default_import_worker_concurrency() -> int:
     return clamp_import_worker_concurrency(get_settings().worker_import_concurrency)
 
 
+def default_cloud_run_workers_enabled() -> bool:
+    return bool(get_settings().cloud_run_workers_enabled)
+
+
+def default_cloud_run_worker_concurrency() -> int:
+    return clamp_cloud_run_worker_concurrency(get_settings().cloud_run_desired_instances or MIN_IMPORT_WORKER_CONCURRENCY)
+
+
+def default_cloud_run_worker_flavor() -> str:
+    return normalize_cloud_run_worker_flavor(get_settings().cloud_run_flavor)
+
+
 def default_document_cache_size_mb() -> int:
     return clamp_document_cache_size_mb(get_settings().document_cache_size_mb)
 
@@ -667,6 +737,28 @@ def get_import_worker_concurrency(db: Session) -> int:
         _get_preference_value(db, IMPORT_WORKER_CONCURRENCY_KEY),
         default_import_worker_concurrency(),
     )
+
+
+def get_cloud_run_workers_enabled(db: Session) -> bool:
+    return normalize_bool(_get_preference_value(db, CLOUD_RUN_WORKERS_ENABLED_KEY), default_cloud_run_workers_enabled())
+
+
+def get_cloud_run_worker_concurrency(db: Session) -> int:
+    return clamp_cloud_run_worker_concurrency(
+        _get_preference_value(db, CLOUD_RUN_WORKER_CONCURRENCY_KEY),
+        default_cloud_run_worker_concurrency(),
+    )
+
+
+def get_cloud_run_worker_flavor(db: Session) -> str:
+    return normalize_cloud_run_worker_flavor(
+        _get_preference_value(db, CLOUD_RUN_WORKER_FLAVOR_KEY),
+        default_cloud_run_worker_flavor(),
+    )
+
+
+def get_cloud_run_worker_flavor_spec(db: Session) -> dict[str, Any]:
+    return cloud_run_worker_flavor_spec(get_cloud_run_worker_flavor(db))
 
 
 def get_valkey_maxmemory(db: Session) -> str:
@@ -939,6 +1031,10 @@ def get_app_preferences(db: Session) -> dict[str, Any]:
         "import_worker_concurrency": get_import_worker_concurrency(db),
         "recommended_import_worker_concurrency": RECOMMENDED_IMPORT_WORKER_CONCURRENCY,
         "import_worker_cost_warning_threshold": IMPORT_WORKER_COST_WARNING_THRESHOLD,
+        "cloud_run_workers_enabled": get_cloud_run_workers_enabled(db),
+        "cloud_run_worker_concurrency": get_cloud_run_worker_concurrency(db),
+        "cloud_run_worker_flavor": get_cloud_run_worker_flavor(db),
+        "cloud_run_worker_flavor_options": cloud_run_worker_flavor_options(),
         "accent_color_day": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_DAY_KEY), DEFAULT_DAY_ACCENT),
         "accent_color_night": normalize_hex_color(_get_preference_value(db, ACCENT_COLOR_NIGHT_KEY), DEFAULT_NIGHT_ACCENT),
         "document_cache_size_mb": get_document_cache_size_mb(db),
@@ -967,6 +1063,9 @@ def update_app_preferences(
     db: Session,
     *,
     import_worker_concurrency: int | None = None,
+    cloud_run_workers_enabled: bool | None = None,
+    cloud_run_worker_concurrency: int | None = None,
+    cloud_run_worker_flavor: str | None = None,
     accent_color_day: str | None = None,
     accent_color_night: str | None = None,
     document_cache_size_mb: int | None = None,
@@ -989,6 +1088,16 @@ def update_app_preferences(
             IMPORT_WORKER_CONCURRENCY_KEY,
             clamp_import_worker_concurrency(import_worker_concurrency),
         )
+    if cloud_run_workers_enabled is not None:
+        _set_preference_value(db, CLOUD_RUN_WORKERS_ENABLED_KEY, bool(cloud_run_workers_enabled))
+    if cloud_run_worker_concurrency is not None:
+        _set_preference_value(
+            db,
+            CLOUD_RUN_WORKER_CONCURRENCY_KEY,
+            clamp_cloud_run_worker_concurrency(cloud_run_worker_concurrency),
+        )
+    if cloud_run_worker_flavor is not None:
+        _set_preference_value(db, CLOUD_RUN_WORKER_FLAVOR_KEY, normalize_cloud_run_worker_flavor(cloud_run_worker_flavor))
     if accent_color_day is not None:
         _set_preference_value(db, ACCENT_COLOR_DAY_KEY, normalize_hex_color(accent_color_day, DEFAULT_DAY_ACCENT))
     if accent_color_night is not None:

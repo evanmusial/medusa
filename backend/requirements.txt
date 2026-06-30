@@ -8,6 +8,7 @@ python-multipart>=0.0.12,<1
 httpx>=0.27,<1
 openai>=1.59,<3
 google-cloud-storage>=2.19,<4
+google-cloud-secret-manager>=2.22,<3
 google-cloud-vision>=3.8,<4
 PyMuPDF>=1.24,<2
 marker-pdf>=1.10,<2

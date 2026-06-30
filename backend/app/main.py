@@ -96,6 +96,9 @@ from app.schemas import (
     CacheStatusOut,
     CitationCandidatePatch,
     CitationCandidateOut,
+    CloudRunWorkerScalePlanCreate,
+    CloudRunWorkerScalePlanOut,
+    CloudRunWorkerStatusOut,
     ConcordanceCapabilityOut,
     ConcordanceRunEstimateOut,
     ConcordanceJobOut,
@@ -399,6 +402,7 @@ from app.services.release_status import (
 from app.services.runtime_location import detect_server_ipv4, runtime_location_payload
 from app.services.search import document_search_condition_and_rank, rebuild_document_search_text
 from app.services.slipstream import (
+    CLOUD_RUN_WORKER_KIND,
     SlipstreamAuthError,
     SlipstreamError,
     artifact_for_lease,
@@ -407,6 +411,8 @@ from app.services.slipstream import (
     clamp_client_capabilities,
     clamp_client_capacity,
     client_out,
+    cloud_run_scale_plan,
+    cloud_run_worker_status,
     complete_lease_from_result,
     create_enrollment,
     enrollment_out,
@@ -2223,6 +2229,25 @@ def slipstream_admin_status(
     return payload
 
 
+@app.get("/api/cloud-run/workers/status", response_model=CloudRunWorkerStatusOut)
+def cloud_run_workers_admin_status(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    payload = cloud_run_worker_status(db)
+    db.commit()
+    return payload
+
+
+@app.post("/api/cloud-run/workers/scale-plan", response_model=CloudRunWorkerScalePlanOut)
+def cloud_run_workers_scale_plan(
+    payload: CloudRunWorkerScalePlanCreate,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    return cloud_run_scale_plan(db, desired_instances=payload.desired_instances, force=payload.force)
+
+
 @app.post("/api/slipstream/enrollments", response_model=SlipstreamEnrollmentOut)
 def create_slipstream_enrollment(
     payload: SlipstreamEnrollmentCreate,
@@ -2345,7 +2370,8 @@ def claim_slipstream_lease(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     try:
-        claim = claim_next_job_lease(db, client=client, worker_kind="slipstream", job_types=payload.job_types or None)
+        worker_kind = CLOUD_RUN_WORKER_KIND if payload.worker_kind == CLOUD_RUN_WORKER_KIND else "slipstream"
+        claim = claim_next_job_lease(db, client=client, worker_kind=worker_kind, job_types=payload.job_types or None)
     except Exception as exc:
         raise http_error_for_slipstream(exc) from exc
     db.commit()
@@ -3383,6 +3409,9 @@ def patch_preferences(
         preferences = update_app_preferences(
             db,
             import_worker_concurrency=payload.import_worker_concurrency,
+            cloud_run_workers_enabled=payload.cloud_run_workers_enabled,
+            cloud_run_worker_concurrency=payload.cloud_run_worker_concurrency,
+            cloud_run_worker_flavor=payload.cloud_run_worker_flavor,
             accent_color_day=payload.accent_color_day,
             accent_color_night=payload.accent_color_night,
             document_cache_size_mb=payload.document_cache_size_mb,

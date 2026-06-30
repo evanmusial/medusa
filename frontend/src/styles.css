@@ -9675,6 +9675,7 @@ pre {
 .account-settings-panel h2,
 .preferences-panel h2,
 .storage-settings-panel h2,
+.cloud-run-settings-panel h2,
 .slipstream-settings-panel h2,
 .import-processing-panel h2,
 .model-settings-panel h2,
@@ -9690,6 +9691,7 @@ pre {
 .account-settings-panel p,
 .preferences-panel p,
 .storage-settings-panel p,
+.cloud-run-settings-panel p,
 .slipstream-settings-panel p,
 .import-processing-panel p,
 .model-settings-panel p,
@@ -10065,6 +10067,12 @@ pre {
   gap: 12px;
 }
 
+.cloud-run-settings-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+
 .toggle-line {
   display: inline-flex;
   align-items: center;
@@ -10108,6 +10116,102 @@ pre {
   min-width: 0;
   color: var(--ink);
   font-size: 15px;
+}
+
+.cloud-run-control-row {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 160px) minmax(180px, 260px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.cloud-run-control-row label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cloud-run-config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cloud-run-config-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.cloud-run-config-grid span,
+.cloud-run-row span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cloud-run-config-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-run-command-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.cloud-run-command-row code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-run-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.3fr) auto minmax(120px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.cloud-run-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cloud-run-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .slipstream-enrollment-row,
@@ -13528,6 +13632,9 @@ button.history-row,
   .import-toggle-list,
   .import-processing-step-row,
   .import-picker-grid,
+  .cloud-run-control-row,
+  .cloud-run-config-grid,
+  .cloud-run-row,
   .slipstream-enrollment-row,
   .slipstream-metric-grid,
   .slipstream-row,
@@ -13605,6 +13712,7 @@ button.history-row,
   .preferences-panel,
   .account-settings-panel,
   .storage-settings-panel,
+  .cloud-run-settings-panel,
   .slipstream-settings-panel,
   .model-settings-panel,
   .openai-usage-panel,

@@ -1998,6 +1998,10 @@ class AppPreferencesOut(BaseModel):
     import_worker_concurrency: int
     recommended_import_worker_concurrency: int
     import_worker_cost_warning_threshold: int
+    cloud_run_workers_enabled: bool = False
+    cloud_run_worker_concurrency: int = 1
+    cloud_run_worker_flavor: str = "economy"
+    cloud_run_worker_flavor_options: list[dict[str, Any]] = Field(default_factory=list)
     accent_color_day: str
     accent_color_night: str
     document_cache_size_mb: int
@@ -2027,6 +2031,9 @@ class AppPreferencesOut(BaseModel):
 
 class AppPreferencesPatch(BaseModel):
     import_worker_concurrency: int | None = Field(default=None, ge=1)
+    cloud_run_workers_enabled: bool | None = None
+    cloud_run_worker_concurrency: int | None = Field(default=None, ge=1)
+    cloud_run_worker_flavor: str | None = Field(default=None, pattern=r"^(economy|balanced|performance|high_memory)$")
     accent_color_day: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     accent_color_night: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     document_cache_size_mb: int | None = Field(default=None, ge=0)
@@ -2300,6 +2307,7 @@ class SlipstreamCheckInCreate(BaseModel):
 
 class SlipstreamClaimCreate(BaseModel):
     job_types: list[str] = Field(default_factory=list)
+    worker_kind: str | None = None
 
 
 class SlipstreamHeartbeatCreate(BaseModel):
@@ -2366,6 +2374,7 @@ class SlipstreamWorkOut(BaseModel):
     run_id: str | None = None
     capability_keys: list[str] = Field(default_factory=list)
     target_version: int | None = None
+    cloud_run: dict[str, Any] = Field(default_factory=dict)
 
 
 class SlipstreamClaimOut(BaseModel):
@@ -2386,3 +2395,44 @@ class SlipstreamStatusOut(BaseModel):
     active_lease_count: int = 0
     oldest_active_lease_age_seconds: int | None = None
     failed_or_expired_lease_count: int = 0
+
+
+class CloudRunWorkerScalePlanCreate(BaseModel):
+    desired_instances: int = Field(ge=0)
+    force: bool = False
+
+
+class CloudRunWorkerStatusOut(BaseModel):
+    enabled: bool
+    desired_instances: int
+    effective_target_instances: int
+    max_instances: int
+    active_lease_count: int
+    online_client_count: int
+    job_types: list[str] = Field(default_factory=list)
+    flavor: str
+    flavor_label: str
+    flavor_description: str | None = None
+    cpu: float
+    memory_gib: float
+    region: str
+    project: str | None = None
+    worker_pool: str
+    image: str | None = None
+    service_account: str | None = None
+    cost: dict[str, Any] = Field(default_factory=dict)
+    missing_config: list[str] = Field(default_factory=list)
+    commands: dict[str, str] = Field(default_factory=dict)
+    can_scale_to_zero: bool
+    scale_down_blocked_reason: str | None = None
+    clients: list[SlipstreamClientOut] = Field(default_factory=list)
+    active_leases: list[SlipstreamLeaseOut] = Field(default_factory=list)
+
+
+class CloudRunWorkerScalePlanOut(BaseModel):
+    desired_instances: int
+    effective_target_instances: int
+    blocked: bool
+    reason: str | None = None
+    command: str | None = None
+    status: CloudRunWorkerStatusOut

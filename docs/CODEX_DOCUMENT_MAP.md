@@ -29,7 +29,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 | GCS, OpenAI, Gemini, recommendation, DOI, and credential settings | `docs/LOCAL_OPERATIONS.md` | Exact env-var examples live here; routing strategy and model choices belong in `docs/AI_COST_ROUTING.md`. |
 | Detailed AI behavior, citation/tag/summary defaults, provider-routing rationale, and cost strategy | `docs/ARCHITECTURE.md` and `docs/AI_COST_ROUTING.md` | Use architecture for current behavior contracts and cost-routing for model strategy. |
 | Slipstream local/remote runner commands and worker recovery settings | `docs/LOCAL_OPERATIONS.md` | Architecture-level Slipstream contracts remain in `docs/ARCHITECTURE.md`; unfinished Slipstream work stays in `TODO.md`. |
-| Cloud container worker pools, Cloud Run defaults, IAM, cost model, and command snippets | `docs/LOCAL_OPERATIONS.md` | Current architecture contracts still belong in `docs/ARCHITECTURE.md`; create a dedicated worker-pool doc before linking one here. |
+| Cloud container worker pools, Cloud Run defaults, IAM, cost model, and command snippets | `docs/CLOUD_RUN_WORKER_POOL.md` | Runtime command snippets are also summarized in `docs/LOCAL_OPERATIONS.md`; current architecture contracts still belong in `docs/ARCHITECTURE.md`. |
 | Backend/frontend/worker development commands and verification commands | `docs/LOCAL_OPERATIONS.md` | Keep test commands current with project practice. |
 | Backup, restore, metadata export restore, portability reminders | `docs/LOCAL_OPERATIONS.md` | Host move and release-agent details belong in `docs/PORTABLE_DEPLOYMENT.md`. |
 | Dependency maintenance policy and Renovate behavior | `docs/DEPENDENCY_UPDATE_PLAN.md` | Keep routine update plans out of README. |
@@ -48,7 +48,8 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 ## Processing And Intelligence
 
 - `docs/AI_COST_ROUTING.md`: model/provider routing, cost-control strategy, implemented defaults, and candidate routes.
-- `docs/LOCAL_OPERATIONS.md`: default-disabled cloud worker-pool notes, Cloud Run cost model, IAM boundary, command snippets, and Slipstream runner operations.
+- `docs/CLOUD_RUN_WORKER_POOL.md`: default-disabled Cloud Run worker-pool implementation note, IAM boundary, cost model, runtime entrypoint, and limitations.
+- `docs/LOCAL_OPERATIONS.md`: Cloud Run command snippets and Slipstream runner operations.
 - `docs/SECOND_PASS_DOCUMENT_PROCESSING.md`: second-pass extraction and cleanup design.
 - `docs/TAG_GOVERNANCE.md`: tag suggestion, scoring, governance, merge, relationship, pruning, and Optimize behavior.
 

@@ -197,6 +197,7 @@ MEDUSA_SLIPSTREAM_MAX_RESULT_MB=512
 MEDUSA_SLIPSTREAM_REQUIRE_TLS=true
 MEDUSA_SLIPSTREAM_SIGNATURE_WINDOW_SECONDS=300
 MEDUSA_CLOUD_RUN_WORKERS_ENABLED=false
+MEDUSA_CLOUD_RUN_FLAVOR=economy
 MEDUSA_CLOUD_RUN_PROJECT=
 MEDUSA_CLOUD_RUN_REGION=us-central1
 MEDUSA_CLOUD_RUN_WORKER_POOL=medusa-processing
@@ -222,7 +223,7 @@ Slipstream is disabled by default. When enabled, Settings > Slipstream creates o
 
 The current bundled runner supports `import_preprocess`: it downloads the original PDF, runs the configured raw-text extractor, returns durable page text/search text/composition evidence, then Medusa requeues the import at `normalizing_pages` so the central worker owns enrichment, model calls, citations, tags, storage, and final completion.
 
-Cloud Run worker pools are a disabled-by-default Slipstream profile, not a second queue. Settings > Cloud Run stores the effective enable switch and numeric target concurrency; disabled means a target of `0` instances, and enabling defaults to `1`. The conservative default shape is `1 vCPU`, `2 GiB`, import-only, maximum `4` instances, and `/tmp` scratch storage. Cloud Run workers run `python -m app.cloud_run_worker`, claim `worker_kind=cloud_run` leases over HTTPS, and append a Cloud Run runtime cost row to the returned Composition manifest. They do not receive PostgreSQL, OpenAI, Gemini, Google Vision, or GCS credentials.
+Cloud Run worker pools are a disabled-by-default Slipstream profile, not a second queue. Settings > Cloud Run stores the effective enable switch, numeric target concurrency, and worker flavor; disabled means a target of `0` instances, and enabling defaults to `1`. The conservative default flavor is Economy (`1 vCPU`, `2 GiB`), import-only, maximum `4` instances, and `/tmp` scratch storage. Other saved flavors are Balanced (`2 vCPU`, `4 GiB`), Performance (`4 vCPU`, `8 GiB`), and High Memory (`4 vCPU`, `16 GiB`). Cloud Run workers run `python -m app.slipstream.client --cloud-run`, claim `worker_kind=cloud_run` leases over HTTPS, and append a Cloud Run runtime cost row to the returned Composition manifest. They do not receive PostgreSQL, OpenAI, Gemini, Google Vision, or GCS credentials.
 
 At the current published `us-central1` Cloud Run worker-pool rates, the default shape costs about `$0.000823/minute`, `$0.0494/hour`, and roughly `$0.0041` for a five-minute typical 12-page document before model/OCR costs. Keeping one instance always on for a 30-day month is about `$35.55` gross before any free-tier effects, so Cloud Run is recommended for burst batches or local CPU relief, not occasional single-document imports.
 
@@ -238,9 +239,8 @@ gcloud run worker-pools deploy medusa-processing \
   --cpu 1 \
   --memory 2Gi \
   --instances 0 \
-  --max-instances 4 \
   --command python \
-  --args -m,app.cloud_run_worker
+  --args -m,app.slipstream.client,--cloud-run
 ```
 
 The local laptop worker profile lives in `docker-compose.slipstream.yml`. Copy `.env.slipstream.example` to ignored `.env.slipstream`, set `MEDUSA_SLIPSTREAM_ENROLLMENT_TOKEN` to a fresh Settings token, then run:

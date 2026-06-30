@@ -13,6 +13,8 @@ import type {
   CacheRefreshResult,
   CacheStatus,
   CitationCandidate,
+  CloudRunWorkerScalePlan,
+  CloudRunWorkerStatus,
   ConcordanceCapability,
   ConcordanceJob,
   ConcordanceRun,
@@ -190,6 +192,9 @@ export const api = {
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
   libraryFunStats: () => request<LibraryFunStats>("/api/status/library-fun"),
   slipstreamStatus: () => request<SlipstreamStatus>("/api/slipstream/status"),
+  cloudRunWorkerStatus: () => request<CloudRunWorkerStatus>("/api/cloud-run/workers/status"),
+  cloudRunWorkerScalePlan: (body: { desired_instances: number; force?: boolean }) =>
+    request<CloudRunWorkerScalePlan>("/api/cloud-run/workers/scale-plan", { method: "POST", body: JSON.stringify(body) }),
   createSlipstreamEnrollment: (body: { label?: string | null; ttl_minutes?: number; capabilities?: string[]; max_capacity?: number }) =>
     request<SlipstreamEnrollment>("/api/slipstream/enrollments", { method: "POST", body: JSON.stringify(body) }),
   disableSlipstreamClient: (id: string) =>
@@ -216,6 +221,9 @@ export const api = {
       Pick<
         AppPreferences,
         | "import_worker_concurrency"
+        | "cloud_run_workers_enabled"
+        | "cloud_run_worker_concurrency"
+        | "cloud_run_worker_flavor"
         | "accent_color_day"
         | "accent_color_night"
         | "document_cache_size_mb"

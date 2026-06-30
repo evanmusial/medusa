@@ -26,6 +26,9 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         ACCENT_COLOR_DAY_KEY,
         CITATION_CONVENTION_APA_7,
         CITATION_CONVENTION_KEY,
+        CLOUD_RUN_WORKERS_ENABLED_KEY,
+        CLOUD_RUN_WORKER_CONCURRENCY_KEY,
+        CLOUD_RUN_WORKER_FLAVOR_KEY,
         DEFAULT_DETAIL_STICKY_FIELDS,
         DEFAULT_LIBRARY_DENSITY,
         DEFAULT_LIBRARY_PAGE_SIZE,
@@ -35,9 +38,15 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         LIBRARY_ALTERNATING_ROWS_KEY,
         LIBRARY_DENSITY_KEY,
         LIBRARY_PAGE_SIZE_KEY,
+        clamp_cloud_run_worker_concurrency,
         clamp_import_worker_concurrency,
+        cloud_run_worker_flavor_options,
         clamp_library_page_size,
         get_app_preferences,
+        get_cloud_run_worker_concurrency,
+        get_cloud_run_worker_flavor,
+        get_cloud_run_worker_flavor_spec,
+        get_cloud_run_workers_enabled,
         get_import_worker_concurrency,
         normalize_hex_color,
         normalize_detail_sticky_fields,
@@ -48,6 +57,9 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
     assert clamp_import_worker_concurrency(0) == 1
     assert clamp_import_worker_concurrency(99) == 99
     assert clamp_import_worker_concurrency("not-a-number", default=3) == 3
+    assert clamp_cloud_run_worker_concurrency(0) == 1
+    assert clamp_cloud_run_worker_concurrency("not-a-number", default=2) == 2
+    assert [option["key"] for option in cloud_run_worker_flavor_options()] == ["economy", "balanced", "performance", "high_memory"]
     assert clamp_library_page_size(9) == 10
     assert clamp_library_page_size(37) == 37
     assert clamp_library_page_size("not-a-number", default=25) == 25
@@ -67,10 +79,16 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         assert get_app_preferences(db)["detail_sticky_fields"] == DEFAULT_DETAIL_STICKY_FIELDS
         assert get_app_preferences(db)["download_naming_template"] == "$title ($year)"
         assert get_app_preferences(db)["citation_convention"] == CITATION_CONVENTION_APA_7
+        assert get_app_preferences(db)["cloud_run_workers_enabled"] is False
+        assert get_app_preferences(db)["cloud_run_worker_concurrency"] == 1
+        assert get_app_preferences(db)["cloud_run_worker_flavor"] == "economy"
 
         preferences = update_app_preferences(
             db,
             import_worker_concurrency=3,
+            cloud_run_workers_enabled=True,
+            cloud_run_worker_concurrency=2,
+            cloud_run_worker_flavor="balanced",
             accent_color_day="#14b8a6",
             library_alternating_rows=False,
             library_page_size=37,
@@ -81,6 +99,9 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         )
 
         stored = db.get(AppPreference, IMPORT_WORKER_CONCURRENCY_KEY)
+        cloud_run_enabled = db.get(AppPreference, CLOUD_RUN_WORKERS_ENABLED_KEY)
+        cloud_run_concurrency = db.get(AppPreference, CLOUD_RUN_WORKER_CONCURRENCY_KEY)
+        cloud_run_flavor = db.get(AppPreference, CLOUD_RUN_WORKER_FLAVOR_KEY)
         accent = db.get(AppPreference, ACCENT_COLOR_DAY_KEY)
         alternating_rows = db.get(AppPreference, LIBRARY_ALTERNATING_ROWS_KEY)
         library_page_size = db.get(AppPreference, LIBRARY_PAGE_SIZE_KEY)
@@ -89,6 +110,9 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         download_naming = db.get(AppPreference, DOWNLOAD_NAMING_TEMPLATE_KEY)
         citation_convention = db.get(AppPreference, CITATION_CONVENTION_KEY)
         assert stored is not None
+        assert cloud_run_enabled is not None
+        assert cloud_run_concurrency is not None
+        assert cloud_run_flavor is not None
         assert accent is not None
         assert alternating_rows is not None
         assert library_page_size is not None
@@ -97,6 +121,9 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         assert download_naming is not None
         assert citation_convention is not None
         assert stored.value == {"value": 3}
+        assert cloud_run_enabled.value == {"value": True}
+        assert cloud_run_concurrency.value == {"value": 2}
+        assert cloud_run_flavor.value == {"value": "balanced"}
         assert accent.value == {"value": "#14b8a6"}
         assert alternating_rows.value == {"value": False}
         assert library_page_size.value == {"value": 37}
@@ -105,6 +132,10 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         assert download_naming.value == {"value": "$author - $title [$pages]"}
         assert citation_convention.value == {"value": CITATION_CONVENTION_APA_7}
         assert preferences["import_worker_concurrency"] == 3
+        assert preferences["cloud_run_workers_enabled"] is True
+        assert preferences["cloud_run_worker_concurrency"] == 2
+        assert preferences["cloud_run_worker_flavor"] == "balanced"
+        assert preferences["cloud_run_worker_flavor_options"][1]["label"] == "Balanced"
         assert preferences["accent_color_day"] == "#14b8a6"
         assert preferences["library_alternating_rows"] is False
         assert preferences["library_page_size"] == 37
@@ -113,9 +144,17 @@ def test_import_worker_concurrency_preference_is_clamped_and_persisted(monkeypat
         assert preferences["download_naming_template"] == "$author - $title [$pages]"
         assert preferences["citation_convention"] == CITATION_CONVENTION_APA_7
         assert get_import_worker_concurrency(db) == 3
+        assert get_cloud_run_workers_enabled(db) is True
+        assert get_cloud_run_worker_concurrency(db) == 2
+        assert get_cloud_run_worker_flavor(db) == "balanced"
+        assert get_cloud_run_worker_flavor_spec(db)["memory_gib"] == 4.0
 
         update_app_preferences(db, import_worker_concurrency=99)
         assert get_app_preferences(db)["import_worker_concurrency"] == 99
+        update_app_preferences(db, cloud_run_worker_concurrency=0)
+        assert get_app_preferences(db)["cloud_run_worker_concurrency"] == 1
+        update_app_preferences(db, cloud_run_worker_flavor="not-real")
+        assert get_app_preferences(db)["cloud_run_worker_flavor"] == "economy"
         update_app_preferences(db, library_page_size=3)
         assert get_app_preferences(db)["library_page_size"] == 10
 

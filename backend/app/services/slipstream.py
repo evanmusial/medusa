@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import shlex
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -35,19 +36,33 @@ from app.models import (
 from app.services.concordance import CURRENT_CAPABILITIES, refresh_concordance_run_progress
 from app.services.document_cache import ensure_document_pdf_bytes
 from app.services.extraction import sanitize_extracted_text
-from app.services.preferences import get_analysis_models
+from app.services.preferences import (
+    get_analysis_models,
+    get_cloud_run_worker_concurrency,
+    get_cloud_run_worker_flavor_spec,
+    get_cloud_run_workers_enabled,
+)
 from app.services.processing import import_processing_preset_for_job, refresh_import_batch_progress
 
 
 SLIPSTREAM_JOB_IMPORT = "import"
 SLIPSTREAM_JOB_CONCORDANCE = "concordance"
 SLIPSTREAM_CAP_IMPORT_PREPROCESS = "import_preprocess"
+CLOUD_RUN_WORKER_KIND = "cloud_run"
 ACTIVE_LEASE_STATUS = "active"
 TERMINAL_LEASE_STATUSES = {"complete", "failed", "expired", "canceled"}
-REMOTE_WORKER_KINDS = {"slipstream"}
+REMOTE_WORKER_KINDS = {"slipstream", CLOUD_RUN_WORKER_KIND}
 ALLOWED_SLIPSTREAM_CAPABILITIES = {SLIPSTREAM_CAP_IMPORT_PREPROCESS, SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE}
 DEFAULT_SLIPSTREAM_CAPABILITIES = [SLIPSTREAM_CAP_IMPORT_PREPROCESS]
 IMPORT_PREPROCESS_STEPS = {"stored", "extracting"}
+CLOUD_RUN_PRICING_URL = "https://cloud.google.com/run/pricing"
+CLOUD_RUN_WORKER_POOLS_DEPLOY_URL = "https://cloud.google.com/run/docs/deploy-worker-pools"
+CLOUD_RUN_VCPU_SECOND_USD = 0.000011244
+CLOUD_RUN_GIB_SECOND_USD = 0.000001235
+TYPICAL_DOCUMENT_PAGES = 12
+TYPICAL_DOCUMENT_EXTRACTED_CHARACTERS = 50_544
+TYPICAL_DOCUMENT_DURATION_SECONDS = 5 * 60
+SECONDS_PER_MONTH = 30 * 24 * 60 * 60
 
 
 class SlipstreamError(ValueError):
@@ -70,6 +85,135 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def configured_cloud_run_job_types() -> list[str]:
+    configured = str(get_settings().cloud_run_job_types or "import")
+    job_types: list[str] = []
+    for value in configured.replace(";", ",").split(","):
+        job_type = value.strip().lower()
+        if job_type in {SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE} and job_type not in job_types:
+            job_types.append(job_type)
+    return job_types or [SLIPSTREAM_JOB_IMPORT]
+
+
+def cloud_run_allowed_job_types() -> set[str]:
+    return set(configured_cloud_run_job_types())
+
+
+def cloud_run_unit_second_usd(*, cpu: float | None = None, memory_gib: float | None = None) -> float:
+    settings = get_settings()
+    vcpu = max(0.0, float(cpu if cpu is not None else settings.cloud_run_cpu or 0))
+    gib = max(0.0, float(memory_gib if memory_gib is not None else settings.cloud_run_memory_gib or 0))
+    return (vcpu * CLOUD_RUN_VCPU_SECOND_USD) + (gib * CLOUD_RUN_GIB_SECOND_USD)
+
+
+def cloud_run_cost_estimates(
+    *,
+    cpu: float | None = None,
+    memory_gib: float | None = None,
+    duration_seconds: int = TYPICAL_DOCUMENT_DURATION_SECONDS,
+) -> dict[str, Any]:
+    settings = get_settings()
+    vcpu = max(0.0, float(cpu if cpu is not None else settings.cloud_run_cpu or 0))
+    gib = max(0.0, float(memory_gib if memory_gib is not None else settings.cloud_run_memory_gib or 0))
+    unit_second = cloud_run_unit_second_usd(cpu=vcpu, memory_gib=gib)
+    return {
+        "pricing_source": CLOUD_RUN_PRICING_URL,
+        "vcpu_second_usd": CLOUD_RUN_VCPU_SECOND_USD,
+        "gib_second_usd": CLOUD_RUN_GIB_SECOND_USD,
+        "cpu": vcpu,
+        "memory_gib": gib,
+        "unit_second_usd": unit_second,
+        "minute_usd": unit_second * 60,
+        "hour_usd": unit_second * 60 * 60,
+        "monthly_one_instance_usd": unit_second * SECONDS_PER_MONTH,
+        "five_minute_document_usd": unit_second * duration_seconds,
+        "hundred_five_minute_documents_usd": unit_second * duration_seconds * 100,
+        "typical_document": {
+            "pages": TYPICAL_DOCUMENT_PAGES,
+            "extracted_characters": TYPICAL_DOCUMENT_EXTRACTED_CHARACTERS,
+            "duration_seconds": duration_seconds,
+        },
+    }
+
+
+def _quote_command_part(value: str) -> str:
+    return shlex.quote(str(value))
+
+
+def _cloud_run_env_vars() -> dict[str, str]:
+    settings = get_settings()
+    env_vars = {
+        "MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL": settings.slipstream_public_base_url or "",
+        "MEDUSA_CLOUD_RUN_WORKER_STATE_PATH": settings.cloud_run_worker_state_path,
+        "MEDUSA_CLOUD_RUN_CLIENT_ID_SECRET": settings.cloud_run_client_id_secret,
+        "MEDUSA_CLOUD_RUN_PRIVATE_KEY_SECRET": settings.cloud_run_private_key_secret,
+        "MEDUSA_CLOUD_RUN_JOB_TYPES": ",".join(configured_cloud_run_job_types()),
+    }
+    return {key: value for key, value in env_vars.items() if value}
+
+
+def _cloud_run_env_var_arg() -> str:
+    return ",".join(f"{key}={value}" for key, value in _cloud_run_env_vars().items())
+
+
+def cloud_run_commands(*, desired_instances: int | None = None, cpu: float | None = None, memory_gib: float | None = None) -> dict[str, str]:
+    settings = get_settings()
+    project = settings.cloud_run_project or "PROJECT"
+    region = settings.cloud_run_region or "us-central1"
+    worker_pool = settings.cloud_run_worker_pool or "medusa-processing"
+    image = settings.cloud_run_image or f"{region}-docker.pkg.dev/{project}/medusa/worker:latest"
+    service_account = settings.cloud_run_service_account or f"medusa-cloud-run-worker@{project}.iam.gserviceaccount.com"
+    instances = max(0, int(desired_instances if desired_instances is not None else settings.cloud_run_desired_instances or 0))
+    selected_cpu = float(cpu if cpu is not None else settings.cloud_run_cpu)
+    selected_memory_gib = float(memory_gib if memory_gib is not None else settings.cloud_run_memory_gib)
+    env_arg = _cloud_run_env_var_arg()
+    base = [
+        "gcloud",
+        "run",
+        "worker-pools",
+        "deploy",
+        worker_pool,
+        "--image",
+        image,
+        "--region",
+        region,
+        "--project",
+        project,
+        "--service-account",
+        service_account,
+        "--cpu",
+        str(selected_cpu),
+        "--memory",
+        f"{selected_memory_gib}Gi",
+        "--instances",
+        str(instances),
+        "--command",
+        "python",
+        "--args",
+        "-m,app.slipstream.client,--cloud-run",
+    ]
+    if env_arg:
+        base.extend(["--set-env-vars", env_arg])
+    scale = [
+        "gcloud",
+        "run",
+        "worker-pools",
+        "update",
+        worker_pool,
+        "--region",
+        region,
+        "--project",
+        project,
+        "--instances",
+        str(instances),
+    ]
+    return {
+        "deploy": " ".join(_quote_command_part(part) for part in base),
+        "scale": " ".join(_quote_command_part(part) for part in scale),
+        "docs": CLOUD_RUN_WORKER_POOLS_DEPLOY_URL,
+    }
 
 
 def canonical_signature_message(method: str, path: str, timestamp: str, nonce: str, body_hash: str) -> bytes:
@@ -612,6 +756,8 @@ def claim_next_job_lease(
     if worker_kind in REMOTE_WORKER_KINDS:
         if not settings.slipstream_enabled:
             raise SlipstreamError("Slipstream is disabled.")
+        if worker_kind == CLOUD_RUN_WORKER_KIND and not get_cloud_run_workers_enabled(db):
+            raise SlipstreamError("Cloud Run workers are disabled.")
         if not leases_available:
             raise SlipstreamError("Slipstream tables are unavailable.")
         if not client:
@@ -624,6 +770,8 @@ def claim_next_job_lease(
         requested_job_types = {str(job_type).strip().lower() for job_type in job_types or [] if str(job_type).strip().lower() in {SLIPSTREAM_JOB_IMPORT, SLIPSTREAM_JOB_CONCORDANCE}}
         if requested_job_types:
             allowed_job_types &= requested_job_types
+        if worker_kind == CLOUD_RUN_WORKER_KIND:
+            allowed_job_types &= cloud_run_allowed_job_types()
         if not allowed_job_types:
             return None
         ttl_seconds = settings.slipstream_lease_ttl_seconds
@@ -786,6 +934,133 @@ def slipstream_status(db: Session) -> dict[str, Any]:
     }
 
 
+def _is_cloud_run_client(client: SlipstreamClient) -> bool:
+    metadata = dict(client.client_metadata or {})
+    return metadata.get("worker_kind") == CLOUD_RUN_WORKER_KIND or metadata.get("runner") == "cloud-run-slipstream"
+
+
+def _client_capacity(client: SlipstreamClient) -> int:
+    return min(max(1, int(client.capacity or 1)), client_max_capacity(client))
+
+
+def cloud_run_missing_config() -> list[str]:
+    settings = get_settings()
+    missing: list[str] = []
+    if not settings.cloud_run_project:
+        missing.append("MEDUSA_CLOUD_RUN_PROJECT")
+    if not settings.cloud_run_image:
+        missing.append("MEDUSA_CLOUD_RUN_IMAGE")
+    if not settings.cloud_run_service_account:
+        missing.append("MEDUSA_CLOUD_RUN_SERVICE_ACCOUNT")
+    if not settings.slipstream_public_base_url:
+        missing.append("MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL")
+    return missing
+
+
+def _cloud_run_clients(db: Session) -> list[SlipstreamClient]:
+    return [
+        client
+        for client in db.query(SlipstreamClient).order_by(SlipstreamClient.created_at.asc()).all()
+        if _is_cloud_run_client(client)
+    ]
+
+
+def _cloud_run_active_leases(db: Session) -> list[SlipstreamLease]:
+    return (
+        db.query(SlipstreamLease)
+        .filter(SlipstreamLease.status == ACTIVE_LEASE_STATUS, SlipstreamLease.worker_kind == CLOUD_RUN_WORKER_KIND)
+        .order_by(SlipstreamLease.claimed_at.asc())
+        .all()
+    )
+
+
+def cloud_run_worker_status(db: Session) -> dict[str, Any]:
+    expire_stale_leases(db)
+    settings = get_settings()
+    enabled = get_cloud_run_workers_enabled(db)
+    desired = get_cloud_run_worker_concurrency(db)
+    max_instances = max(1, int(settings.cloud_run_max_instances or 1))
+    effective_target = min(desired, max_instances) if enabled else 0
+    clients = _cloud_run_clients(db)
+    active_leases = _cloud_run_active_leases(db)
+    missing = cloud_run_missing_config()
+    flavor = get_cloud_run_worker_flavor_spec(db)
+    cpu = float(flavor["cpu"])
+    memory_gib = float(flavor["memory_gib"])
+    can_scale_to_zero = not active_leases
+    blocked_reason = f"{len(active_leases)} active Cloud Run lease(s) still own work." if active_leases else None
+    return {
+        "enabled": enabled,
+        "desired_instances": desired,
+        "effective_target_instances": effective_target,
+        "max_instances": max_instances,
+        "active_lease_count": len(active_leases),
+        "online_client_count": sum(1 for client in clients if client_is_online(client)),
+        "job_types": configured_cloud_run_job_types(),
+        "flavor": flavor["key"],
+        "flavor_label": flavor["label"],
+        "flavor_description": flavor.get("description"),
+        "cpu": cpu,
+        "memory_gib": memory_gib,
+        "region": settings.cloud_run_region,
+        "project": settings.cloud_run_project,
+        "worker_pool": settings.cloud_run_worker_pool,
+        "image": settings.cloud_run_image,
+        "service_account": settings.cloud_run_service_account,
+        "cost": cloud_run_cost_estimates(cpu=cpu, memory_gib=memory_gib),
+        "missing_config": missing,
+        "commands": cloud_run_commands(desired_instances=effective_target, cpu=cpu, memory_gib=memory_gib),
+        "can_scale_to_zero": can_scale_to_zero,
+        "scale_down_blocked_reason": blocked_reason,
+        "clients": [client_out(client, db=db) for client in clients],
+        "active_leases": [lease_out(lease) for lease in active_leases],
+    }
+
+
+def cloud_run_scale_plan(db: Session, *, desired_instances: int, force: bool = False) -> dict[str, Any]:
+    requested = max(0, int(desired_instances or 0))
+    active_leases = _cloud_run_active_leases(db)
+    blocked = requested == 0 and bool(active_leases) and not force
+    status = cloud_run_worker_status(db)
+    effective = min(requested, status["max_instances"]) if status["enabled"] else 0
+    reason = f"{len(active_leases)} active Cloud Run lease(s) still own work." if blocked else None
+    return {
+        "desired_instances": requested,
+        "effective_target_instances": effective,
+        "blocked": blocked,
+        "reason": reason,
+        "command": None if blocked else cloud_run_commands(desired_instances=effective, cpu=status["cpu"], memory_gib=status["memory_gib"])["scale"],
+        "status": status,
+    }
+
+
+def cloud_run_runtime_composition_entry(*, work: dict[str, Any], started: float, completed: float | None = None) -> dict[str, Any]:
+    completed_at = completed or datetime.now(tz=timezone.utc).timestamp()
+    duration_seconds = max(0.0, completed_at - started)
+    cloud_run = work.get("cloud_run") if isinstance(work.get("cloud_run"), dict) else {}
+    cpu = float(cloud_run.get("cpu") or get_settings().cloud_run_cpu or 0)
+    memory_gib = float(cloud_run.get("memory_gib") or get_settings().cloud_run_memory_gib or 0)
+    amount = cloud_run_unit_second_usd(cpu=cpu, memory_gib=memory_gib) * duration_seconds
+    return {
+        "record_kind": "operational",
+        "stage_key": "cloud_run_runtime",
+        "stage_label": "Cloud Run runtime",
+        "provider": "cloud_run",
+        "method": "worker_pool",
+        "status": "complete",
+        "amount_usd": amount,
+        "duration_ms": int(duration_seconds * 1000),
+        "metadata": {
+            "worker_kind": CLOUD_RUN_WORKER_KIND,
+            "runtime_seconds": duration_seconds,
+            "cpu": cpu,
+            "memory_gib": memory_gib,
+            "pricing_source": CLOUD_RUN_PRICING_URL,
+            "unit_second_usd": cloud_run_unit_second_usd(cpu=cpu, memory_gib=memory_gib),
+        },
+    }
+
+
 def work_bundle(db: Session, lease: SlipstreamLease) -> dict[str, Any]:
     job = _lease_job(db, lease)
     if not job:
@@ -813,6 +1088,17 @@ def work_bundle(db: Session, lease: SlipstreamLease) -> dict[str, Any]:
         "model_preferences": model_preferences,
         "capability_versions": _capability_versions(),
     }
+    if lease.worker_kind == CLOUD_RUN_WORKER_KIND:
+        flavor = get_cloud_run_worker_flavor_spec(db)
+        cpu = float(flavor["cpu"])
+        memory_gib = float(flavor["memory_gib"])
+        bundle["cloud_run"] = {
+            "flavor": flavor["key"],
+            "flavor_label": flavor["label"],
+            "cpu": cpu,
+            "memory_gib": memory_gib,
+            "cost": cloud_run_cost_estimates(cpu=cpu, memory_gib=memory_gib),
+        }
     if lease.job_type == SLIPSTREAM_JOB_IMPORT and isinstance(job, ImportJob):
         bundle.update(
             {

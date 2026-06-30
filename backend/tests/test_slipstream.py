@@ -257,6 +257,62 @@ def test_import_preprocess_claim_reaches_stored_jobs_behind_server_side_queue(mo
         assert claimed["work"]["work_kind"] == "import_preprocess"
 
 
+def test_cloud_run_claim_is_disabled_by_default_and_uses_same_lease_quorum(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.models import SlipstreamLease
+    from app.services.preferences import update_app_preferences
+    from app.services.slipstream import CLOUD_RUN_WORKER_KIND, SlipstreamError, claim_next_job_lease
+
+    with Session() as db:
+        client, _, _, _ = registered_client(db, name="cloud-run", capabilities=["import_preprocess"], capacity=1)
+        client.client_metadata = {"worker_kind": CLOUD_RUN_WORKER_KIND}
+        _, document, job = import_job(db)
+
+        with pytest.raises(SlipstreamError, match="Cloud Run workers are disabled"):
+            claim_next_job_lease(db, client=client, worker_kind=CLOUD_RUN_WORKER_KIND, job_types=["import"])
+
+        update_app_preferences(db, cloud_run_workers_enabled=True, cloud_run_worker_concurrency=1, cloud_run_worker_flavor="balanced")
+        claimed = claim_next_job_lease(db, client=client, worker_kind=CLOUD_RUN_WORKER_KIND, job_types=["import"])
+
+        assert claimed is not None
+        assert claimed["lease"]["worker_kind"] == CLOUD_RUN_WORKER_KIND
+        assert claimed["work"]["worker_kind"] == CLOUD_RUN_WORKER_KIND
+        assert claimed["work"]["cloud_run"]["flavor"] == "balanced"
+        assert claimed["work"]["cloud_run"]["cpu"] == 2.0
+        assert claimed["work"]["cloud_run"]["memory_gib"] == 4.0
+        assert job.status == "running"
+        assert document.processing_status == "running"
+        assert db.query(SlipstreamLease).filter_by(job_id=job.id, status="active", worker_kind=CLOUD_RUN_WORKER_KIND).count() == 1
+
+
+def test_cloud_run_cost_formula_and_scale_down_guard(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.services.preferences import update_app_preferences
+    from app.services.slipstream import CLOUD_RUN_WORKER_KIND, claim_next_job_lease, cloud_run_cost_estimates, cloud_run_scale_plan
+
+    costs = cloud_run_cost_estimates(cpu=1, memory_gib=2)
+    assert costs["five_minute_document_usd"] == pytest.approx(0.0041142)
+    assert costs["hour_usd"] == pytest.approx(0.0493704)
+
+    with Session() as db:
+        update_app_preferences(db, cloud_run_workers_enabled=True, cloud_run_worker_concurrency=1, cloud_run_worker_flavor="performance")
+        client, _, _, _ = registered_client(db, name="cloud-run", capabilities=["import_preprocess"], capacity=1)
+        client.client_metadata = {"worker_kind": CLOUD_RUN_WORKER_KIND}
+        import_job(db)
+        claim_next_job_lease(db, client=client, worker_kind=CLOUD_RUN_WORKER_KIND, job_types=["import"])
+
+        blocked = cloud_run_scale_plan(db, desired_instances=0, force=False)
+        forced = cloud_run_scale_plan(db, desired_instances=0, force=True)
+
+        assert blocked["blocked"] is True
+        assert blocked["reason"] == "1 active Cloud Run lease(s) still own work."
+        assert blocked["command"] is None
+        assert forced["blocked"] is False
+        assert "--instances 0" in forced["command"]
+        assert "--cpu 4.0" in forced["status"]["commands"]["deploy"]
+        assert "--memory 8.0Gi" in forced["status"]["commands"]["deploy"]
+
+
 def test_heartbeat_extends_lease_and_expiry_requeues_job(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.models import SlipstreamLease, utc_now

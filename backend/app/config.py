@@ -175,6 +175,23 @@ class Settings(BaseSettings):
     slipstream_max_result_mb: int = Field(default=512, validation_alias="MEDUSA_SLIPSTREAM_MAX_RESULT_MB")
     slipstream_require_tls: bool = Field(default=True, validation_alias="MEDUSA_SLIPSTREAM_REQUIRE_TLS")
     slipstream_signature_window_seconds: int = Field(default=300, validation_alias="MEDUSA_SLIPSTREAM_SIGNATURE_WINDOW_SECONDS")
+    cloud_run_workers_enabled: bool = Field(default=False, validation_alias="MEDUSA_CLOUD_RUN_WORKERS_ENABLED")
+    cloud_run_flavor: str = Field(default="economy", validation_alias="MEDUSA_CLOUD_RUN_FLAVOR")
+    cloud_run_project: str | None = Field(default=None, validation_alias="MEDUSA_CLOUD_RUN_PROJECT")
+    cloud_run_region: str = Field(default="us-central1", validation_alias="MEDUSA_CLOUD_RUN_REGION")
+    cloud_run_worker_pool: str = Field(default="medusa-processing", validation_alias="MEDUSA_CLOUD_RUN_WORKER_POOL")
+    cloud_run_image: str | None = Field(default=None, validation_alias="MEDUSA_CLOUD_RUN_IMAGE")
+    cloud_run_service_account: str | None = Field(default=None, validation_alias="MEDUSA_CLOUD_RUN_SERVICE_ACCOUNT")
+    cloud_run_desired_instances: int = Field(default=0, validation_alias="MEDUSA_CLOUD_RUN_DESIRED_INSTANCES")
+    cloud_run_max_instances: int = Field(default=4, validation_alias="MEDUSA_CLOUD_RUN_MAX_INSTANCES")
+    cloud_run_cpu: float = Field(default=1.0, validation_alias="MEDUSA_CLOUD_RUN_CPU")
+    cloud_run_memory_gib: float = Field(default=2.0, validation_alias="MEDUSA_CLOUD_RUN_MEMORY_GIB")
+    cloud_run_idle_scale_down_seconds: int = Field(default=300, validation_alias="MEDUSA_CLOUD_RUN_IDLE_SCALE_DOWN_SECONDS")
+    cloud_run_job_types: str = Field(default="import", validation_alias="MEDUSA_CLOUD_RUN_JOB_TYPES")
+    cloud_run_cost_warning_usd: float = Field(default=2.0, validation_alias="MEDUSA_CLOUD_RUN_COST_WARNING_USD")
+    cloud_run_worker_state_path: str = Field(default="/tmp/medusa-cloud-run/slipstream-client.json", validation_alias="MEDUSA_CLOUD_RUN_WORKER_STATE_PATH")
+    cloud_run_client_id_secret: str = Field(default="medusa-slipstream-client-id", validation_alias="MEDUSA_CLOUD_RUN_CLIENT_ID_SECRET")
+    cloud_run_private_key_secret: str = Field(default="medusa-slipstream-private-key", validation_alias="MEDUSA_CLOUD_RUN_PRIVATE_KEY_SECRET")
 
     cors_origins: list[str] = [
         "http://localhost:3737",

@@ -22,11 +22,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.services.analysis_models import MODEL_RAW_TEXT_EXTRACTION
 from app.services.extraction import extract_pdf_text, sanitize_extracted_text
+from app.services.slipstream import cloud_run_runtime_composition_entry
 
 
 STATE_FILE = "slipstream-client.json"
 SLIPSTREAM_CAP_IMPORT_PREPROCESS = "import_preprocess"
+CLOUD_RUN_WORKER_KIND = "cloud_run"
 RUNNER_NAME = "slipstream-import-preprocess"
+CLOUD_RUN_RUNNER_NAME = "cloud-run-slipstream"
 DEFAULT_VERSION = "slipstream-import-preprocess-1"
 
 
@@ -57,6 +60,44 @@ def save_state(work_dir: Path, state: dict[str, Any], *, state_file: str = STATE
         state_path.chmod(0o600)
     except OSError:
         pass
+
+
+def _secret_resource_name(secret_name: str, *, project: str | None) -> str:
+    value = str(secret_name or "").strip()
+    if not value:
+        raise RuntimeError("Cloud Run secret name is required.")
+    if value.startswith("projects/"):
+        return value if "/versions/" in value else f"{value}/versions/latest"
+    if not project:
+        raise RuntimeError("MEDUSA_CLOUD_RUN_PROJECT or GOOGLE_CLOUD_PROJECT is required to read Secret Manager state.")
+    return f"projects/{project}/secrets/{value}/versions/latest"
+
+
+def _read_secret(secret_name: str, *, project: str | None) -> str:
+    try:
+        from google.cloud import secretmanager
+    except Exception as exc:  # pragma: no cover - dependency is exercised in Cloud Run
+        raise RuntimeError("google-cloud-secret-manager is required for --cloud-run mode.") from exc
+    client = secretmanager.SecretManagerServiceClient()
+    response = client.access_secret_version(request={"name": _secret_resource_name(secret_name, project=project)})
+    return response.payload.data.decode("utf-8").strip()
+
+
+def load_cloud_run_state() -> dict[str, Any]:
+    project = os.getenv("MEDUSA_CLOUD_RUN_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+    client_id = os.getenv("MEDUSA_SLIPSTREAM_CLIENT_ID") or _read_secret(
+        os.getenv("MEDUSA_CLOUD_RUN_CLIENT_ID_SECRET", "medusa-slipstream-client-id"),
+        project=project,
+    )
+    private_key = os.getenv("MEDUSA_SLIPSTREAM_PRIVATE_KEY") or _read_secret(
+        os.getenv("MEDUSA_CLOUD_RUN_PRIVATE_KEY_SECRET", "medusa-slipstream-private-key"),
+        project=project,
+    )
+    state = {"client_id": client_id.strip(), "private_key": private_key.strip()}
+    public_key = os.getenv("MEDUSA_SLIPSTREAM_PUBLIC_KEY")
+    if public_key:
+        state["public_key"] = public_key.strip()
+    return state
 
 
 def ensure_key(state: dict[str, Any]) -> Ed25519PrivateKey:
@@ -235,8 +276,11 @@ class SlipstreamClient:
             self.state["capacity"] = result.get("capacity") or capacity
         return result
 
-    def claim(self, job_types: list[str]) -> dict[str, Any]:
-        return self.signed_request("POST", "/api/slipstream/leases/claim", {"job_types": job_types}).json()
+    def claim(self, job_types: list[str], *, worker_kind: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"job_types": job_types}
+        if worker_kind:
+            payload["worker_kind"] = worker_kind
+        return self.signed_request("POST", "/api/slipstream/leases/claim", payload).json()
 
     def heartbeat(self, lease_id: str, lease_token: str, detail: str) -> None:
         self.signed_request("POST", f"/api/slipstream/leases/{lease_id}/heartbeat", {"detail": detail}, lease_token=lease_token)
@@ -365,11 +409,14 @@ def process_one_claim(
     *,
     heartbeat_seconds: int,
     job_types: list[str],
+    worker_kind: str | None,
+    manifest_provider: str,
     no_process: bool,
     prefer_performance: bool,
 ) -> bool:
     prefer_performance_cores(prefer_performance)
-    claim = client.claim(job_types)
+    claim_started = time.time()
+    claim = client.claim(job_types, worker_kind=worker_kind)
     lease = claim.get("lease")
     work = claim.get("work")
     lease_token = claim.get("lease_token")
@@ -389,7 +436,11 @@ def process_one_claim(
         with LeaseHeartbeat(client, lease_id, lease_token, interval_seconds=heartbeat_seconds, initial_detail="claimed") as heartbeat:
             client.download_artifact(lease_id, lease_token, artifact_path)
             heartbeat.beat("artifact downloaded")
-            manifest = extract_pdf_manifest(artifact_path, work, heartbeat=heartbeat)
+            manifest = extract_pdf_manifest(artifact_path, work, heartbeat=heartbeat, provider=manifest_provider)
+            if worker_kind == CLOUD_RUN_WORKER_KIND:
+                manifest.setdefault("composition", []).append(
+                    cloud_run_runtime_composition_entry(work=work, started=claim_started, completed=time.time())
+                )
             heartbeat.beat("submitting result")
             client.complete(lease_id, lease_token, manifest)
         print(f"Preprocessed import job {job_id} from {artifact_path}.", flush=True)
@@ -421,6 +472,8 @@ def run_once(
     capacity: int,
     concurrency: int,
     job_types: list[str],
+    worker_kind: str | None,
+    manifest_provider: str,
     no_process: bool,
     heartbeat_seconds: int,
     metadata: dict[str, Any],
@@ -435,6 +488,8 @@ def run_once(
                 client,
                 heartbeat_seconds=heartbeat_seconds,
                 job_types=job_types,
+                worker_kind=worker_kind,
+                manifest_provider=manifest_provider,
                 no_process=no_process,
                 prefer_performance=prefer_performance,
             )
@@ -456,6 +511,8 @@ def run_forever(
     capacity: int,
     concurrency: int,
     job_types: list[str],
+    worker_kind: str | None,
+    manifest_provider: str,
     no_process: bool,
     heartbeat_seconds: int,
     poll_seconds: int,
@@ -490,6 +547,8 @@ def run_forever(
                         client,
                         heartbeat_seconds=heartbeat_seconds,
                         job_types=job_types,
+                        worker_kind=worker_kind,
+                        manifest_provider=manifest_provider,
                         no_process=no_process,
                         prefer_performance=prefer_performance,
                     )
@@ -519,8 +578,9 @@ def run_forever(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a Medusa Slipstream remote import-preprocessing client.")
-    parser.add_argument("--server", required=True, help="Central Medusa base URL, for example https://medusa.evan.engineer:3737")
+    parser.add_argument("--server", default=os.getenv("MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL"), help="Central Medusa base URL, for example https://medusa.evan.engineer:3737")
     parser.add_argument("--work-dir", default="./data/slipstream-client", help="Ignored local directory for client key and downloaded artifacts.")
+    parser.add_argument("--state-file", default=STATE_FILE)
     parser.add_argument("--name", default="Slipstream client")
     parser.add_argument("--version", default=DEFAULT_VERSION)
     parser.add_argument("--enroll", help="One-time enrollment token from Settings > Slipstream.")
@@ -536,27 +596,66 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--once", action="store_true", help="Check in, claim up to --concurrency jobs, then exit.")
     parser.add_argument("--no-process", action="store_true", help="Claim and heartbeat only; do not submit a result.")
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification for controlled local tests.")
+    parser.add_argument("--cloud-run", action="store_true", help="Run as a Cloud Run worker-pool client using Secret Manager state and /tmp scratch storage.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    if not args.server:
+        raise SystemExit("--server or MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL is required.")
+    initial_state: dict[str, Any] | None = None
+    state_file = args.state_file
+    persist_state = True
     work_dir = Path(args.work_dir).expanduser()
-    capacity = max(1, int(args.capacity or 1))
+    worker_kind: str | None = None
+    manifest_provider = "slipstream"
+    runner_name = RUNNER_NAME
+    if args.cloud_run:
+        state_path = Path(os.getenv("MEDUSA_CLOUD_RUN_WORKER_STATE_PATH", "/tmp/medusa-cloud-run/slipstream-client.json"))
+        work_dir = state_path.parent
+        state_file = state_path.name
+        initial_state = load_cloud_run_state()
+        persist_state = False
+        worker_kind = CLOUD_RUN_WORKER_KIND
+        manifest_provider = "cloud_run"
+        runner_name = CLOUD_RUN_RUNNER_NAME
+        if args.name == "Slipstream client":
+            args.name = os.getenv("MEDUSA_CLOUD_RUN_WORKER_NAME", "Cloud Run worker")
+    capacity_default = 1 if args.cloud_run else 1
+    capacity = max(1, int(args.capacity or capacity_default))
     concurrency = max(1, int(args.concurrency or capacity))
     capabilities = args.capability or [SLIPSTREAM_CAP_IMPORT_PREPROCESS]
-    job_types = args.job_type or ["import"]
+    if args.cloud_run and args.job_type is None:
+        configured_job_types = [
+            value.strip().lower()
+            for value in os.getenv("MEDUSA_CLOUD_RUN_JOB_TYPES", "import").replace(";", ",").split(",")
+            if value.strip().lower() in {"import"}
+        ]
+        job_types = configured_job_types or ["import"]
+    else:
+        job_types = args.job_type or ["import"]
     affinity_detail = apply_process_affinity(args.cpuset)
     qos_detail = prefer_performance_cores(args.prefer_performance_cores)
     for detail in (affinity_detail, qos_detail):
         if detail:
             print(detail, flush=True)
     metadata = runner_metadata(concurrency=concurrency, cpuset=args.cpuset, prefer_performance=args.prefer_performance_cores)
+    metadata["runner"] = runner_name
+    if worker_kind:
+        metadata["worker_kind"] = worker_kind
     if affinity_detail:
         metadata["affinity_detail"] = affinity_detail
     if qos_detail:
         metadata["qos_detail"] = qos_detail
-    client = SlipstreamClient(args.server, work_dir, verify_tls=not args.insecure)
+    client = SlipstreamClient(
+        args.server,
+        work_dir,
+        verify_tls=not args.insecure,
+        state_file=state_file,
+        initial_state=initial_state,
+        persist_state=persist_state,
+    )
     try:
         if args.enroll:
             if client.state.get("client_id"):
@@ -579,6 +678,8 @@ def main(argv: list[str] | None = None) -> int:
                 capacity=capacity,
                 concurrency=concurrency,
                 job_types=job_types,
+                worker_kind=worker_kind,
+                manifest_provider=manifest_provider,
                 no_process=args.no_process,
                 heartbeat_seconds=args.heartbeat_seconds,
                 metadata=metadata,
@@ -591,6 +692,8 @@ def main(argv: list[str] | None = None) -> int:
             capacity=capacity,
             concurrency=concurrency,
             job_types=job_types,
+            worker_kind=worker_kind,
+            manifest_provider=manifest_provider,
             no_process=args.no_process,
             heartbeat_seconds=args.heartbeat_seconds,
             poll_seconds=max(1, int(args.poll_seconds or 1)),

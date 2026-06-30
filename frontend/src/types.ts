@@ -307,6 +307,50 @@ export type SlipstreamStatus = {
   failed_or_expired_lease_count: number;
 };
 
+export type CloudRunWorkerStatus = {
+  enabled: boolean;
+  desired_instances: number;
+  effective_target_instances: number;
+  max_instances: number;
+  active_lease_count: number;
+  online_client_count: number;
+  job_types: string[];
+  flavor: string;
+  flavor_label: string;
+  flavor_description?: string | null;
+  cpu: number;
+  memory_gib: number;
+  region: string;
+  project?: string | null;
+  worker_pool: string;
+  image?: string | null;
+  service_account?: string | null;
+  cost: Record<string, unknown>;
+  missing_config: string[];
+  commands: Record<string, string>;
+  can_scale_to_zero: boolean;
+  scale_down_blocked_reason?: string | null;
+  clients: SlipstreamClient[];
+  active_leases: SlipstreamLease[];
+};
+
+export type CloudRunWorkerFlavor = {
+  key: string;
+  label: string;
+  description: string;
+  cpu: number;
+  memory_gib: number;
+};
+
+export type CloudRunWorkerScalePlan = {
+  desired_instances: number;
+  effective_target_instances: number;
+  blocked: boolean;
+  reason?: string | null;
+  command?: string | null;
+  status: CloudRunWorkerStatus;
+};
+
 export type SlipstreamEnrollment = {
   id: string;
   label?: string | null;
@@ -351,6 +395,10 @@ export type AppPreferences = {
   import_worker_concurrency: number;
   recommended_import_worker_concurrency: number;
   import_worker_cost_warning_threshold: number;
+  cloud_run_workers_enabled: boolean;
+  cloud_run_worker_concurrency: number;
+  cloud_run_worker_flavor: string;
+  cloud_run_worker_flavor_options: CloudRunWorkerFlavor[];
   accent_color_day: string;
   accent_color_night: string;
   document_cache_size_mb: number;

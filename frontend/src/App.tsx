@@ -166,6 +166,8 @@ import type {
   OpenAIUsage,
   OpenAIUsageGroup,
   OpenAIUsagePeriod,
+  CloudRunWorkerFlavor,
+  CloudRunWorkerStatus,
   PortfolioAssessmentRun,
   PortfolioItem,
   PortfolioMaterial,
@@ -4086,6 +4088,7 @@ function importJobWorkerLabel(job: ImportJob) {
   const heartbeat = job.lease_heartbeat_at ? `, heartbeat ${relativeTimeLabel(job.lease_heartbeat_at)}` : "";
   if (job.assigned_worker_kind === "local") return `Local worker${heartbeat}`;
   const name = job.assigned_client_name || job.assigned_client_id || "client";
+  if (job.assigned_worker_kind === "cloud_run") return `Cloud Run: ${name}${heartbeat}`;
   return `Slipstream: ${name}${heartbeat}`;
 }
 
@@ -24565,6 +24568,212 @@ function SlipstreamSettingsPanel() {
   );
 }
 
+function cloudRunCostValue(status: CloudRunWorkerStatus | undefined, key: string) {
+  const value = status?.cost?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function CloudRunWorkerSettingsPanel({
+  enabled,
+  concurrency,
+  flavor,
+  flavorOptions,
+  onEnabledChange,
+  onConcurrencyChange,
+  onFlavorChange,
+}: {
+  enabled: boolean;
+  concurrency: number;
+  flavor: string;
+  flavorOptions: CloudRunWorkerFlavor[];
+  onEnabledChange: (enabled: boolean) => void;
+  onConcurrencyChange: (value: number) => void;
+  onFlavorChange: (value: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const scaleFeedback = useAsyncActionFeedback();
+  const { copiedKey, copyToClipboard } = useClipboardNotice();
+  const statusQuery = useQuery({
+    queryKey: ["cloud-run-worker-status"],
+    queryFn: api.cloudRunWorkerStatus,
+    refetchInterval: 10000,
+  });
+  const status = statusQuery.data;
+  const desiredInstances = enabled ? Math.max(1, concurrency) : 0;
+  const scalePlan = useMutation({
+    mutationFn: (force: boolean) => api.cloudRunWorkerScalePlan({ desired_instances: desiredInstances, force }),
+    onSuccess: () => {
+      scaleFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["cloud-run-worker-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["slipstream-status"] });
+    },
+    onError: (error) => {
+      scaleFeedback.showError(actionFailureMessage("Could not prepare Cloud Run scale plan", error));
+    },
+  });
+  const plan = scalePlan.data;
+  const command = plan?.command || status?.commands?.scale || "";
+  const blockedReason = plan?.blocked ? plan.reason : status?.scale_down_blocked_reason;
+  const fiveMinuteCost = cloudRunCostValue(status, "five_minute_document_usd");
+  const hourlyCost = cloudRunCostValue(status, "hour_usd");
+  const monthlyCost = cloudRunCostValue(status, "monthly_one_instance_usd");
+  const hundredDocsCost = cloudRunCostValue(status, "hundred_five_minute_documents_usd");
+  const missingConfig = status?.missing_config || [];
+  const activeLeases = status?.active_leases || [];
+  const clients = status?.clients || [];
+  const effectiveFlavorOptions = flavorOptions.length
+    ? flavorOptions
+    : [{ key: "economy", label: "Economy", description: "Lowest-cost import preprocessing for small batches.", cpu: 1, memory_gib: 2 }];
+  const selectedFlavor = effectiveFlavorOptions.find((option) => option.key === flavor) || effectiveFlavorOptions[0];
+  const unsavedCloudRunSettings = Boolean(
+    status && (status.enabled !== enabled || status.desired_instances !== concurrency || status.flavor !== flavor),
+  );
+  const statusText = !status
+    ? "Loading"
+    : enabled
+      ? `${formatMetric(status.effective_target_instances)} target / ${formatMetric(status.active_lease_count)} active`
+      : "Disabled by default";
+  const prepareDisabledReason = scalePlan.isPending
+    ? "scale planning is already running."
+    : unsavedCloudRunSettings
+      ? "Save All before generating a Cloud Run command for these settings."
+    : missingConfig.length
+      ? `missing ${missingConfig.join(", ")}.`
+      : "";
+  return (
+    <div className="cloud-run-settings-panel">
+      <div className="panel-title-row">
+        <div>
+          <h2>Cloud Run</h2>
+          <span>{statusText}</span>
+        </div>
+        <Cloud size={20} />
+      </div>
+      <div className="cloud-run-control-row">
+        <label className="toggle-line">
+          <input checked={enabled} onChange={(event) => onEnabledChange(event.target.checked)} type="checkbox" />
+          Enabled
+        </label>
+        <label>
+          Concurrency
+          <input
+            data-tooltip="Set desired Cloud Run worker-pool instances. Disabled Cloud Run always targets zero."
+            min={1}
+            onChange={(event) => onConcurrencyChange(Math.max(1, Number(event.target.value) || 1))}
+            type="number"
+            value={concurrency}
+          />
+        </label>
+        <label>
+          Flavor
+          <select
+            data-tooltip="Choose the Cloud Run worker CPU and memory shape saved for future worker-pool commands."
+            onChange={(event) => onFlavorChange(event.target.value)}
+            value={flavor}
+          >
+            {effectiveFlavorOptions.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label} ({option.cpu} vCPU / {option.memory_gib} GiB)
+              </option>
+            ))}
+          </select>
+        </label>
+        <AsyncActionSlot busy={scalePlan.isPending} feedback={scaleFeedback.feedback} label="Cloud Run scale plan in progress">
+          <button
+            className={asyncFeedbackClass("secondary-button", scaleFeedback.feedback, scalePlan.isPending)}
+            data-disabled-reason={prepareDisabledReason}
+            data-tooltip="Generate the gcloud command for the current Cloud Run worker-pool target."
+            disabled={Boolean(prepareDisabledReason)}
+            onClick={() => scalePlan.mutate(false)}
+            type="button"
+          >
+            <SlidersHorizontal className={scalePlan.isPending ? "spin" : ""} size={16} />
+            Plan Scale
+          </button>
+        </AsyncActionSlot>
+      </div>
+      <div className="slipstream-metric-grid">
+        <div>
+          <span>Shape</span>
+          <strong>{status ? `${status.flavor_label} (${status.cpu} vCPU / ${status.memory_gib} GiB)` : "..."}</strong>
+        </div>
+        <div>
+          <span>5 min doc</span>
+          <strong>{formatUsd(fiveMinuteCost)}</strong>
+        </div>
+        <div>
+          <span>100 docs</span>
+          <strong>{formatUsd(hundredDocsCost)}</strong>
+        </div>
+        <div>
+          <span>Hour</span>
+          <strong>{formatUsd(hourlyCost)}</strong>
+        </div>
+      </div>
+      {selectedFlavor ? (
+        <p>{`${selectedFlavor.label}: ${selectedFlavor.description} ${selectedFlavor.cpu} vCPU / ${selectedFlavor.memory_gib} GiB.`}</p>
+      ) : null}
+      {unsavedCloudRunSettings ? <p className="preference-warning">Save All to apply Cloud Run settings to cost estimates and generated commands.</p> : null}
+      <div className="cloud-run-config-grid">
+        <div>
+          <span>Pool</span>
+          <strong>{status?.worker_pool || "medusa-processing"}</strong>
+        </div>
+        <div>
+          <span>Region</span>
+          <strong>{status?.region || "us-central1"}</strong>
+        </div>
+        <div>
+          <span>Jobs</span>
+          <strong>{status?.job_types?.join(", ") || "import"}</strong>
+        </div>
+        <div>
+          <span>Always-on month</span>
+          <strong>{formatUsd(monthlyCost)}</strong>
+        </div>
+      </div>
+      {missingConfig.length ? <p className="preference-warning">Missing Cloud Run config: {missingConfig.join(", ")}</p> : null}
+      {blockedReason ? <p className="preference-warning">{blockedReason}</p> : null}
+      {command ? (
+        <div className="cloud-run-command-row">
+          <code>{command}</code>
+          <button
+            className="icon-button compact"
+            data-tooltip="Copy the Cloud Run command."
+            onClick={() => void copyToClipboard("cloud-run-command", command)}
+            type="button"
+          >
+            {copiedKey === "cloud-run-command" ? <CheckCircle2 size={15} /> : <Copy size={15} />}
+          </button>
+        </div>
+      ) : null}
+      <div className="slipstream-list">
+        {clients.map((client) => (
+          <div className="cloud-run-row" key={client.id}>
+            <div>
+              <strong>{client.name}</strong>
+              <span>{client.online ? "online" : client.last_check_in_at ? `last ${relativeTimeLabel(client.last_check_in_at)}` : "not checked in"}</span>
+            </div>
+            <StatusPill value={client.status} tone={client.status === "active" ? "good" : "neutral"} />
+            <span>{`${formatMetric(client.active_lease_count)} active / ${formatMetric(client.capacity)} slots`}</span>
+          </div>
+        ))}
+        {activeLeases.map((lease) => (
+          <div className="cloud-run-row" key={lease.id}>
+            <div>
+              <strong>{lease.job_type} job</strong>
+              <span>{lease.client_name || "Cloud Run"}</span>
+            </div>
+            <StatusPill value={lease.status} tone="blue" />
+            <span>{lease.heartbeat_at ? `heartbeat ${relativeTimeLabel(lease.heartbeat_at)}` : "no heartbeat"}</span>
+          </div>
+        ))}
+        {!clients.length && !activeLeases.length ? <p className="empty-note">No Cloud Run clients or leases visible.</p> : null}
+      </div>
+    </div>
+  );
+}
+
 function GcsLifecyclePolicy({
   bucketDirty,
   error,
@@ -24694,6 +24903,9 @@ function SettingsView({
   const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null);
   const [twoFactorRecoveryCodes, setTwoFactorRecoveryCodes] = useState<string[]>([]);
   const [selectedCapabilityKeys, setSelectedCapabilityKeys] = useState<string[]>([]);
+  const [cloudRunWorkersEnabled, setCloudRunWorkersEnabled] = useState(preferences?.cloud_run_workers_enabled ?? false);
+  const [cloudRunWorkerConcurrency, setCloudRunWorkerConcurrency] = useState(preferences?.cloud_run_worker_concurrency || 1);
+  const [cloudRunWorkerFlavor, setCloudRunWorkerFlavor] = useState(preferences?.cloud_run_worker_flavor || "economy");
   const serviceAccountInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const createRunFeedback = useAsyncActionFeedback();
@@ -24740,6 +24952,9 @@ function SettingsView({
           : preferences.default_import_processing_preset_id || "balanced",
       );
       setSecondPassProcessingEnabled(preferences.second_pass_processing_enabled ?? true);
+      setCloudRunWorkersEnabled(preferences.cloud_run_workers_enabled ?? false);
+      setCloudRunWorkerConcurrency(preferences.cloud_run_worker_concurrency || 1);
+      setCloudRunWorkerFlavor(preferences.cloud_run_worker_flavor || "economy");
     }
   }, [preferences]);
 
@@ -24885,6 +25100,9 @@ function SettingsView({
     mutationFn: () =>
       api.updatePreferences({
         import_worker_concurrency: importWorkerConcurrency,
+        cloud_run_workers_enabled: cloudRunWorkersEnabled,
+        cloud_run_worker_concurrency: cloudRunWorkerConcurrency,
+        cloud_run_worker_flavor: cloudRunWorkerFlavor,
         accent_color_day: accentColorDay,
         accent_color_night: accentColorNight,
         document_cache_size_mb: documentCacheSizeMb,
@@ -25024,6 +25242,9 @@ function SettingsView({
   const preferenceDirty = Boolean(
     preferences &&
       (preferences.import_worker_concurrency !== importWorkerConcurrency ||
+        preferences.cloud_run_workers_enabled !== cloudRunWorkersEnabled ||
+        preferences.cloud_run_worker_concurrency !== cloudRunWorkerConcurrency ||
+        preferences.cloud_run_worker_flavor !== cloudRunWorkerFlavor ||
         preferences.accent_color_day !== accentColorDay ||
         preferences.accent_color_night !== accentColorNight ||
         preferences.document_cache_size_mb !== documentCacheSizeMb ||
@@ -25436,6 +25657,15 @@ function SettingsView({
         />
       </div>
       <SlipstreamSettingsPanel />
+      <CloudRunWorkerSettingsPanel
+        concurrency={cloudRunWorkerConcurrency}
+        enabled={cloudRunWorkersEnabled}
+        flavor={cloudRunWorkerFlavor}
+        flavorOptions={preferences?.cloud_run_worker_flavor_options || []}
+        onConcurrencyChange={setCloudRunWorkerConcurrency}
+        onEnabledChange={setCloudRunWorkersEnabled}
+        onFlavorChange={setCloudRunWorkerFlavor}
+      />
       <div className="preferences-panel">
         <div className="panel-title-row">
           <div>
