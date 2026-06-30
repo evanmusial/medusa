@@ -57,6 +57,25 @@ def parse_cpuset(value: str) -> set[int]:
     return cpus
 
 
+def env_value(env: dict[str, str], key: str, default: str | None = None) -> str | None:
+    return env.get(key) or os.environ.get(key) or default
+
+
+def check_cpuset_value(label: str, value: str, cpu_count: int) -> bool:
+    try:
+        cpus = parse_cpuset(value)
+    except ValueError as exc:
+        status(label, "FAIL", str(exc))
+        return False
+    invalid = sorted(cpu for cpu in cpus if cpu < 0 or cpu >= cpu_count)
+    if invalid:
+        status(label, "FAIL", f"{value} includes unavailable CPUs {invalid}; host has {cpu_count}")
+        return False
+    state = "OK" if len(cpus) <= max(cpu_count - 1, 0) else "WARN"
+    status(label, state, f"{value} uses {len(cpus)} of {cpu_count} logical CPUs")
+    return True
+
+
 def host_ips() -> set[str]:
     ips = {"0.0.0.0", "127.0.0.1", "::", "::1"}
     if shutil.which("ip"):
@@ -179,11 +198,14 @@ def main() -> int:
         return 2
 
     env = read_env(repo / ".env")
-    public_host = env.get("MEDUSA_PUBLIC_HOST") or os.environ.get("MEDUSA_PUBLIC_HOST") or ""
-    allowed_hosts = env.get("MEDUSA_ALLOWED_HOSTS") or os.environ.get("MEDUSA_ALLOWED_HOSTS") or ""
-    bind_ip = env.get("MEDUSA_BIND_IP") or os.environ.get("MEDUSA_BIND_IP") or "0.0.0.0"
-    bind_ipv6 = env.get("MEDUSA_BIND_IPV6") or os.environ.get("MEDUSA_BIND_IPV6") or "::1"
-    cpuset_value = env.get("MEDUSA_CPUSET") or os.environ.get("MEDUSA_CPUSET") or "0-5"
+    public_host = env_value(env, "MEDUSA_PUBLIC_HOST", "") or ""
+    allowed_hosts = env_value(env, "MEDUSA_ALLOWED_HOSTS", "") or ""
+    bind_ip = env_value(env, "MEDUSA_BIND_IP", "0.0.0.0") or "0.0.0.0"
+    bind_ipv6 = env_value(env, "MEDUSA_BIND_IPV6", "::1") or "::1"
+    cpuset_value = env_value(env, "MEDUSA_CPUSET", "0-5") or "0-5"
+    app_cpuset_value = env_value(env, "MEDUSA_APP_CPUSET")
+    db_cpuset_value = env_value(env, "MEDUSA_DB_CPUSET")
+    worker_cpuset_value = env_value(env, "MEDUSA_WORKER_CPUSET")
     failures = 0
 
     print(f"Medusa server doctor for {repo}")
@@ -205,18 +227,16 @@ def main() -> int:
 
     print("")
     cpu_count = os.cpu_count() or 0
-    try:
-        cpus = parse_cpuset(cpuset_value)
-        invalid = sorted(cpu for cpu in cpus if cpu < 0 or cpu >= cpu_count)
-        if invalid:
+    cpu_checks = [("MEDUSA_CPUSET", cpuset_value)]
+    if app_cpuset_value:
+        cpu_checks.append(("MEDUSA_APP_CPUSET", app_cpuset_value))
+    if db_cpuset_value:
+        cpu_checks.append(("MEDUSA_DB_CPUSET", db_cpuset_value))
+    if worker_cpuset_value:
+        cpu_checks.append(("MEDUSA_WORKER_CPUSET", worker_cpuset_value))
+    for label, value in cpu_checks:
+        if not check_cpuset_value(label, value, cpu_count):
             failures += 1
-            status("MEDUSA_CPUSET", "FAIL", f"{cpuset_value} includes unavailable CPUs {invalid}; host has {cpu_count}")
-        else:
-            state = "OK" if len(cpus) <= max(cpu_count - 1, 0) else "WARN"
-            status("MEDUSA_CPUSET", state, f"{cpuset_value} uses {len(cpus)} of {cpu_count} logical CPUs")
-    except ValueError as exc:
-        failures += 1
-        status("MEDUSA_CPUSET", "FAIL", str(exc))
     if shutil.which("lscpu"):
         result = run_command(["lscpu", "-e=CPU,CORE,SOCKET,NODE,ONLINE"], cwd=repo)
         if result.returncode == 0:

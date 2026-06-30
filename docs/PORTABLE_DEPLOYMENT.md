@@ -20,14 +20,14 @@ After metrics is enabled, host deploy/release commands preserve that overlay aut
 
 The server environment and override:
 
-- pins all Medusa services to `MEDUSA_CPUSET`, defaulting to logical CPUs `0-5`;
+- pins Medusa services to CPU sets, defaulting to `MEDUSA_CPUSET` / logical CPUs `0-5`, with optional `MEDUSA_APP_CPUSET`, `MEDUSA_DB_CPUSET`, and `MEDUSA_WORKER_CPUSET` splits for dedicated hosts;
 - binds HAProxy through `MEDUSA_BIND_IP`, defaulting to `0.0.0.0`;
 - adds a dedicated-server IPv6 HAProxy bind through `MEDUSA_BIND_IPV6`, defaulting to loopback `::1`;
 - starts backend and worker with `MEDUSA_IMPORT_WORKER_CONCURRENCY=2` unless `.env` overrides it;
 - starts backend and worker with `MEDUSA_DOCUMENT_CACHE_SIZE_MB=51200` unless `.env` overrides it.
 - optionally binds the Prometheus exporter through HAProxy TLS on `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT` when `docker-compose.metrics.yml` is included.
 
-Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. The checked-in placeholder profile uses `https://medusa.home.musial.io:3737` as the app URL, `0.0.0.0` as the IPv4 bind IP, loopback-only `::1` for the dedicated IPv6 bind, CPU set `2-7`, document cache `51200` MB, import worker concurrency `2`, and `https://medusa.home.musial.io:43737/metrics` as the Prometheus exporter URL when metrics are enabled. Keep `MEDUSA_ALLOWED_HOSTS` scoped to the chosen host unless you deliberately need a temporary open-host migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
+Use `deploy/server/.env.server.example` as the source checklist for the server `.env`. Keep the filled `.env` untracked. The checked-in placeholder profile uses `https://medusa.home.musial.io:3737` as the app URL, `0.0.0.0` as the IPv4 bind IP, loopback-only `::1` for the dedicated IPv6 bind, reserves logical CPUs `0,4` for OS/non-Medusa work on the reference 4-core/8-thread Xeon host, assigns app/database services to `1,5`, assigns the worker to `2,3,6,7`, sets document cache `51200` MB, import worker concurrency `2`, and `https://medusa.home.musial.io:43737/metrics` as the Prometheus exporter URL when metrics are enabled. Keep `MEDUSA_ALLOWED_HOSTS` scoped to the chosen host unless you deliberately need a temporary open-host migration window. If Prometheus scraping is enabled, create an ignored `data/secrets/prometheus-token` file and set `MEDUSA_METRICS_INTERNAL_TOKEN` in `.env` before refreshing backend plus `metrics-exporter`.
 
 Before moving from the local machine, run:
 
@@ -95,7 +95,7 @@ MEDUSA_CERTBOT_EMAIL=admin@example.com deploy/server/medusa-certbot.sh issue
    - optionally `data/model-cache/` to avoid first-run model downloads.
    - optionally `data/processing-cache/` to avoid rehydrating recent PDFs.
    - copy `data/originals/` when local fallback storage contains authoritative originals that are not in GCS.
-6. Fill the target `.env` from `deploy/server/.env.server.example`, including `MEDUSA_PUBLIC_HOST`, `MEDUSA_ALLOWED_HOSTS`, `MEDUSA_BIND_IP`, optional `MEDUSA_BIND_IPV6`, `MEDUSA_CPUSET`, GCS, and model-provider credentials.
+6. Fill the target `.env` from `deploy/server/.env.server.example`, including `MEDUSA_PUBLIC_HOST`, `MEDUSA_ALLOWED_HOSTS`, `MEDUSA_BIND_IP`, optional `MEDUSA_BIND_IPV6`, `MEDUSA_CPUSET` or the split `MEDUSA_APP_CPUSET` / `MEDUSA_DB_CPUSET` / `MEDUSA_WORKER_CPUSET`, GCS, and model-provider credentials.
 7. Run `deploy/server/medusa-certbot.sh issue` on the target when the target should own its own Let's Encrypt certificate.
 8. Run the server doctor on the target.
 9. Start Medusa on the target:

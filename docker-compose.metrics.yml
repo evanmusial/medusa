@@ -19,6 +19,7 @@ services:
   metrics-exporter:
     build:
       context: ./backend
+    cpuset: "${MEDUSA_APP_CPUSET:-${MEDUSA_CPUSET:-0-5}}"
     restart: unless-stopped
     networks:
       - default

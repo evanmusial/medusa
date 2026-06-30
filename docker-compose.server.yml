@@ -5,29 +5,38 @@
 #
 # The base docker-compose.yml remains the default for local development.
 
-x-server-cpu: &server-cpu
-  cpuset: "${MEDUSA_CPUSET:-0-5}"
+x-app-cpu: &app-cpu
+  cpuset: "${MEDUSA_APP_CPUSET:-${MEDUSA_CPUSET:-0-5}}"
+
+x-db-cpu: &db-cpu
+  cpuset: "${MEDUSA_DB_CPUSET:-${MEDUSA_APP_CPUSET:-${MEDUSA_CPUSET:-0-5}}}"
+
+x-worker-cpu: &worker-cpu
+  cpuset: "${MEDUSA_WORKER_CPUSET:-${MEDUSA_CPUSET:-0-5}}"
 
 services:
   db:
-    <<: *server-cpu
+    <<: *db-cpu
 
   backend:
-    <<: *server-cpu
+    <<: *app-cpu
     environment:
       MEDUSA_IMPORT_WORKER_CONCURRENCY: ${MEDUSA_IMPORT_WORKER_CONCURRENCY:-2}
       MEDUSA_DOCUMENT_CACHE_SIZE_MB: ${MEDUSA_DOCUMENT_CACHE_SIZE_MB:-51200}
 
   worker:
-    <<: *server-cpu
+    <<: *worker-cpu
     environment:
       MEDUSA_IMPORT_WORKER_CONCURRENCY: ${MEDUSA_IMPORT_WORKER_CONCURRENCY:-2}
       MEDUSA_DOCUMENT_CACHE_SIZE_MB: ${MEDUSA_DOCUMENT_CACHE_SIZE_MB:-51200}
 
   frontend:
-    <<: *server-cpu
+    <<: *app-cpu
 
   haproxy:
-    <<: *server-cpu
+    <<: *app-cpu
     ports:
       - "[${MEDUSA_BIND_IPV6:-::1}]:3737:3737"
+
+  valkey:
+    <<: *app-cpu
