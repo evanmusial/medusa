@@ -1354,6 +1354,8 @@ class ImportJobOut(ApiModel):
     status: str
     current_step: str
     current_model: str | None = None
+    execution_location: str | None = None
+    next_stage: str | None = None
     estimated_cost_usd: float = 0.0
     estimated_cost_basis: str = "none"
     estimated_cost_page_count: int | None = None
@@ -2237,6 +2239,8 @@ class ConcordanceJobOut(ApiModel):
     capability_key: str
     target_version: int
     status: str
+    execution_location: str | None = None
+    next_stage: str | None = None
     attempts: int
     last_error: str | None = None
     locked_at: datetime | None = None

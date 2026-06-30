@@ -4072,15 +4072,27 @@ function ImportJobStatusDetail({ job }: { job: ImportJob }) {
   const model = modelDisplayName(job.current_model);
   const cost = formatUsd(job.estimated_cost_usd ?? 0);
   const preset = job.processing_preset_name ? ` / ${job.processing_preset_name}` : "";
-  const worker = importJobWorkerLabel(job);
+  const execution = importJobExecutionLabel(job);
+  const nextStage = job.next_stage || importJobStage(job);
   return (
     <small className="job-status-detail" title={job.status === "failed" ? job.last_error || undefined : importJobEstimateTitle(job)}>
       <strong>{status}</strong>
       {model ? ` (${model})` : ""}
       {` (${importJobEstimatePrefix(job)}${cost}${preset})`}
-      {worker ? <span className="job-worker-label">{worker}</span> : null}
+      <span className="job-worker-label">
+        {execution ? `Execution: ${execution}` : "Execution pending"}
+        {nextStage ? ` / Next: ${nextStage}` : ""}
+      </span>
     </small>
   );
+}
+
+function importJobExecutionLabel(job: ImportJob) {
+  if (job.execution_location) {
+    const heartbeat = job.lease_heartbeat_at && job.status === "running" ? `, heartbeat ${relativeTimeLabel(job.lease_heartbeat_at)}` : "";
+    return `${job.execution_location}${heartbeat}`;
+  }
+  return importJobWorkerLabel(job);
 }
 
 function importJobWorkerLabel(job: ImportJob) {
@@ -20365,10 +20377,10 @@ function ActivityView({
     const importJobRows = includeFailedRows(orderedImportJobs(jobs), 40, (job) => job.id, (job) => job.status === "failed").map<ActivityRow>((job) => ({
       actionLabel: job.document_id ? "Open Document" : "Open Queue",
       detail: [
-        job.current_step?.replaceAll("_", " "),
+        job.next_stage || job.current_step?.replaceAll("_", " "),
         job.current_model || "",
         job.estimated_cost_usd > 0 ? `~${formatUsd(job.estimated_cost_usd)}` : "",
-        job.assigned_client_name || job.assigned_worker_kind || "",
+        job.execution_location || job.assigned_client_name || job.assigned_worker_kind || "",
       ]
         .filter(Boolean)
         .join(" / "),
@@ -20412,7 +20424,7 @@ function ActivityView({
       (job) => job.status === "failed",
     ).map<ActivityRow>((job) => ({
       actionLabel: "Open Document",
-      detail: [`${job.capability_key.replaceAll("_", " ")}`, `v${job.target_version}`, job.assigned_client_name || job.assigned_worker_kind || ""]
+      detail: [job.next_stage || `${job.capability_key.replaceAll("_", " ")} v${job.target_version}`, job.execution_location || job.assigned_client_name || job.assigned_worker_kind || ""]
         .filter(Boolean)
         .join(" / "),
       icon: RefreshCw,

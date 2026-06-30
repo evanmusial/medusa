@@ -10485,6 +10485,102 @@ def lease_assignment_payload(lease: SlipstreamLease | None) -> dict[str, Any]:
     }
 
 
+def _worker_location_label(lease: SlipstreamLease | None) -> str | None:
+    if not lease:
+        return None
+    if lease.worker_kind == "local":
+        return "Local worker"
+    name = lease.client.name if lease.client else lease.client_id or "client"
+    if lease.worker_kind == CLOUD_RUN_WORKER_KIND:
+        return f"Cloud Run: {name}"
+    return f"Slipstream: {name}"
+
+
+def import_execution_location(job: ImportJob, lease: SlipstreamLease | None) -> str:
+    assigned = _worker_location_label(lease)
+    if assigned:
+        return assigned
+    step = str(job.current_step or "stored")
+    if job.status == STAGED_IMPORT_STATUS:
+        return "Staged upload"
+    if job.status == "queued":
+        if step in {"stored", "extracting"}:
+            return "Unassigned: remote preprocess eligible"
+        return "Queued for central worker"
+    if job.status == "running":
+        return "Worker lock active"
+    if job.status == "restored_paused":
+        return "Restored paused"
+    if job.status == "failed":
+        return "Stopped after failure"
+    if job.status == "complete":
+        return "Complete"
+    if job.status == "cleared":
+        return "Cleared"
+    return job.status.replace("_", " ")
+
+
+def import_next_stage(job: ImportJob) -> str:
+    step = str(job.current_step or "stored")
+    page_match = re.match(r"^normalizing_page_(\d+)$", step)
+    if job.status == STAGED_IMPORT_STATUS:
+        return "Release with Process Uploads"
+    if job.status == "failed":
+        return "Retry or clear"
+    if job.status == "restored_paused":
+        return "Reactivate or clear"
+    if job.status in {"complete", "duplicate_skipped"}:
+        return "Done"
+    if job.status == "cleared":
+        return "Cleared"
+    if page_match:
+        return "Normalize remaining pages"
+    next_by_step = {
+        "stored": "Extract raw text",
+        "extracting": "Finish raw text extraction",
+        "normalizing_pages": "Normalize pages centrally",
+        "cleaning_structure": "Clean structure",
+        "extracting_bibliography": "Extract bibliography",
+        "extracted": "Extract figure assets",
+        "extracting_figures": "Extract figure assets",
+        "figures": "Enrich metadata, citations, and tags",
+        "enriching": "Finish metadata, citation, and tag enrichment",
+        "enriched": "Build search index",
+        "indexing": "Build search index",
+        "indexed": "Finalize Library entry",
+        "cleaning_cache": "Finalize cache cleanup",
+    }
+    return next_by_step.get(step, step.replace("_", " "))
+
+
+def concordance_execution_location(job: ConcordanceJob, lease: SlipstreamLease | None) -> str:
+    assigned = _worker_location_label(lease)
+    if assigned:
+        return assigned
+    if job.status == "queued":
+        return "Queued for Concordance worker"
+    if job.status == "running":
+        return "Worker lock active"
+    if job.status == "failed":
+        return "Stopped after failure"
+    if job.status == "complete":
+        return "Complete"
+    return job.status.replace("_", " ")
+
+
+def concordance_next_stage(job: ConcordanceJob) -> str:
+    capability = job.capability_key.replace("_", " ")
+    if job.status == "queued":
+        return f"Run {capability} v{job.target_version}"
+    if job.status == "running":
+        return f"Finish {capability}"
+    if job.status == "failed":
+        return "Review failure and retry"
+    if job.status == "complete":
+        return "Done"
+    return capability
+
+
 def import_job_out(
     job: ImportJob,
     *,
@@ -10521,6 +10617,8 @@ def import_job_out(
         "status": job.status,
         "current_step": job.current_step,
         "current_model": import_job_step_model(job.current_step, model_preferences),
+        "execution_location": import_execution_location(job, lease),
+        "next_stage": import_next_stage(job),
         "estimated_cost_usd": round(display_cost, 6),
         "estimated_cost_basis": display_basis,
         "estimated_cost_page_count": estimate_page_count,
@@ -10544,6 +10642,8 @@ def concordance_job_out(job: ConcordanceJob, *, lease: SlipstreamLease | None = 
         "capability_key": job.capability_key,
         "target_version": job.target_version,
         "status": job.status,
+        "execution_location": concordance_execution_location(job, lease),
+        "next_stage": concordance_next_stage(job),
         "attempts": job.attempts,
         "last_error": job.last_error,
         "locked_at": job.locked_at,

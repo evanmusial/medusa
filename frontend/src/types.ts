@@ -1808,6 +1808,8 @@ export type ImportJob = {
   status: string;
   current_step: string;
   current_model?: string | null;
+  execution_location?: string | null;
+  next_stage?: string | null;
   estimated_cost_usd: number;
   estimated_cost_basis: string;
   estimated_cost_page_count?: number | null;
@@ -1994,6 +1996,8 @@ export type ConcordanceJob = {
   capability_key: string;
   target_version: number;
   status: string;
+  execution_location?: string | null;
+  next_stage?: string | null;
   attempts: number;
   last_error?: string | null;
   locked_at?: string | null;
