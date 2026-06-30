@@ -2859,6 +2859,21 @@ function cleanFilters(filters: DocumentFilters): DocumentFilters {
   return Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value))) as DocumentFilters;
 }
 
+function libraryListScopeKey(query: string, filters: DocumentFilters, pageSize: LibraryPageSize, sort: DocumentListSort) {
+  return JSON.stringify([
+    query,
+    filters.domain_id || "",
+    filters.tag_id || "",
+    filters.read_status || "",
+    filters.priority || "",
+    filters.citation_status || "",
+    filters.duplicate_status || "",
+    filters.health_status || "",
+    pageSize,
+    sort,
+  ]);
+}
+
 function selectOptionSearchText(option: SelectMenuOption) {
   return `${option.name} ${option.meta || ""} ${option.id}`.toLowerCase();
 }
@@ -25327,10 +25342,28 @@ export default function App() {
   const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data && needsDomains) });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data && needsTags) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data && needsSavedSearches) });
+  const libraryScopeKey = useMemo(
+    () => libraryListScopeKey(documentQuery, filters, libraryPageSize, librarySort),
+    [
+      documentQuery,
+      filters.citation_status,
+      filters.domain_id,
+      filters.duplicate_status,
+      filters.health_status,
+      filters.priority,
+      filters.read_status,
+      filters.tag_id,
+      libraryPageSize,
+      librarySort,
+    ],
+  );
+  const previousLibraryScopeKeyRef = useRef(libraryScopeKey);
   useEffect(() => {
+    if (previousLibraryScopeKeyRef.current === libraryScopeKey) return;
+    previousLibraryScopeKeyRef.current = libraryScopeKey;
     if (libraryFocusDocumentId) return;
     setLibraryOffset(0);
-  }, [documentQuery, filters, libraryFocusDocumentId, libraryPageSize, librarySort]);
+  }, [libraryFocusDocumentId, libraryScopeKey]);
   const libraryDocumentList = useQuery({
     queryKey: ["documents", "library-list", documentQuery, filters, libraryOffset, libraryPageSize, libraryFocusDocumentId, librarySort],
     queryFn: () =>
@@ -26308,7 +26341,8 @@ export default function App() {
             onCloseReader={(options) => {
               setLibraryDocumentMode("detail");
               if (selectedId) {
-                setLibraryFocusDocumentId(selectedId);
+                const selectedDocumentAlreadyInWindow = libraryRows.some((item) => item.id === selectedId);
+                setLibraryFocusDocumentId(selectedDocumentAlreadyInWindow ? null : selectedId);
                 setLibraryScrollTargetId(selectedId);
               }
               if (options?.updateUrl !== false && selectedId) syncBrowserUrlForDocument(selectedId, "push", "detail");
