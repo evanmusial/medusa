@@ -483,7 +483,7 @@ def run_forever(
                 except Exception as exc:
                     claim_pause_until = max(claim_pause_until, time.time() + max(1, poll_seconds))
                     print(f"Slipstream check-in failed: {exc}", file=sys.stderr, flush=True)
-            while len(in_flight) < concurrency and not stop_event.is_set() and time.time() >= claim_pause_until:
+            if len(in_flight) < concurrency and not stop_event.is_set() and time.time() >= claim_pause_until:
                 in_flight.add(
                     executor.submit(
                         process_one_claim,

@@ -164,6 +164,8 @@ def get_db() -> Iterator[Session]:
     try:
         yield db
     finally:
+        if db.in_transaction():
+            db.rollback()
         db.close()
 
 

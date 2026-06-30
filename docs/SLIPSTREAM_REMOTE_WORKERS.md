@@ -7,7 +7,7 @@ This note tracks the Slipstream-only remote worker work being built for Medusa p
 - Build Slipstream remote workers only. Cloud Run is intentionally out of scope and should not be part of this rollout.
 - Keep the main FastAPI backend as the Slipstream control plane instead of introducing a second public IP, port, or service.
 - Let remote workers check in over the existing authenticated HTTPS application boundary and claim only server-authorized work.
-- Enroll this laptop as a remote worker with capacity for up to 4 concurrent jobs.
+- Enroll this laptop as a remote worker. It was originally allowed up to 4 concurrent jobs, but the active local profile is now capped at 2 concurrent jobs after production load testing.
 - Prefer this laptop's 12 performance cores and avoid the 4 efficiency cores where the runtime can express affinity.
 
 ## Architecture
@@ -46,14 +46,14 @@ This keeps remote laptops useful for CPU-heavy extraction while keeping credenti
 
 The local Compose profile is `docker-compose.slipstream.yml`. The ignored `.env.slipstream` file holds the production URL, enrollment token during first boot, worker name, capacity, concurrency, poll interval, heartbeat interval, and CPU selection hints. `.env.slipstream.example` documents the expected values without secrets.
 
-The worker loop backs off after empty claim responses and transient server errors instead of immediately refilling every open concurrency slot. This protects the main Medusa backend from tight claim polling when the queue is temporarily empty, when all eligible jobs are already leased, or when HAProxy/backend health is recovering. Check-in failures are logged and retried in-process so a short proxy outage does not create a container restart loop.
+The worker loop backs off after empty claim responses and transient server errors instead of immediately refilling every open concurrency slot. It also ramps claim attempts one at a time while still allowing up to the configured number of active jobs, so a multi-slot worker can process multiple documents concurrently without issuing simultaneous claim races every time capacity opens. This protects the main Medusa backend from tight claim polling when the queue is temporarily empty, when all eligible jobs are already leased, or when HAProxy/backend health is recovering. Check-in failures are logged and retried in-process so a short proxy outage does not create a container restart loop.
 
 ## Laptop Worker Profile
 
-This machine has 4 efficiency cores and 12 performance cores. The worker profile is set for:
+This machine has 4 efficiency cores and 12 performance cores. The worker profile was initially tested at four concurrent jobs, then lowered after production showed FastAPI/DB-session saturation under four simultaneous remote claim and heartbeat streams. The current production-safe profile is set for:
 
-- capacity: `4`
-- local concurrency: `4`
+- capacity: `2`
+- local concurrency: `2`
 - CPU budget: `12`
 - requested CPU set: `4-15`
 
@@ -66,10 +66,10 @@ On Linux containers the client attempts `os.sched_setaffinity` for the requested
 3. Enable Slipstream in production `.env` with TLS required and the public base URL set to the production HTTPS origin.
 4. Rebuild/restart the production application and run migrations.
 5. Verify `/api/health`.
-6. Create a one-time enrollment token for the laptop with `import_preprocess` and max capacity `4`.
+6. Create a one-time enrollment token for the laptop with `import_preprocess` and max capacity `4`, then advertise only the desired active local capacity in `.env.slipstream`.
 7. Write the ignored local `.env.slipstream` file.
 8. Start `docker compose -f docker-compose.slipstream.yml up --build -d`.
-9. Confirm the client appears online, checks in regularly, and can claim up to 4 eligible jobs.
+9. Confirm the client appears online, checks in regularly, and can claim up to the configured active local capacity.
 
 ## Verification
 

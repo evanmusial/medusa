@@ -17,8 +17,8 @@ services:
         : "$${MEDUSA_SLIPSTREAM_WORK_DIR:=/app/data/slipstream-client}";
         : "$${MEDUSA_SLIPSTREAM_NAME:=Evan laptop Slipstream worker}";
         : "$${MEDUSA_SLIPSTREAM_VERSION:=slipstream-import-preprocess-1}";
-        : "$${MEDUSA_SLIPSTREAM_CAPACITY:=4}";
-        : "$${MEDUSA_SLIPSTREAM_CONCURRENCY:=4}";
+        : "$${MEDUSA_SLIPSTREAM_CAPACITY:=2}";
+        : "$${MEDUSA_SLIPSTREAM_CONCURRENCY:=2}";
         : "$${MEDUSA_SLIPSTREAM_POLL_SECONDS:=5}";
         : "$${MEDUSA_SLIPSTREAM_HEARTBEAT_SECONDS:=20}";
         : "$${MEDUSA_SLIPSTREAM_CHECK_IN_SECONDS:=30}";
