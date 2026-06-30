@@ -285,14 +285,14 @@ class LeaseHeartbeat:
     def beat(self, detail: str | None = None) -> None:
         if detail:
             self.set_detail(detail)
-        self.client.heartbeat(self.lease_id, self.lease_token, self.current_detail())
+        try:
+            self.client.heartbeat(self.lease_id, self.lease_token, self.current_detail())
+        except Exception as exc:
+            print(f"Heartbeat failed for lease {self.lease_id}: {exc}", file=sys.stderr, flush=True)
 
     def _run(self) -> None:
         while not self.stop_event.wait(self.interval_seconds):
-            try:
-                self.beat()
-            except Exception as exc:
-                print(f"Heartbeat failed for lease {self.lease_id}: {exc}", file=sys.stderr, flush=True)
+            self.beat()
 
 
 def extract_pdf_manifest(

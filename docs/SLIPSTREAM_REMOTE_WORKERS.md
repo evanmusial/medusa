@@ -50,6 +50,8 @@ The worker loop backs off after empty claim responses and transient server error
 
 Import-preprocess claims filter for preprocessing-eligible steps (`stored` and `extracting`) before applying the claim window. This matters because the central worker may have many `normalizing_pages` continuation jobs queued ahead of newly stored documents; those continuation jobs belong to the server and must not block laptop workers from reaching stored import jobs.
 
+Heartbeat requests are best-effort progress/liveness telemetry. A transient heartbeat failure is logged, but the worker continues processing and lets the final result or explicit failure report decide the lease outcome.
+
 ## Laptop Worker Profile
 
 This machine has 4 efficiency cores and 12 performance cores. The worker profile was initially tested at four concurrent jobs, then lowered after production showed FastAPI/DB-session saturation under four simultaneous remote claim and heartbeat streams. The current production-safe profile is set for:
