@@ -46,6 +46,8 @@ This keeps remote laptops useful for CPU-heavy extraction while keeping credenti
 
 The local Compose profile is `docker-compose.slipstream.yml`. The ignored `.env.slipstream` file holds the production URL, enrollment token during first boot, worker name, capacity, concurrency, poll interval, heartbeat interval, and CPU selection hints. `.env.slipstream.example` documents the expected values without secrets.
 
+The worker loop backs off after empty claim responses and transient server errors instead of immediately refilling every open concurrency slot. This protects the main Medusa backend from tight claim polling when the queue is temporarily empty, when all eligible jobs are already leased, or when HAProxy/backend health is recovering. Check-in failures are logged and retried in-process so a short proxy outage does not create a container restart loop.
+
 ## Laptop Worker Profile
 
 This machine has 4 efficiency cores and 12 performance cores. The worker profile is set for:

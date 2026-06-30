@@ -2209,7 +2209,7 @@ def content_disposition_header(disposition: str, filename: str) -> str:
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
 
 

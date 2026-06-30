@@ -471,14 +471,19 @@ def run_forever(
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     last_check_in = 0.0
+    claim_pause_until = 0.0
     in_flight: set[Future[bool]] = set()
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="slipstream-worker") as executor:
         while not stop_event.is_set():
             now = time.time()
             if now - last_check_in >= check_in_seconds:
-                client.check_in(version=version, capabilities=capabilities, capacity=capacity, metadata=metadata)
                 last_check_in = now
-            while len(in_flight) < concurrency and not stop_event.is_set():
+                try:
+                    client.check_in(version=version, capabilities=capabilities, capacity=capacity, metadata=metadata)
+                except Exception as exc:
+                    claim_pause_until = max(claim_pause_until, time.time() + max(1, poll_seconds))
+                    print(f"Slipstream check-in failed: {exc}", file=sys.stderr, flush=True)
+            while len(in_flight) < concurrency and not stop_event.is_set() and time.time() >= claim_pause_until:
                 in_flight.add(
                     executor.submit(
                         process_one_claim,
@@ -490,17 +495,25 @@ def run_forever(
                     )
                 )
             if not in_flight:
-                stop_event.wait(poll_seconds)
+                wait_seconds = max(0.0, claim_pause_until - time.time()) if claim_pause_until else poll_seconds
+                if claim_pause_until and wait_seconds <= 0:
+                    claim_pause_until = 0.0
+                    continue
+                stop_event.wait(min(poll_seconds, wait_seconds) if wait_seconds > 0 else poll_seconds)
                 continue
             done, in_flight = wait(in_flight, timeout=poll_seconds, return_when=FIRST_COMPLETED)
             any_claimed = False
+            any_error = False
             for future in done:
                 try:
                     any_claimed = future.result() or any_claimed
                 except Exception as exc:
+                    any_error = True
                     print(f"Slipstream worker task failed: {exc}", file=sys.stderr, flush=True)
-            if not any_claimed and not in_flight:
-                stop_event.wait(poll_seconds)
+            if any_claimed:
+                claim_pause_until = 0.0
+            elif done or any_error:
+                claim_pause_until = max(claim_pause_until, time.time() + max(1, poll_seconds))
     return 0
 
 
