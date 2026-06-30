@@ -25389,6 +25389,49 @@ function SettingsView({
   return (
     <section className="workbench settings-grid">
       <header className="settings-save-row">{renderSaveAllButton("top")}</header>
+      <div className="worker-capacity-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Processing Capacity</h2>
+            <span>Server worker, Cloud Run, and Slipstream</span>
+          </div>
+          <Cpu size={20} />
+        </div>
+        <div className="worker-capacity-grid">
+          <div className="preference-control">
+            <label htmlFor="import-worker-concurrency">
+              <span>Server Import Workers</span>
+            </label>
+            <input
+              data-tooltip="Set how many import jobs the server worker should process concurrently."
+              id="import-worker-concurrency"
+              min={1}
+              onChange={(event) => setImportWorkerConcurrency(Math.max(1, Number(event.target.value) || 1))}
+              type="number"
+              value={importWorkerConcurrency}
+            />
+            <p>(Default: 4) Local server processing stays enabled unless the worker container is stopped.</p>
+            {importCostWarning ? (
+              <p className="preference-warning">Higher server concurrency can incur a large OpenAI cost over a short amount of time.</p>
+            ) : null}
+          </div>
+          <div className="worker-capacity-note">
+            <span>Cloud Run default</span>
+            <strong>{cloudRunWorkersEnabled ? `${cloudRunWorkerConcurrency} target` : "Disabled / 0 target"}</strong>
+            <p>When enabled, Cloud Run starts from concurrency 1 and uses the saved CPU/memory flavor.</p>
+          </div>
+        </div>
+      </div>
+      <CloudRunWorkerSettingsPanel
+        concurrency={cloudRunWorkerConcurrency}
+        enabled={cloudRunWorkersEnabled}
+        flavor={cloudRunWorkerFlavor}
+        flavorOptions={preferences?.cloud_run_worker_flavor_options || []}
+        onConcurrencyChange={setCloudRunWorkerConcurrency}
+        onEnabledChange={setCloudRunWorkersEnabled}
+        onFlavorChange={setCloudRunWorkerFlavor}
+      />
+      <SlipstreamSettingsPanel />
       <div className="account-settings-panel">
         <div className="panel-title-row">
           <div>
@@ -25656,40 +25699,13 @@ function SettingsView({
           savedBucket={preferences?.gcs_bucket || ""}
         />
       </div>
-      <SlipstreamSettingsPanel />
-      <CloudRunWorkerSettingsPanel
-        concurrency={cloudRunWorkerConcurrency}
-        enabled={cloudRunWorkersEnabled}
-        flavor={cloudRunWorkerFlavor}
-        flavorOptions={preferences?.cloud_run_worker_flavor_options || []}
-        onConcurrencyChange={setCloudRunWorkerConcurrency}
-        onEnabledChange={setCloudRunWorkersEnabled}
-        onFlavorChange={setCloudRunWorkerFlavor}
-      />
       <div className="preferences-panel">
         <div className="panel-title-row">
           <div>
             <h2>Preferences</h2>
-            <span>Display and processing</span>
+            <span>Display and runtime defaults</span>
           </div>
           <SlidersHorizontal size={20} />
-        </div>
-        <div className="preference-control">
-          <label htmlFor="import-worker-concurrency">
-            <span>Import workers</span>
-          </label>
-          <input
-            data-tooltip="Set how many import jobs the worker should process concurrently."
-            id="import-worker-concurrency"
-            min={1}
-            onChange={(event) => setImportWorkerConcurrency(Math.max(1, Number(event.target.value) || 1))}
-            type="number"
-            value={importWorkerConcurrency}
-          />
-          <p>(Default: 4) Higher values can fan out many OpenAI calls at once, but may incur cost more quickly.</p>
-          {importCostWarning ? (
-            <p className="preference-warning">Higher concurrency can incur a large OpenAI cost over a short amount of time.</p>
-          ) : null}
         </div>
         <div className="preference-control">
           <label htmlFor="document-cache-size">
