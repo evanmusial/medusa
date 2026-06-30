@@ -6,6 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Document, DocumentPage, DocumentVersion
+from app.services.publications import publication_to_dict, primary_document_publication
 
 
 def _figure_snapshot(document: Document) -> list[dict[str, Any]]:
@@ -46,6 +47,7 @@ def document_correction_snapshot(document: Document) -> dict[str, Any]:
         "citation_status": document.citation_status,
         "metadata_confidence": float(document.metadata_confidence) if document.metadata_confidence is not None else None,
         "metadata_evidence": document.metadata_evidence,
+        "publication": publication_to_dict(primary_document_publication(document)),
         "read_status": document.read_status,
         "priority": document.priority,
         "tags": [tag.name for tag in document.tags],

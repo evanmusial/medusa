@@ -10,6 +10,7 @@ from app.models import Document
 from app.services.extraction import sanitize_extracted_text
 from app.services.formulas import formula_capture_search_text
 from app.services.processing import author_search_text, document_reading_text, figure_search_text
+from app.services.publications import publication_search_text
 
 
 def _attribute_value_text(value: dict[str, Any]) -> str:
@@ -46,6 +47,7 @@ def rebuild_document_search_text(document: Document) -> str:
                 document.bibliography,
                 document.apa_citation,
                 document.apa_in_text_citation,
+                publication_search_text(document),
                 page_text,
                 formula_capture_search_text(document),
                 figure_search_text(document.figures),

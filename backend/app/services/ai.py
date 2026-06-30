@@ -43,6 +43,11 @@ from app.services.preferences import get_active_google_project_id, get_active_go
 METADATA_EXTRACTION_PROMPT = (
     "Extract scholarly identity metadata from this PDF context. The beginning may contain unrelated cover "
     "or front matter before the true article/chapter begins. Prefer DOI and publisher metadata when present. "
+    "Also extract the publication/container relationship separately from the document itself: journal, magazine, "
+    "book, textbook, edited volume, proceedings, report series, or other source in which this document appeared. "
+    "Put volume, issue, pages, article number, edition, chapter, section, series, and event details on the "
+    "publication appearance fields, not in the document title. Include short evidence snippets and page hints "
+    "when visible. "
     "Extract every visible author, affiliation, and author contact email. Normalize deliberately obfuscated "
     "email addresses such as someone{at}university{dot}edu, someone [at] university [dot] edu, and "
     "someone at university dot edu into standard someone@university.edu form. Store an email only when it is "
@@ -90,6 +95,79 @@ DOCUMENT_SUMMARY_PROMPT = (
 )
 
 
+PUBLICATION_METADATA_SCHEMA: dict[str, Any] = {
+    "type": ["object", "null"],
+    "additionalProperties": False,
+    "properties": {
+        "title": {"type": ["string", "null"]},
+        "type": {"type": ["string", "null"]},
+        "publisher": {"type": ["string", "null"]},
+        "imprint": {"type": ["string", "null"]},
+        "identifiers": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "doi": {"type": ["string", "null"]},
+                "issn": {"type": "array", "items": {"type": "string"}},
+                "issn_l": {"type": ["string", "null"]},
+                "isbn": {"type": "array", "items": {"type": "string"}},
+                "openalex": {"type": ["string", "null"]},
+                "semantic_scholar": {"type": ["string", "null"]},
+                "crossref": {"type": ["string", "null"]},
+                "url": {"type": ["string", "null"]},
+            },
+            "required": ["doi", "issn", "issn_l", "isbn", "openalex", "semantic_scholar", "crossref", "url"],
+        },
+        "source_url": {"type": ["string", "null"]},
+        "appearance_type": {"type": ["string", "null"]},
+        "volume": {"type": ["string", "null"]},
+        "issue": {"type": ["string", "null"]},
+        "article_number": {"type": ["string", "null"]},
+        "page_range": {"type": ["string", "null"]},
+        "published_date": {"type": ["string", "null"]},
+        "published_year": {"type": ["integer", "null"]},
+        "edition": {"type": ["string", "null"]},
+        "chapter": {"type": ["string", "null"]},
+        "section": {"type": ["string", "null"]},
+        "series_title": {"type": ["string", "null"]},
+        "event_name": {"type": ["string", "null"]},
+        "evidence": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "snippets": {"type": "array", "items": {"type": "string"}},
+                "page_hints": {"type": "array", "items": {"type": "string"}},
+                "notes": {"type": ["string", "null"]},
+            },
+            "required": ["snippets", "page_hints", "notes"],
+        },
+        "confidence": {"type": "number"},
+    },
+    "required": [
+        "title",
+        "type",
+        "publisher",
+        "imprint",
+        "identifiers",
+        "source_url",
+        "appearance_type",
+        "volume",
+        "issue",
+        "article_number",
+        "page_range",
+        "published_date",
+        "published_year",
+        "edition",
+        "chapter",
+        "section",
+        "series_title",
+        "event_name",
+        "evidence",
+        "confidence",
+    ],
+}
+
+
 METADATA_IDENTITY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -116,6 +194,7 @@ METADATA_IDENTITY_SCHEMA: dict[str, Any] = {
         "publisher": {"type": ["string", "null"]},
         "doi": {"type": ["string", "null"]},
         "abstract": {"type": ["string", "null"]},
+        "publication": PUBLICATION_METADATA_SCHEMA,
         "confidence": {"type": "number"},
         "needs_review_reasons": {"type": "array", "items": {"type": "string"}},
     },
@@ -129,6 +208,7 @@ METADATA_IDENTITY_SCHEMA: dict[str, Any] = {
         "publisher",
         "doi",
         "abstract",
+        "publication",
         "confidence",
         "needs_review_reasons",
     ],
@@ -222,7 +302,10 @@ CORE_DOCUMENT_INTELLIGENCE_PROMPT = (
     "Analyze this scholarly PDF context once and return all core Medusa document-intelligence outputs. "
     "Use only the supplied original PDF context and extracted text. First, extract scholarly identity metadata: "
     "title, subtitle, authors, visible affiliations, visible author contact emails, universities, publication year, "
-    "journal/venue, publisher, DOI, and abstract. Normalize deliberately obfuscated visible emails such as "
+    "journal/venue, publisher, DOI, abstract, and the structured publication/container relationship. For publication, "
+    "distinguish the source title from appearance details such as volume, issue, page range, article number, edition, "
+    "chapter, series, proceedings, or event, and include short evidence snippets/page hints when visible. Normalize "
+    "deliberately obfuscated visible emails such as "
     "someone{at}university{dot}edu, someone [at] university [dot] edu, and someone at university dot edu into "
     "standard someone@university.edu form. Never infer an email when it is absent. Second, generate rich_summary. "
     f"{SUMMARY_STYLE_HINT} "
@@ -797,6 +880,7 @@ class AiService:
             "publisher": None,
             "doi": None,
             "abstract": None,
+            "publication": None,
             "rich_summary": "Metadata extraction is pending. Configure an AI model provider to generate a scientific summary.",
             "apa_citation": None,
             "apa_in_text_citation": None,

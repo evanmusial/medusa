@@ -49,6 +49,7 @@ from app.services.history import document_correction_snapshot, record_document_v
 from app.services.openai_usage import OpenAIUsageContext
 from app.services.preferences import get_analysis_model, get_analysis_models
 from app.services.preferences import import_processing_cloud_page_cap, import_processing_snapshot
+from app.services.publications import document_publication_citation_metadata, refresh_document_publication_metadata
 from app.services.second_pass import clean_document_structure
 from app.services.tag_governance import apply_import_tag_governance
 from app.services.tags import existing_tag_manifest
@@ -147,7 +148,7 @@ def checkpoint_job_step(db: Session, job: ImportJob, document: Document, step: s
 
 
 def document_metadata(document: Document) -> dict[str, Any]:
-    return {
+    metadata = {
         "title": document.title,
         "authors": document.authors,
         "publication_year": document.publication_year,
@@ -156,6 +157,7 @@ def document_metadata(document: Document) -> dict[str, Any]:
         "doi": document.doi,
         "source_url": document.source_url,
     }
+    return merge_citation_metadata(document_publication_citation_metadata(document), metadata)
 
 
 def apply_document_citations(
@@ -1004,6 +1006,18 @@ class DocumentProcessor:
             filled_fields = fill_missing_document_metadata(document, crossref_metadata)
             if filled_fields:
                 document.metadata_evidence["crossref_filled_fields"] = filled_fields
+        publication_result = refresh_document_publication_metadata(
+            db,
+            document,
+            ai_publication=metadata.get("publication") if isinstance(metadata.get("publication"), dict) else None,
+            crossref=crossref,
+            model=model_preferences[MODEL_METADATA],
+            source="import",
+        )
+        document.metadata_evidence["publication_metadata"] = {
+            **publication_result,
+            "generated_at": utc_now().isoformat(),
+        }
 
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
         citation_model = model_preferences[MODEL_APA_CITATION]
@@ -1076,6 +1090,7 @@ class DocumentProcessor:
                 "publication_year",
                 "publisher",
                 "journal",
+                "publication",
                 "doi",
                 "source_url",
                 "abstract",
@@ -1110,6 +1125,7 @@ class DocumentProcessor:
                 "citation_status": document.citation_status,
                 "crossref_used": bool(crossref),
                 "doi_discovery_source": doi_discovery.get("source") if doi_discovery else None,
+                "publication_metadata": publication_result,
                 "tag_governance": tag_governance,
             },
         )

@@ -52,6 +52,11 @@ from app.services.openai_usage import OpenAIUsageContext
 from app.services.openai_usage import estimated_cost_usd_for_model_tokens
 from app.services.preferences import get_analysis_model, get_analysis_models, get_citation_convention
 from app.services.preferences import import_processing_cloud_page_cap, import_processing_snapshot
+from app.services.publications import (
+    document_publication_is_verified,
+    primary_document_publication,
+    refresh_document_publication_metadata,
+)
 from app.services.processing import (
     apa_candidate_evidence,
     apa_candidate_needs_review,
@@ -452,6 +457,12 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
         description="Regenerate APA reference-list and in-text citation text with model/provenance tracking.",
     ),
     CapabilityDefinition(
+        key="publication_metadata",
+        label="Publication metadata",
+        version=1,
+        description="Detect and reconcile the journal, publication, proceedings, book, textbook, or series in which the document appeared, plus volume/issue/pages/edition/chapter appearance details.",
+    ),
+    CapabilityDefinition(
         key="summary_topics",
         label="AI metadata and summary",
         version=8,
@@ -514,7 +525,7 @@ CAPABILITY_BY_KEY = {
     capability.key: capability
     for capability in (*CURRENT_CAPABILITIES, SUMMARY_REFRESH_CAPABILITY, TAG_REFRESH_CAPABILITY, LEGACY_FIGURE_ASSETS_CAPABILITY)
 }
-MANUAL_REFINEMENT_CAPABILITIES = {"formula_capture"}
+MANUAL_REFINEMENT_CAPABILITIES = {"formula_capture", "publication_metadata"}
 
 CONCORDANCE_LOCAL_MODELS = {
     "",
@@ -573,6 +584,8 @@ def concordance_stage_model(db: Session, capability_key: str) -> str | None:
         return get_analysis_model(db, MODEL_PAGE_TEXT_NORMALIZATION)
     if capability_key == "summary_refresh":
         return get_analysis_model(db, MODEL_SUMMARY)
+    if capability_key == "publication_metadata":
+        return get_analysis_model(db, MODEL_METADATA)
     if capability_key == "tag_refresh":
         return get_analysis_model(db, MODEL_KEYWORDS_TOPICS)
     if capability_key == "summary_topics":
@@ -753,6 +766,8 @@ def _model_requirement_current(db: Session, document: Document, requirement: Con
         return False
     if requirement.task_key == MODEL_METADATA and not _document_has_metadata_identity(document):
         return False
+    if requirement.field_key == "publication" and not primary_document_publication(document):
+        return False
     if requirement.task_key == MODEL_APA_CITATION:
         if (
             document.apa_citation
@@ -857,6 +872,15 @@ def concordance_model_requirements(
                 label="Summary",
                 model=model_preferences.get(MODEL_SUMMARY),
             ),
+        ]
+    if capability_key == "publication_metadata":
+        return [
+            ConcordanceModelRequirement(
+                task_key=MODEL_METADATA,
+                field_key="publication",
+                label="Publication metadata",
+                model=model_preferences.get(MODEL_METADATA),
+            )
         ]
     if capability_key == "citation_refresh":
         return [
@@ -1350,6 +1374,8 @@ class ConcordanceProcessor:
                 evidence = self._refresh_tags(db, document, job)
             elif job.capability_key == "summary_topics":
                 evidence = self._refresh_summary_topics(db, document, job)
+            elif job.capability_key == "publication_metadata":
+                evidence = self._refresh_publication_metadata(db, document, job)
             elif job.capability_key == "bibliography_extraction":
                 evidence = self._extract_bibliography(db, document, job)
             elif job.capability_key == "formula_capture":
@@ -2012,6 +2038,63 @@ class ConcordanceProcessor:
             "citation_model": document.apa_citation_model,
             "citation_source": document.apa_citation_source,
         }
+
+    def _refresh_publication_metadata(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        if document_publication_is_verified(document):
+            return {"status": "skipped_verified", "publication_verified": True}
+        before = document_correction_snapshot(document)
+        prior_search_text = document.search_text
+        run_force = bool(job.run and (job.run.scope_data or {}).get("_force"))
+        model_preferences = get_analysis_models(db)
+        metadata_model = model_preferences[MODEL_METADATA]
+        ai = get_ai_service()
+        pdf_bytes = self._document_pdf_bytes(db, document)
+        metadata = ai.extract_document_identity(
+            document.original_filename,
+            document.search_text or "",
+            pdf_bytes=pdf_bytes,
+            model=metadata_model,
+            usage_context=self._usage_context(document, job, "publication_metadata"),
+            prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:publication",
+        )
+        evidence = dict(document.metadata_evidence or {})
+        crossref = None
+        if document.doi:
+            crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year) or evidence.get("crossref")
+        result = refresh_document_publication_metadata(
+            db,
+            document,
+            ai_publication=metadata.get("publication") if isinstance(metadata.get("publication"), dict) else None,
+            crossref=crossref,
+            model=metadata_model,
+            source="concordance",
+            force=run_force,
+        )
+        generated_at = utc_now().isoformat()
+        evidence["publication_metadata"] = {
+            **result,
+            "generated_at": generated_at,
+            "model": (metadata.get("_openai") or {}).get("model") or metadata_model,
+            "used_pdf_file": bool((metadata.get("_openai") or {}).get("used_pdf_file")),
+            "pdf_file_bytes": (metadata.get("_openai") or {}).get("pdf_file_bytes", 0),
+        }
+        document.metadata_evidence = evidence
+        document.search_text = rebuild_document_search_text(document)
+        after = document_correction_snapshot(document)
+        changed_fields = set(changed_snapshot_fields(before, after))
+        if document.search_text != prior_search_text:
+            changed_fields.add("search_text")
+        if changed_fields:
+            record_document_version(
+                db,
+                document=document,
+                change_note="Concordance publication metadata",
+                changed_fields=changed_fields,
+                before=before,
+                after=after,
+                extra={"run_id": job.run_id, "concordance_job_id": job.id},
+            )
+        return result
 
     def _refresh_summary(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
         if _document_summary_is_validated(document):

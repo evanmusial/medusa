@@ -457,6 +457,88 @@ class ReconAnswerVersion(Base, TimestampMixin):
     run: Mapped[ReconRun] = relationship(back_populates="answers")
 
 
+class Publication(Base, TimestampMixin):
+    __tablename__ = "publications"
+    __table_args__ = (
+        Index("ix_publications_normalized_title_type", "normalized_title", "publication_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(600), nullable=False)
+    normalized_title: Mapped[str] = mapped_column(String(600), nullable=False, index=True)
+    publication_type: Mapped[str | None] = mapped_column(String(60), index=True)
+    publisher: Mapped[str | None] = mapped_column(String(300))
+    imprint: Mapped[str | None] = mapped_column(String(300))
+    issn_l: Mapped[str | None] = mapped_column(String(32), index=True)
+    issns: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    isbns: Mapped[list[str]] = mapped_column(JsonDict, default=list, nullable=False)
+    doi: Mapped[str | None] = mapped_column(String(256), index=True)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    external_ids: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    publication_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+
+    aliases: Mapped[list["PublicationAlias"]] = relationship(back_populates="publication", cascade="all, delete-orphan")
+    document_links: Mapped[list["DocumentPublication"]] = relationship(back_populates="publication")
+
+
+class PublicationAlias(Base, TimestampMixin):
+    __tablename__ = "publication_aliases"
+    __table_args__ = (
+        UniqueConstraint("publication_id", "normalized_alias", name="uq_publication_alias_normalized"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    publication_id: Mapped[str] = mapped_column(String(36), ForeignKey("publications.id", ondelete="CASCADE"), nullable=False, index=True)
+    alias: Mapped[str] = mapped_column(String(600), nullable=False)
+    normalized_alias: Mapped[str] = mapped_column(String(600), nullable=False, index=True)
+    source: Mapped[str | None] = mapped_column(String(80))
+    alias_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict, nullable=False)
+
+    publication: Mapped[Publication] = relationship(back_populates="aliases")
+
+
+class DocumentPublication(Base, TimestampMixin):
+    __tablename__ = "document_publications"
+    __table_args__ = (
+        UniqueConstraint("document_id", "role", name="uq_document_publication_role"),
+        Index("ix_document_publications_document_role", "document_id", "role"),
+        Index("ix_document_publications_publication_role", "publication_id", "role"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    publication_id: Mapped[str] = mapped_column(String(36), ForeignKey("publications.id", ondelete="CASCADE"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(40), default="primary", nullable=False, index=True)
+    appearance_type: Mapped[str | None] = mapped_column(String(80), index=True)
+    title_snapshot: Mapped[str | None] = mapped_column(String(600))
+    publisher_snapshot: Mapped[str | None] = mapped_column(String(300))
+    volume: Mapped[str | None] = mapped_column(String(80))
+    issue: Mapped[str | None] = mapped_column(String(80))
+    article_number: Mapped[str | None] = mapped_column(String(120))
+    page_range: Mapped[str | None] = mapped_column(String(120))
+    published_date: Mapped[str | None] = mapped_column(String(80))
+    published_year: Mapped[int | None] = mapped_column(Integer)
+    edition: Mapped[str | None] = mapped_column(String(160))
+    chapter: Mapped[str | None] = mapped_column(String(240))
+    section: Mapped[str | None] = mapped_column(String(240))
+    series_title: Mapped[str | None] = mapped_column(String(600))
+    event_name: Mapped[str | None] = mapped_column(String(600))
+    source_url: Mapped[str | None] = mapped_column(Text)
+    identifiers: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    source: Mapped[str | None] = mapped_column(String(80), index=True)
+    model: Mapped[str | None] = mapped_column(String(160))
+    verification_status: Mapped[str] = mapped_column(String(40), default="needs_review", nullable=False, index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by: Mapped[str | None] = mapped_column(String(320))
+    verified_by_user_id: Mapped[str | None] = mapped_column(String(36))
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonDict, default=dict, nullable=False)
+
+    document: Mapped["Document"] = relationship(back_populates="publication_links")
+    publication: Mapped[Publication] = relationship(back_populates="document_links")
+
+
 class Document(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "documents"
 
@@ -519,6 +601,11 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
     notes: Mapped[list["Note"]] = relationship(back_populates="document")
     attributes: Mapped[list["DocumentAttributeValue"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     capabilities: Mapped[list["DocumentCapability"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    publication_links: Mapped[list["DocumentPublication"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentPublication.role, DocumentPublication.created_at",
+    )
     composition_records: Mapped[list["DocumentCompositionRecord"]] = relationship(
         back_populates="document",
         cascade="all, delete-orphan",

@@ -615,12 +615,121 @@ class AccessorySummaryOut(ApiModel):
         return decode_html_entity_text(value)
 
 
+class DocumentPublicationOut(BaseModel):
+    id: str
+    publication_id: str
+    role: str = "primary"
+    title: str
+    type: str | None = None
+    publisher: str | None = None
+    imprint: str | None = None
+    issn_l: str | None = None
+    issns: list[str] = Field(default_factory=list)
+    isbns: list[str] = Field(default_factory=list)
+    doi: str | None = None
+    source_url: str | None = None
+    external_ids: dict[str, Any] = Field(default_factory=dict)
+    appearance_type: str | None = None
+    volume: str | None = None
+    issue: str | None = None
+    article_number: str | None = None
+    page_range: str | None = None
+    published_date: str | None = None
+    published_year: int | None = None
+    edition: str | None = None
+    chapter: str | None = None
+    section: str | None = None
+    series_title: str | None = None
+    event_name: str | None = None
+    identifiers: dict[str, Any] = Field(default_factory=dict)
+    confidence: float | None = None
+    source: str | None = None
+    model: str | None = None
+    verification_status: str = "unverified"
+    verified_at: datetime | None = None
+    verified_by: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "title",
+        "type",
+        "publisher",
+        "imprint",
+        "doi",
+        "source_url",
+        "appearance_type",
+        "volume",
+        "issue",
+        "article_number",
+        "page_range",
+        "published_date",
+        "edition",
+        "chapter",
+        "section",
+        "series_title",
+        "event_name",
+        mode="before",
+    )
+    @classmethod
+    def decode_publication_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class PublicationListRow(BaseModel):
+    id: str
+    title: str
+    type: str | None = None
+    publisher: str | None = None
+    issn_l: str | None = None
+    issns: list[str] = Field(default_factory=list)
+    isbns: list[str] = Field(default_factory=list)
+    doi: str | None = None
+    source_url: str | None = None
+    ready_document_count: int = 0
+
+    @field_validator("title", "type", "publisher", "doi", "source_url", mode="before")
+    @classmethod
+    def decode_publication_row_text_fields(cls, value: Any) -> Any:
+        return decode_html_entity_text(value)
+
+
+class DocumentPublicationPatch(BaseModel):
+    clear: bool | None = None
+    title: str | None = None
+    publication_title: str | None = None
+    type: str | None = None
+    publication_type: str | None = None
+    publisher: str | None = None
+    imprint: str | None = None
+    issn_l: str | None = None
+    issns: list[str] | None = None
+    isbns: list[str] | None = None
+    doi: str | None = None
+    source_url: str | None = None
+    external_ids: dict[str, Any] | None = None
+    identifiers: dict[str, Any] | None = None
+    appearance_type: str | None = None
+    volume: str | None = None
+    issue: str | None = None
+    article_number: str | None = None
+    page_range: str | None = None
+    published_date: str | None = None
+    published_year: int | None = None
+    edition: str | None = None
+    chapter: str | None = None
+    section: str | None = None
+    series_title: str | None = None
+    event_name: str | None = None
+    notes: str | None = None
+
+
 class DocumentSummary(ApiModel):
     id: str
     title: str
     authors: list[dict[str, Any]]
     publication_year: int | None = None
     journal: str | None = None
+    publication: DocumentPublicationOut | None = None
     doi: str | None = None
     rich_summary: str | None = None
     apa_citation: str | None = None
@@ -660,6 +769,7 @@ class DocumentListRow(ApiModel):
     title: str
     authors: list[dict[str, Any]]
     publication_year: int | None = None
+    publication: DocumentPublicationOut | None = None
     rich_summary: str | None = None
     citation_status: str
     no_doi: bool = False
@@ -1132,7 +1242,9 @@ class DocumentPatch(BaseModel):
     abstract: str | None = None
     rich_summary: str | None = None
     bibliography: str | None = None
+    publication: DocumentPublicationPatch | None = None
     confirm_verified_doi_edit: bool | None = None
+    confirm_verified_publication_edit: bool | None = None
     confirm_verified_apa_citation_edit: bool | None = None
     confirm_verified_apa_in_text_citation_edit: bool | None = None
     confirm_verified_bibliography_edit: bool | None = None

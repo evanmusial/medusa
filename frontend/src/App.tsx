@@ -171,6 +171,7 @@ import type {
   PortfolioMaterial,
   PortfolioSuggestion,
   PortfolioVersion,
+  PublicationListRow,
   Project,
   ProjectItem,
   RecommendationFamily,
@@ -481,7 +482,7 @@ const MEDUSA_EMBLEM_NIGHT_SRC = "/medusa-emblem-night.png";
 const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
 const LIVE_IMPORT_JOB_STATUSES = new Set(["queued", "running"]);
 const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
-const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture"]);
+const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture", "publication_metadata"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
 const ASYNC_ACTION_ERROR_FEEDBACK_MS = 5000;
 const ASYNC_ACTION_MESSAGE_MAX_WIDTH = 360;
@@ -2950,7 +2951,16 @@ function hasDelimitedListInput(value: string) {
 }
 
 function emptyFilters(): DocumentFilters {
-  return { domain_id: "", tag_id: "", read_status: "", priority: "", citation_status: "", duplicate_status: "", health_status: "" };
+  return {
+    domain_id: "",
+    tag_id: "",
+    publication_id: "",
+    read_status: "",
+    priority: "",
+    citation_status: "",
+    duplicate_status: "",
+    health_status: "",
+  };
 }
 
 const EMPTY_DOCUMENT_FILTERS = emptyFilters();
@@ -2964,6 +2974,7 @@ function libraryListScopeKey(query: string, filters: DocumentFilters, pageSize: 
     query,
     filters.domain_id || "",
     filters.tag_id || "",
+    filters.publication_id || "",
     filters.read_status || "",
     filters.priority || "",
     filters.citation_status || "",
@@ -3112,12 +3123,16 @@ function healthStatusLabel(value?: string | null) {
   return HEALTH_STATUS_OPTIONS.find((option) => option.id === value)?.name || (value ? value.replaceAll("_", " ") : "Health review");
 }
 
-function savedSearchSummary(savedSearch: SavedSearch, lookup: { domains: Map<string, string>; tags: Map<string, string> }) {
+function savedSearchSummary(
+  savedSearch: SavedSearch,
+  lookup: { domains: Map<string, string>; tags: Map<string, string>; publications?: Map<string, string> },
+) {
   const filters = savedSearch.filters || {};
   const pieces = [
     savedSearch.query ? `"${savedSearch.query}"` : "",
     filters.domain_id ? `Domain: ${lookup.domains.get(String(filters.domain_id)) || "selected"}` : "",
     filters.tag_id ? `Tag: ${lookup.tags.get(String(filters.tag_id)) || "selected"}` : "",
+    filters.publication_id ? `Publication: ${lookup.publications?.get(String(filters.publication_id)) || "selected"}` : "",
     filters.read_status ? `Read: ${String(filters.read_status).replaceAll("_", " ")}` : "",
     filters.priority ? `Priority: ${priorityLabel(String(filters.priority))}` : "",
     filters.citation_status ? `Citation: ${String(filters.citation_status).replaceAll("_", " ")}` : "",
@@ -7826,6 +7841,11 @@ function LibraryView({
     queryFn: api.scanDocumentDuplicates,
     enabled: duplicateReviewOpen,
   });
+  const publicationsQuery = useQuery({
+    queryKey: ["publications"],
+    queryFn: () => api.publications(),
+    staleTime: 60_000,
+  });
   const resolveDuplicate = useMutation({
     mutationFn: ({ keepId, duplicateId }: { pair: DuplicatePair; keepId: string; duplicateId: string }) =>
       api.resolveDocumentDuplicate(keepId, duplicateId),
@@ -8047,6 +8067,16 @@ function LibraryView({
   const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
   const tagOptions = useMemo(() => sortedTags.map(({ id, name }) => ({ id, name })), [sortedTags]);
+  const publicationRows: PublicationListRow[] = publicationsQuery.data || [];
+  const publicationOptions = useMemo(
+    () =>
+      publicationRows.map((publication) => ({
+        id: publication.id,
+        name: publication.title,
+        meta: `${publication.ready_document_count} ${publication.ready_document_count === 1 ? "document" : "documents"}`,
+      })),
+    [publicationRows],
+  );
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const projectOptions = useMemo(() => sortedProjects.map(({ id, name }) => ({ id, name })), [sortedProjects]);
   const visibleKeywordTags = useMemo(() => {
@@ -8080,8 +8110,9 @@ function LibraryView({
     () => ({
       domains: new Map(domainOptions.map((option) => [option.id, option.name])),
       tags: new Map(tagOptions.map((option) => [option.id, option.name])),
+      publications: new Map(publicationOptions.map((option) => [option.id, option.name])),
     }),
-    [domainOptions, tagOptions],
+    [domainOptions, publicationOptions, tagOptions],
   );
   useEffect(() => {
     setBulkReadStatus("");
@@ -8174,6 +8205,13 @@ function LibraryView({
           key: "tag",
           label: `Tag: ${tagOptions.find((option) => option.id === filters.tag_id)?.name || "selected"}`,
           onClear: () => setFilterValue("tag_id", ""),
+        }
+      : null,
+    filters.publication_id
+      ? {
+          key: "publication",
+          label: `Publication: ${publicationOptions.find((option) => option.id === filters.publication_id)?.name || "selected"}`,
+          onClear: () => setFilterValue("publication_id", ""),
         }
       : null,
     filters.read_status
@@ -8373,6 +8411,16 @@ function LibraryView({
               options={tagOptions}
               placeholder="Any tag"
               value={filters.tag_id || ""}
+            />
+          </div>
+          <div className="filter-field">
+            <span>Publication</span>
+            <LibrarySingleSelect
+              emptyLabel="No publications"
+              onChange={(value) => setFilterValue("publication_id", value)}
+              options={publicationOptions}
+              placeholder="Any publication"
+              value={filters.publication_id || ""}
             />
           </div>
           <div className="filter-field">
@@ -8947,6 +8995,11 @@ function LibraryView({
           rememberSelectedRowPosition();
           onOpenReader();
         }}
+        onOpenPublicationFilter={(publicationId) => {
+          setQuery("");
+          setFilters({ ...emptyFilters(), publication_id: publicationId });
+          if (readerOpen) onCloseReader({ updateUrl: false });
+        }}
         preferences={preferences}
         projects={projects}
         query={query}
@@ -8993,6 +9046,31 @@ type DocumentDraft = {
   tag_names: string;
   domain_ids: string[];
   attributes: AttributeDraft[];
+};
+
+type PublicationEditDraft = {
+  title: string;
+  type: string;
+  publisher: string;
+  imprint: string;
+  issn_l: string;
+  issns: string;
+  isbns: string;
+  doi: string;
+  source_url: string;
+  appearance_type: string;
+  volume: string;
+  issue: string;
+  article_number: string;
+  page_range: string;
+  published_date: string;
+  published_year: string;
+  edition: string;
+  chapter: string;
+  section: string;
+  series_title: string;
+  event_name: string;
+  notes: string;
 };
 
 type FigureEditDraft = {
@@ -9066,6 +9144,84 @@ function draftFromDocument(document: DocumentDetail): DocumentDraft {
   };
 }
 
+function publicationDraftFromDocument(document: DocumentDetail): PublicationEditDraft {
+  const publication = document.publication;
+  return {
+    title: publication?.title || document.journal || "",
+    type: publication?.type || "",
+    publisher: publication?.publisher || document.publisher || "",
+    imprint: publication?.imprint || "",
+    issn_l: publication?.issn_l || "",
+    issns: (publication?.issns || []).join(", "),
+    isbns: (publication?.isbns || []).join(", "),
+    doi: publication?.doi || "",
+    source_url: publication?.source_url || document.source_url || "",
+    appearance_type: publication?.appearance_type || "",
+    volume: publication?.volume || "",
+    issue: publication?.issue || "",
+    article_number: publication?.article_number || "",
+    page_range: publication?.page_range || "",
+    published_date: publication?.published_date || "",
+    published_year: publication?.published_year ? String(publication.published_year) : "",
+    edition: publication?.edition || "",
+    chapter: publication?.chapter || "",
+    section: publication?.section || "",
+    series_title: publication?.series_title || "",
+    event_name: publication?.event_name || "",
+    notes: "",
+  };
+}
+
+function publicationPatchFromDraft(draft: PublicationEditDraft) {
+  const year = Number(draft.published_year);
+  return {
+    title: draft.title.trim() || null,
+    type: draft.type.trim() || null,
+    publisher: draft.publisher.trim() || null,
+    imprint: draft.imprint.trim() || null,
+    issn_l: draft.issn_l.trim() || null,
+    issns: normalizedNameList(splitCommaList(draft.issns)),
+    isbns: normalizedNameList(splitCommaList(draft.isbns)),
+    doi: draft.doi.trim() || null,
+    source_url: draft.source_url.trim() || null,
+    appearance_type: draft.appearance_type.trim() || null,
+    volume: draft.volume.trim() || null,
+    issue: draft.issue.trim() || null,
+    article_number: draft.article_number.trim() || null,
+    page_range: draft.page_range.trim() || null,
+    published_date: draft.published_date.trim() || null,
+    published_year: Number.isFinite(year) && draft.published_year.trim() ? year : null,
+    edition: draft.edition.trim() || null,
+    chapter: draft.chapter.trim() || null,
+    section: draft.section.trim() || null,
+    series_title: draft.series_title.trim() || null,
+    event_name: draft.event_name.trim() || null,
+    notes: draft.notes.trim() || null,
+  };
+}
+
+function publicationAppearanceLine(document: DocumentDetail) {
+  const publication = document.publication;
+  if (!publication) return "";
+  const volumeIssue =
+    publication.volume && publication.issue
+      ? `${publication.volume}(${publication.issue})`
+      : publication.volume || (publication.issue ? `Issue ${publication.issue}` : "");
+  return [
+    publication.type,
+    publication.appearance_type,
+    volumeIssue,
+    publication.article_number ? `Article ${publication.article_number}` : "",
+    publication.page_range ? `pp. ${publication.page_range}` : "",
+    publication.edition,
+    publication.chapter,
+    publication.series_title,
+    publication.event_name,
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function figureDraftFromFigure(figure: FigureRecord): FigureEditDraft {
   return {
     figure_label: figure.figure_label || "",
@@ -9107,6 +9263,7 @@ function DocumentPanel({
   domains,
   onCloseReader,
   onOpenReader,
+  onOpenPublicationFilter,
   onTrashDocument,
   preferences,
   projects,
@@ -9123,6 +9280,7 @@ function DocumentPanel({
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
+  onOpenPublicationFilter?: (publicationId: string) => void;
   onTrashDocument?: (document: DocumentDetail) => void;
   preferences?: AppPreferences;
   projects: Project[];
@@ -9150,6 +9308,7 @@ function DocumentPanel({
       domains={domains}
       onCloseReader={onCloseReader}
       onOpenReader={onOpenReader}
+      onOpenPublicationFilter={onOpenPublicationFilter}
       onTrashDocument={onTrashDocument}
       preferences={preferences}
       projects={projects}
@@ -10016,6 +10175,7 @@ function DocumentPanelContent({
   domains,
   onCloseReader,
   onOpenReader,
+  onOpenPublicationFilter,
   onTrashDocument,
   preferences,
   projects,
@@ -10032,6 +10192,7 @@ function DocumentPanelContent({
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
+  onOpenPublicationFilter?: (publicationId: string) => void;
   onTrashDocument?: (document: DocumentDetail) => void;
   preferences?: AppPreferences;
   projects: Project[];
@@ -10103,6 +10264,10 @@ function DocumentPanelContent({
   const [bibliographyDraft, setBibliographyDraft] = useState(document.bibliography || "");
   const [bibliographyEditError, setBibliographyEditError] = useState<string | null>(null);
   const [bibliographyVerifiedEditConfirmed, setBibliographyVerifiedEditConfirmed] = useState(false);
+  const [editingPublication, setEditingPublication] = useState(false);
+  const [publicationDraft, setPublicationDraft] = useState<PublicationEditDraft>(() => publicationDraftFromDocument(document));
+  const [publicationEditError, setPublicationEditError] = useState<string | null>(null);
+  const [publicationVerifiedEditConfirmed, setPublicationVerifiedEditConfirmed] = useState(false);
   const [domainAssignOpen, setDomainAssignOpen] = useState(false);
   const [domainAssignSearch, setDomainAssignSearch] = useState("");
   const [domainEditError, setDomainEditError] = useState<string | null>(null);
@@ -10113,6 +10278,7 @@ function DocumentPanelContent({
   const [citationRefreshTarget, setCitationRefreshTarget] = useState<CitationRefreshTarget | null>(null);
   const [summaryRunId, setSummaryRunId] = useState<string | null>(null);
   const [bibliographyRunId, setBibliographyRunId] = useState<string | null>(null);
+  const [publicationRunId, setPublicationRunId] = useState<string | null>(null);
   const [formulaCaptureRunId, setFormulaCaptureRunId] = useState<string | null>(null);
   const [tagRefreshRunId, setTagRefreshRunId] = useState<string | null>(null);
   const trackedRunAcceptedAtRef = useRef<Record<string, number>>({});
@@ -10151,6 +10317,7 @@ function DocumentPanelContent({
   const citationRefreshFeedback = useAsyncActionFeedback();
   const summaryRefreshFeedback = useAsyncActionFeedback();
   const bibliographyRefreshFeedback = useAsyncActionFeedback();
+  const publicationRefreshFeedback = useAsyncActionFeedback();
   const formulaCaptureFeedback = useAsyncActionFeedback();
   const tagRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
@@ -10257,6 +10424,7 @@ function DocumentPanelContent({
         doi: updatedDocument.doi,
         no_doi: updatedDocument.no_doi,
         priority: updatedDocument.priority,
+        publication: updatedDocument.publication,
         read_status: updatedDocument.read_status,
         rich_summary: updatedDocument.rich_summary,
         title: updatedDocument.title,
@@ -10265,6 +10433,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["tags"] });
       void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["publications"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setSaveError(error instanceof Error ? error.message : "Could not save correction"),
@@ -10412,6 +10581,51 @@ function DocumentPanelContent({
     },
     onError: (error) => setBibliographyEditError(actionFailureMessage("Could not verify bibliography", error)),
   });
+  const updatePublication = useMutation({
+    mutationFn: ({ draft, confirmVerified }: { draft: PublicationEditDraft; confirmVerified: boolean }) =>
+      api.updateDocument(document.id, {
+        publication: publicationPatchFromDraft(draft),
+        confirm_verified_publication_edit: confirmVerified,
+        confirm_verified_apa_citation_edit: confirmVerified,
+        confirm_verified_apa_in_text_citation_edit: confirmVerified,
+      }),
+    onSuccess: (updatedDocument) => {
+      setEditingPublication(false);
+      setPublicationDraft(publicationDraftFromDocument(updatedDocument));
+      setPublicationEditError(null);
+      setPublicationVerifiedEditConfirmed(false);
+      setDraft(draftFromDocument(updatedDocument));
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      patchCachedDocumentSummaries(queryClient, {
+        id: updatedDocument.id,
+        apa_citation: updatedDocument.apa_citation,
+        apa_in_text_citation: updatedDocument.apa_in_text_citation,
+        citation_status: updatedDocument.citation_status,
+        journal: updatedDocument.journal,
+        publication: updatedDocument.publication,
+        publication_year: updatedDocument.publication_year,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["publications"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setPublicationEditError(actionFailureMessage("Could not save publication", error)),
+  });
+  const verifyPublication = useMutation({
+    mutationFn: () => api.verifyDocumentPublication(document.id),
+    onSuccess: (updatedDocument) => {
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      setPublicationDraft(publicationDraftFromDocument(updatedDocument));
+      setDraft(draftFromDocument(updatedDocument));
+      setPublicationEditError(null);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["publications"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setPublicationEditError(actionFailureMessage("Could not verify publication", error)),
+  });
   const verifyDocumentField = useMutation({
     mutationFn: (field: DocumentVerificationField) => api.verifyDocumentField(document.id, field),
     onSuccess: (updatedDocument) => {
@@ -10498,6 +10712,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["tags"] });
       void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["publications"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setHistoryRestoreError(actionFailureMessage("Could not restore history version", error)),
@@ -10635,6 +10850,32 @@ function DocumentPanelContent({
     onError: (error) => {
       setBibliographyRunId(null);
       bibliographyRefreshFeedback.showError(actionFailureMessage("Could not start bibliography refresh", error));
+    },
+  });
+  const refreshPublication = useMutation({
+    mutationFn: (confirmVerified: boolean) =>
+      startConcordanceRun({
+        backgroundDetail: document.title,
+        backgroundLabel: "Refreshing publication",
+        capability_keys: ["publication_metadata"],
+        capabilityKey: "publication_metadata",
+        createRun: () => api.refreshDocumentPublication(document.id, { confirmVerified }),
+        documentId: document.id,
+        force: true,
+        label: `Publication refresh: ${document.title}`,
+        scope_data: { document_ids: [document.id] },
+        scope_type: "documents",
+      }),
+    onSuccess: (run) => {
+      if (run.total_jobs > 0) setPublicationRunId(rememberTrackedRun(run));
+      else publicationRefreshFeedback.showSuccess();
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+    },
+    onError: (error) => {
+      setPublicationRunId(null);
+      publicationRefreshFeedback.showError(actionFailureMessage("Could not start publication refresh", error));
     },
   });
   const captureFormulas = useMutation({
@@ -10900,6 +11141,7 @@ function DocumentPanelContent({
     setEditingSummary(false);
     setSummaryValidatedEditConfirmed(false);
     setEditingBibliography(false);
+    setEditingPublication(false);
     setEditingCitation(null);
     setEditingPageId(null);
     setEditingFigureId(null);
@@ -10922,6 +11164,10 @@ function DocumentPanelContent({
   }, [document.bibliography, editingBibliography]);
 
   useEffect(() => {
+    if (!editingPublication) setPublicationDraft(publicationDraftFromDocument(document));
+  }, [document.id, document.publication, document.journal, document.publisher, document.source_url, editingPublication]);
+
+  useEffect(() => {
     if (editingCitation) return;
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
     setCitationVerifiedEditConfirmed({ reference: false, "in-text": false });
@@ -10939,7 +11185,8 @@ function DocumentPanelContent({
       !document.doi_verified_at &&
       !document.apa_citation_verified_at &&
       !document.apa_in_text_citation_verified_at &&
-      !document.bibliography_verified_at
+      !document.bibliography_verified_at &&
+      !document.publication?.verified_at
     )
       return;
     setRelativeTimeNow(Date.now());
@@ -10951,6 +11198,7 @@ function DocumentPanelContent({
     document.bibliography_generated_at,
     document.bibliography_verified_at,
     document.doi_verified_at,
+    document.publication?.verified_at,
     document.summary_generated_at,
     document.summary_validated_at,
   ]);
@@ -11072,6 +11320,10 @@ function DocumentPanelContent({
     () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "bibliography_extraction"),
     [citationJobs, document.id],
   );
+  const publicationRefreshJobsForDocument = useMemo(
+    () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "publication_metadata"),
+    [citationJobs, document.id],
+  );
   const formulaCaptureJobsForDocument = useMemo(
     () => citationJobs.filter((job) => job.document_id === document.id && job.capability_key === "formula_capture"),
     [citationJobs, document.id],
@@ -11125,6 +11377,17 @@ function DocumentPanelContent({
     () => (bibliographyRunId ? concordanceRuns.find((run) => run.id === bibliographyRunId) : undefined),
     [bibliographyRunId, concordanceRuns],
   );
+  const trackedPublicationJobs = useMemo(
+    () =>
+      publicationRunId
+        ? citationJobs.filter((job) => job.run_id === publicationRunId && job.document_id === document.id && job.capability_key === "publication_metadata")
+        : [],
+    [citationJobs, document.id, publicationRunId],
+  );
+  const trackedPublicationRun = useMemo(
+    () => (publicationRunId ? concordanceRuns.find((run) => run.id === publicationRunId) : undefined),
+    [concordanceRuns, publicationRunId],
+  );
   const trackedFormulaCaptureJobs = useMemo(
     () =>
       formulaCaptureRunId
@@ -11151,6 +11414,7 @@ function DocumentPanelContent({
   const citationRunServerIdle = trackedRunServerIdle(citationRunId, trackedCitationRun);
   const summaryRunServerIdle = trackedRunServerIdle(summaryRunId, trackedSummaryRun);
   const bibliographyRunServerIdle = trackedRunServerIdle(bibliographyRunId, trackedBibliographyRun);
+  const publicationRunServerIdle = trackedRunServerIdle(publicationRunId, trackedPublicationRun);
   const formulaCaptureRunServerIdle = trackedRunServerIdle(formulaCaptureRunId, trackedFormulaCaptureRun);
   const tagRefreshRunServerIdle = trackedRunServerIdle(tagRefreshRunId, trackedTagRefreshRun);
   const ignoreStaleActiveConcordanceRows = concordanceServerIdleAfterConcordanceSnapshot(concordanceActivity);
@@ -11166,6 +11430,10 @@ function DocumentPanelContent({
     !ignoreStaleActiveConcordanceRows &&
     !bibliographyRunServerIdle &&
     bibliographyRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
+  const publicationRefreshActive =
+    !ignoreStaleActiveConcordanceRows &&
+    !publicationRunServerIdle &&
+    publicationRefreshJobsForDocument.some((job) => isActiveConcordanceStatus(job.status));
   const formulaCaptureActive =
     !ignoreStaleActiveConcordanceRows &&
     !formulaCaptureRunServerIdle &&
@@ -11199,6 +11467,15 @@ function DocumentPanelContent({
         (trackedBibliographyJobs.some((job) => isActiveConcordanceStatus(job.status)) ||
           (!trackedBibliographyJobs.length && trackedBibliographyRun && isActiveConcordanceStatus(trackedBibliographyRun.status))),
     );
+  const publicationRefreshBusy =
+    refreshPublication.isPending ||
+    publicationRefreshActive ||
+    Boolean(
+      publicationRunId &&
+        !publicationRunServerIdle &&
+        (trackedPublicationJobs.some((job) => isActiveConcordanceStatus(job.status)) ||
+          (!trackedPublicationJobs.length && trackedPublicationRun && isActiveConcordanceStatus(trackedPublicationRun.status))),
+    );
   const formulaCaptureBusy =
     captureFormulas.isPending ||
     formulaCaptureActive ||
@@ -11227,6 +11504,10 @@ function DocumentPanelContent({
   const bibliographyRefreshProgress = concordanceJobButtonProgress(
     trackedBibliographyJobs.length ? trackedBibliographyJobs : bibliographyRefreshJobsForDocument,
     bibliographyRefreshBusy,
+  );
+  const publicationRefreshProgress = concordanceJobButtonProgress(
+    trackedPublicationJobs.length ? trackedPublicationJobs : publicationRefreshJobsForDocument,
+    publicationRefreshBusy,
   );
   const formulaCaptureProgress = concordanceJobButtonProgress(
     trackedFormulaCaptureJobs.length ? trackedFormulaCaptureJobs : formulaCaptureJobsForDocument,
@@ -11263,6 +11544,13 @@ function DocumentPanelContent({
     ? "a bibliography refresh request is already starting."
     : bibliographyRefreshActive || (bibliographyRunId && !bibliographyRunServerIdle)
       ? "a bibliography refresh is already queued or running for this document."
+      : "";
+  const publicationRefreshBusyReason = documentLocked
+    ? documentLockedReason
+    : refreshPublication.isPending
+    ? "a publication refresh request is already starting."
+    : publicationRefreshActive || (publicationRunId && !publicationRunServerIdle)
+      ? "a publication refresh is already queued or running for this document."
       : "";
   const formulaCaptureBusyReason = documentLocked
     ? documentLockedReason
@@ -11500,6 +11788,48 @@ function DocumentPanelContent({
     bibliographyRunServerIdle,
     trackedBibliographyJobs,
     trackedBibliographyRun,
+  ]);
+
+  useEffect(() => {
+    if (!publicationRunId) return;
+    if (trackedPublicationJobs.length === 0) {
+      if ((!trackedPublicationRun || isActiveConcordanceStatus(trackedPublicationRun.status)) && !publicationRunServerIdle) return;
+      if (trackedPublicationRun && concordanceRunFailed(trackedPublicationRun)) {
+        publicationRefreshFeedback.showError(
+          actionFailureMessage("Publication refresh failed", runFailureMessage(trackedPublicationRun, []) || "Concordance run failed"),
+        );
+      } else {
+        publicationRefreshFeedback.showSuccess();
+      }
+      setPublicationRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["publications"] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+      void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+      return;
+    }
+    if (trackedPublicationJobs.some((job) => isActiveConcordanceStatus(job.status)) && !publicationRunServerIdle) return;
+    const failedJob = trackedPublicationJobs.find((job) => job.status === "failed");
+    if (failedJob) {
+      publicationRefreshFeedback.showError(
+        actionFailureMessage("Publication refresh failed", failedJob.last_error || "Concordance job failed without a detailed error"),
+      );
+    } else {
+      publicationRefreshFeedback.showSuccess();
+    }
+    setPublicationRunId(null);
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["publications"] });
+    refreshActiveDocumentDetail(queryClient, document.id);
+    void queryClient.invalidateQueries({ queryKey: ["openai-usage"] });
+  }, [
+    document.id,
+    publicationRefreshFeedback,
+    publicationRunId,
+    publicationRunServerIdle,
+    queryClient,
+    trackedPublicationJobs,
+    trackedPublicationRun,
   ]);
 
   useEffect(() => {
@@ -12090,6 +12420,76 @@ function DocumentPanelContent({
     }
     refreshBibliography.mutate(confirmVerified);
   };
+  const copyPublication = () => {
+    if (!publication) return;
+    const text = [publication.title, publication.publisher, publicationAppearance, publication.doi, publication.source_url]
+      .filter(Boolean)
+      .join("\n");
+    if (text) void copyToClipboard("document-publication", text);
+  };
+  const startPublicationEdit = async () => {
+    if (documentLocked || editingPublication || updatePublication.isPending) return;
+    let confirmed = false;
+    if (publicationIsVerified) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Edit Publication",
+        eyebrow: "Verified publication",
+        message:
+          "This publication relationship has been manually marked as verified. Saving changes will remove the verified status until you verify it again.",
+        title: "Edit verified publication?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmed = true;
+    }
+    const citationOk = await confirmVerifiedFieldAction(["apa_citation", "apa_in_text_citation"], {
+      confirmLabel: "Edit Publication",
+      message: "Saving publication changes can regenerate APA citation text. Verified status will be removed from regenerated citation fields.",
+      title: "Edit verified citation data?",
+    });
+    if (!citationOk) return;
+    setPublicationDraft(publicationDraftFromDocument(document));
+    setPublicationEditError(null);
+    setPublicationVerifiedEditConfirmed(confirmed || isFieldVerified("apa_citation") || isFieldVerified("apa_in_text_citation"));
+    setEditingPublication(true);
+  };
+  const cancelPublicationEdit = () => {
+    setPublicationDraft(publicationDraftFromDocument(document));
+    setPublicationEditError(null);
+    setPublicationVerifiedEditConfirmed(false);
+    setEditingPublication(false);
+  };
+  const setPublicationDraftValue = <K extends keyof PublicationEditDraft>(key: K, value: PublicationEditDraft[K]) => {
+    setPublicationDraft((current) => ({ ...current, [key]: value }));
+  };
+  const savePublicationEdit = () => {
+    if (documentLocked || updatePublication.isPending) return;
+    updatePublication.mutate({ draft: publicationDraft, confirmVerified: publicationVerifiedEditConfirmed });
+  };
+  const markPublicationVerified = () => {
+    if (documentLocked || verifyPublication.isPending || !publication || publicationIsVerified) return;
+    setPublicationEditError(null);
+    verifyPublication.mutate();
+  };
+  const checkPublication = async () => {
+    if (documentLocked) return;
+    let confirmVerified = false;
+    if (publicationIsVerified) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Refresh Publication",
+        eyebrow: "Verified publication",
+        message:
+          "This publication relationship has been manually marked as verified. Refreshing it will remove verified status and queue a replacement candidate from current metadata evidence.",
+        title: "Refresh verified publication?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmVerified = true;
+    }
+    refreshPublication.mutate(confirmVerified);
+  };
   const checkTags = async () => {
     if (documentLocked) return;
     const ok = await dialogs.confirm({
@@ -12260,6 +12660,7 @@ function DocumentPanelContent({
   useEscapeLayer(editingDoi && !updateDoi.isPending, () => setEditingDoi(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingSummary && !updateSummary.isPending, () => setEditingSummary(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editingBibliography && !updateBibliography.isPending, () => setEditingBibliography(false), ESCAPE_PRIORITY_EXPANDED);
+  useEscapeLayer(editingPublication && !updatePublication.isPending, cancelPublicationEdit, ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(editing && !updateDocument.isPending, () => setEditing(false), ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(pageTextEditing && !pageTextBusy, cancelPageTextEdit, ESCAPE_PRIORITY_EXPANDED);
   useEscapeLayer(Boolean(editingCitation) && !updateCitation.isPending, cancelCitationEdit, ESCAPE_PRIORITY_EXPANDED);
@@ -12296,6 +12697,9 @@ function DocumentPanelContent({
       (draft.publisher.trim() || null) !== (document.publisher || null) ||
       doiChanged ||
       (draft.source_url.trim() || null) !== (document.source_url || null);
+    const legacyPublicationChanged =
+      (draft.journal.trim() || null) !== (document.journal || null) ||
+      (draft.publisher.trim() || null) !== (document.publisher || null);
     const nextBibliography = draft.bibliography.trim() || null;
     const currentBibliography = document.bibliography?.trim() || null;
     const bibliographyChanged = nextBibliography !== currentBibliography;
@@ -12312,6 +12716,19 @@ function DocumentPanelContent({
       });
       if (!ok) return;
     }
+    let confirmVerifiedPublicationEdit = false;
+    if (legacyPublicationChanged && publicationIsVerified) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Edit Publication",
+        eyebrow: "Verified publication",
+        message: "Saving Journal or Publisher changes will update the primary publication and remove verified status until you verify it again.",
+        title: "Edit verified publication?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmVerifiedPublicationEdit = true;
+    }
     updateDocument.mutate({
       title: draft.title.trim() || document.title,
       subtitle: draft.subtitle.trim() || null,
@@ -12325,6 +12742,7 @@ function DocumentPanelContent({
       rich_summary: draft.rich_summary.trim() || null,
       bibliography: nextBibliography,
       confirm_verified_doi_edit: fieldsNeedingConfirmation.includes("doi"),
+      confirm_verified_publication_edit: confirmVerifiedPublicationEdit,
       confirm_verified_apa_citation_edit: fieldsNeedingConfirmation.includes("apa_citation"),
       confirm_verified_apa_in_text_citation_edit: fieldsNeedingConfirmation.includes("apa_in_text_citation"),
       confirm_verified_bibliography_edit: fieldsNeedingConfirmation.includes("bibliography"),
@@ -12370,6 +12788,14 @@ function DocumentPanelContent({
   const bibliographyVerifiedTooltip = document.bibliography_verified_at
     ? `Verified by ${bibliographyVerifiedBy}${bibliographyVerifiedLabel ? ` ${bibliographyVerifiedLabel}` : ""}.`
     : "";
+  const publication = document.publication;
+  const publicationIsVerified = publication?.verification_status === "verified" && Boolean(publication.verified_at);
+  const publicationVerifiedLabel = relativeTimeLabel(publication?.verified_at, relativeTimeNow);
+  const publicationVerifiedBy = publication?.verified_by || "Medusa user";
+  const publicationVerifiedTooltip = publication?.verified_at
+    ? `Verified by ${publicationVerifiedBy}${publicationVerifiedLabel ? ` ${publicationVerifiedLabel}` : ""}.`
+    : "";
+  const publicationAppearance = publicationAppearanceLine(document);
   const fieldVerificationTooltip = (field: DocumentVerificationField) => {
     const verifiedAt = verificationTimestampForField(field);
     if (!verifiedAt) return `${verificationLabelForField(field)} has not been manually verified.`;
@@ -12576,6 +13002,329 @@ function DocumentPanelContent({
       </section>
     );
   };
+  const renderPublicationSection = () => (
+    <section className="detail-section publication-section">
+      <div className="detail-section-title-row verified-field-title-row">
+        <h3>Publication</h3>
+        {publicationIsVerified ? (
+          <span className="verified-field-badge" data-tooltip={publicationVerifiedTooltip || "This publication was manually verified."}>
+            <BadgeCheck size={15} />
+            Verified
+          </span>
+        ) : (
+          <button
+            className="secondary-button compact field-verify-button"
+            data-disabled-reason={
+              documentLocked
+                ? documentLockedReason
+                : verifyPublication.isPending
+                  ? "publication verification is already saving."
+                  : !publication
+                    ? "this document does not have publication metadata to verify."
+                    : undefined
+            }
+            data-tooltip="Mark this document's publication relationship as manually verified."
+            disabled={documentLocked || verifyPublication.isPending || !publication}
+            onClick={markPublicationVerified}
+            type="button"
+          >
+            <BadgeCheck size={14} />
+            Verify
+          </button>
+        )}
+      </div>
+      <div className="doi-value publication-value">
+        {publication ? (
+          <>
+            <strong>{publication.title}</strong>
+            {publication.publisher ? <span>{publication.publisher}</span> : null}
+            {publicationAppearance ? <span>{publicationAppearance}</span> : null}
+            {publication.issn_l ? <code>ISSN-L {publication.issn_l}</code> : null}
+            {publication.isbns.length ? <code>ISBN {publication.isbns.join(", ")}</code> : null}
+          </>
+        ) : (
+          <span>No publication recorded.</span>
+        )}
+      </div>
+      {editingPublication ? (
+        <form
+          className="doi-editor publication-editor"
+          data-escape-layer="expanded"
+          onSubmit={(event) => {
+            event.preventDefault();
+            savePublicationEdit();
+          }}
+        >
+          <label>
+            Title
+            <input
+              disabled={documentLocked || updatePublication.isPending}
+              onChange={(event) => setPublicationDraftValue("title", event.target.value)}
+              value={publicationDraft.title}
+            />
+          </label>
+          <div className="editor-grid">
+            <label>
+              Type
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("type", event.target.value)}
+                placeholder="journal, book, proceedings"
+                value={publicationDraft.type}
+              />
+            </label>
+            <label>
+              Appearance
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("appearance_type", event.target.value)}
+                placeholder="article, chapter"
+                value={publicationDraft.appearance_type}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              Publisher
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("publisher", event.target.value)}
+                value={publicationDraft.publisher}
+              />
+            </label>
+            <label>
+              Imprint
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("imprint", event.target.value)}
+                value={publicationDraft.imprint}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              Volume
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("volume", event.target.value)}
+                value={publicationDraft.volume}
+              />
+            </label>
+            <label>
+              Issue
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("issue", event.target.value)}
+                value={publicationDraft.issue}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              Pages
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("page_range", event.target.value)}
+                value={publicationDraft.page_range}
+              />
+            </label>
+            <label>
+              Article
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("article_number", event.target.value)}
+                value={publicationDraft.article_number}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              Published
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("published_date", event.target.value)}
+                placeholder="YYYY-MM-DD"
+                value={publicationDraft.published_date}
+              />
+            </label>
+            <label>
+              Year
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                inputMode="numeric"
+                onChange={(event) => setPublicationDraftValue("published_year", event.target.value)}
+                value={publicationDraft.published_year}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              Edition
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("edition", event.target.value)}
+                value={publicationDraft.edition}
+              />
+            </label>
+            <label>
+              Chapter
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("chapter", event.target.value)}
+                value={publicationDraft.chapter}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              Series
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("series_title", event.target.value)}
+                value={publicationDraft.series_title}
+              />
+            </label>
+            <label>
+              Event
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("event_name", event.target.value)}
+                value={publicationDraft.event_name}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              ISSN-L
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("issn_l", event.target.value)}
+                value={publicationDraft.issn_l}
+              />
+            </label>
+            <label>
+              ISSNs
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("issns", event.target.value)}
+                value={publicationDraft.issns}
+              />
+            </label>
+          </div>
+          <div className="editor-grid">
+            <label>
+              ISBNs
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("isbns", event.target.value)}
+                value={publicationDraft.isbns}
+              />
+            </label>
+            <label>
+              Container DOI
+              <input
+                disabled={documentLocked || updatePublication.isPending}
+                onChange={(event) => setPublicationDraftValue("doi", event.target.value)}
+                value={publicationDraft.doi}
+              />
+            </label>
+          </div>
+          <label>
+            URL
+            <input
+              disabled={documentLocked || updatePublication.isPending}
+              onChange={(event) => setPublicationDraftValue("source_url", event.target.value)}
+              value={publicationDraft.source_url}
+            />
+          </label>
+          <label>
+            Notes
+            <textarea
+              disabled={documentLocked || updatePublication.isPending}
+              onChange={(event) => setPublicationDraftValue("notes", event.target.value)}
+              value={publicationDraft.notes}
+            />
+          </label>
+          <div className="doi-editor-actions">
+            <button
+              className="primary-button compact"
+              data-disabled-reason={documentLocked ? documentLockedReason : "the publication change is already saving."}
+              disabled={documentLocked || updatePublication.isPending}
+              type="submit"
+            >
+              <Save size={14} />
+              Save
+            </button>
+            <button
+              className="secondary-button compact"
+              disabled={documentLocked || updatePublication.isPending}
+              onClick={cancelPublicationEdit}
+              type="button"
+            >
+              <X size={14} />
+              Cancel
+            </button>
+          </div>
+          {publicationEditError ? <p className="form-error">{publicationEditError}</p> : null}
+        </form>
+      ) : null}
+      <div className="doi-actions">
+        <button
+          aria-label={copiedKey === "document-publication" ? "Publication copied" : "Copy publication"}
+          className="icon-button"
+          data-disabled-reason="this document does not have publication metadata to copy."
+          data-tooltip="Copy publication metadata for this document to the clipboard."
+          disabled={!publication}
+          onClick={copyPublication}
+          type="button"
+        >
+          {copiedKey === "document-publication" ? <CheckCircle2 size={15} /> : <Clipboard size={15} />}
+        </button>
+        <button
+          aria-label="Edit publication"
+          className="icon-button"
+          data-disabled-reason={documentLocked ? documentLockedReason : updatePublication.isPending ? "the publication change is already saving." : "the publication editor is already open."}
+          data-tooltip="Open publication editing for journal, book, proceedings, volume, issue, pages, edition, chapter, and identifiers."
+          disabled={documentLocked || updatePublication.isPending || editingPublication}
+          onClick={() => void startPublicationEdit()}
+          type="button"
+        >
+          <Edit3 size={15} />
+        </button>
+        <AsyncActionSlot
+          busy={publicationRefreshBusy}
+          feedback={publicationRefreshFeedback.feedback}
+          label="Publication refresh in progress"
+          progress={publicationRefreshProgress}
+        >
+          <button
+            aria-label={publicationRefreshBusy ? "Refreshing publication" : "Refresh publication"}
+            className={asyncFeedbackClass("icon-button", publicationRefreshFeedback.feedback, publicationRefreshBusy)}
+            data-disabled-reason={publicationRefreshBusyReason}
+            data-tooltip="Queue a publication metadata Concordance refresh for this document."
+            disabled={documentLocked || publicationRefreshBusy}
+            onClick={() => void checkPublication()}
+            type="button"
+          >
+            <RefreshCw className={publicationRefreshBusy ? "spin" : ""} size={15} />
+          </button>
+        </AsyncActionSlot>
+        <button
+          aria-label="Filter Library by publication"
+          className="icon-button"
+          data-disabled-reason="this document does not have publication metadata to browse."
+          data-tooltip="Show other Library documents from this publication."
+          disabled={!publication || !onOpenPublicationFilter}
+          onClick={() => publication && onOpenPublicationFilter?.(publication.publication_id)}
+          type="button"
+        >
+          <Filter size={15} />
+        </button>
+        <span className="citation-model-label">{analysisModelActionLabel(preferences, METADATA_MODEL_KEY, "gpt-5.5")}</span>
+      </div>
+      {!editingPublication && publicationEditError ? <p className="form-error">{publicationEditError}</p> : null}
+    </section>
+  );
   const renderDoiSection = () => (
     <section className="detail-section doi-section">
       <div className="detail-section-title-row verified-field-title-row">
@@ -14397,6 +15146,7 @@ function DocumentPanelContent({
       ) : null}
       {renderDomainsSection()}
       {renderTagsSection()}
+      {renderPublicationSection()}
       {renderDoiSection()}
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
       {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
@@ -25766,6 +26516,7 @@ export default function App() {
       filters.duplicate_status,
       filters.health_status,
       filters.priority,
+      filters.publication_id,
       filters.read_status,
       filters.tag_id,
       libraryPageSize,

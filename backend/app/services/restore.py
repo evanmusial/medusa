@@ -20,6 +20,7 @@ from app.models import (
     DocumentAttributeValue,
     DocumentCapability,
     DocumentPage,
+    DocumentPublication,
     DocumentRecommendation,
     DocumentTagAssessment,
     DocumentVersion,
@@ -38,6 +39,8 @@ from app.models import (
     PortfolioSuggestion,
     PortfolioVersion,
     PortfolioVersionEdge,
+    Publication,
+    PublicationAlias,
     Project,
     ProjectBibliography,
     ProjectItem,
@@ -80,6 +83,7 @@ RESTORE_SECTIONS = [
     "tag_relationships",
     "saved_searches",
     "attribute_definitions",
+    "publications",
     "documents",
     "projects",
     "project_bibliographies",
@@ -213,6 +217,7 @@ def restore_metadata_export(
         "tags": {},
         "saved_searches": {},
         "attribute_definitions": {},
+        "publications": {},
         "documents": {},
         "projects": {},
         "import_batches": {},
@@ -253,6 +258,12 @@ def restore_metadata_export(
         restored_counts["attribute_definitions"] = _restore_attribute_definitions(
             db,
             _section(data, "attribute_definitions"),
+            id_maps,
+            preserve_ids,
+        )
+        restored_counts["publications"] = _restore_publications(
+            db,
+            _section(data, "publications"),
             id_maps,
             preserve_ids,
         )
@@ -590,6 +601,66 @@ def _restore_attribute_definitions(
         if original_id:
             id_maps["attribute_definitions"][original_id] = definition.id
         count += 1
+    return count
+
+
+def _restore_publications(
+    db: Session,
+    rows: list[dict[str, Any]],
+    id_maps: dict[str, dict[str, str]],
+    preserve_ids: bool,
+) -> int:
+    count = 0
+    for row in rows:
+        original_id = row.get("id")
+        title = row.get("title") or "Restored Publication"
+        publication = _get_existing(db, Publication, original_id)
+        if not publication:
+            publication = Publication(
+                **_restore_kwargs(
+                    row,
+                    preserve_ids,
+                    title=title,
+                    normalized_title=row.get("normalized_title") or title.casefold(),
+                )
+            )
+            db.add(publication)
+        publication.title = title
+        publication.normalized_title = row.get("normalized_title") or publication.normalized_title or title.casefold()
+        publication.publication_type = row.get("publication_type") or row.get("type")
+        publication.publisher = row.get("publisher")
+        publication.imprint = row.get("imprint")
+        publication.issn_l = row.get("issn_l")
+        publication.issns = row.get("issns") or []
+        publication.isbns = row.get("isbns") or []
+        publication.doi = row.get("doi")
+        publication.source_url = row.get("source_url")
+        publication.external_ids = row.get("external_ids") or {}
+        publication.publication_metadata = row.get("metadata") or {}
+        publication.evidence = row.get("evidence") or {}
+        _apply_timestamps(publication, row)
+        db.flush()
+        if original_id:
+            id_maps["publications"][original_id] = publication.id
+        db.query(PublicationAlias).filter(PublicationAlias.publication_id == publication.id).delete(synchronize_session=False)
+        for alias_row in row.get("aliases", []):
+            if not isinstance(alias_row, dict):
+                continue
+            alias = PublicationAlias(
+                **_restore_kwargs(
+                    alias_row,
+                    preserve_ids,
+                    publication_id=publication.id,
+                    alias=alias_row.get("alias") or "",
+                    normalized_alias=alias_row.get("normalized_alias") or str(alias_row.get("alias") or "").casefold(),
+                    source=alias_row.get("source"),
+                    alias_metadata=alias_row.get("metadata") or {},
+                )
+            )
+            _apply_timestamps(alias, alias_row)
+            db.add(alias)
+        count += 1
+    db.flush()
     return count
 
 
@@ -1524,6 +1595,7 @@ def _replace_document_children(
         Annotation,
         DocumentAttributeValue,
         DocumentCapability,
+        DocumentPublication,
     ):
         db.query(model).filter(model.document_id == document.id).delete(synchronize_session=False)
     db.query(DocumentRecommendation).filter(DocumentRecommendation.source_document_id == document.id).delete(synchronize_session=False)
@@ -1558,6 +1630,50 @@ def _replace_document_children(
         )
         _apply_timestamps(capability, capability_row)
         db.add(capability)
+
+    for publication_row in row.get("publications", []):
+        if not isinstance(publication_row, dict):
+            continue
+        publication_id = id_maps["publications"].get(publication_row.get("publication_id")) or publication_row.get("publication_id")
+        if not publication_id:
+            continue
+        if not _get_existing(db, Publication, publication_id):
+            continue
+        link = DocumentPublication(
+            **_restore_kwargs(
+                publication_row,
+                preserve_ids,
+                document_id=document.id,
+                publication_id=publication_id,
+                role=publication_row.get("role") or "primary",
+                appearance_type=publication_row.get("appearance_type"),
+                title_snapshot=publication_row.get("title_snapshot"),
+                publisher_snapshot=publication_row.get("publisher_snapshot"),
+                volume=publication_row.get("volume"),
+                issue=publication_row.get("issue"),
+                article_number=publication_row.get("article_number"),
+                page_range=publication_row.get("page_range"),
+                published_date=publication_row.get("published_date"),
+                published_year=publication_row.get("published_year"),
+                edition=publication_row.get("edition"),
+                chapter=publication_row.get("chapter"),
+                section=publication_row.get("section"),
+                series_title=publication_row.get("series_title"),
+                event_name=publication_row.get("event_name"),
+                source_url=publication_row.get("source_url"),
+                identifiers=publication_row.get("identifiers") or {},
+                confidence=publication_row.get("confidence"),
+                source=publication_row.get("source"),
+                model=publication_row.get("model"),
+                verification_status=publication_row.get("verification_status") or "needs_review",
+                verified_at=_dt(publication_row.get("verified_at")),
+                verified_by=publication_row.get("verified_by"),
+                verified_by_user_id=publication_row.get("verified_by_user_id"),
+                evidence=publication_row.get("evidence") or {},
+            )
+        )
+        _apply_timestamps(link, publication_row)
+        db.add(link)
 
     for page_row in row.get("pages", []):
         page = DocumentPage(

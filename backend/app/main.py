@@ -37,6 +37,7 @@ from app.models import (
     DocumentCompositionRecord,
     DocumentAttributeValue,
     DocumentPage,
+    DocumentPublication,
     DocumentRecommendation,
     DocumentTagAssessment,
     DocumentVersion,
@@ -57,6 +58,7 @@ from app.models import (
     PortfolioSuggestion,
     PortfolioVersion,
     PortfolioVersionEdge,
+    Publication,
     Project,
     ProjectBibliography,
     ProjectItem,
@@ -165,6 +167,7 @@ from app.schemas import (
     PortfolioItemPatch,
     PortfolioSuggestionOut,
     PortfolioSuggestionRefreshOut,
+    PublicationListRow,
     ProjectCreate,
     ProjectDetail,
     ProjectItemCreate,
@@ -325,6 +328,14 @@ from app.services.processing import (
     document_metadata,
     log_event,
     refresh_import_batch_progress,
+)
+from app.services.publications import (
+    apply_document_publication_patch,
+    clear_document_publication_verification,
+    document_publication_is_verified,
+    mark_document_publication_verified,
+    primary_document_publication,
+    publication_to_dict,
 )
 from app.services.preferences import (
     get_analysis_model,
@@ -940,6 +951,7 @@ def apply_document_filters(
     read_status: str | None = None,
     priority: str | None = None,
     citation_status: str | None = None,
+    publication_id: str | None = None,
 ):
     search_rank = None
     if q:
@@ -956,6 +968,12 @@ def apply_document_filters(
         query = query.filter(Document.priority == priority)
     if citation_status:
         query = query.filter(Document.citation_status == citation_status)
+    if publication_id:
+        query = query.filter(
+            Document.publication_links.any(
+                (DocumentPublication.publication_id == publication_id) & (DocumentPublication.role == "primary")
+            )
+        )
     return query, search_rank
 
 
@@ -984,6 +1002,7 @@ def document_list_row_load_options():
         load_only(*DOCUMENT_LIST_ROW_COLUMNS),
         selectinload(Document.tags),
         selectinload(Document.domains),
+        selectinload(Document.publication_links).selectinload(DocumentPublication.publication),
     )
 
 
@@ -1201,17 +1220,20 @@ def document_summary_out(
     projects: list[ProjectOut] | None = None,
     duplicate_reasons: list[str] | None = None,
 ) -> DocumentSummary:
+    publication = publication_to_dict(primary_document_publication(document))
     return DocumentSummary.model_validate(document).model_copy(
         update={
             "duplicate_count": duplicate_count,
             "duplicate_reasons": duplicate_reasons or [],
             "projects": projects or [],
             "no_doi": document_no_doi(document),
+            "publication": publication,
         }
     )
 
 
 def document_list_row_out(document: Document, projects: list[ProjectOut] | None = None, figure_count: int = 0) -> DocumentListRow:
+    publication = publication_to_dict(primary_document_publication(document))
     return DocumentListRow.model_validate(document).model_copy(
         update={
             "duplicate_count": int(document.duplicate_count or 0),
@@ -1219,6 +1241,7 @@ def document_list_row_out(document: Document, projects: list[ProjectOut] | None 
             "projects": projects or [],
             "no_doi": document_no_doi(document),
             "figure_count": figure_count,
+            "publication": publication,
         }
     )
 
@@ -1466,6 +1489,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     apa_citation_verification = document_field_verification(document, "apa_citation")
     apa_in_text_citation_verification = document_field_verification(document, "apa_in_text_citation")
     bibliography_verification = document_bibliography_verification(document)
+    publication = publication_to_dict(primary_document_publication(document))
     summary_validation = document_summary_validation(document)
     reader_text_by_page_number = document_reader_text_by_page_number(document)
     pages = [
@@ -1497,6 +1521,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             ),
             "bibliography_verified_at": bibliography_verification["verified_at"] if bibliography_verification else None,
             "bibliography_verified_by": bibliography_verification["verified_by"] if bibliography_verification else None,
+            "publication": publication,
             "pages": pages,
             "versions": [document_version_out(version) for version in document.versions],
         }
@@ -2025,7 +2050,7 @@ def restorable_document_snapshot(snapshot: dict[str, Any]) -> dict[str, Any] | N
     after = snapshot.get("after")
     if isinstance(after, dict):
         return after
-    if any(field in snapshot for field in (*RESTORABLE_DOCUMENT_FIELDS, "tags", "domains", "attributes")):
+    if any(field in snapshot for field in (*RESTORABLE_DOCUMENT_FIELDS, "tags", "domains", "attributes", "publication")):
         return snapshot
     return None
 
@@ -2106,6 +2131,24 @@ def apply_document_snapshot(db: Session, document: Document, snapshot: dict[str,
                     )
                 )
             changed_fields.add("attributes")
+
+    if "publication" in snapshot:
+        publication_snapshot = snapshot.get("publication")
+        if publication_snapshot is None:
+            publication_changed = apply_document_publication_patch(db, document, {"clear": True})
+        elif isinstance(publication_snapshot, dict):
+            publication_changed = apply_document_publication_patch(db, document, publication_snapshot)
+            link = primary_document_publication(document)
+            if link:
+                link.verification_status = publication_snapshot.get("verification_status") or link.verification_status
+                link.verified_at = parse_evidence_datetime(publication_snapshot.get("verified_at"))
+                link.verified_by = publication_snapshot.get("verified_by")
+                if link.verification_status == "verified" and not link.verified_at:
+                    link.verification_status = "needs_review"
+        else:
+            publication_changed = set()
+        if publication_changed:
+            changed_fields.update(publication_changed)
 
     return changed_fields
 
@@ -4793,13 +4836,18 @@ def list_documents(
     read_status: str | None = None,
     priority: str | None = None,
     citation_status: str | None = None,
+    publication_id: str | None = None,
     duplicate_status: str | None = None,
     health_status: str | None = None,
     include_duplicate_summary: bool = True,
     include_projects: bool = True,
     limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
 ) -> list[DocumentSummary]:
-    query = filter_library_visible_documents(db.query(Document)).options(selectinload(Document.tags), selectinload(Document.domains))
+    query = filter_library_visible_documents(db.query(Document)).options(
+        selectinload(Document.tags),
+        selectinload(Document.domains),
+        selectinload(Document.publication_links).selectinload(DocumentPublication.publication),
+    )
     query, search_rank = apply_document_filters(
         query,
         db,
@@ -4809,6 +4857,7 @@ def list_documents(
         read_status=read_status,
         priority=priority,
         citation_status=citation_status,
+        publication_id=publication_id,
     )
     if duplicate_status:
         if duplicate_status == "duplicates":
@@ -4843,6 +4892,7 @@ def document_list_rows_out(
     read_status: str | None = None,
     priority: str | None = None,
     citation_status: str | None = None,
+    publication_id: str | None = None,
     duplicate_status: str | None = None,
     health_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
@@ -4862,6 +4912,7 @@ def document_list_rows_out(
         read_status=read_status,
         priority=priority,
         citation_status=citation_status,
+        publication_id=publication_id,
     )
     if duplicate_status == "duplicates":
         query = query.filter(Document.duplicate_count > 0)
@@ -4929,6 +4980,7 @@ def list_document_rows(
     read_status: str | None = None,
     priority: str | None = None,
     citation_status: str | None = None,
+    publication_id: str | None = None,
     duplicate_status: str | None = None,
     health_status: str | None = None,
     all_results: Annotated[bool, Query(alias="all")] = False,
@@ -4944,6 +4996,7 @@ def list_document_rows(
         "read_status": read_status or "",
         "priority": priority or "",
         "citation_status": citation_status or "",
+        "publication_id": publication_id or "",
         "duplicate_status": duplicate_status or "",
         "health_status": health_status or "",
         "all": bool(all_results),
@@ -4966,6 +5019,7 @@ def list_document_rows(
             read_status=read_status,
             priority=priority,
             citation_status=citation_status,
+            publication_id=publication_id,
             duplicate_status=duplicate_status,
             health_status=health_status,
             all_results=all_results,
@@ -4975,6 +5029,53 @@ def list_document_rows(
             sort=sort,
         ),
     )
+
+
+@app.get("/api/publications", response_model=list[PublicationListRow])
+def list_publications(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> list[PublicationListRow]:
+    count_rows = (
+        db.query(DocumentPublication.publication_id, func.count(Document.id))
+        .join(Document, Document.id == DocumentPublication.document_id)
+        .filter(DocumentPublication.role == "primary", library_visible_document_filter())
+        .group_by(DocumentPublication.publication_id)
+        .all()
+    )
+    counts = {publication_id: int(count or 0) for publication_id, count in count_rows}
+    query = db.query(Publication)
+    cleaned = (q or "").strip()
+    if cleaned:
+        like = f"%{cleaned}%"
+        normalized = f"%{cleaned.casefold()}%"
+        query = query.filter(
+            or_(
+                Publication.title.ilike(like),
+                Publication.publisher.ilike(like),
+                Publication.normalized_title.ilike(normalized),
+                Publication.issn_l.ilike(like),
+                Publication.doi.ilike(like),
+            )
+        )
+    publications = query.order_by(func.lower(Publication.title), Publication.id).limit(limit).all()
+    return [
+        PublicationListRow(
+            id=publication.id,
+            title=publication.title,
+            type=publication.publication_type,
+            publisher=publication.publisher,
+            issn_l=publication.issn_l,
+            issns=publication.issns or [],
+            isbns=publication.isbns or [],
+            doi=publication.doi,
+            source_url=publication.source_url,
+            ready_document_count=counts.get(publication.id, 0),
+        )
+        for publication in publications
+    ]
 
 
 @app.get("/api/documents/{document_id}", response_model=DocumentDetail)
@@ -5341,6 +5442,8 @@ def verify_document_field(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    if field == "publication":
+        return verify_document_publication(document_id, user, db)
     return mark_document_field_verified(db, document, field, user)
 
 
@@ -5354,6 +5457,92 @@ def verify_document_bibliography(
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
     return mark_document_field_verified(db, document, "bibliography", user)
+
+
+@app.post("/api/documents/{document_id}/publication-verification", response_model=DocumentDetail)
+def verify_document_publication(
+    document_id: str,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
+    if not primary_document_publication(document):
+        raise HTTPException(status_code=400, detail="Publication is required before it can be marked verified")
+    if document_publication_is_verified(document):
+        return document_detail_out(document, db)
+    before = document_correction_snapshot(document)
+    if not mark_document_publication_verified(document, user):
+        raise HTTPException(status_code=400, detail="Publication is required before it can be marked verified")
+    document.updated_at = utc_now()
+    db.flush()
+    verified_at = primary_document_publication(document).verified_at
+    record_document_version(
+        db,
+        document=document,
+        change_note="Verified Publication",
+        changed_fields={"publication"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"operation": "publication_verification", "verified_at": verified_at.isoformat() if verified_at else None},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message="Verified Publication",
+        metadata={"operation": "publication_verification", "verified_at": verified_at.isoformat() if verified_at else None},
+    )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.post("/api/documents/{document_id}/publication-refresh", response_model=ConcordanceRunOut)
+def refresh_document_publication(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    confirm_verified: bool = False,
+) -> ConcordanceRun:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
+    if document_publication_is_verified(document):
+        if not confirm_verified:
+            raise HTTPException(status_code=409, detail="Confirm refreshing the manually verified publication before starting")
+        before = document_correction_snapshot(document)
+        if clear_document_publication_verification(document):
+            document.updated_at = utc_now()
+            db.flush()
+            record_document_version(
+                db,
+                document=document,
+                change_note="Cleared publication verification for refresh",
+                changed_fields={"publication"},
+                before=before,
+                after=document_correction_snapshot(document),
+                extra={"operation": "publication_refresh_unverify"},
+            )
+            record_manual_edit(
+                db,
+                document=document,
+                message="Cleared publication verification for refresh",
+                metadata={"operation": "publication_refresh_unverify"},
+            )
+    run = create_concordance_run(
+        db,
+        scope_type="documents",
+        scope_data={"document_ids": [document.id]},
+        capability_keys=["publication_metadata"],
+        force=True,
+        label=f"Publication refresh: {document.title}",
+    )
+    db.commit()
+    db.refresh(run)
+    return run
 
 
 @app.post("/api/documents/{document_id}/bibliography-refresh", response_model=ConcordanceRunOut)
@@ -8148,17 +8337,23 @@ def patch_document(
     domain_ids = data.pop("domain_ids", None)
     project_ids = data.pop("project_ids", None)
     attribute_values = data.pop("attribute_values", None)
+    publication_payload = data.pop("publication", None)
     no_doi = data.pop("no_doi", None)
     confirm_verified_doi_edit = bool(data.pop("confirm_verified_doi_edit", False))
+    confirm_verified_publication_edit = bool(data.pop("confirm_verified_publication_edit", False))
     confirm_verified_apa_citation_edit = bool(data.pop("confirm_verified_apa_citation_edit", False))
     confirm_verified_apa_in_text_citation_edit = bool(data.pop("confirm_verified_apa_in_text_citation_edit", False))
     confirm_verified_bibliography_edit = bool(data.pop("confirm_verified_bibliography_edit", False))
     confirm_validated_summary_edit = bool(data.pop("confirm_validated_summary_edit", False))
     requested_field_changes = {key for key, value in data.items() if getattr(document, key) != value}
     citation_fields = {"title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"}
+    if publication_payload is not None:
+        citation_fields.add("publication")
     no_doi_clears_doi = no_doi is True and bool(document.doi)
     doi_change_requested = "doi" in requested_field_changes or no_doi_clears_doi
-    citation_metadata_change_requested = bool(requested_field_changes & citation_fields) or no_doi_clears_doi
+    legacy_publication_change_requested = publication_payload is None and bool(requested_field_changes & {"journal", "publisher"})
+    publication_change_requested = publication_payload is not None or legacy_publication_change_requested
+    citation_metadata_change_requested = bool(requested_field_changes & citation_fields) or no_doi_clears_doi or publication_change_requested
     apa_citation_change_requested = "apa_citation" in requested_field_changes or (
         citation_metadata_change_requested and "apa_citation" not in data
     )
@@ -8169,6 +8364,8 @@ def patch_document(
     summary_change_requested = "rich_summary" in requested_field_changes
     if doi_change_requested and document_field_is_verified(document, "doi") and not confirm_verified_doi_edit:
         raise HTTPException(status_code=409, detail="Confirm editing the manually verified DOI before saving changes")
+    if publication_change_requested and document_publication_is_verified(document) and not confirm_verified_publication_edit:
+        raise HTTPException(status_code=409, detail="Confirm editing the manually verified publication before saving changes")
     if apa_citation_change_requested and document_field_is_verified(document, "apa_citation") and not confirm_verified_apa_citation_edit:
         raise HTTPException(status_code=409, detail="Confirm editing the manually verified APA reference list before saving changes")
     if (
@@ -8284,6 +8481,32 @@ def patch_document(
                 )
                 changed_fields.add("attributes")
 
+    if publication_payload is not None:
+        if confirm_verified_publication_edit and clear_document_publication_verification(document):
+            changed_fields.add("publication")
+        publication_changed_fields = apply_document_publication_patch(
+            db,
+            document,
+            publication_payload.model_dump(exclude_unset=True) if hasattr(publication_payload, "model_dump") else publication_payload,
+        )
+        changed_fields.update(publication_changed_fields)
+    elif legacy_publication_change_requested and document.journal:
+        if confirm_verified_publication_edit and clear_document_publication_verification(document):
+            changed_fields.add("publication")
+        changed_fields.update(
+            apply_document_publication_patch(
+                db,
+                document,
+                {
+                    "title": document.journal,
+                    "publisher": document.publisher,
+                    "source_url": document.source_url,
+                    "published_year": document.publication_year,
+                    "appearance_type": "article",
+                },
+            )
+        )
+
     if changed_fields & citation_fields:
         citation_metadata = document_metadata(document)
         citation_model = get_analysis_model(db, MODEL_APA_CITATION)
@@ -8323,6 +8546,8 @@ def patch_document(
     if "rich_summary" in changed_fields and clear_document_summary_validation(document):
         changed_fields.add("metadata_evidence")
     if changed_fields:
+        if "publication" in changed_fields:
+            document.updated_at = utc_now()
         document.search_text = rebuild_document_search_text(document)
         db.flush()
         after = document_correction_snapshot(document)
@@ -8771,6 +8996,7 @@ DOCUMENT_OVERWRITE_CHANGED_FIELDS = {
     "chunks",
     "figures",
     "capabilities",
+    "publication",
     "citation_candidates",
 }
 
@@ -8815,6 +9041,7 @@ def reset_document_for_overwrite(
     document.chunks.clear()
     document.figures.clear()
     document.capabilities.clear()
+    document.publication_links.clear()
     db.query(CitationCandidate).filter(CitationCandidate.document_id == document.id, CitationCandidate.status == "needs_review").delete(
         synchronize_session=False
     )
@@ -11401,18 +11628,7 @@ def project_bibliography(
         for item in project.items
         if document_is_library_visible(item.document) and (not used_only or item.used_in_output)
     ]
-    metadata = [
-        {
-            "title": document.title,
-            "authors": document.authors,
-            "publication_year": document.publication_year,
-            "journal": document.journal,
-            "publisher": document.publisher,
-            "doi": document.doi,
-            "source_url": document.source_url,
-        }
-        for document in documents
-    ]
+    metadata = [document_metadata(document) for document in documents]
     apa = "\n".join(sorted(document.apa_citation or "" for document in documents if document.apa_citation))
     bibtex = "\n\n".join(format_bibtex(item) for item in metadata)
     ris = "\n\n".join(format_ris(item) for item in metadata)

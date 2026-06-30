@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-06-27
+Last updated: 2026-06-30
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -24,6 +24,9 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: Queue shows source evidence side by side, supports partial field-level acceptance, and records which source supplied each accepted field.
 
 ## Document Processing And Intelligence
+
+- [ ] Add a richer Publication workspace and provider-evidence review UI.
+  - Acceptance: publication rows can be inspected outside the document detail pane, show aliases, identifiers, provider evidence, conflicts, and linked ready documents, and support review/merge/cleanup of duplicate publication identities without automatic metadata overwrite.
 
 - [ ] Extend Slipstream remote processing beyond the v1 lease/result foundation.
   - Acceptance: remote clients can run the same configured import and Concordance capability set as local workers, including capability-specific result bundle schemas, derived asset uploads with checksum validation, central scoped provider-call proxying for any model-backed step, per-call usage/cost attribution, richer client health/rate-limit surfaces, and end-to-end UI smoke coverage for Settings, Queue, Status, import completion, Concordance completion, failure recovery, and lease cancellation.

@@ -40,6 +40,8 @@ from app.models import (
     PortfolioSuggestion,
     PortfolioVersion,
     PortfolioVersionEdge,
+    Publication,
+    PublicationAlias,
     Project,
     ProjectBibliography,
     ProjectItem,
@@ -271,6 +273,10 @@ def build_metadata_export(db: Session) -> dict[str, Any]:
                 **_soft_delete(definition),
             }
             for definition in db.query(AttributeDefinition).order_by(AttributeDefinition.name).all()
+        ],
+        "publications": [
+            _publication_export(publication)
+            for publication in db.query(Publication).order_by(Publication.title, Publication.id).all()
         ],
         "documents": [_document_export(document) for document in documents],
         "notes": [
@@ -693,6 +699,10 @@ def _document_export(document: Document) -> dict[str, Any]:
         "capabilities": [
             _capability_export(capability) for capability in sorted(document.capabilities, key=lambda value: value.capability_key)
         ],
+        "publications": [
+            _document_publication_export(link)
+            for link in sorted(document.publication_links, key=lambda value: (value.role, value.created_at, value.id))
+        ],
         "pages": [_page_export(page) for page in sorted(document.pages, key=lambda value: value.page_number)],
         "text_chunks": [_chunk_export(chunk) for chunk in sorted(document.chunks, key=lambda value: (value.page_start or 0, value.id))],
         "figures": [_figure_export(figure) for figure in sorted(document.figures, key=lambda value: (value.page_number or 0, value.id))],
@@ -717,6 +727,76 @@ def _document_export(document: Document) -> dict[str, Any]:
         ],
         **_timestamps(document),
         **_soft_delete(document),
+    }
+
+
+def _publication_export(publication: Publication) -> dict[str, Any]:
+    return {
+        "id": publication.id,
+        "title": publication.title,
+        "normalized_title": publication.normalized_title,
+        "publication_type": publication.publication_type,
+        "publisher": publication.publisher,
+        "imprint": publication.imprint,
+        "issn_l": publication.issn_l,
+        "issns": publication.issns,
+        "isbns": publication.isbns,
+        "doi": publication.doi,
+        "source_url": publication.source_url,
+        "external_ids": publication.external_ids,
+        "metadata": publication.publication_metadata,
+        "evidence": publication.evidence,
+        "aliases": [
+            _publication_alias_export(alias)
+            for alias in sorted(publication.aliases, key=lambda value: (value.normalized_alias, value.id))
+        ],
+        **_timestamps(publication),
+    }
+
+
+def _publication_alias_export(alias: PublicationAlias) -> dict[str, Any]:
+    return {
+        "id": alias.id,
+        "publication_id": alias.publication_id,
+        "alias": alias.alias,
+        "normalized_alias": alias.normalized_alias,
+        "source": alias.source,
+        "metadata": alias.alias_metadata,
+        **_timestamps(alias),
+    }
+
+
+def _document_publication_export(link) -> dict[str, Any]:
+    return {
+        "id": link.id,
+        "document_id": link.document_id,
+        "publication_id": link.publication_id,
+        "role": link.role,
+        "appearance_type": link.appearance_type,
+        "title_snapshot": link.title_snapshot,
+        "publisher_snapshot": link.publisher_snapshot,
+        "volume": link.volume,
+        "issue": link.issue,
+        "article_number": link.article_number,
+        "page_range": link.page_range,
+        "published_date": link.published_date,
+        "published_year": link.published_year,
+        "edition": link.edition,
+        "chapter": link.chapter,
+        "section": link.section,
+        "series_title": link.series_title,
+        "event_name": link.event_name,
+        "source_url": link.source_url,
+        "identifiers": link.identifiers,
+        "confidence": _value(link.confidence),
+        "source": link.source,
+        "model": link.model,
+        "verification_status": link.verification_status,
+        "verified_at": _value(link.verified_at),
+        "verified_by": link.verified_by,
+        "verified_by_user_id": link.verified_by_user_id,
+        "evidence": link.evidence,
+        **_timestamps(link),
     }
 
 

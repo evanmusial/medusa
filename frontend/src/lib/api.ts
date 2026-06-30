@@ -67,6 +67,7 @@ import type {
   PortfolioItemPatchPayload,
   PortfolioItemPayload,
   PortfolioSuggestionRefresh,
+  PublicationListRow,
   Project,
   ProjectDetail,
   ProjectItem,
@@ -334,6 +335,12 @@ export const api = {
     return request<DocumentListResponse>(`/api/documents/list?${params.toString()}`);
   },
   document: (id: string) => request<DocumentDetail>(`/api/documents/${id}`),
+  publications: (query = "", limit = 200) => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    params.set("limit", String(limit));
+    return request<PublicationListRow[]>(`/api/publications?${params.toString()}`);
+  },
   scanDocumentDuplicates: () => request<DuplicateScan>("/api/documents/duplicates/scan"),
   resolveDocumentDuplicate: (keepDocumentId: string, duplicateDocumentId: string) =>
     request<DuplicateResolveResult>("/api/documents/duplicates/resolve", {
@@ -384,6 +391,8 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${id}/field-verifications/${field}`, { method: "POST" }),
   verifyDocumentBibliography: (id: string) =>
     request<DocumentDetail>(`/api/documents/${id}/bibliography-verification`, { method: "POST" }),
+  verifyDocumentPublication: (id: string) =>
+    request<DocumentDetail>(`/api/documents/${id}/publication-verification`, { method: "POST" }),
   validateDocumentSummary: (id: string) =>
     request<DocumentDetail>(`/api/documents/${id}/summary-validation`, { method: "POST" }),
   refreshDocumentSummary: (id: string, options: { confirmValidated?: boolean } = {}) =>
@@ -393,6 +402,11 @@ export const api = {
   refreshDocumentBibliography: (id: string, options: { confirmVerified?: boolean } = {}) =>
     request<ConcordanceRun>(
       `/api/documents/${id}/bibliography-refresh${options.confirmVerified ? "?confirm_verified=true" : ""}`,
+      { method: "POST" },
+    ),
+  refreshDocumentPublication: (id: string, options: { confirmVerified?: boolean } = {}) =>
+    request<ConcordanceRun>(
+      `/api/documents/${id}/publication-refresh${options.confirmVerified ? "?confirm_verified=true" : ""}`,
       { method: "POST" },
     ),
   createAccessorySummary: (documentId: string, body: AccessorySummaryPayload) =>

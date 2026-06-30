@@ -978,11 +978,91 @@ export type TagOptimizationApproveAllResult = {
 export type DocumentFilters = {
   domain_id?: string;
   tag_id?: string;
+  publication_id?: string;
   read_status?: string;
   priority?: string;
   citation_status?: string;
   duplicate_status?: string;
   health_status?: string;
+};
+
+export type DocumentPublication = {
+  id: string;
+  publication_id: string;
+  role: string;
+  title: string;
+  type?: string | null;
+  publisher?: string | null;
+  imprint?: string | null;
+  issn_l?: string | null;
+  issns: string[];
+  isbns: string[];
+  doi?: string | null;
+  source_url?: string | null;
+  external_ids: Record<string, unknown>;
+  appearance_type?: string | null;
+  volume?: string | null;
+  issue?: string | null;
+  article_number?: string | null;
+  page_range?: string | null;
+  published_date?: string | null;
+  published_year?: number | null;
+  edition?: string | null;
+  chapter?: string | null;
+  section?: string | null;
+  series_title?: string | null;
+  event_name?: string | null;
+  identifiers: Record<string, unknown>;
+  confidence?: number | null;
+  source?: string | null;
+  model?: string | null;
+  verification_status: string;
+  verified_at?: string | null;
+  verified_by?: string | null;
+  evidence: Record<string, unknown>;
+};
+
+export type PublicationListRow = {
+  id: string;
+  title: string;
+  type?: string | null;
+  publisher?: string | null;
+  issn_l?: string | null;
+  issns: string[];
+  isbns: string[];
+  doi?: string | null;
+  source_url?: string | null;
+  ready_document_count: number;
+};
+
+export type DocumentPublicationPatch = {
+  clear?: boolean;
+  title?: string | null;
+  publication_title?: string | null;
+  type?: string | null;
+  publication_type?: string | null;
+  publisher?: string | null;
+  imprint?: string | null;
+  issn_l?: string | null;
+  issns?: string[] | null;
+  isbns?: string[] | null;
+  doi?: string | null;
+  source_url?: string | null;
+  external_ids?: Record<string, unknown> | null;
+  identifiers?: Record<string, unknown> | null;
+  appearance_type?: string | null;
+  volume?: string | null;
+  issue?: string | null;
+  article_number?: string | null;
+  page_range?: string | null;
+  published_date?: string | null;
+  published_year?: number | null;
+  edition?: string | null;
+  chapter?: string | null;
+  section?: string | null;
+  series_title?: string | null;
+  event_name?: string | null;
+  notes?: string | null;
 };
 
 export type SavedSearch = {
@@ -1232,6 +1312,7 @@ export type DocumentSummary = {
   authors: Array<Record<string, string | null>>;
   publication_year?: number | null;
   journal?: string | null;
+  publication?: DocumentPublication | null;
   doi?: string | null;
   rich_summary?: string | null;
   apa_citation?: string | null;
@@ -1266,6 +1347,7 @@ export type DocumentListRow = {
   title: string;
   authors: Array<Record<string, string | null>>;
   publication_year?: number | null;
+  publication?: DocumentPublication | null;
   rich_summary?: string | null;
   citation_status: string;
   no_doi: boolean;
@@ -1593,12 +1675,14 @@ export type DoiStashPayload = {
   recommendation_id?: string | null;
 };
 
-export type DocumentUpdatePayload = Partial<DocumentDetail> & {
+export type DocumentUpdatePayload = Omit<Partial<DocumentDetail>, "publication"> & {
   tag_names?: string[];
   domain_ids?: string[];
   project_ids?: string[];
   attribute_values?: Record<string, unknown>;
+  publication?: DocumentPublicationPatch | null;
   confirm_verified_doi_edit?: boolean;
+  confirm_verified_publication_edit?: boolean;
   confirm_verified_apa_citation_edit?: boolean;
   confirm_verified_apa_in_text_citation_edit?: boolean;
   confirm_verified_bibliography_edit?: boolean;
