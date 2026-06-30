@@ -5230,6 +5230,14 @@ function markdownExcerpt(markdown: string, maxChars = 360): string {
   return `${trimmed.replace(/[,\s;:]+$/, "")}...`;
 }
 
+function markdownParagraphCount(markdown?: string | null): number {
+  return decodeHtmlEntities(markdown || "")
+    .replace(/\r/g, "")
+    .split(/\n\s*\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean).length;
+}
+
 function MarkdownBlock({
   content,
   empty,
@@ -9518,12 +9526,12 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
         <div className="recommendations-download-row">
           <label className="select-all-row">
             <input
-              data-disabled-reason="there are no new recommendations available for selection."
+              data-disabled-reason={documentLocked ? "this document is locked." : "there are no new recommendations available for selection."}
               data-tooltip={allSelectableSelected ? "Clear all selectable recommendation rows." : "Select all discovery rows that are not already known to Medusa."}
               type="checkbox"
               checked={allSelectableSelected}
               onChange={toggleAllSelectable}
-              disabled={!selectableRows.length}
+              disabled={documentLocked || !selectableRows.length}
             />
             <strong>{selectedCount ? `${selectedCount} selected` : "Select discovery leads"}</strong>
           </label>
@@ -9531,14 +9539,16 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             <button
               className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
               data-disabled-reason={
-                download.isPending
+                documentLocked
+                  ? "this document is locked."
+                  : download.isPending
                   ? "recommendation downloads are already being queued."
                   : !selectedCount
                     ? "select one or more discovery rows first."
                     : "none of the selected recommendations has an open PDF URL."
               }
               data-tooltip="Queue imports for selected discovery rows that have open PDF URLs."
-              disabled={!selectedCount || !selectedDownloadable || download.isPending}
+              disabled={documentLocked || !selectedCount || !selectedDownloadable || download.isPending}
               onClick={() => download.mutate({ recommendation_ids: selectedIds, mode: "selected", skip_existing: true })}
               type="button"
             >
@@ -9550,14 +9560,16 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             <button
               className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
               data-disabled-reason={
-                download.isPending
+                documentLocked
+                  ? "this document is locked."
+                  : download.isPending
                   ? "recommendation downloads are already being queued."
                   : !newRows.length
                     ? "there are no discovery rows."
                     : "no discovery row has an open PDF URL."
               }
               data-tooltip="Queue imports for every discovery row that has an open PDF URL."
-              disabled={!newRows.length || !newDownloadable || download.isPending}
+              disabled={documentLocked || !newRows.length || !newDownloadable || download.isPending}
               onClick={() => download.mutate({ mode: "new", skip_existing: true })}
               type="button"
             >
@@ -9963,6 +9975,7 @@ function DocumentPanelContent({
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState(document.rich_summary || "");
   const [summaryEditError, setSummaryEditError] = useState<string | null>(null);
+  const [summaryValidatedEditConfirmed, setSummaryValidatedEditConfirmed] = useState(false);
   const [editingBibliography, setEditingBibliography] = useState(false);
   const [bibliographyDraft, setBibliographyDraft] = useState(document.bibliography || "");
   const [bibliographyEditError, setBibliographyEditError] = useState<string | null>(null);
@@ -10184,11 +10197,16 @@ function DocumentPanelContent({
     onError: (error) => setDoiEditError(actionFailureMessage("Could not mark No DOI", error)),
   });
   const updateSummary = useMutation({
-    mutationFn: (value: string) => api.updateDocument(document.id, { rich_summary: value.trim() || null }),
+    mutationFn: ({ value, confirmValidated }: { value: string; confirmValidated: boolean }) =>
+      api.updateDocument(document.id, {
+        rich_summary: value.trim() || null,
+        confirm_validated_summary_edit: confirmValidated,
+      }),
     onSuccess: (updatedDocument) => {
       setEditingSummary(false);
       setSummaryDraft(updatedDocument.rich_summary || "");
       setSummaryEditError(null);
+      setSummaryValidatedEditConfirmed(false);
       setDraft(draftFromDocument(updatedDocument));
       queryClient.setQueryData(["document", document.id], updatedDocument);
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
@@ -10196,6 +10214,18 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (error) => setSummaryEditError(actionFailureMessage("Could not save summary", error)),
+  });
+  const validateSummary = useMutation({
+    mutationFn: () => api.validateDocumentSummary(document.id),
+    onSuccess: (updatedDocument) => {
+      queryClient.setQueryData(["document", document.id], updatedDocument);
+      setDraft(draftFromDocument(updatedDocument));
+      setSummaryEditError(null);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => setSummaryEditError(actionFailureMessage("Could not validate summary", error)),
   });
   const updateBibliography = useMutation({
     mutationFn: ({ value, confirmVerified }: { value: string; confirmVerified: boolean }) =>
@@ -10402,12 +10432,13 @@ function DocumentPanelContent({
     },
   });
   const refreshSummary = useMutation({
-    mutationFn: () =>
+    mutationFn: (confirmValidated: boolean) =>
       startConcordanceRun({
         backgroundDetail: document.title,
         backgroundLabel: "Refreshing summary",
         capability_keys: ["summary_refresh"],
         capabilityKey: "summary_refresh",
+        createRun: () => api.refreshDocumentSummary(document.id, { confirmValidated }),
         documentId: document.id,
         force: true,
         label: `Summary refresh: ${document.title}`,
@@ -10663,6 +10694,7 @@ function DocumentPanelContent({
     setEditingSummary(false);
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
+    setSummaryValidatedEditConfirmed(false);
     setEditingBibliography(false);
     setBibliographyDraft(document.bibliography || "");
     setBibliographyEditError(null);
@@ -10713,6 +10745,7 @@ function DocumentPanelContent({
     setEditing(false);
     setEditingDoi(false);
     setEditingSummary(false);
+    setSummaryValidatedEditConfirmed(false);
     setEditingBibliography(false);
     setEditingCitation(null);
     setEditingPageId(null);
@@ -10748,6 +10781,8 @@ function DocumentPanelContent({
   useEffect(() => {
     if (
       !document.bibliography_generated_at &&
+      !document.summary_generated_at &&
+      !document.summary_validated_at &&
       !document.doi_verified_at &&
       !document.apa_citation_verified_at &&
       !document.apa_in_text_citation_verified_at &&
@@ -10763,6 +10798,8 @@ function DocumentPanelContent({
     document.bibliography_generated_at,
     document.bibliography_verified_at,
     document.doi_verified_at,
+    document.summary_generated_at,
+    document.summary_validated_at,
   ]);
 
   useEffect(() => {
@@ -11625,6 +11662,7 @@ function DocumentPanelContent({
     if (field === "apa_in_text_citation") return document.apa_in_text_citation || "";
     return document.bibliography || "";
   };
+  const canVerifyField = (field: DocumentVerificationField) => field === "bibliography" || Boolean(verificationValueForField(field));
   const verificationTimestampForField = (field: DocumentVerificationField) => {
     if (field === "doi") return document.doi_verified_at || null;
     if (field === "apa_citation") return document.apa_citation_verified_at || null;
@@ -11752,29 +11790,64 @@ function DocumentPanelContent({
     if (!ok) return;
     markNoDoi.mutate(true);
   };
+  const summaryIsValidated = Boolean(document.summary_validated_at);
   const bibliographyIsVerified = Boolean(document.bibliography_verified_at);
   const copySummary = () => {
     if (document.rich_summary) void copyToClipboard("document-summary", decodeHtmlEntities(document.rich_summary));
   };
-  const startSummaryEdit = () => {
-    if (documentLocked) return;
+  const startSummaryEdit = async () => {
+    if (documentLocked || editingSummary || updateSummary.isPending) return;
+    let confirmed = false;
+    if (summaryIsValidated) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Edit Summary",
+        eyebrow: "Validated summary",
+        message: "This summary has been validated as an exemplar. Saving changes will remove validation until you validate it again.",
+        title: "Edit validated summary?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmed = true;
+    }
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
+    setSummaryValidatedEditConfirmed(confirmed);
     setEditingSummary(true);
     window.requestAnimationFrame(() => summaryTextareaRef.current?.focus());
   };
   const cancelSummaryEdit = () => {
     setSummaryDraft(document.rich_summary || "");
     setSummaryEditError(null);
+    setSummaryValidatedEditConfirmed(false);
     setEditingSummary(false);
   };
   const saveSummaryEdit = () => {
     if (documentLocked) return;
-    updateSummary.mutate(summaryDraft);
+    updateSummary.mutate({ value: summaryDraft, confirmValidated: summaryIsValidated && summaryValidatedEditConfirmed });
   };
-  const checkSummary = () => {
+  const markSummaryValidated = () => {
+    if (documentLocked || validateSummary.isPending || !document.rich_summary?.trim() || summaryIsValidated) return;
+    setSummaryEditError(null);
+    validateSummary.mutate();
+  };
+  const checkSummary = async () => {
     if (documentLocked) return;
-    refreshSummary.mutate();
+    let confirmValidated = false;
+    if (summaryIsValidated) {
+      const ok = await dialogs.confirm({
+        cancelLabel: "Cancel",
+        confirmLabel: "Refresh Summary",
+        eyebrow: "Validated summary",
+        message:
+          "This summary has been validated as an exemplar. Refreshing it will remove validation and queue a replacement from the selected Summary model.",
+        title: "Refresh validated summary?",
+        tone: "warning",
+      });
+      if (!ok) return;
+      confirmValidated = true;
+    }
+    refreshSummary.mutate(confirmValidated);
   };
   const startBibliographyEdit = async () => {
     if (documentLocked || editingBibliography || updateBibliography.isPending) return;
@@ -11811,7 +11884,7 @@ function DocumentPanelContent({
     });
   };
   const markBibliographyVerified = () => {
-    if (documentLocked || !document.bibliography || verifyBibliography.isPending) return;
+    if (documentLocked || verifyBibliography.isPending) return;
     setBibliographyEditError(null);
     verifyBibliography.mutate();
   };
@@ -12099,6 +12172,14 @@ function DocumentPanelContent({
     setDocumentTags(currentTagNames.filter((tagName) => tagName.toLocaleLowerCase() !== normalizedKey));
   };
   const accessoryModelOptions = preferences?.model_options[accessorySummaryTask?.model_kind || "gpt"] || [];
+  const summaryGeneratedLabel = relativeTimeLabel(document.summary_generated_at, relativeTimeNow);
+  const summaryValidatedLabel = relativeTimeLabel(document.summary_validated_at, relativeTimeNow);
+  const summaryValidatedBy = document.summary_validated_by || "Medusa user";
+  const summaryValidatedTooltip = document.summary_validated_at
+    ? `Validated by ${summaryValidatedBy}${summaryValidatedLabel ? ` ${summaryValidatedLabel}` : ""}.`
+    : "";
+  const summaryParagraphs = markdownParagraphCount(document.rich_summary);
+  const summaryShowsRepeatedGeneratedTime = Boolean(summaryGeneratedLabel && summaryParagraphs > 4 && !editingSummary);
   const bibliographyGeneratedLabel = relativeTimeLabel(document.bibliography_generated_at, relativeTimeNow);
   const bibliographyVerifiedLabel = relativeTimeLabel(document.bibliography_verified_at, relativeTimeNow);
   const bibliographyVerifiedBy = document.bibliography_verified_by || "Medusa user";
@@ -12112,7 +12193,7 @@ function DocumentPanelContent({
     return `Verified by ${verificationUserForField(field) || "Medusa user"}${relative ? ` ${relative}` : ""}.`;
   };
   const markFieldVerified = (field: DocumentVerificationField) => {
-    if (documentLocked || !verificationValueForField(field) || verifyDocumentField.isPending) return;
+    if (documentLocked || !canVerifyField(field) || verifyDocumentField.isPending) return;
     if (field === "doi") setDoiEditError(null);
     else if (field === "bibliography") setBibliographyEditError(null);
     else setCitationEditError(null);
@@ -12136,7 +12217,7 @@ function DocumentPanelContent({
           documentLocked ? documentLockedReason : verifyDocumentField.isPending ? "the verification is already saving." : `this document does not have ${label} text to verify.`
         }
         data-tooltip={`Mark this document's ${label} field as manually verified.`}
-        disabled={documentLocked || !verificationValueForField(field) || verifyDocumentField.isPending}
+        disabled={documentLocked || !canVerifyField(field) || verifyDocumentField.isPending}
         onClick={() => markFieldVerified(field)}
         type="button"
       >
@@ -12432,7 +12513,36 @@ function DocumentPanelContent({
   );
   const renderSummarySection = () => (
     <section className="detail-section summary-section">
-      <h3>Summary</h3>
+      <div className="detail-section-title-row summary-title-row">
+        <h3>Summary</h3>
+        {summaryIsValidated ? (
+          <span className="bibliography-verified-badge" data-tooltip={summaryValidatedTooltip || "This summary was manually validated."}>
+            <BadgeCheck size={15} />
+            Validated
+          </span>
+        ) : (
+          <button
+            className="secondary-button compact bibliography-verify-button"
+            data-disabled-reason={
+              documentLocked
+                ? documentLockedReason
+                : validateSummary.isPending
+                  ? "summary validation is already saving."
+                  : !document.rich_summary?.trim()
+                    ? "this document does not have a summary to validate."
+                    : undefined
+            }
+            data-tooltip="Mark this document's summary as validated and preserve it as the exemplar summary."
+            disabled={documentLocked || validateSummary.isPending || !document.rich_summary?.trim()}
+            onClick={markSummaryValidated}
+            type="button"
+          >
+            <BadgeCheck size={14} />
+            Validate
+          </button>
+        )}
+      </div>
+      {summaryShowsRepeatedGeneratedTime ? <p className="section-kicker summary-generated-marker">Generated {summaryGeneratedLabel}</p> : null}
       {editingSummary ? (
         <form
           className="summary-editor"
@@ -12574,6 +12684,7 @@ function DocumentPanelContent({
       ) : (
         <MarkdownBlock content={document.rich_summary} empty="Summary pending." />
       )}
+      {summaryShowsRepeatedGeneratedTime ? <p className="section-kicker summary-generated-marker bottom">Generated {summaryGeneratedLabel}</p> : null}
       <div className="citation-actions">
         <button
           aria-label={copiedKey === "document-summary" ? "Summary copied" : "Copy summary"}
@@ -12591,7 +12702,7 @@ function DocumentPanelContent({
           className="icon-button"
           data-disabled-reason={documentLocked ? documentLockedReason : updateSummary.isPending ? "the summary edit is already saving." : "the summary editor is already open."}
           data-tooltip="Open the Markdown summary editor for this document."
-          onClick={startSummaryEdit}
+          onClick={() => void startSummaryEdit()}
           disabled={documentLocked || updateSummary.isPending || editingSummary}
           type="button"
         >
@@ -12608,7 +12719,7 @@ function DocumentPanelContent({
             className={asyncFeedbackClass("icon-button", summaryRefreshFeedback.feedback, summaryRefreshBusy)}
             data-disabled-reason={summaryRefreshBusyReason}
             data-tooltip="Queue a summary-only Concordance refresh using the selected Summary model."
-            onClick={checkSummary}
+            onClick={() => void checkSummary()}
             disabled={documentLocked || summaryRefreshBusy}
             type="button"
           >
@@ -12621,6 +12732,9 @@ function DocumentPanelContent({
   );
   const renderBibliographySection = () => {
     const bibliographyItemCount = bibliographyEntriesFromText(document.bibliography).length;
+    const bibliographyEmptyLabel = bibliographyIsVerified
+      ? "No source bibliography provided; verified as empty."
+      : "No source bibliography extracted yet.";
     return (
       <section className="detail-section bibliography-section">
         <div className="detail-section-title-row bibliography-title-row">
@@ -12641,10 +12755,10 @@ function DocumentPanelContent({
                   ? documentLockedReason
                   : verifyBibliography.isPending
                   ? "the bibliography verification is already saving."
-                  : "this document does not have an extracted bibliography to verify."
+                  : undefined
               }
-              data-tooltip="Mark this document's Bibliography field as manually verified."
-              disabled={documentLocked || !document.bibliography || verifyBibliography.isPending}
+              data-tooltip="Mark this document's Bibliography field as manually verified, including when the document has no source bibliography."
+              disabled={documentLocked || verifyBibliography.isPending}
               onClick={markBibliographyVerified}
               type="button"
             >
@@ -12707,7 +12821,7 @@ function DocumentPanelContent({
             {bibliographyEditError ? <p className="form-error">{bibliographyEditError}</p> : null}
           </form>
         ) : (
-          <BibliographyBlock content={document.bibliography} empty="No source bibliography extracted yet." />
+          <BibliographyBlock content={document.bibliography} empty={bibliographyEmptyLabel} />
         )}
         {!editingBibliography && bibliographyEditError ? <p className="form-error">{bibliographyEditError}</p> : null}
         <div className="citation-actions">

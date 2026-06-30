@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,6 +79,7 @@ from app.services.verifier import (
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_CHARACTERS = BIBLIOGRAPHY_CLEANUP_INPUT_MAX_CHARACTERS
 BIBLIOGRAPHY_MODEL_CLEANUP_MAX_ENTRIES = 300
 BIBLIOGRAPHY_CLEANUP_LOW_CONFIDENCE_THRESHOLD = 0.55
+SUMMARY_VALIDATION_METADATA_KEY = "summary_validation"
 BIBLIOGRAPHY_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 BIBLIOGRAPHY_DOI_SIGNAL_RE = re.compile(r"(?:https?://(?:dx\.)?doi\.org/|\bdoi\.org/|\b10\.\d{4,9}/)", re.IGNORECASE)
 BIBLIOGRAPHY_REFERENCE_SIGNAL_RE = re.compile(
@@ -658,6 +660,24 @@ def _document_has_meaningful_summary(document: Document) -> bool:
         return False
     lowered = summary.lower()
     return "summary refresh is pending" not in lowered and "metadata extraction is pending" not in lowered
+
+
+def _document_summary_digest(summary: str | None) -> str | None:
+    text = str(summary or "")
+    if not text.strip():
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _document_summary_is_validated(document: Document) -> bool:
+    current_digest = _document_summary_digest(document.rich_summary)
+    if not current_digest:
+        return False
+    validation = (document.metadata_evidence or {}).get(SUMMARY_VALIDATION_METADATA_KEY)
+    if not isinstance(validation, dict) or validation.get("status") != "validated":
+        return False
+    stored_digest = str(validation.get("summary_sha256") or "").strip()
+    return not stored_digest or stored_digest == current_digest
 
 
 def _document_has_metadata_identity(document: Document) -> bool:
@@ -1994,6 +2014,19 @@ class ConcordanceProcessor:
         }
 
     def _refresh_summary(self, db: Session, document: Document, job: ConcordanceJob) -> dict[str, Any]:
+        if _document_summary_is_validated(document):
+            metadata_evidence = dict(document.metadata_evidence or {})
+            metadata_evidence["summary_refresh"] = {
+                "status": "skipped_validated_summary",
+                "checked_at": utc_now().isoformat(),
+                "summary_generated_at": None,
+                "summary_validated": True,
+            }
+            document.metadata_evidence = metadata_evidence
+            return {
+                "status": "skipped_validated_summary",
+                "summary_validated": True,
+            }
         before = document_correction_snapshot(document)
         ai = get_ai_service()
         summary_model = get_analysis_model(db, MODEL_SUMMARY)
@@ -2004,10 +2037,13 @@ class ConcordanceProcessor:
             usage_context=self._usage_context(document, job, "summary_refresh"),
             prompt_cache_key=f"medusa-doc:{document.checksum_sha256}:summary",
         )
+        generated_at = utc_now().isoformat()
         metadata_evidence = dict(document.metadata_evidence or {})
         metadata_evidence["summary_refresh"] = {
             "confidence": summary.get("confidence"),
             "needs_review_reasons": summary.get("needs_review_reasons") or [],
+            "generated_at": generated_at,
+            "summary_generated_at": generated_at if summary.get("rich_summary") else None,
             **(summary.get("_openai") or {}),
         }
         document.metadata_evidence = metadata_evidence
@@ -2110,7 +2146,8 @@ class ConcordanceProcessor:
             model=model_preferences[MODEL_KEYWORDS_TOPICS],
         )
         metadata_current = _model_requirement_current(db, document, metadata_requirement)
-        summary_current = _model_requirement_current(db, document, summary_requirement)
+        summary_validated = _document_summary_is_validated(document)
+        summary_current = summary_validated or _model_requirement_current(db, document, summary_requirement)
         tags_current = _model_requirement_current(db, document, tags_requirement)
 
         metadata: dict[str, Any] = {}
@@ -2164,12 +2201,17 @@ class ConcordanceProcessor:
             *(summary.get("needs_review_reasons") or []),
             *(keywords.get("needs_review_reasons") or []),
         ]
+        generated_at = utc_now().isoformat()
+        summary_generated_at = generated_at if summary.get("rich_summary") else None
         evidence = dict(document.metadata_evidence or {})
         evidence["concordance_ai"] = {
             "confidence": min(confidence_values) if confidence_values else None,
             "needs_review_reasons": needs_review_reasons,
             "models": called_models,
             "skipped_fields": skipped_fields,
+            "generated_at": generated_at,
+            "summary_generated_at": summary_generated_at,
+            "summary_validated": summary_validated,
             "used_pdf_file": bool((metadata.get("_openai") or {}).get("used_pdf_file")),
             "pdf_file_bytes": (metadata.get("_openai") or {}).get("pdf_file_bytes", 0),
         }

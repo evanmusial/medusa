@@ -1305,6 +1305,9 @@ export type DocumentDetail = DocumentSummary & {
   source_url?: string | null;
   abstract?: string | null;
   bibliography?: string | null;
+  summary_generated_at?: string | null;
+  summary_validated_at?: string | null;
+  summary_validated_by?: string | null;
   bibliography_generated_at?: string | null;
   doi_verified_at?: string | null;
   doi_verified_by?: string | null;
@@ -1599,6 +1602,7 @@ export type DocumentUpdatePayload = Partial<DocumentDetail> & {
   confirm_verified_apa_citation_edit?: boolean;
   confirm_verified_apa_in_text_citation_edit?: boolean;
   confirm_verified_bibliography_edit?: boolean;
+  confirm_validated_summary_edit?: boolean;
 };
 
 export type DocumentLockPayload = {

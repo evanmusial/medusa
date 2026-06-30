@@ -164,20 +164,58 @@ def test_document_lock_blocks_document_mutations(monkeypatch, tmp_path):
 
     from fastapi import HTTPException
 
-    from app.main import bulk_update_documents, patch_document, set_document_lock, trash_documents
-    from app.models import Document
-    from app.schemas import DocumentLockPatch, DocumentPatch, DocumentTrashRequest
+    from app.main import (
+        bulk_update_documents,
+        create_annotation,
+        download_recommendations,
+        patch_document,
+        patch_document_page,
+        patch_figure,
+        refresh_document_bibliography,
+        refresh_document_citation,
+        refresh_document_summary,
+        scrub_document_text,
+        set_document_lock,
+        trash_documents,
+        validate_document_summary,
+        verify_document_bibliography,
+        verify_document_field,
+    )
+    from app.models import Document, DocumentPage, Figure
+    from app.schemas import (
+        AnnotationCreate,
+        DocumentLockPatch,
+        DocumentPagePatch,
+        DocumentPatch,
+        DocumentRecommendationDownloadCreate,
+        DocumentTextScrub,
+        DocumentTrashRequest,
+        FigurePatch,
+    )
 
     Session = make_session()
     with Session() as db:
         document = Document(
             title="Lock Target",
+            publication_year=2025,
             original_filename="lock-target.pdf",
             checksum_sha256="l" * 64,
             processing_status="ready",
+            doi="10.1000/lock",
+            apa_citation="Smith, A. (2025). Lock target.",
+            apa_in_text_citation="(Smith, 2025)",
+            bibliography="Smith, A. (2025). Lock target.",
+            rich_summary="Validated lock summary.",
+            search_text="Lock Target OCR text.",
         )
         db.add(document)
+        db.flush()
+        page = DocumentPage(document_id=document.id, page_number=1, text="Lock Target OCR text.", text_source="pdf")
+        figure = Figure(document_id=document.id, page_number=1, figure_label="Figure 1", caption="Original caption.")
+        db.add_all([page, figure])
         db.commit()
+        db.refresh(page)
+        db.refresh(figure)
 
         locked = set_document_lock(document.id, DocumentLockPatch(is_locked=True), object(), db)
         db.refresh(document)
@@ -185,9 +223,20 @@ def test_document_lock_blocks_document_mutations(monkeypatch, tmp_path):
         assert locked.is_locked is True
         assert document.locked_at is not None
 
-        with pytest.raises(HTTPException) as patch_exc:
-            patch_document(document.id, DocumentPatch(title="Changed"), object(), db)
-        assert patch_exc.value.status_code == 423
+        locked_patch_payloads = [
+            DocumentPatch(title="Changed"),
+            DocumentPatch(publication_year=2026),
+            DocumentPatch(doi="10.1000/changed"),
+            DocumentPatch(no_doi=True),
+            DocumentPatch(apa_citation="Changed APA reference."),
+            DocumentPatch(apa_in_text_citation="(Changed, 2026)"),
+            DocumentPatch(bibliography="Changed bibliography."),
+            DocumentPatch(rich_summary="Changed summary."),
+        ]
+        for payload in locked_patch_payloads:
+            with pytest.raises(HTTPException) as patch_exc:
+                patch_document(document.id, payload, object(), db)
+            assert patch_exc.value.status_code == 423
 
         with pytest.raises(HTTPException) as bulk_exc:
             bulk_update_documents({"document_ids": [document.id], "updates": {"priority": "high"}}, object(), db)
@@ -196,6 +245,24 @@ def test_document_lock_blocks_document_mutations(monkeypatch, tmp_path):
         with pytest.raises(HTTPException) as trash_exc:
             trash_documents(DocumentTrashRequest(document_ids=[document.id]), object(), db)
         assert trash_exc.value.status_code == 423
+
+        locked_actions = [
+            lambda: patch_document_page(document.id, page.id, DocumentPagePatch(normalized_text="Changed OCR text."), object(), db),
+            lambda: scrub_document_text(document.id, DocumentTextScrub(text="OCR"), object(), db),
+            lambda: verify_document_field(document.id, "doi", object(), db),
+            lambda: verify_document_bibliography(document.id, object(), db),
+            lambda: validate_document_summary(document.id, object(), db),
+            lambda: refresh_document_citation(document.id, object(), db),
+            lambda: refresh_document_bibliography(document.id, object(), db),
+            lambda: refresh_document_summary(document.id, object(), db),
+            lambda: create_annotation(document.id, AnnotationCreate(body="Changed note"), object(), db),
+            lambda: patch_figure(figure.id, FigurePatch(figure_label="Changed figure"), object(), db),
+            lambda: download_recommendations(document.id, DocumentRecommendationDownloadCreate(mode="new"), object(), db),
+        ]
+        for action in locked_actions:
+            with pytest.raises(HTTPException) as locked_exc:
+                action()
+            assert locked_exc.value.status_code == 423
 
         unlocked = set_document_lock(document.id, DocumentLockPatch(is_locked=False), object(), db)
         updated = patch_document(document.id, DocumentPatch(title="Unlocked Change"), object(), db)
@@ -1320,6 +1387,59 @@ def test_document_detail_prefers_bibliography_generated_evidence(monkeypatch, tm
         assert detail.bibliography_generated_at.isoformat() == "2026-06-26T12:34:56+00:00"
 
 
+def test_document_detail_prefers_summary_generated_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import document_detail_out
+    from app.models import Document, DocumentCapability, utc_now
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Evidence Summary Paper",
+            original_filename="evidence-summary.pdf",
+            checksum_sha256="s" * 64,
+            rich_summary="Generated summary text.",
+            metadata_evidence={"summary_refresh": {"status": "generated", "summary_generated_at": "2026-06-26T14:34:56+00:00"}},
+            page_count=1,
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        detail = document_detail_out(document, db)
+
+        assert detail.summary_generated_at is not None
+        assert detail.summary_generated_at.isoformat() == "2026-06-26T14:34:56+00:00"
+
+        skipped_document = Document(
+            title="Skipped Summary Paper",
+            original_filename="skipped-summary.pdf",
+            checksum_sha256="t" * 64,
+            rich_summary="Existing validated summary.",
+            metadata_evidence={"summary_refresh": {"status": "skipped_validated_summary", "summary_generated_at": None}},
+            page_count=1,
+        )
+        db.add(skipped_document)
+        db.flush()
+        db.add(
+            DocumentCapability(
+                document_id=skipped_document.id,
+                capability_key="summary_refresh",
+                version=1,
+                status="complete",
+                completed_at=utc_now(),
+            )
+        )
+        db.commit()
+        db.refresh(skipped_document)
+
+        skipped_detail = document_detail_out(skipped_document, db)
+
+        assert skipped_detail.summary_generated_at is None
+
+
 def test_document_bibliography_verification_requires_confirmed_edit(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
@@ -1362,6 +1482,161 @@ def test_document_bibliography_verification_requires_confirmed_edit(monkeypatch,
         )
 
         assert updated.bibliography == "Edited source."
+        assert updated.bibliography_verified_at is None
+        assert updated.metadata_evidence.get("bibliography_verification") is None
+
+
+def test_document_summary_validation_requires_confirmed_edit_and_refresh(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import patch_document, refresh_document_summary, validate_document_summary
+    from app.models import ConcordanceJob, Document
+    from app.schemas import DocumentPatch
+
+    Session = make_session()
+    user = SimpleNamespace(id="user-1", email="editor@example.com")
+    with Session() as db:
+        refresh_document = Document(
+            title="Validated Summary Refresh Paper",
+            original_filename="validated-summary-refresh.pdf",
+            checksum_sha256="r" * 64,
+            rich_summary="Validated summary for refresh.",
+            processing_status="ready",
+            page_count=1,
+        )
+        edit_document = Document(
+            title="Validated Summary Edit Paper",
+            original_filename="validated-summary-edit.pdf",
+            checksum_sha256="q" * 64,
+            rich_summary="Validated summary for edit.",
+            processing_status="ready",
+            page_count=1,
+        )
+        empty_document = Document(
+            title="Empty Summary Paper",
+            original_filename="empty-summary.pdf",
+            checksum_sha256="p" * 64,
+            rich_summary=" ",
+            processing_status="ready",
+            page_count=1,
+        )
+        db.add_all([refresh_document, edit_document, empty_document])
+        db.commit()
+        db.refresh(refresh_document)
+        db.refresh(edit_document)
+        db.refresh(empty_document)
+
+        refresh_detail = validate_document_summary(refresh_document.id, user, db)
+        db.refresh(refresh_document)
+
+        assert refresh_detail.summary_validated_at is not None
+        assert refresh_detail.summary_validated_by == "editor@example.com"
+        validation = refresh_document.metadata_evidence["summary_validation"]
+        assert validation["status"] == "validated"
+        assert validation["exemplar"] is True
+        assert validation["summary_sha256"]
+
+        with pytest.raises(HTTPException) as exc_info:
+            refresh_document_summary(refresh_document.id, user, db)
+        assert exc_info.value.status_code == 409
+
+        run = refresh_document_summary(refresh_document.id, user, db, confirm_validated=True)
+        jobs = db.query(ConcordanceJob).filter(ConcordanceJob.run_id == run.id).all()
+        db.refresh(refresh_document)
+
+        assert jobs
+        assert jobs[0].capability_key == "summary_refresh"
+        assert refresh_document.metadata_evidence.get("summary_validation") is None
+
+        validate_document_summary(edit_document.id, user, db)
+        with pytest.raises(HTTPException) as exc_info:
+            patch_document(edit_document.id, DocumentPatch(rich_summary="Edited summary."), user, db)
+        assert exc_info.value.status_code == 409
+
+        edited = patch_document(
+            edit_document.id,
+            DocumentPatch(rich_summary="Edited summary.", confirm_validated_summary_edit=True),
+            user,
+            db,
+        )
+
+        assert edited.rich_summary == "Edited summary."
+        assert edited.summary_validated_at is None
+        assert edited.metadata_evidence.get("summary_validation") is None
+
+        with pytest.raises(HTTPException) as exc_info:
+            validate_document_summary(empty_document.id, user, db)
+        assert exc_info.value.status_code == 400
+
+
+def test_document_bibliography_verification_can_confirm_empty_field(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from fastapi import HTTPException
+
+    from app.main import patch_document, refresh_document_bibliography, verify_document_bibliography, verify_document_field
+    from app.models import Document
+    from app.schemas import DocumentPatch
+
+    Session = make_session()
+    user = SimpleNamespace(id="user-1", email="editor@example.com")
+    with Session() as db:
+        document = Document(
+            title="No References Paper",
+            original_filename="no-references.pdf",
+            checksum_sha256="e" * 64,
+            bibliography=None,
+            processing_status="ready",
+            page_count=1,
+        )
+        doi_gap = Document(
+            title="No DOI Paper",
+            original_filename="no-doi.pdf",
+            checksum_sha256="g" * 64,
+            doi=None,
+            processing_status="ready",
+            page_count=1,
+        )
+        db.add_all([document, doi_gap])
+        db.commit()
+        db.refresh(document)
+        db.refresh(doi_gap)
+
+        verified = verify_document_bibliography(document.id, user, db)
+        db.refresh(document)
+
+        assert verified.bibliography is None
+        assert verified.bibliography_verified_at is not None
+        assert verified.bibliography_verified_by == "editor@example.com"
+        verification = document.metadata_evidence["bibliography_verification"]
+        assert verification["status"] == "verified"
+        assert verification["value_state"] == "empty"
+        assert verification["verified_empty"] is True
+
+        with pytest.raises(HTTPException) as exc_info:
+            verify_document_field(doi_gap.id, "doi", user, db)
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc_info:
+            patch_document(document.id, DocumentPatch(bibliography="Added source."), user, db)
+        assert exc_info.value.status_code == 409
+
+        with pytest.raises(HTTPException) as exc_info:
+            refresh_document_bibliography(document.id, user, db)
+        assert exc_info.value.status_code == 409
+
+        updated = patch_document(
+            document.id,
+            DocumentPatch(bibliography="Added source.", confirm_verified_bibliography_edit=True),
+            user,
+            db,
+        )
+
+        assert updated.bibliography == "Added source."
         assert updated.bibliography_verified_at is None
         assert updated.metadata_evidence.get("bibliography_verification") is None
 

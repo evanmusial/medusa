@@ -973,12 +973,15 @@ class DocumentProcessor:
         document.abstract = metadata.get("abstract")
         document.rich_summary = metadata.get("rich_summary")
         document.metadata_confidence = metadata.get("confidence")
+        enrichment_generated_at = utc_now().isoformat()
         document.metadata_evidence = {
             **(document.metadata_evidence or {}),
             "ai": {
                 "confidence": metadata.get("confidence"),
                 "needs_review_reasons": metadata.get("needs_review_reasons") or [],
                 "citation_warnings": metadata.get("citation_warnings") or [],
+                "generated_at": enrichment_generated_at,
+                "summary_generated_at": enrichment_generated_at if document.rich_summary else None,
                 **(metadata.get("_openai") or {}),
             },
         }

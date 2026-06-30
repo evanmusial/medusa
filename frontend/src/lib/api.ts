@@ -378,6 +378,12 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${id}/field-verifications/${field}`, { method: "POST" }),
   verifyDocumentBibliography: (id: string) =>
     request<DocumentDetail>(`/api/documents/${id}/bibliography-verification`, { method: "POST" }),
+  validateDocumentSummary: (id: string) =>
+    request<DocumentDetail>(`/api/documents/${id}/summary-validation`, { method: "POST" }),
+  refreshDocumentSummary: (id: string, options: { confirmValidated?: boolean } = {}) =>
+    request<ConcordanceRun>(`/api/documents/${id}/summary-refresh${options.confirmValidated ? "?confirm_validated=true" : ""}`, {
+      method: "POST",
+    }),
   refreshDocumentBibliography: (id: string, options: { confirmVerified?: boolean } = {}) =>
     request<ConcordanceRun>(
       `/api/documents/${id}/bibliography-refresh${options.confirmVerified ? "?confirm_verified=true" : ""}`,

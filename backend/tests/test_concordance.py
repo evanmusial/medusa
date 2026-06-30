@@ -2166,6 +2166,7 @@ def test_concordance_summary_refresh_uses_summary_only_model(monkeypatch, tmp_pa
         assert "Fresh" in (document.search_text or "")
         assert "Method: close read" in (document.search_text or "")
         assert document.metadata_evidence["summary_refresh"]["model"] == "gpt-5.4-mini"
+        assert document.metadata_evidence["summary_refresh"]["summary_generated_at"]
         assert document.capabilities[0].capability_key == "summary_refresh"
         assert calls == [
             {
@@ -2176,6 +2177,66 @@ def test_concordance_summary_refresh_uses_summary_only_model(monkeypatch, tmp_pa
                 "prompt_cache_key": f"medusa-doc:{'9' * 64}:summary",
             }
         ]
+
+
+def test_concordance_summary_refresh_skips_validated_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    import hashlib
+
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+    from app.services.concordance import ConcordanceProcessor
+
+    calls: list[str] = []
+
+    class FakeAiService:
+        def generate_document_summary(self, *args, **kwargs):
+            calls.append("summary")
+            return {"rich_summary": "Replacement summary.", "confidence": 0.9, "needs_review_reasons": [], "_openai": {}}
+
+    monkeypatch.setattr("app.services.concordance.get_ai_service", lambda: FakeAiService())
+
+    summary = "Validated exemplar summary."
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Validated Summary Target",
+            original_filename="validated-summary-target.pdf",
+            checksum_sha256="7" * 64,
+            rich_summary=summary,
+            search_text="Validated searchable document text.",
+            metadata_evidence={
+                "summary_validation": {
+                    "status": "validated",
+                    "validated_at": "2026-06-27T12:00:00+00:00",
+                    "validated_by": "editor@example.com",
+                    "summary_sha256": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+                    "exemplar": True,
+                }
+            },
+        )
+        db.add(document)
+        run = ConcordanceRun(scope_type="library", scope_data={}, capability_keys=["summary_refresh"], total_jobs=1)
+        db.add(run)
+        db.flush()
+        job = ConcordanceJob(
+            run_id=run.id,
+            document_id=document.id,
+            capability_key="summary_refresh",
+            target_version=1,
+        )
+        db.add(job)
+        db.commit()
+
+        ConcordanceProcessor().process_job(db, job)
+        db.refresh(document)
+
+        assert job.status == "complete"
+        assert document.rich_summary == summary
+        assert document.metadata_evidence["summary_validation"]["status"] == "validated"
+        assert document.metadata_evidence["summary_refresh"]["summary_generated_at"] is None
+        assert calls == []
 
 
 def test_concordance_summary_topics_prefers_manifest_and_keeps_existing_document_tags(monkeypatch, tmp_path):

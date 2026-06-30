@@ -5506,9 +5506,14 @@ textarea {
   gap: 8px;
 }
 
+.summary-title-row,
 .bibliography-title-row,
 .verified-field-title-row {
   margin-bottom: 0;
+}
+
+.summary-generated-marker.bottom {
+  margin: 2px 0 -2px;
 }
 
 .bibliography-verify-button,

@@ -702,6 +702,9 @@ class DocumentDetail(DocumentSummary):
     source_url: str | None = None
     abstract: str | None = None
     bibliography: str | None = None
+    summary_generated_at: datetime | None = None
+    summary_validated_at: datetime | None = None
+    summary_validated_by: str | None = None
     bibliography_generated_at: datetime | None = None
     doi_verified_at: datetime | None = None
     doi_verified_by: str | None = None
@@ -1133,6 +1136,7 @@ class DocumentPatch(BaseModel):
     confirm_verified_apa_citation_edit: bool | None = None
     confirm_verified_apa_in_text_citation_edit: bool | None = None
     confirm_verified_bibliography_edit: bool | None = None
+    confirm_validated_summary_edit: bool | None = None
     apa_citation: str | None = None
     apa_in_text_citation: str | None = None
     citation_status: str | None = None

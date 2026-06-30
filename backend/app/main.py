@@ -1100,6 +1100,7 @@ def same_drop_duplicate_reasons(left: Any, right: Any) -> list[str]:
 
 NO_DOI_METADATA_KEY = "no_doi"
 BIBLIOGRAPHY_VERIFICATION_METADATA_KEY = "bibliography_verification"
+SUMMARY_VALIDATION_METADATA_KEY = "summary_validation"
 DOCUMENT_FIELD_VERIFICATION_CONFIG = {
     "doi": {"attribute": "doi", "metadata_key": "doi_verification", "label": "DOI"},
     "apa_citation": {
@@ -1116,6 +1117,7 @@ DOCUMENT_FIELD_VERIFICATION_CONFIG = {
         "attribute": "bibliography",
         "metadata_key": BIBLIOGRAPHY_VERIFICATION_METADATA_KEY,
         "label": "Bibliography",
+        "allow_empty_verified": True,
     },
 }
 
@@ -1238,12 +1240,90 @@ def document_bibliography_generated_at(document: Document, db: Session) -> datet
     return parse_evidence_datetime(capability.completed_at) if capability else None
 
 
+def document_summary_digest(summary: str | None) -> str | None:
+    text = str(summary or "")
+    if not text.strip():
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def document_summary_generated_at(document: Document, db: Session) -> datetime | None:
+    if not str(document.rich_summary or "").strip():
+        return None
+    evidence = document.metadata_evidence or {}
+    generated_times: list[datetime] = []
+    saw_summary_timestamp_evidence = False
+    for section_key in ("summary_refresh", "concordance_ai", "ai"):
+        section = evidence.get(section_key)
+        if not isinstance(section, dict):
+            continue
+        if "summary_generated_at" in section:
+            saw_summary_timestamp_evidence = True
+            parsed = parse_evidence_datetime(section.get("summary_generated_at"))
+            if parsed:
+                generated_times.append(parsed)
+            continue
+        parsed = parse_evidence_datetime(section.get("generated_at"))
+        if parsed:
+            generated_times.append(parsed)
+    if generated_times:
+        return max(generated_times)
+    if saw_summary_timestamp_evidence:
+        return None
+    capabilities = (
+        db.query(DocumentCapability)
+        .filter(
+            DocumentCapability.document_id == document.id,
+            DocumentCapability.capability_key.in_(["summary_refresh", "summary_topics"]),
+            DocumentCapability.status == "complete",
+        )
+        .all()
+    )
+    for capability in capabilities:
+        parsed = parse_evidence_datetime(capability.completed_at)
+        if parsed:
+            generated_times.append(parsed)
+    return max(generated_times) if generated_times else None
+
+
+def document_summary_validation(document: Document) -> dict[str, Any] | None:
+    current_digest = document_summary_digest(document.rich_summary)
+    if not current_digest:
+        return None
+    evidence = document.metadata_evidence or {}
+    validation = evidence.get(SUMMARY_VALIDATION_METADATA_KEY)
+    if not isinstance(validation, dict) or validation.get("status") != "validated":
+        return None
+    stored_digest = str(validation.get("summary_sha256") or "").strip()
+    if stored_digest and stored_digest != current_digest:
+        return None
+    validated_at = parse_evidence_datetime(validation.get("validated_at"))
+    if not validated_at:
+        return None
+    return {
+        "validated_at": validated_at,
+        "validated_by": str(validation.get("validated_by") or "").strip() or None,
+    }
+
+
+def document_summary_is_validated(document: Document) -> bool:
+    return document_summary_validation(document) is not None
+
+
+def clear_document_summary_validation(document: Document) -> bool:
+    evidence = dict(document.metadata_evidence or {})
+    if evidence.pop(SUMMARY_VALIDATION_METADATA_KEY, None) is None:
+        return False
+    document.metadata_evidence = evidence
+    return True
+
+
 def document_field_verification(document: Document, field: str) -> dict[str, Any] | None:
     config = DOCUMENT_FIELD_VERIFICATION_CONFIG.get(field)
     if not config:
         return None
     value = getattr(document, str(config["attribute"]), None)
-    if not (str(value or "").strip()):
+    if not (str(value or "").strip()) and not config.get("allow_empty_verified"):
         return None
     evidence = document.metadata_evidence or {}
     verification = evidence.get(str(config["metadata_key"]))
@@ -1358,6 +1438,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     apa_citation_verification = document_field_verification(document, "apa_citation")
     apa_in_text_citation_verification = document_field_verification(document, "apa_in_text_citation")
     bibliography_verification = document_bibliography_verification(document)
+    summary_validation = document_summary_validation(document)
     reader_text_by_page_number = document_reader_text_by_page_number(document)
     pages = [
         DocumentPageOut.model_validate(page).model_copy(
@@ -1372,6 +1453,9 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "duplicate_document_ids": [],
             "projects": projects,
             "no_doi": document_no_doi(document),
+            "summary_generated_at": document_summary_generated_at(document, db),
+            "summary_validated_at": summary_validation["validated_at"] if summary_validation else None,
+            "summary_validated_by": summary_validation["validated_by"] if summary_validation else None,
             "bibliography_generated_at": document_bibliography_generated_at(document, db),
             "doi_verified_at": doi_verification["verified_at"] if doi_verification else None,
             "doi_verified_by": doi_verification["verified_by"] if doi_verification else None,
@@ -5172,7 +5256,8 @@ def mark_document_field_verified(db: Session, document: Document, field: str, us
     if not config:
         raise HTTPException(status_code=404, detail="Verification field not found")
     value = getattr(document, str(config["attribute"]), None)
-    if not (str(value or "").strip()):
+    value_is_empty = not (str(value or "").strip())
+    if value_is_empty and not config.get("allow_empty_verified"):
         raise HTTPException(status_code=400, detail=f"{config['label']} is required before it can be marked verified")
 
     before = document_correction_snapshot(document)
@@ -5183,6 +5268,8 @@ def mark_document_field_verified(db: Session, document: Document, field: str, us
         "verified_at": verified_at.isoformat(),
         "verified_by": user.email,
         "verified_by_user_id": user.id,
+        "value_state": "empty" if value_is_empty else "present",
+        "verified_empty": value_is_empty,
     }
     document.metadata_evidence = evidence
     db.flush()
@@ -5270,6 +5357,102 @@ def refresh_document_bibliography(
         capability_keys=["bibliography_extraction"],
         force=True,
         label=f"Bibliography refresh: {document.title}",
+    )
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+@app.post("/api/documents/{document_id}/summary-validation", response_model=DocumentDetail)
+def validate_document_summary(
+    document_id: str,
+    user: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentDetail:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
+    summary_digest = document_summary_digest(document.rich_summary)
+    if not summary_digest:
+        raise HTTPException(status_code=400, detail="Summary is required before it can be validated")
+    if document_summary_is_validated(document):
+        return document_detail_out(document, db)
+
+    before = document_correction_snapshot(document)
+    validated_at = utc_now()
+    evidence = dict(document.metadata_evidence or {})
+    evidence[SUMMARY_VALIDATION_METADATA_KEY] = {
+        "status": "validated",
+        "source": "manual",
+        "validated_at": validated_at.isoformat(),
+        "validated_by": user.email,
+        "validated_by_user_id": user.id,
+        "exemplar": True,
+        "summary_sha256": summary_digest,
+        "summary_characters": len(document.rich_summary or ""),
+    }
+    document.metadata_evidence = evidence
+    db.flush()
+    record_document_version(
+        db,
+        document=document,
+        change_note="Validated Summary",
+        changed_fields={"metadata_evidence"},
+        before=before,
+        after=document_correction_snapshot(document),
+        extra={"operation": "summary_validation", "validated_at": validated_at.isoformat()},
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message="Validated Summary",
+        metadata={"operation": "summary_validation", "validated_at": validated_at.isoformat()},
+    )
+    db.commit()
+    db.refresh(document)
+    return document_detail_out(document, db)
+
+
+@app.post("/api/documents/{document_id}/summary-refresh", response_model=ConcordanceRunOut)
+def refresh_document_summary(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    confirm_validated: bool = False,
+) -> ConcordanceRun:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
+    if document_summary_is_validated(document):
+        if not confirm_validated:
+            raise HTTPException(status_code=409, detail="Confirm refreshing the validated summary before starting")
+        before = document_correction_snapshot(document)
+        if clear_document_summary_validation(document):
+            db.flush()
+            record_document_version(
+                db,
+                document=document,
+                change_note="Cleared summary validation for refresh",
+                changed_fields={"metadata_evidence"},
+                before=before,
+                after=document_correction_snapshot(document),
+                extra={"operation": "summary_refresh_unvalidate"},
+            )
+            record_manual_edit(
+                db,
+                document=document,
+                message="Cleared summary validation for refresh",
+                metadata={"operation": "summary_refresh_unvalidate"},
+            )
+    run = create_concordance_run(
+        db,
+        scope_type="documents",
+        scope_data={"document_ids": [document.id]},
+        capability_keys=["summary_refresh"],
+        force=True,
+        label=f"Summary refresh: {document.title}",
     )
     db.commit()
     db.refresh(run)
@@ -5404,6 +5587,7 @@ def download_recommendations(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document)
     if payload.mode == "new":
         recommendations = [
             row
@@ -7919,6 +8103,7 @@ def patch_document(
     confirm_verified_apa_citation_edit = bool(data.pop("confirm_verified_apa_citation_edit", False))
     confirm_verified_apa_in_text_citation_edit = bool(data.pop("confirm_verified_apa_in_text_citation_edit", False))
     confirm_verified_bibliography_edit = bool(data.pop("confirm_verified_bibliography_edit", False))
+    confirm_validated_summary_edit = bool(data.pop("confirm_validated_summary_edit", False))
     requested_field_changes = {key for key, value in data.items() if getattr(document, key) != value}
     citation_fields = {"title", "authors", "publication_year", "journal", "publisher", "doi", "source_url"}
     no_doi_clears_doi = no_doi is True and bool(document.doi)
@@ -7931,6 +8116,7 @@ def patch_document(
         citation_metadata_change_requested and "apa_in_text_citation" not in data
     )
     bibliography_change_requested = "bibliography" in requested_field_changes
+    summary_change_requested = "rich_summary" in requested_field_changes
     if doi_change_requested and document_field_is_verified(document, "doi") and not confirm_verified_doi_edit:
         raise HTTPException(status_code=409, detail="Confirm editing the manually verified DOI before saving changes")
     if apa_citation_change_requested and document_field_is_verified(document, "apa_citation") and not confirm_verified_apa_citation_edit:
@@ -7943,6 +8129,8 @@ def patch_document(
         raise HTTPException(status_code=409, detail="Confirm editing the manually verified APA in-text citation before saving changes")
     if bibliography_change_requested and document_bibliography_is_verified(document) and not confirm_verified_bibliography_edit:
         raise HTTPException(status_code=409, detail="Confirm editing the manually verified bibliography before saving changes")
+    if summary_change_requested and document_summary_is_validated(document) and not confirm_validated_summary_edit:
+        raise HTTPException(status_code=409, detail="Confirm editing the validated summary before saving changes")
     before = document_correction_snapshot(document)
     changed_fields: set[str] = set()
     for key, value in data.items():
@@ -8081,6 +8269,8 @@ def patch_document(
     if "bibliography" in changed_fields:
         verification_fields_to_clear.append("bibliography")
     if verification_fields_to_clear and clear_document_field_verifications(document, verification_fields_to_clear):
+        changed_fields.add("metadata_evidence")
+    if "rich_summary" in changed_fields and clear_document_summary_validation(document):
         changed_fields.add("metadata_evidence")
     if changed_fields:
         document.search_text = rebuild_document_search_text(document)
