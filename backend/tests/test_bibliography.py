@@ -960,6 +960,76 @@ def test_extract_document_bibliography_ignores_inline_references_word_before_rea
     assert not any(entry.startswith(("references to", "Savage,")) for entry in entries)
 
 
+def test_extract_document_bibliography_uses_page_text_when_pdf_spans_stop_before_later_pages(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Page Boundary References Paper",
+        original_filename="page-boundary-references.pdf",
+        checksum_sha256="3" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=16,
+            normalized_text=(
+                "Body text ends here.\n"
+                "References\n"
+                "Anderson, A. (2014). Alpha source. Journal of Tests, 1, 1-9.\n"
+                "Baker, B. (2013). Beta source. Journal of Tests, 2, 10-19.\n"
+                "Clark, C. (2012). Gamma source. Journal of Tests, 3, 20-29."
+            ),
+        )
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=17,
+            normalized_text=(
+                "Dorsey, D. (2011). Delta source. Journal of Tests, 4, 30-39.\n"
+                "Edwards, E. (2010). Epsilon source. Journal of Tests, 5, 40-49.\n"
+                "Foster, F. (2009). Zeta source. Journal of Tests, 6, 50-59.\n"
+                "Garcia, G. (2008). Eta source. Journal of Tests, 7, 60-69.\n"
+                "Zimmer, Z. (2007). Omega source. Journal of Tests, 8, 70-79."
+            ),
+        )
+    )
+    pdf_path = tmp_path / "page-boundary-references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_formatted_bibliography_from_pdf",
+        lambda _path: {
+            "bibliography": (
+                "Anderson, A. (2014). *Alpha source.* Journal of Tests, 1, 1-9.\n"
+                "Baker, B. (2013). *Beta source.* Journal of Tests, 2, 10-19.\n"
+                "Clark, C. (2012). *Gamma source.* Journal of Tests, 3, 20-29."
+            ),
+            "evidence": {
+                "source": "pdf_span_layout",
+                "status": "extracted",
+                "page_start": 16,
+                "page_end": 16,
+                "formatting": "markdown_italics_from_pdf_spans",
+                "entry_count_estimate": 3,
+            },
+        },
+    )
+
+    result = extract_document_bibliography(document, pdf_path)
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["source"] == "page_text"
+    assert result["evidence"]["page_end"] == 17
+    assert result["evidence"]["fallback_reason"] == "page_text_more_complete_than_pdf_span_layout"
+    assert result["evidence"]["fallback_from_pdf_span_layout"]["page_end"] == 16
+    assert result["evidence"]["entry_count_estimate"] == 8
+    assert len(entries) == 8
+    assert entries[0].startswith("Anderson")
+    assert entries[-1].startswith("Zimmer")
+
+
 def test_extract_document_bibliography_rejects_publisher_reference_count_front_matter(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service

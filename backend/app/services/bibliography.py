@@ -774,6 +774,49 @@ def _with_visual_ocr_not_found_evidence(base: dict[str, Any], visual_ocr: dict[s
     return evidence
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _result_entry_count(result: dict[str, Any]) -> int:
+    evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+    return _positive_int(evidence.get("entry_count_estimate")) or _entry_count(result.get("bibliography"))
+
+
+def _page_text_result_is_more_complete(plain: dict[str, Any], formatted: dict[str, Any]) -> bool:
+    plain_text = str(plain.get("bibliography") or "").strip()
+    formatted_text = str(formatted.get("bibliography") or "").strip()
+    if not plain_text or not formatted_text:
+        return False
+    plain_evidence = plain.get("evidence") if isinstance(plain.get("evidence"), dict) else {}
+    formatted_evidence = formatted.get("evidence") if isinstance(formatted.get("evidence"), dict) else {}
+    plain_page_end = _positive_int(plain_evidence.get("page_end"))
+    formatted_page_end = _positive_int(formatted_evidence.get("page_end"))
+    if plain_page_end is None or formatted_page_end is None or plain_page_end <= formatted_page_end:
+        return False
+    plain_entries = _result_entry_count(plain)
+    formatted_entries = _result_entry_count(formatted)
+    if plain_entries <= formatted_entries:
+        return False
+    entry_gain = plain_entries - formatted_entries
+    character_gain = len(plain_text) - len(formatted_text)
+    return bool(
+        entry_gain >= max(5, formatted_entries)
+        or character_gain >= max(2000, len(formatted_text))
+    )
+
+
+def _with_pdf_span_fallback_evidence(plain: dict[str, Any], formatted: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(plain.get("evidence") or {})
+    evidence["fallback_reason"] = "page_text_more_complete_than_pdf_span_layout"
+    evidence["fallback_from_pdf_span_layout"] = formatted.get("evidence") or {}
+    return {"bibliography": plain.get("bibliography"), "evidence": evidence}
+
+
 def _entry_count(text: str | None) -> int:
     if not text:
         return 0
@@ -1021,11 +1064,14 @@ def extract_document_bibliography(
     *,
     visual_ocr: bool = False,
 ) -> dict[str, Any]:
+    formatted: dict[str, Any] | None = None
     if pdf_path and pdf_path.exists():
         formatted = _formatted_bibliography_from_pdf(pdf_path)
-        if formatted and formatted.get("bibliography"):
-            return formatted
     plain = _plain_bibliography_from_pages(document)
+    if formatted and formatted.get("bibliography"):
+        if plain.get("bibliography") and _page_text_result_is_more_complete(plain, formatted):
+            return _with_pdf_span_fallback_evidence(plain, formatted)
+        return formatted
     if plain.get("bibliography") or not visual_ocr or not pdf_path or not pdf_path.exists():
         return plain
     visual = _visual_ocr_bibliography_from_pdf(pdf_path)
