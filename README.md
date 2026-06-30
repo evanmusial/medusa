@@ -30,11 +30,25 @@ Medusa is built for one serious reader who wants their corpus to stay under thei
 
 Medusa begins with a staging area, not a blind import button. New sources can be reviewed, labeled, checked for duplicates, and released only when the batch is ready.
 
-Once processing starts, Medusa turns source material into a usable research record: searchable page text, citations, summaries, bibliographies, figures, notes, tags, domains, project links, and review evidence. Work in progress stays out of the Library until it is ready.
+Once processing starts, Medusa turns source material into a usable research record. Originals are preserved, files are checked against the existing corpus, pages are extracted or transcribed into searchable reading text, and rough source material is broken into working metadata: title, authors, publication venue, year, DOI, abstract, page count, references, bibliography, figures, captions, keywords, topics, and processing evidence.
+
+The document then becomes more than a PDF in a folder. Medusa generates summaries, APA reference-list entries, APA in-text citations, DOI evidence, bibliography candidates, related-paper leads, tag suggestions, domain/project context, and figure records that can be searched, reviewed, corrected, or refreshed later. Work in progress stays out of the Library until it is ready.
+
+Medusa is built around reviewable document intelligence. Scholarly metadata is treated as evidence-backed working data, not magic text: DOI and publication details can be verified, uncertain citation output can go to review, extracted bibliography text can be cleaned into APA form, and user corrections are preserved as history instead of disappearing into the latest generated answer.
+
+The taxonomy layer is designed to reduce organizational drag. Keywords and topics become candidate tags, but Medusa compares them against the existing tag system before attaching them, prefers reuse when a concept is already covered, and routes weak or overlapping suggestions into governance workflows for merge, alias, relationship, downgrade, or pruning decisions.
+
+Figures and visual material are first-class research evidence. Medusa can extract charts, diagrams, photos, screenshots, maps, and other embedded visuals into durable figure records, keep them connected to page context, and let older documents receive newer visual extraction through Concordance Runs.
 
 The Library is the active corpus. It is built for reading, correction, organization, discovery, and reuse rather than passive file storage.
 
-AI is an enrichment layer, not the only source of truth. Evidence, user corrections, review state, and history stay visible so generated metadata can be trusted, repaired, or rejected.
+## AI In Medusa
+
+AI is an enrichment layer, not the only source of truth. Medusa uses models to help read difficult documents, extract usable metadata, normalize page text, suggest tags, summarize arguments, clean bibliographies, draft APA citations, find related sources, answer corpus-grounded research questions, and improve older records through Concordance Runs.
+
+Medusa is deliberately LLM agnostic. Model-powered steps are configurable, and any model that fits a supported task can be used when the appropriate API key or provider credential is available. A real production deployment can mix providers, such as the OpenAI API for GPT and Text Extractor workflows alongside Google for Gemini-based generation, review, and document-intelligence tasks.
+
+The app keeps model work accountable. Provider, model, task, cost, evidence, failures, and generated values remain visible so AI output can be compared with deterministic extraction, DOI/Crossref-style evidence, parsed page text, and human corrections. The goal is not to hide complexity behind a chatbot; it is to make a messy research library easier to trust, repair, and extend.
 
 ## Documentation
 
