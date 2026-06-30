@@ -9930,6 +9930,7 @@ function DocumentPanelContent({
   const pdfPreviewScrollRef = useRef<HTMLDivElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
+  const replacementFileInputRef = useRef<HTMLInputElement | null>(null);
   const domainAssignRef = useRef<HTMLDivElement | null>(null);
   const accessoryPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const syncScrollSourceRef = useRef<"pdf" | "text" | null>(null);
@@ -10032,6 +10033,7 @@ function DocumentPanelContent({
   const tagRefreshFeedback = useAsyncActionFeedback();
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const visualPageScanFeedback = useAsyncActionFeedback();
+  const replacementFeedback = useAsyncActionFeedback();
   const composition = useQuery({
     queryKey: ["document-composition", document.id],
     queryFn: () => api.documentComposition(document.id),
@@ -10087,6 +10089,35 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+  const replaceDocumentFile = useMutation({
+    mutationFn: (file: File) =>
+      api.replaceDocument(document.id, file, {
+        processingPresetId: preferences?.default_import_processing_preset_id || "balanced",
+      }),
+    onSuccess: (job) => {
+      replacementFeedback.showSuccess();
+      patchCachedDocumentSummaries(queryClient, {
+        id: document.id,
+        title: job.document_title || document.title,
+        original_filename: job.original_filename || document.original_filename,
+        page_count: job.document_page_count || document.page_count,
+        processing_status: job.status,
+        tags: [],
+        updated_at: job.updated_at,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (error) => {
+      replacementFeedback.showError(actionFailureMessage("Could not replace document", error));
     },
   });
   const updateDocument = useMutation({
@@ -11132,6 +11163,13 @@ function DocumentPanelContent({
     : documentConcordanceBusy
       ? "a document Concordance Run is already queued or running."
       : "";
+  const replacementBusyReason = documentLocked
+    ? documentLockedReason
+    : replaceDocumentFile.isPending
+    ? "a document replacement upload is already starting."
+    : document.processing_status !== "ready"
+      ? "this document is already queued or running."
+      : "";
   const accessorySummaries = document.accessory_summaries || [];
   const trackedAccessorySummary = trackedAccessorySummaryId
     ? accessorySummaries.find((summary) => summary.id === trackedAccessorySummaryId)
@@ -11729,6 +11767,30 @@ function DocumentPanelContent({
       value: normalizeRichEditorMarkdown(citationDrafts[kind] || "", "compact"),
       confirmVerified: citationVerifiedEditConfirmed[kind],
     });
+  };
+
+  const chooseReplacementFile = () => {
+    if (documentLocked || replaceDocumentFile.isPending || document.processing_status !== "ready") return;
+    replacementFileInputRef.current?.click();
+  };
+  const handleReplacementFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0] || null;
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!isSupportedImportFile(file)) {
+      replacementFeedback.showError("PDF, DOCX, RTF, HTML, or text only");
+      return;
+    }
+    const ok = await dialogs.confirm({
+      cancelLabel: "Cancel",
+      confirmLabel: "Replace",
+      eyebrow: "Replace document",
+      message:
+        "Medusa will store this file as the new original, clear source-derived metadata, text, citations, figures, tags, and custom attributes, then queue a full import on the same document record. Prior history, logs, composition costs, domains, project links, priority, and read state stay attached.",
+      title: `Replace ${document.title}?`,
+      tone: "danger",
+    });
+    if (ok) replaceDocumentFile.mutate(file);
   };
 
   const citationFeedbackFor = (_kind: CitationKind) => citationRefreshFeedback.feedback;
@@ -13863,6 +13925,25 @@ function DocumentPanelContent({
       <Download size={15} />
     </a>
   );
+  const replaceDocumentButton = (
+    <AsyncActionSlot
+      busy={replaceDocumentFile.isPending}
+      feedback={replacementFeedback.feedback}
+      label="Document replacement upload in progress"
+    >
+      <button
+        className={asyncFeedbackClass("secondary-button", replacementFeedback.feedback, replaceDocumentFile.isPending)}
+        data-disabled-reason={replacementBusyReason}
+        data-tooltip="Upload a replacement original and queue a full import on this document record."
+        disabled={Boolean(replacementBusyReason)}
+        onClick={chooseReplacementFile}
+        type="button"
+      >
+        <Upload className={replaceDocumentFile.isPending ? "spin" : ""} size={15} />
+        {replaceDocumentFile.isPending ? "Replacing" : "Replace"}
+      </button>
+    </AsyncActionSlot>
+  );
   const lockDocumentButton = (
     <button
       aria-pressed={documentLocked}
@@ -13905,6 +13986,7 @@ function DocumentPanelContent({
       {editButton}
       {linkButton}
       {downloadOriginalLink}
+      {replaceDocumentButton}
       {lockDocumentButton}
       {trashDocumentButton}
     </div>
@@ -13943,12 +14025,21 @@ function DocumentPanelContent({
             </div>
           </div>
           <div className={`detail-actions ${readerExpanded ? "detail-actions-expanded" : ""}`}>
+            <input
+              ref={replacementFileInputRef}
+              aria-label="Choose replacement document file"
+              className="hidden-file-input"
+              type="file"
+              accept={IMPORT_ACCEPT}
+              onChange={handleReplacementFileSelected}
+            />
             {readerExpanded ? (
               <div className="detail-actions-row detail-expanded-actions">
                 {readerButton}
                 {editButton}
                 {linkButton}
                 {downloadOriginalLink}
+                {replaceDocumentButton}
                 {askButton}
                 {relatedButton}
                 {compositionButton}

@@ -1,6 +1,9 @@
+import asyncio
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -2048,3 +2051,148 @@ def test_document_annotations_update_search_text_and_soft_delete(monkeypatch, tm
 
         assert stored and stored.deleted_at is not None
         assert "core argument" not in (document.search_text or "")
+
+
+def test_replace_document_in_place_queues_import_and_preserves_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEDUSA_LOCAL_STORAGE_DIR", str(tmp_path / "data" / "originals"))
+    monkeypatch.setenv("GCS_BUCKET", "")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+
+    from app import main
+    from app.config import get_settings
+    from app.models import (
+        Annotation,
+        AttributeDefinition,
+        Document,
+        DocumentAttributeValue,
+        DocumentCompositionRecord,
+        DocumentVersion,
+        ImportJob,
+        ProcessingEvent,
+        Tag,
+    )
+
+    get_settings.cache_clear()
+    main.settings.data_dir = tmp_path / "data"
+
+    class FakeStorage:
+        def __init__(self):
+            self.objects = []
+
+        def put_bytes(self, key, data, content_type):
+            self.objects.append({"key": key, "data": data, "content_type": content_type})
+            return SimpleNamespace(uri=f"memory://{key}", backend="fake")
+
+    fake_storage = FakeStorage()
+    monkeypatch.setattr(main, "get_storage_service", lambda: fake_storage)
+
+    Session = make_session()
+    with Session() as db:
+        tag = Tag(name="summary artifact")
+        definition = AttributeDefinition(name="Old note", value_type="markdown")
+        document = Document(
+            title="Summary Only",
+            original_filename="summary.pdf",
+            checksum_sha256="a" * 64,
+            checksum_md5="b" * 32,
+            processing_status="ready",
+            page_count=1,
+            rich_summary="Only a summary was imported.",
+            tags=[tag],
+        )
+        db.add_all([tag, definition, document])
+        db.flush()
+        db.add(
+            DocumentAttributeValue(
+                document_id=document.id,
+                attribute_definition_id=definition.id,
+                value={"value": "old attribute"},
+            )
+        )
+        db.add(
+            DocumentCompositionRecord(
+                document_id=document.id,
+                record_kind="llm",
+                stage_key="summary_topics",
+                stage_label="Summary",
+                provider="openai",
+                method="responses",
+                model="gpt-test",
+                status="complete",
+                amount_usd=1.25,
+                message="Prior import spend",
+            )
+        )
+        db.add(Annotation(document_id=document.id, page_number=1, body="old source highlight"))
+        db.commit()
+
+        response = asyncio.run(
+            main.replace_document_in_place(
+                document.id,
+                object(),
+                db,
+                UploadFile(filename="full-paper.md", file=BytesIO(b"Full Paper\n\nThis is the complete source.")),
+            )
+        )
+        db.refresh(document)
+
+        jobs = db.query(ImportJob).filter(ImportJob.document_id == document.id).all()
+        versions = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).all()
+        replacement_events = db.query(ProcessingEvent).filter(ProcessingEvent.event_type == "document_replacement_queued").all()
+        composition_records = db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).all()
+
+        assert response["document_id"] == document.id
+        assert response["status"] == "queued"
+        assert len(jobs) == 1
+        assert document.processing_status == "queued"
+        assert document.title.lower() == "full paper"
+        assert document.original_filename == "full-paper.pdf"
+        assert document.rich_summary is None
+        assert document.tags == []
+        assert document.attributes == []
+        assert db.query(Annotation).filter(Annotation.document_id == document.id, Annotation.deleted_at.is_(None)).count() == 0
+        assert document.metadata_evidence["document_replacement"]["previous_accession"]["title"] == "Summary Only"
+        assert document.metadata_evidence["document_replacement"]["previous_accession"]["checksum_sha256"] == "a" * 64
+        assert fake_storage.objects and fake_storage.objects[0]["content_type"] == "application/pdf"
+        assert any(record.message == "Prior import spend" for record in composition_records)
+        assert any((record.record_metadata or {}).get("operation") == "document_replacement" for record in composition_records)
+        assert len(versions) == 1
+        assert versions[0].change_note == "Document replacement queued"
+        assert versions[0].metadata_snapshot["before"]["title"] == "Summary Only"
+        assert versions[0].metadata_snapshot["previous_accession"]["title"] == "Summary Only"
+        assert replacement_events and replacement_events[0].import_job_id == jobs[0].id
+
+
+def test_replace_document_in_place_rejects_locked_document(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+    from app.models import Document, ImportJob, utc_now
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Locked",
+            original_filename="locked.pdf",
+            checksum_sha256="c" * 64,
+            processing_status="ready",
+            locked_at=utc_now(),
+        )
+        db.add(document)
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                main.replace_document_in_place(
+                    document.id,
+                    object(),
+                    db,
+                    UploadFile(filename="replacement.md", file=BytesIO(b"Replacement\n\nBody.")),
+                )
+            )
+
+        assert exc_info.value.status_code == 423
+        assert db.query(ImportJob).count() == 0

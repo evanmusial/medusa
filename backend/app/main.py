@@ -8699,10 +8699,47 @@ def apply_attribute_defaults(db: Session, document: Document, attributes: dict[s
             )
 
 
-def reset_document_for_overwrite(db: Session, document: Document) -> None:
-    ensure_document_unlocked(document, detail="Document is locked. Unlock it before overwriting it through Import.")
-    before = document_correction_snapshot(document)
-    db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).delete(synchronize_session=False)
+DOCUMENT_OVERWRITE_CHANGED_FIELDS = {
+    "subtitle",
+    "authors",
+    "universities",
+    "publication_year",
+    "publisher",
+    "journal",
+    "doi",
+    "source_url",
+    "abstract",
+    "rich_summary",
+    "bibliography",
+    "apa_citation",
+    "apa_in_text_citation",
+    "citation_status",
+    "metadata_confidence",
+    "search_text",
+    "page_count",
+    "pages",
+    "chunks",
+    "figures",
+    "capabilities",
+    "citation_candidates",
+}
+
+
+def reset_document_for_overwrite(
+    db: Session,
+    document: Document,
+    *,
+    preserve_composition: bool = False,
+    record_history: bool = True,
+    lock_detail: str | None = None,
+) -> None:
+    ensure_document_unlocked(
+        document,
+        detail=lock_detail or "Document is locked. Unlock it before overwriting it through Import.",
+    )
+    before = document_correction_snapshot(document) if record_history else None
+    if not preserve_composition:
+        db.query(DocumentCompositionRecord).filter(DocumentCompositionRecord.document_id == document.id).delete(synchronize_session=False)
     document.subtitle = None
     document.authors = []
     document.universities = []
@@ -8732,34 +8769,13 @@ def reset_document_for_overwrite(db: Session, document: Document) -> None:
         synchronize_session=False
     )
     db.flush()
+    if not record_history:
+        return
     record_document_version(
         db,
         document=document,
         change_note="Import overwrite",
-        changed_fields={
-            "subtitle",
-            "authors",
-            "universities",
-            "publication_year",
-            "publisher",
-            "journal",
-            "doi",
-            "source_url",
-            "abstract",
-            "rich_summary",
-            "bibliography",
-            "apa_citation",
-            "apa_in_text_citation",
-            "citation_status",
-            "metadata_confidence",
-            "search_text",
-            "page_count",
-            "pages",
-            "chunks",
-            "figures",
-            "capabilities",
-            "citation_candidates",
-        },
+        changed_fields=DOCUMENT_OVERWRITE_CHANGED_FIELDS,
         before=before,
         after=document_correction_snapshot(document),
     )
@@ -9054,6 +9070,233 @@ async def create_import_batch(
     db.commit()
     db.refresh(batch)
     return batch
+
+
+def document_accession_snapshot(document: Document) -> dict[str, Any]:
+    return {
+        "document_id": document.id,
+        "title": document.title,
+        "original_filename": document.original_filename,
+        "content_type": document.content_type,
+        "checksum_sha256": document.checksum_sha256,
+        "checksum_md5": document.checksum_md5,
+        "page_count": document.page_count,
+        "gcs_uri": document.gcs_uri,
+        "storage_status": document.storage_status,
+        "processing_status": document.processing_status,
+        "created_at": document.created_at.isoformat() if document.created_at else None,
+        "updated_at": document.updated_at.isoformat() if document.updated_at else None,
+    }
+
+
+@app.post("/api/documents/{document_id}/replace", response_model=ImportJobOut)
+async def replace_document_in_place(
+    document_id: str,
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    file: Annotated[UploadFile, File()],
+    processing_preset_id: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    document = db.get(Document, document_id)
+    if not document_is_library_visible(document):
+        raise HTTPException(status_code=404, detail="Document not found")
+    ensure_document_unlocked(document, detail="Document is locked. Unlock it before replacing it.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Upload a replacement document file.")
+    try:
+        prepared = prepare_import_source(data, file.filename, file.content_type)
+    except ImportSourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    queued_at = utc_now()
+    previous_accession = document_accession_snapshot(document)
+    before = document_correction_snapshot(document)
+    preset_snapshot = import_processing_snapshot(db, processing_preset_id)
+    batch = ImportBatch(
+        label=f"Replacement: {document.title[:200]}",
+        total_files=1,
+        shared_defaults={
+            "source": "library_replacement",
+            "replacement_document_id": document.id,
+            "processing_preset_id": preset_snapshot["id"],
+            "processing_preset_name": preset_snapshot["name"],
+            "processing_preset_mode": preset_snapshot["mode"],
+            "processing_preset_snapshot": preset_snapshot,
+        },
+    )
+    db.add(batch)
+    db.flush()
+
+    reset_document_for_overwrite(
+        db,
+        document,
+        preserve_composition=True,
+        record_history=False,
+        lock_detail="Document is locked. Unlock it before replacing it.",
+    )
+    document.tags.clear()
+    document.attributes.clear()
+    db.query(Annotation).filter(Annotation.document_id == document.id, Annotation.deleted_at.is_(None)).update(
+        {Annotation.deleted_at: queued_at},
+        synchronize_session=False,
+    )
+    document.duplicate_count = 0
+    document.duplicate_reasons = []
+    document.duplicate_checked_at = None
+    db.flush()
+
+    storage = get_storage_service()
+    cache_dir = document_cache_root()
+    key = import_storage_key(prepared.source_checksum_sha256, document.id, prepared.stored_filename)
+    stored = storage.put_bytes(key, prepared.stored_data, prepared.stored_content_type)
+    cache_path = import_cache_path(cache_dir, document.id)
+    cache_path.write_bytes(prepared.stored_data)
+    estimated_page_count = prepared.stored_page_count or 0
+    document.title = prepared.title
+    document.original_filename = prepared.stored_filename
+    document.content_type = prepared.stored_content_type
+    document.checksum_sha256 = prepared.source_checksum_sha256
+    document.checksum_md5 = prepared.stored_checksum_md5
+    document.gcs_uri = stored.uri
+    document.storage_status = stored.backend
+    document.processing_status = "queued"
+    document.page_count = estimated_page_count
+    document.metadata_evidence = {
+        "file_size_bytes": len(prepared.stored_data),
+        "local_cache_path": str(cache_path),
+        "document_cache_path": str(cache_path),
+        "source_import": prepared.metadata,
+        "hashes": {
+            "source_sha256": prepared.source_checksum_sha256,
+            "source_md5": prepared.source_checksum_md5,
+            "stored_sha256": prepared.stored_checksum_sha256,
+            "stored_md5": prepared.stored_checksum_md5,
+        },
+        "upload_cost_estimate": {
+            "estimated_page_count": estimated_page_count or None,
+            "basis": "pending_preset_step_cost_model",
+        },
+        "import_defaults": batch.shared_defaults,
+        "import_processing_preset": preset_snapshot,
+        "document_replacement": {
+            "status": "queued",
+            "queued_at": queued_at.isoformat(),
+            "previous_accession": previous_accession,
+        },
+    }
+    register_document_cache(document, cache_path, source="library_replacement")
+
+    job = ImportJob(batch_id=batch.id, document_id=document.id, status="queued", current_step="stored")
+    db.add(job)
+    db.flush()
+    model_preferences = get_analysis_models(db)
+    estimate_rates = import_cost_exemplar_rates(db)
+    cost_estimate = estimate_import_job_cost(job, model_preferences=model_preferences, rates=estimate_rates, db=db)
+    estimated_cost_usd = float(cost_estimate.get("estimated_cost_usd") or 0.0)
+    estimate_basis = str(cost_estimate.get("basis") or "none")
+    estimate_page_count = cost_estimate.get("estimated_page_count")
+    if not isinstance(estimate_page_count, int):
+        estimate_page_count = document_estimated_page_count(document)
+    upload_estimate = {
+        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_page_count": estimate_page_count,
+        "basis": estimate_basis,
+        "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+        "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
+        "step_estimates": cost_estimate.get("steps", []),
+        "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+        "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+        "model_preferences": model_preferences,
+        "processing_preset": {
+            "id": preset_snapshot["id"],
+            "name": preset_snapshot["name"],
+            "mode": preset_snapshot["mode"],
+        },
+        "estimated_at": utc_now().isoformat(),
+    }
+    document.metadata_evidence = {**(document.metadata_evidence or {}), "upload_cost_estimate": upload_estimate}
+    record_import_cost_estimate(
+        db,
+        document=document,
+        job=job,
+        estimated_cost_usd=estimated_cost_usd,
+        estimate_basis=estimate_basis,
+        estimated_page_count=estimate_page_count,
+        model_preferences=model_preferences,
+        metadata={
+            "source": "library_replacement",
+            "previous_accession": previous_accession,
+            "calibration_factor": estimate_rates.get("estimate_calibration_factor"),
+            "calibration_sample_count": estimate_rates.get("estimate_calibration_sample_count"),
+            "uncalibrated_cost_usd": cost_estimate.get("uncalibrated_cost_usd"),
+            "minimum_cloud_call_cost_usd": cost_estimate.get("minimum_cloud_call_cost_usd"),
+            "step_estimates": cost_estimate.get("steps", []),
+            "processing_preset": {
+                "id": preset_snapshot["id"],
+                "name": preset_snapshot["name"],
+                "mode": preset_snapshot["mode"],
+            },
+        },
+    )
+    replacement_payload = {
+        "operation": "document_replacement",
+        "import_batch_id": batch.id,
+        "import_job_id": job.id,
+        "queued_at": queued_at.isoformat(),
+        "previous_accession": previous_accession,
+        "new_accession": document_accession_snapshot(document),
+    }
+    record_document_version(
+        db,
+        document=document,
+        change_note="Document replacement queued",
+        changed_fields=DOCUMENT_OVERWRITE_CHANGED_FIELDS
+        | {
+            "tags",
+            "attributes",
+            "annotations",
+            "title",
+            "original_filename",
+            "content_type",
+            "checksum_sha256",
+            "checksum_md5",
+            "gcs_uri",
+            "storage_status",
+            "processing_status",
+            "metadata_evidence",
+            "duplicate_count",
+            "duplicate_reasons",
+            "duplicate_checked_at",
+        },
+        before=before,
+        after=document_correction_snapshot(document),
+        extra=replacement_payload,
+    )
+    record_manual_edit(
+        db,
+        document=document,
+        message="Queued document replacement",
+        metadata=replacement_payload,
+    )
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=document.id,
+            event_type="document_replacement_queued",
+            message="Document replacement queued from Library.",
+            payload=replacement_payload,
+        )
+    )
+    refresh_import_batch_progress(db, batch)
+    db.commit()
+    db.refresh(job)
+    return import_job_out(
+        job,
+        model_preferences=model_preferences,
+        cost_estimate=(estimated_cost_usd, estimate_basis, estimate_page_count),
+    )
 
 
 @app.get("/api/imports/batches", response_model=list[ImportBatchOut])

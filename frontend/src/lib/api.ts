@@ -351,6 +351,12 @@ export const api = {
     request<DocumentDetail>(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   updateDocumentLock: (id: string, body: DocumentLockPayload) =>
     request<DocumentDetail>(`/api/documents/${id}/lock`, { method: "POST", body: JSON.stringify(body) }),
+  replaceDocument: (id: string, file: File, options: { processingPresetId?: string | null } = {}) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (options.processingPresetId) form.append("processing_preset_id", options.processingPresetId);
+    return request<ImportJob>(`/api/documents/${id}/replace`, { method: "POST", body: form });
+  },
   updateDocumentPageText: (documentId: string, pageId: string, body: DocumentPageUpdatePayload) =>
     request<DocumentDetail>(`/api/documents/${documentId}/pages/${pageId}`, { method: "PATCH", body: JSON.stringify(body) }),
   scrubDocumentText: (documentId: string, body: DocumentTextScrubPayload) =>
