@@ -897,29 +897,19 @@ def test_list_documents_default_uses_50_row_window(monkeypatch, tmp_path):
     assert first_page.offset == 0
     assert first_page.limit == 40
     assert first_page.has_more is True
-    assert first_page.previous_page_boundary_title is None
-    assert first_page.next_page_boundary_title == "Document 079"
     assert len(second_page.items) == 40
     assert second_page.offset == 40
     assert second_page.has_more is True
-    assert second_page.previous_page_boundary_title == "Document 000"
-    assert second_page.next_page_boundary_title == "Document 119"
     assert len(last_page.items) == 5
     assert last_page.offset == 120
     assert last_page.has_more is False
-    assert last_page.previous_page_boundary_title == "Document 080"
-    assert last_page.next_page_boundary_title is None
     assert len(all_page.items) == 125
     assert all_page.offset == 0
     assert all_page.limit == 125
     assert all_page.has_more is False
-    assert all_page.previous_page_boundary_title is None
-    assert all_page.next_page_boundary_title is None
     assert focused_page.focus_document_id == focused_document_id
     assert focused_page.focus_index == 87
     assert focused_page.offset == 80
-    assert focused_page.previous_page_boundary_title == "Document 040"
-    assert focused_page.next_page_boundary_title == "Document 124"
     assert [document.title for document in focused_page.items][:2] == ["Document 080", "Document 081"]
     assert any(document.id == focused_document_id for document in focused_page.items)
     assert missing_focus_page.focus_index is None

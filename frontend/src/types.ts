@@ -1296,8 +1296,6 @@ export type DocumentListResponse = {
   revision: string;
   focus_document_id?: string | null;
   focus_index?: number | null;
-  previous_page_boundary_title?: string | null;
-  next_page_boundary_title?: string | null;
 };
 
 export type DocumentDetail = DocumentSummary & {

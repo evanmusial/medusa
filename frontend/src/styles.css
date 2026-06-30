@@ -2817,18 +2817,9 @@ textarea {
 }
 
 .library-page-arrow {
-  width: auto;
+  width: 34px;
   min-width: 34px;
-  gap: 4px;
-  padding: 0 7px;
-}
-
-.library-page-arrow-label {
-  min-width: 1.75em;
-  color: currentColor;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
+  padding: 0;
 }
 
 .bulk-multi-select {

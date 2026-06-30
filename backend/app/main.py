@@ -987,22 +987,6 @@ def document_list_row_load_options():
     )
 
 
-def document_page_boundary_title(query, order_columns: Iterable[Any], index: int) -> str | None:
-    if index < 0:
-        return None
-    title = (
-        query.order_by(None)
-        .order_by(*order_columns)
-        .with_entities(Document.title)
-        .offset(index)
-        .limit(1)
-        .scalar()
-    )
-    if not title:
-        return None
-    return str(title)
-
-
 def document_title_order_columns(db: Session):
     title_key = func.lower(Document.title)
     bind = db.get_bind()
@@ -4904,21 +4888,11 @@ def document_list_rows_out(
             focus_index = None
         if focus_index is not None and not all_results and not (offset <= focus_index < offset + limit):
             offset = (focus_index // limit) * limit
-    previous_page_boundary_title = None
-    next_page_boundary_title = None
     if all_results:
         offset = 0
         documents = row_query.order_by(None).order_by(*order_columns).all()
         limit = len(documents)
     else:
-        if offset > 0:
-            previous_page_boundary_title = document_page_boundary_title(query, order_columns, max(0, offset - limit))
-        if offset + limit < total_count:
-            next_page_boundary_title = document_page_boundary_title(
-                query,
-                order_columns,
-                min(offset + limit * 2, total_count) - 1,
-            )
         documents = row_query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
     document_ids = [document.id for document in documents]
     project_map = project_summaries_for_documents(db, document_ids)
@@ -4941,8 +4915,6 @@ def document_list_rows_out(
         revision=":".join(revision_parts),
         focus_document_id=focus_document_id,
         focus_index=focus_index,
-        previous_page_boundary_title=previous_page_boundary_title,
-        next_page_boundary_title=next_page_boundary_title,
     )
 
 

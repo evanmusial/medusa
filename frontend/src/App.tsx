@@ -2965,10 +2965,6 @@ function libraryListScopeKey(query: string, filters: DocumentFilters, pageSize: 
   ]);
 }
 
-function paginationTitleHint(title?: string | null) {
-  return Array.from((title || "").trim()).slice(0, 3).join("");
-}
-
 function selectOptionSearchText(option: SelectMenuOption) {
   return `${option.name} ${option.meta || ""} ${option.id}`.toLowerCase();
 }
@@ -7740,8 +7736,6 @@ function LibraryView({
   pageLimit,
   pageSize,
   pageTurnPending,
-  previousPageBoundaryTitle,
-  nextPageBoundaryTitle,
   sortKey,
   hasMoreDocuments,
   onPreviousPage,
@@ -7780,8 +7774,6 @@ function LibraryView({
   pageLimit: number;
   pageSize: LibraryPageSize;
   pageTurnPending: boolean;
-  previousPageBoundaryTitle?: string | null;
-  nextPageBoundaryTitle?: string | null;
   sortKey: DocumentListSort;
   hasMoreDocuments: boolean;
   onPreviousPage: () => void;
@@ -8034,8 +8026,6 @@ function LibraryView({
   const currentResultPage =
     totalDocumentCount > 0 ? Math.min(totalResultPages, Math.floor(pageOffset / effectivePageLimit) + 1) : 0;
   const pageCountLabel = `${formatWholeNumber(currentResultPage)} of ${formatWholeNumber(totalResultPages)}`;
-  const previousPageHint = !pageTurnPending && pageOffset > 0 ? paginationTitleHint(previousPageBoundaryTitle) : "";
-  const nextPageHint = !pageTurnPending && hasMoreDocuments ? paginationTitleHint(nextPageBoundaryTitle) : "";
   const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
   const effectiveRowsViewportHeight = measuredRowsViewportHeight || libraryRowHeight * 12;
   const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
@@ -8793,7 +8783,6 @@ function LibraryView({
                   type="button"
                 >
                   <ArrowLeft size={18} strokeWidth={3} />
-                  {previousPageHint ? <span className="library-page-arrow-label">{previousPageHint}</span> : null}
                 </button>
                 <span className="library-page-count">{pageCountLabel}</span>
                 <button
@@ -8805,7 +8794,6 @@ function LibraryView({
                   onClick={onNextPage}
                   type="button"
                 >
-                  {nextPageHint ? <span className="library-page-arrow-label">{nextPageHint}</span> : null}
                   <ArrowRight size={18} strokeWidth={3} />
                 </button>
               </div>
@@ -26693,8 +26681,6 @@ export default function App() {
             pageLimit={libraryDisplayLimit}
             pageSize={libraryPageSize}
             pageTurnPending={libraryPageTurnPending}
-            previousPageBoundaryTitle={libraryDocumentList.data?.previous_page_boundary_title}
-            nextPageBoundaryTitle={libraryDocumentList.data?.next_page_boundary_title}
             sortKey={librarySort}
             hasMoreDocuments={libraryHasMoreDocuments}
             onPreviousPage={() => {
