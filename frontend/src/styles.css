@@ -2643,7 +2643,7 @@ textarea {
 .tag-cloud-chip {
   --tag-cloud-chip-font-size: 13px;
   --tag-cloud-chip-count-font-size: 11px;
-  min-height: 34px;
+  min-height: 30px;
   max-width: 100%;
   display: inline-flex;
   align-items: stretch;
