@@ -8923,12 +8923,6 @@ function LibraryView({
                 <span className="doc-row-title">
                   <span>{item.title}</span>
                   {item.publication_year ? <span className="doc-row-title-year">({item.publication_year})</span> : null}
-                  {hasVerifiedFields || item.is_locked ? (
-                    <span className="doc-row-title-icons" role="img" aria-label={titleIconLabel} data-tooltip={titleIconLabel}>
-                      {hasVerifiedFields ? <BadgeCheck size={14} aria-hidden="true" /> : null}
-                      {item.is_locked ? <Lock size={14} aria-hidden="true" /> : null}
-                    </span>
-                  ) : null}
                 </span>
                 <span className="doc-row-byline">
                   <span className="doc-row-pages" aria-label={`Pages: ${pageCountMarker(item)}`}>
@@ -8957,6 +8951,12 @@ function LibraryView({
                 ) : null}
                 {showLibraryStatusPill(item.processing_status, "ready") ? <StatusPill value={item.processing_status} tone="blue" /> : null}
                 {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
+                {hasVerifiedFields || item.is_locked ? (
+                  <span className="doc-row-title-icons" role="img" aria-label={titleIconLabel} data-tooltip={titleIconLabel}>
+                    {hasVerifiedFields ? <BadgeCheck size={14} aria-hidden="true" /> : null}
+                    {item.is_locked ? <Lock size={14} aria-hidden="true" /> : null}
+                  </span>
+                ) : null}
               </div>
               <div className="doc-row-summary">
                 <MarkdownBlock compact content={markdownExcerpt(item.rich_summary || "", librarySummaryExcerptChars)} empty="Summary pending." />

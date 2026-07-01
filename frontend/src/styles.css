@@ -3938,6 +3938,11 @@ textarea {
   line-height: 1;
 }
 
+.doc-row .doc-row-title-icons,
+.doc-row .doc-row-title-icons svg {
+  color: var(--accent);
+}
+
 .doc-row-title-icons svg {
   width: 14px;
   height: 14px;
@@ -4029,9 +4034,11 @@ textarea {
 }
 
 .row-meta {
+  align-self: start;
   gap: 5px;
   justify-content: flex-end;
   min-width: 270px;
+  padding-top: 1px;
   flex-wrap: wrap;
 }
 
