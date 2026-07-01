@@ -2927,10 +2927,12 @@ def dashboard_out(db: Session) -> DashboardOut:
     import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
     queue_import_jobs = db.query(ImportJob).filter(ImportJob.status.in_(IMPORT_JOB_QUEUE_STATUSES)).count()
     active_import_jobs = import_queued_jobs + import_running_jobs
-    active_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status.in_(["queued", "running"])).count()
-    active_accessory_summary_jobs = (
-        db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status.in_(["queued", "running"])).count()
-    )
+    concordance_queued_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "queued").count()
+    concordance_running_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "running").count()
+    active_concordance_jobs = concordance_queued_jobs + concordance_running_jobs
+    accessory_summary_queued_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "queued").count()
+    accessory_summary_running_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "running").count()
+    active_accessory_summary_jobs = accessory_summary_queued_jobs + accessory_summary_running_jobs
     failed_import_jobs = db.query(ImportJob).filter(ImportJob.status == "failed").count()
     failed_concordance_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "failed").count()
     failed_accessory_summary_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "failed").count()
@@ -2985,7 +2987,11 @@ def dashboard_out(db: Session) -> DashboardOut:
         import_active_elapsed_seconds=active_elapsed_seconds,
         import_active_cost_usd=active_import_cost_usd(db, active_import_job_ids),
         active_concordance_jobs=active_concordance_jobs,
+        concordance_queued_jobs=concordance_queued_jobs,
+        concordance_running_jobs=concordance_running_jobs,
         active_accessory_summary_jobs=active_accessory_summary_jobs,
+        accessory_summary_queued_jobs=accessory_summary_queued_jobs,
+        accessory_summary_running_jobs=accessory_summary_running_jobs,
         failed_jobs=failed_import_jobs + failed_concordance_jobs + failed_accessory_summary_jobs,
         failed_import_jobs=failed_import_jobs,
         failed_concordance_jobs=failed_concordance_jobs,

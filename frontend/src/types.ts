@@ -126,7 +126,11 @@ export type Dashboard = {
   import_active_elapsed_seconds?: number | null;
   import_active_cost_usd: number;
   active_concordance_jobs: number;
+  concordance_queued_jobs: number;
+  concordance_running_jobs: number;
   active_accessory_summary_jobs: number;
+  accessory_summary_queued_jobs: number;
+  accessory_summary_running_jobs: number;
   failed_jobs: number;
   failed_import_jobs: number;
   failed_concordance_jobs: number;

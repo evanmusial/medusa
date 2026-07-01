@@ -1536,7 +1536,11 @@ class DashboardOut(BaseModel):
     import_active_elapsed_seconds: int | None = None
     import_active_cost_usd: float = 0.0
     active_concordance_jobs: int
+    concordance_queued_jobs: int = 0
+    concordance_running_jobs: int = 0
     active_accessory_summary_jobs: int = 0
+    accessory_summary_queued_jobs: int = 0
+    accessory_summary_running_jobs: int = 0
     failed_jobs: int
     failed_import_jobs: int
     failed_concordance_jobs: int

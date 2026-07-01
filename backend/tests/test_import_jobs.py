@@ -347,6 +347,81 @@ def test_dashboard_surfaces_recent_failed_ai_calls(monkeypatch, tmp_path):
         assert notice.error_message == "context_length_exceeded"
 
 
+def test_dashboard_splits_queued_and_running_background_work(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import dashboard
+    from app.models import ConcordanceJob, ConcordanceRun, Document, DocumentAccessorySummary
+
+    with Session() as db:
+        documents = [
+            Document(
+                title=f"Background {index}",
+                original_filename=f"background-{index}.pdf",
+                checksum_sha256=f"9{index:063x}"[-64:],
+                processing_status="ready",
+            )
+            for index in range(4)
+        ]
+        run = ConcordanceRun(
+            label="Mixed background work",
+            scope_type="documents",
+            scope_data={"document_ids": []},
+            capability_keys=["summary_refresh"],
+            status="running",
+            total_jobs=3,
+        )
+        db.add_all([*documents, run])
+        db.flush()
+        db.add_all(
+            [
+                ConcordanceJob(
+                    run=run,
+                    document=documents[0],
+                    capability_key="summary_refresh",
+                    target_version=1,
+                    status="running",
+                ),
+                ConcordanceJob(
+                    run=run,
+                    document=documents[1],
+                    capability_key="summary_refresh",
+                    target_version=1,
+                    status="queued",
+                ),
+                ConcordanceJob(
+                    run=run,
+                    document=documents[2],
+                    capability_key="summary_refresh",
+                    target_version=1,
+                    status="queued",
+                ),
+                DocumentAccessorySummary(
+                    document=documents[2],
+                    prompt="Explain the method.",
+                    model="gpt-5.5",
+                    status="running",
+                ),
+                DocumentAccessorySummary(
+                    document=documents[3],
+                    prompt="Explain the conclusion.",
+                    model="gpt-5.5",
+                    status="queued",
+                ),
+            ]
+        )
+        db.commit()
+
+        counts = dashboard(object(), db)
+
+    assert counts.concordance_running_jobs == 1
+    assert counts.concordance_queued_jobs == 2
+    assert counts.active_concordance_jobs == 3
+    assert counts.accessory_summary_running_jobs == 1
+    assert counts.accessory_summary_queued_jobs == 1
+    assert counts.active_accessory_summary_jobs == 2
+    assert counts.queued_jobs == 5
+
+
 def test_process_staged_import_jobs_promotes_rows(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import process_staged_import_jobs

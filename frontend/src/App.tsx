@@ -232,6 +232,7 @@ type BackgroundJob = {
   completedJobs?: number;
   failedJobs?: number;
   progress?: number;
+  runningJobs?: number;
   totalJobs?: number;
   error?: string;
   createdAt: number;
@@ -2033,6 +2034,12 @@ function concordanceRunActiveJobCount(run: ConcordanceRun) {
   return Math.max(0, (run.total_jobs || 0) - (run.completed_jobs || 0) - (run.failed_jobs || 0));
 }
 
+function concordanceRunRunningJobCount(run: ConcordanceRun, runJobs: ConcordanceJob[]) {
+  const runningJobs = runJobs.filter((job) => job.status === "running").length;
+  if (runningJobs > 0) return runningJobs;
+  return run.status === "running" ? 1 : 0;
+}
+
 function concordanceRunProgressDetail(run: ConcordanceRun) {
   const total = Math.max(0, run.total_jobs || 0);
   if (!total) return "Already current";
@@ -2048,12 +2055,14 @@ function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], ex
   const status = statusFromRun(run, runJobs);
   const terminal = isTerminalBackgroundStatus(status);
   const now = Date.now();
+  const runningJobs = terminal ? 0 : concordanceRunRunningJobCount(run, runJobs);
   return {
     id: existing?.id || run.id,
     label: existing?.label || run.label || `${scopeLabel(run.scope_type)} Concordance`,
     detail: concordanceRunProgressDetail(run),
     status,
     activeJobs: terminal ? 0 : concordanceRunActiveJobCount(run),
+    runningJobs,
     runId: run.id,
     documentId: existing?.documentId,
     capabilityKey: existing?.capabilityKey,
@@ -2218,6 +2227,7 @@ function backgroundJobFromBackupRun(run: BackupRun): BackgroundJob {
     detail: run.status_detail || backupPhaseLabel(run.phase),
     status,
     progress: Math.max(0, Math.min(100, run.progress || 0)),
+    runningJobs: status === "running" ? 1 : 0,
     error: run.last_error || undefined,
     createdAt: new Date(run.created_at).getTime() || Date.now(),
     completedAt: terminal ? new Date(run.completed_at || run.updated_at).getTime() || Date.now() : undefined,
@@ -2232,6 +2242,7 @@ function backgroundJobFromAccessorySummaryCount(count: number, updatedAt: number
     detail: `${formatMetric(count)} active ${count === 1 ? "Inquest" : "Inquests"}`,
     status: "running",
     activeJobs: count,
+    runningJobs: count,
     totalJobs: count,
     createdAt: updatedAt || Date.now(),
   };
@@ -2268,6 +2279,14 @@ function backgroundActiveJobCount(jobs: BackgroundJob[]) {
   return jobs.reduce((total, job) => total + Math.max(0, job.activeJobs ?? 1), 0);
 }
 
+function backgroundRunningJobCount(jobs: BackgroundJob[]) {
+  return jobs.reduce((total, job) => {
+    if (job.runningJobs !== undefined) return total + Math.max(0, job.runningJobs);
+    if (job.status !== "running") return total;
+    return total + Math.max(1, job.activeJobs ?? 1);
+  }, 0);
+}
+
 function backgroundAggregateProgress(jobs: BackgroundJob[]) {
   const total = jobs.reduce((sum, job) => sum + backgroundJobTotal(job), 0);
   if (!total) return backgroundProgress(jobs[0]);
@@ -2295,6 +2314,11 @@ function backgroundAggregateDetail(jobs: BackgroundJob[]) {
 function dashboardBackgroundWorkCount(dashboard?: Dashboard) {
   if (!dashboard) return 0;
   return Math.max(0, (dashboard.active_concordance_jobs || 0) + (dashboard.active_accessory_summary_jobs || 0));
+}
+
+function dashboardRunningBackgroundWorkCount(dashboard?: Dashboard) {
+  if (!dashboard) return 0;
+  return Math.max(0, (dashboard.concordance_running_jobs || 0) + (dashboard.accessory_summary_running_jobs || 0));
 }
 
 function dashboardBackgroundWorkDetail(dashboard?: Dashboard) {
@@ -2418,17 +2442,22 @@ function HeaderWorkProgress({
   } else if (hasActiveBackgroundWork) {
     const job = activeJobs[0];
     const listedActiveJobCount = backgroundActiveJobCount(activeJobs);
+    const listedRunningJobCount = backgroundRunningJobCount(activeJobs);
     const activeJobCount = Math.max(listedActiveJobCount, dashboardActiveBackgroundCount);
+    const runningJobCount = Math.max(listedRunningJobCount, dashboardRunningBackgroundWorkCount(dashboard));
     const aggregate = activeJobCount > 1 || activeJobs.length > 1;
     progress = job ? (aggregate ? backgroundAggregateProgress(activeJobs) : backgroundProgress(job)) : 18;
-    label = activeJobCount > 1 ? `${formatMetric(activeJobCount)} background jobs` : job?.label || "Background work";
+    label =
+      activeJobCount > 1
+        ? `${formatMetric(activeJobCount)} background jobs (${formatMetric(runningJobCount)} active)`
+        : job?.label || "Background work";
     detail =
       dashboardActiveBackgroundCount > listedActiveJobCount
         ? dashboardBackgroundWorkDetail(dashboard) || backgroundAggregateDetail(activeJobs)
         : aggregate
           ? backgroundAggregateDetail(activeJobs)
           : job?.detail || (job ? backgroundStatusLabel(job) : dashboardBackgroundWorkDetail(dashboard));
-    activeClass = activeJobs.some((item) => item.status === "running") || dashboardActiveBackgroundCount > 0 ? "running" : job?.status || "running";
+    activeClass = runningJobCount > 0 ? "running" : job?.status || "queued";
   } else if (completedImport) {
     progress = 100;
     activeClass = "complete";
@@ -27411,6 +27440,7 @@ export default function App() {
                   runId: run.id,
                   acceptedAt: Date.now(),
                   activeJobs: run.total_jobs > 0 ? concordanceRunActiveJobCount(run) : 0,
+                  runningJobs: run.total_jobs > 0 ? concordanceRunRunningJobCount(run, []) : 0,
                   completedJobs: run.completed_jobs,
                   failedJobs: run.failed_jobs,
                   totalJobs: run.total_jobs,
@@ -27717,6 +27747,7 @@ export default function App() {
       label: "Refresh Cache",
       detail: cacheRefreshProgress.running ? "Invalidating response-cache payloads" : "Finishing",
       status: "running",
+      runningJobs: 1,
       progress: cacheRefreshProgress.progress,
       createdAt: Date.now(),
     });
@@ -27727,6 +27758,7 @@ export default function App() {
       label: "Hydrate Cache",
       detail: cacheHydrateProgress.running ? "Preloading common cache entries" : "Finishing",
       status: "running",
+      runningJobs: 1,
       progress: cacheHydrateProgress.progress,
       createdAt: Date.now(),
     });
