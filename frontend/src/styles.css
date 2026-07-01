@@ -2634,7 +2634,7 @@ textarea {
 
 .tag-cloud-chip,
 .tag-cloud-empty {
-  border: 0;
+  border: 1px solid color-mix(in srgb, var(--button-line) 78%, transparent);
   background: color-mix(in srgb, var(--panel-2) 84%, transparent);
   border-radius: 999px;
   color: var(--muted);
@@ -2656,6 +2656,7 @@ textarea {
 .tag-cloud-chip:hover,
 .tag-cloud-chip:focus-visible,
 .tag-cloud-chip.active {
+  border-color: color-mix(in srgb, var(--blue) 42%, var(--button-line));
   background: color-mix(in srgb, var(--blue-soft) 74%, transparent);
   color: color-mix(in srgb, var(--blue) 72%, var(--ink));
   outline: 0;
@@ -2670,7 +2671,10 @@ textarea {
   border-radius: 999px;
   background: #4b5563;
   color: #ffffff;
+  font-size: inherit !important;
+  font-weight: 700 !important;
   font-variant-numeric: tabular-nums;
+  line-height: inherit;
 }
 
 .tag-cloud-chip-label {
