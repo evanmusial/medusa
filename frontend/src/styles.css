@@ -6120,6 +6120,59 @@ textarea {
 
 .recommendation-notice-slot {
   min-height: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.recommendation-progress {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--blue-soft) 72%, var(--panel));
+  padding: 8px 10px;
+}
+
+.recommendation-progress > div:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.recommendation-progress > div:first-child span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.recommendation-progress-track {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel));
+}
+
+.recommendation-progress-track span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42%;
+  border-radius: inherit;
+  background: var(--blue);
+  animation: recommendation-progress-sweep 1.2s ease-in-out infinite;
+}
+
+@keyframes recommendation-progress-sweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
 }
 
 .recommendations-dialog-empty {

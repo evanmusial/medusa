@@ -1013,6 +1013,71 @@ function recommendationAuthorLine(item: DocumentRecommendation) {
     .join(", ");
 }
 
+const RECOMMENDATION_INPUT_STOPWORDS = new Set([
+  "and",
+  "for",
+  "from",
+  "into",
+  "the",
+  "through",
+  "using",
+  "with",
+]);
+
+function recommendationInputTerms(value?: string | null) {
+  return (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((term) => term.length >= 3 && !RECOMMENDATION_INPUT_STOPWORDS.has(term));
+}
+
+function documentHasRecommendationInputs(document: DocumentDetail) {
+  if (document.doi?.trim() || document.bibliography?.trim()) return true;
+  if (recommendationInputTerms(document.title).length >= 3) return true;
+  const structuredTerms = recommendationInputTerms(
+    [
+      ...document.tags.map((tag) => tag.name),
+      ...document.domains.map((domain) => domain.name),
+      document.title,
+    ].join(" "),
+  );
+  if (structuredTerms.length >= 3) return true;
+  const evidenceTerms = recommendationInputTerms(
+    [document.title, document.abstract, document.rich_summary, document.search_text?.slice(0, 1600)].filter(Boolean).join(" "),
+  );
+  return evidenceTerms.length >= 5;
+}
+
+function documentCanListRecommendations(document: DocumentDetail) {
+  return ["ready", "complete", "completed", "restored"].includes(document.processing_status);
+}
+
+function recommendationRefreshDisabledReason(
+  document: DocumentDetail,
+  options: {
+    documentLocked: boolean;
+    hasRecommendationInputs: boolean;
+    refreshPending: boolean;
+  },
+) {
+  const { documentLocked, hasRecommendationInputs, refreshPending } = options;
+  if (documentLocked) return "this document is locked.";
+  if (refreshPending) return "recommendation refresh is already running.";
+  if (!documentCanListRecommendations(document)) return "related recommendations are available after processing is complete.";
+  if (!hasRecommendationInputs) {
+    return "related recommendations need a DOI, extracted bibliography, summary, tags, domains, or a title with enough searchable terms.";
+  }
+  return "";
+}
+
+function recommendationEmptyMessage(view: RecommendationView, family: RecommendationFamily, refreshing: boolean) {
+  if (refreshing) return "Finding related papers.";
+  if (view === "known") return "No already-known recommendations match this relation filter.";
+  if (family !== "diverse") return `No ${recommendationFamilyLabel(family).toLowerCase()} recommendations match this view.`;
+  return "No other related articles shown.";
+}
+
 function stashAuthorLine(stash: DoiStash) {
   const authors = stash.authors || [];
   if (!authors.length) return "";
@@ -9350,14 +9415,14 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const selectedDownloadFeedback = useAsyncActionFeedback();
   const newDownloadFeedback = useAsyncActionFeedback();
   const stashFeedback = useAsyncActionFeedbackMap();
-  const bibliographyEntries = useMemo(() => bibliographyEntriesFromText(document.bibliography), [document.bibliography]);
-  const hasBibliography = bibliographyEntries.length > 0;
   const documentLocked = Boolean(document.is_locked);
-  const canRefresh = !documentLocked && document.processing_status === "ready" && Boolean(document.title?.trim());
+  const canListRecommendations = documentCanListRecommendations(document);
+  const hasRecommendationInputs = documentHasRecommendationInputs(document);
+  const canRefresh = !documentLocked && document.processing_status === "ready" && hasRecommendationInputs;
   const recommendations = useQuery({
     queryKey: ["document-recommendations", document.id, view, family],
     queryFn: () => api.documentRecommendations(document.id, { view, family }),
-    enabled: canRefresh,
+    enabled: canListRecommendations,
   });
   const refresh = useMutation({
     mutationFn: () => api.refreshDocumentRecommendations(document.id),
@@ -9435,7 +9500,16 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   const selectedDownloadable = rows.filter((item) => selectedIds.includes(item.id) && item.has_pdf).length;
   const rowDownloadable = rows.filter((item) => item.has_pdf).length;
   const newDownloadable = newRows.filter((item) => item.has_pdf).length;
-  const recommendationsLoading = recommendations.isFetching && recommendations.data === undefined;
+  const recommendationsLoading = canListRecommendations && recommendations.isFetching && recommendations.data === undefined;
+  const recommendationWorkActive = canListRecommendations && (recommendations.isFetching || refresh.isPending);
+  const recommendationWorkMessage = refresh.isPending
+    ? "Searching scholarly providers, bibliography, and nearby library context."
+    : "Loading related-paper rows for this view.";
+  const refreshDisabledReason = recommendationRefreshDisabledReason(document, {
+    documentLocked,
+    hasRecommendationInputs,
+    refreshPending: refresh.isPending,
+  });
   const summaryText = recommendationsLoading
     ? "Loading related papers"
     : view === "known"
@@ -9767,13 +9841,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             <AsyncActionSlot busy={refresh.isPending} feedback={refreshFeedback.feedback} label="Recommendation refresh in progress">
               <button
                 className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback, refresh.isPending)}
-                data-disabled-reason={
-                  documentLocked
-                    ? "this document is locked."
-                    : refresh.isPending
-                    ? "recommendation refresh is already running."
-                    : "related recommendations need a completed document with a searchable title."
-                }
+                data-disabled-reason={refreshDisabledReason}
                 data-tooltip="Refresh related-paper recommendations from scholarly metadata search, extracted bibliography references, and nearby project/domain/tag context."
                 disabled={!canRefresh || refresh.isPending}
                 onClick={() => refresh.mutate()}
@@ -9869,11 +9937,24 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             </button>
           </AsyncActionSlot>
         </div>
-        <div className="recommendation-notice-slot">{notice ? <p className="recommendation-notice">{notice}</p> : null}</div>
-        {!canRefresh ? (
+        <div className="recommendation-notice-slot">
+          {recommendationWorkActive ? (
+            <div className="recommendation-progress" role="status" aria-live="polite">
+              <div>
+                <RefreshCw className="spin" size={14} />
+                <span>{recommendationWorkMessage}</span>
+              </div>
+              <div className="recommendation-progress-track" aria-hidden="true">
+                <span />
+              </div>
+            </div>
+          ) : null}
+          {notice ? <p className="recommendation-notice">{notice}</p> : null}
+        </div>
+        {!canListRecommendations ? (
           <div className="empty-inline recommendations-dialog-empty">
             <Sparkles size={17} />
-            <span>Related needs a completed document with a searchable title.</span>
+            <span>Related is available after this document finishes processing.</span>
           </div>
         ) : (
           <div className="recommendations-dialog-body">
@@ -9889,7 +9970,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
               ) : (
                 <div className="empty-inline">
                   <Sparkles size={17} />
-                  <span>{refresh.isPending || recommendationsLoading ? "Finding related papers." : "No other related articles shown."}</span>
+                  <span>{recommendationEmptyMessage(view, family, refresh.isPending || recommendationsLoading)}</span>
                 </div>
               )}
             </section>
