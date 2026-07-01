@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex">
-    <meta http-equiv="refresh" content="2">
+    <noscript><meta http-equiv="refresh" content="2"></noscript>
     <title>Medusa is under maintenance</title>
     <style>
       :root {
@@ -113,6 +113,28 @@
         }
       }
     </style>
+    <script>
+      (() => {
+        const checkMedusa = async () => {
+          try {
+            const probeUrl = new URL(window.location.href);
+            probeUrl.searchParams.set("restart_probe", Date.now().toString(36));
+            const response = await fetch(probeUrl.toString(), {
+              cache: "no-store",
+              credentials: "same-origin",
+            });
+            if (response.ok && response.headers.get("x-medusa-restarting") !== "true") {
+              window.location.replace(window.location.href);
+            }
+          } catch {
+            // The app can be between containers while Docker restarts.
+          }
+        };
+
+        window.setTimeout(checkMedusa, 300);
+        window.setInterval(checkMedusa, 1000);
+      })();
+    </script>
   </head>
   <body>
     <main aria-live="polite">

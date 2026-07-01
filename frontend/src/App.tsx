@@ -378,6 +378,11 @@ const RELEASE_RELOAD_DELAY_MS = 900;
 const RELEASE_RELOAD_PARAM = "_medusa_reload";
 const RELEASE_RELOAD_TARGET_PARAM = "_medusa_release";
 const RELEASE_READY_TIMEOUT_MS = 120_000;
+const RELEASE_HEALTH_CHECK_MESSAGE = "Checking the new build";
+const RELEASE_HEALTH_CHECK_DETAIL = "The update is applied. Verifying health and the app shell before loading the new build.";
+const RELEASE_RESTART_WAIT_MESSAGE = "Waiting for Medusa";
+const RELEASE_RESTART_WAIT_DETAIL =
+  "Medusa may still be restarting. The app will stay locked until release status and health checks answer again.";
 const STARTUP_HEALTH_RETRY_LIMIT = 120;
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
@@ -2566,7 +2571,7 @@ function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgrad
   if (status.phase === "verifying") {
     return {
       detail: status.message || "Waiting for the updated server to pass health checks.",
-      message: "Checking the new build",
+      message: RELEASE_HEALTH_CHECK_MESSAGE,
       stage: "health",
       targetVersion,
     };
@@ -27177,8 +27182,8 @@ export default function App() {
           current
             ? {
                 ...current,
-                detail: "The update is applied. Verifying health and the app shell before loading the new build.",
-                message: "Checking the new build",
+                detail: RELEASE_HEALTH_CHECK_DETAIL,
+                message: RELEASE_HEALTH_CHECK_MESSAGE,
                 stage: "health",
                 targetVersion: status.running.version || nextLock.targetVersion,
               }
@@ -27193,8 +27198,6 @@ export default function App() {
               current
                 ? {
                     ...current,
-                    detail: "The server has updated, but Medusa is not ready to load the app shell yet.",
-                    message: "Waiting for Medusa health",
                     stage: "health",
                     targetVersion: status.running.version || nextLock.targetVersion,
                   }
@@ -27229,9 +27232,9 @@ export default function App() {
           current
             ? {
                 ...current,
-                detail: "The server may be restarting. Medusa will stay locked until release status and health checks answer again.",
-                message: "Waiting for Medusa to return",
-                stage: "polling",
+                detail: current.stage === "health" ? current.detail : RELEASE_RESTART_WAIT_DETAIL,
+                message: current.stage === "health" ? current.message : RELEASE_RESTART_WAIT_MESSAGE,
+                stage: current.stage === "health" ? "health" : "polling",
               }
             : current,
         );
