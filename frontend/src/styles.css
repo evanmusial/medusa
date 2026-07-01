@@ -2650,10 +2650,10 @@ textarea {
   grid-template-columns: var(--tag-cloud-chip-count-width) minmax(0, auto);
   column-gap: 10px;
   align-items: center;
-  padding: 4px 8px 4px 6px;
-  border: 0;
+  padding: 3px 7px 3px 5px;
+  border: 1px solid color-mix(in srgb, var(--button-line) 72%, transparent);
   border-radius: 7px;
-  background: color-mix(in srgb, var(--panel-2) 54%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 82%, var(--button-line));
   color: var(--muted);
   font-size: var(--tag-cloud-chip-font-size);
   box-sizing: border-box;
@@ -2665,6 +2665,7 @@ textarea {
 .tag-cloud-chip:hover,
 .tag-cloud-chip:focus-visible,
 .tag-cloud-chip.active {
+  border-color: color-mix(in srgb, var(--blue) 34%, var(--button-line));
   background: color-mix(in srgb, var(--blue-soft) 46%, var(--panel-2));
   color: color-mix(in srgb, var(--blue) 72%, var(--ink));
   outline: 0;
