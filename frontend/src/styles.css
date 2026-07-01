@@ -2627,12 +2627,11 @@ textarea {
 }
 
 .tag-cloud {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
 }
 
-.tag-cloud-chip,
 .tag-cloud-empty {
   border: 1px solid color-mix(in srgb, var(--button-line) 78%, transparent);
   background: color-mix(in srgb, var(--panel-2) 84%, transparent);
@@ -2642,46 +2641,48 @@ textarea {
 
 .tag-cloud-chip {
   --tag-cloud-chip-font-size: 13px;
-  --tag-cloud-chip-count-font-size: 11px;
-  min-height: 30px;
+  --tag-cloud-chip-count-width: 36px;
+  justify-self: start;
+  width: fit-content;
   max-width: 100%;
-  display: inline-flex;
-  align-items: stretch;
-  gap: 8px;
-  padding: 0 10px 0 0;
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: var(--tag-cloud-chip-count-width) minmax(0, auto);
+  column-gap: 12px;
+  align-items: baseline;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
   font-size: var(--tag-cloud-chip-font-size);
-  overflow: hidden;
+  box-sizing: border-box;
   font-weight: 400;
   line-height: 1.2;
+  text-align: left;
 }
 
 .tag-cloud-chip:hover,
 .tag-cloud-chip:focus-visible,
 .tag-cloud-chip.active {
-  border-color: color-mix(in srgb, var(--blue) 42%, var(--button-line));
-  background: color-mix(in srgb, var(--blue-soft) 74%, transparent);
+  border-color: color-mix(in srgb, var(--blue) 24%, transparent);
+  background: color-mix(in srgb, var(--blue-soft) 42%, transparent);
   color: color-mix(in srgb, var(--blue) 72%, var(--ink));
   outline: 0;
 }
 
 .tag-cloud-chip-count {
-  align-self: stretch;
-  width: 44px;
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 44px;
-  border-radius: 999px;
-  background: #4b5563;
-  color: #ffffff;
-  font-size: var(--tag-cloud-chip-count-font-size) !important;
+  width: var(--tag-cloud-chip-count-width);
+  color: color-mix(in srgb, var(--ink) 74%, var(--muted));
+  font-size: var(--tag-cloud-chip-font-size) !important;
   font-weight: 650 !important;
   font-variant-numeric: tabular-nums;
   line-height: inherit;
+  text-align: right;
 }
 
 .tag-cloud-chip-label {
   min-width: 0;
-  align-self: center;
   font-size: var(--tag-cloud-chip-font-size) !important;
   font-weight: 400 !important;
   line-height: inherit;
