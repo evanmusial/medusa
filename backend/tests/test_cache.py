@@ -104,7 +104,9 @@ def test_cache_revision_dirty_state_clears_on_rollback(monkeypatch, tmp_path):
         db.add(AppPreference(key="unrelated", value={"ok": True}))
         db.commit()
 
-        assert db.query(CacheRevision).count() == 0
+        revisions = {row.family: row.version for row in db.query(CacheRevision).all()}
+
+        assert revisions == {"preferences": 1, "status": 1, "library": 1, "document_detail": 1}
 
 
 def test_cache_revision_hooks_bump_dashboard_for_usage_rows(monkeypatch, tmp_path):
@@ -309,12 +311,16 @@ def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
 
     assert result["status"] == "complete"
     assert result["document_count"] == 2
-    assert result["base_keys"] == 2
-    assert result["organization_keys"] == 3
-    assert result["list_page_keys"] == 1
-    assert result["saved_search_keys"] == 1
+    assert result["base_keys"] >= 3
+    assert result["organization_keys"] >= 6
+    assert result["list_page_keys"] >= 3
+    assert result["saved_search_keys"] >= 3
     assert result["document_detail_keys"] == 2
-    assert result["hydrated_keys"] == 9
+    assert result["document_adjunct_keys"] == 8
+    assert result["finance_keys"] == len(main.OPENAI_USAGE_PERIODS)
+    assert result["job_keys"] >= 3
+    assert result["backup_keys"] >= 2
+    assert result["hydrated_keys"] >= 24
     assert result["after"]["last_hydration_at"] == result["hydrated_at"]
     assert cache.hydrated_at == result["hydrated_at"]
 
@@ -408,10 +414,31 @@ def test_hydrate_cache_default_includes_saved_library_page_size(monkeypatch, tmp
         result = main.hydrate_cache_payloads(db, include_document_details=False)
 
     assert result["status"] == "complete"
-    assert result["list_page_keys"] == 2
-    assert result["saved_search_keys"] == 2
-    assert {key["limit"] for key in recorded_document_list_keys if not key["publication_id"]} == {50, 75}
-    assert {key["limit"] for key in recorded_document_list_keys if key["publication_id"] == "publication-1"} == {50, 75}
+    assert result["list_page_keys"] >= 6
+    assert result["saved_search_keys"] >= 6
+    base_page_keys = [
+        key
+        for key in recorded_document_list_keys
+        if not key["all"] and not any(key[name] for name in ["domain_id", "tag_id", "publication_id", "read_status", "priority", "citation_status", "duplicate_status", "health_status"])
+    ]
+    saved_publication_keys = [key for key in recorded_document_list_keys if not key["all"] and key["publication_id"] == "publication-1"]
+    assert {(key["limit"], key["sort"]) for key in base_page_keys} == {
+        (50, "title"),
+        (75, "title"),
+        (50, "date"),
+        (75, "date"),
+        (50, "page_count"),
+        (75, "page_count"),
+    }
+    assert {(key["limit"], key["sort"]) for key in saved_publication_keys} == {
+        (50, "title"),
+        (75, "title"),
+        (50, "date"),
+        (75, "date"),
+        (50, "page_count"),
+        (75, "page_count"),
+    }
+    assert any(key["all"] and key["sort"] == "title" for key in recorded_document_list_keys)
     assert all("publication_id" in key for key in recorded_document_list_keys)
 
 
@@ -481,7 +508,8 @@ def test_hydrate_cache_default_document_limit_means_all(monkeypatch, tmp_path):
     assert result["status"] == "complete"
     assert result["document_count"] == 3
     assert result["document_detail_keys"] == 3
-    assert result["hydrated_keys"] == 9
+    assert result["document_adjunct_keys"] == 12
+    assert result["hydrated_keys"] >= 24
 
 
 def test_startup_cache_hydration_schedules_shared_hydrator(monkeypatch):

@@ -77,15 +77,16 @@ Valkey response cache settings:
 ```bash
 MEDUSA_CACHE_BACKEND=valkey
 MEDUSA_CACHE_URL=valkey://valkey:6379/0
-MEDUSA_CACHE_TTL_SECONDS=3600
-MEDUSA_CACHE_MAX_PAYLOAD_BYTES=2097152
+MEDUSA_CACHE_TTL_SECONDS=604800
+MEDUSA_CACHE_MAX_PAYLOAD_BYTES=33554432
 MEDUSA_CACHE_STARTUP_HYDRATE=true
 MEDUSA_CACHE_HYDRATE_MAX_DOCUMENTS=0
 MEDUSA_CACHE_HYDRATE_PAGE_SIZE=50
 MEDUSA_VALKEY_MAXMEMORY=8gb
 ```
 
-Valkey stores only rebuildable API payloads and counters. PostgreSQL remains authoritative for documents, jobs, history, evidence, auth, search, and backups. Cache keys include PostgreSQL-backed revision tokens, so Refresh Cache and committed writes make stale payloads unreachable.
+Valkey stores only rebuildable API payloads and counters. PostgreSQL remains authoritative for documents, jobs, history, evidence, auth, search, and backups. Cache keys include PostgreSQL-backed revision tokens, so Refresh Cache and committed writes make stale payloads unreachable. The default response-cache TTL is seven days and the default per-payload cap is 32 MiB so large document detail, workspace, and list payloads stay hot when the Valkey memory budget allows it.
+Keep startup hydration enabled on normal deployments: the backend schedules it as background work after service startup so a cleared or recreated Valkey cache begins warming as soon as Medusa is back online. Disable it only as a temporary incident mitigation if cache warming itself is making recovery unhealthy, then re-enable it once the app is stable. Startup/manual hydration warms safe PostgreSQL-derived JSON payloads broadly: dashboard/status/preferences, organization chrome, all deterministic Library filters and sorts, saved searches, document details plus adjacent document payloads, project/Recon/Portfolio workspaces, notes, review queue, finance summaries, backup status, and Concordance/job surfaces. It intentionally avoids binary downloads, auth/session routes, live host status routes, and GET routes that perform external lookups or other hidden writes.
 
 ## Metrics
 

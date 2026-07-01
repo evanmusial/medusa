@@ -28,7 +28,20 @@ from app.services.slipstream import client_is_online
 logger = logging.getLogger(__name__)
 
 CACHE_KEY_SCHEMA_VERSION = "v1"
-CACHE_REVISION_FAMILIES = ("library", "document_detail", "dashboard", "status", "organization", "jobs")
+CACHE_REVISION_FAMILIES = (
+    "library",
+    "document_detail",
+    "dashboard",
+    "status",
+    "organization",
+    "jobs",
+    "preferences",
+    "publications",
+    "finance",
+    "recon",
+    "portfolio",
+    "backups",
+)
 CACHE_GLOBAL_FAMILY = "global"
 CACHE_ALL_REVISION_FAMILIES = (CACHE_GLOBAL_FAMILY, *CACHE_REVISION_FAMILIES)
 LAST_REFRESH_KEY = "medusa:cache:last_refresh_at"
@@ -36,6 +49,8 @@ LAST_HYDRATION_KEY = "medusa:cache:last_hydration_at"
 
 MODEL_CACHE_FAMILIES: dict[str, set[str]] = {
     "Annotation": {"library", "document_detail", "status"},
+    "AppPreference": {"preferences", "status", "library", "document_detail"},
+    "BackupRun": {"backups", "dashboard", "jobs", "status"},
     "CitationCandidate": {"dashboard", "document_detail"},
     "ConcordanceJob": {"dashboard", "jobs", "status", "document_detail"},
     "ConcordanceRun": {"dashboard", "jobs", "status"},
@@ -53,11 +68,19 @@ MODEL_CACHE_FAMILIES: dict[str, set[str]] = {
     "Figure": {"library", "document_detail", "status"},
     "ImportBatch": {"dashboard", "jobs", "status"},
     "ImportJob": {"dashboard", "jobs", "status", "library", "document_detail"},
+    "ModelPricingRecord": {"finance", "dashboard", "jobs", "status"},
     "Note": {"library", "document_detail", "dashboard", "status"},
-    "OpenAIUsageRecord": {"dashboard", "jobs"},
+    "OpenAIUsageRecord": {"finance", "dashboard", "jobs"},
     "ProcessingEvent": {"dashboard", "jobs", "document_detail"},
+    "Publication": {"publications", "library", "document_detail", "organization", "status"},
+    "PublicationAlias": {"publications", "library", "document_detail", "organization"},
     "Project": {"organization", "library", "document_detail", "dashboard", "status"},
+    "ProjectBibliography": {"organization", "document_detail"},
     "ProjectItem": {"organization", "library", "document_detail", "dashboard", "status"},
+    "ReconAnswerVersion": {"recon", "dashboard", "jobs", "status"},
+    "ReconEvidence": {"recon", "dashboard", "jobs", "status"},
+    "ReconInquiry": {"recon", "dashboard", "jobs", "status"},
+    "ReconRun": {"recon", "dashboard", "jobs", "status"},
     "SavedSearch": {"organization"},
     "SlipstreamClient": {"dashboard", "jobs", "status"},
     "SlipstreamEnrollment": {"status"},
@@ -66,6 +89,17 @@ MODEL_CACHE_FAMILIES: dict[str, set[str]] = {
     "TagAlias": {"organization"},
     "TagRelationship": {"organization"},
     "TextChunk": {"status"},
+    "AttributeDefinition": {"organization", "library", "document_detail"},
+    "DocumentPublication": {"publications", "library", "document_detail", "organization", "status"},
+    "PortfolioAssessmentFinding": {"portfolio", "dashboard", "jobs", "status"},
+    "PortfolioAssessmentRun": {"portfolio", "dashboard", "jobs", "status"},
+    "PortfolioAuditAnchor": {"portfolio", "status"},
+    "PortfolioAuditEvent": {"portfolio", "status"},
+    "PortfolioItem": {"portfolio", "dashboard", "jobs", "status"},
+    "PortfolioMaterial": {"portfolio", "dashboard", "jobs", "status"},
+    "PortfolioSuggestion": {"portfolio", "dashboard", "jobs", "status"},
+    "PortfolioVersion": {"portfolio", "dashboard", "jobs", "status"},
+    "PortfolioVersionEdge": {"portfolio", "dashboard", "jobs", "status"},
 }
 
 _cache_backend: CacheBackend | None = None
@@ -205,7 +239,7 @@ class ValkeyCache(CacheBackend):
     def set_json(self, key: str, family: str, payload: Any, ttl_seconds: int, max_payload_bytes: int) -> str:
         try:
             raw = _json_bytes(payload)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             record_cache_event(family, "bypass")
             return "bypass"
         if len(raw) > max_payload_bytes:

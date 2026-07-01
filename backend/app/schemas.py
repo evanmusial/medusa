@@ -674,6 +674,9 @@ class DocumentPublicationOut(BaseModel):
     def decode_publication_text_fields(cls, value: Any) -> Any:
         return decode_html_entity_text(value)
 
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
 
 class PublicationListRow(BaseModel):
     id: str
@@ -1670,6 +1673,11 @@ class CacheHydrateOut(BaseModel):
     list_page_keys: int = 0
     saved_search_keys: int = 0
     organization_keys: int = 0
+    document_adjunct_keys: int = 0
+    workspace_keys: int = 0
+    finance_keys: int = 0
+    job_keys: int = 0
+    backup_keys: int = 0
     skipped_payloads: int = 0
     errored_payloads: int = 0
     before: CacheStatusOut

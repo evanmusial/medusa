@@ -479,6 +479,21 @@ CACHE_HYDRATE_LIST_PAGE_SIZE = 50
 CACHE_HYDRATION_LOCK = threading.Lock()
 CACHE_STARTUP_HYDRATE_MAX_ATTEMPTS = 12
 CACHE_STARTUP_HYDRATE_RETRY_SECONDS = 2.5
+DOCUMENT_LIST_SORTS = ("title", "date", "page_count")
+DOCUMENT_READ_STATUSES = ("unread", "skimmed", "read")
+DOCUMENT_PRIORITIES = ("urgent", "high", "normal", "low")
+DOCUMENT_CITATION_STATUSES = ("needs_review", "verified", "rejected")
+DOCUMENT_DUPLICATE_STATUSES = ("duplicates", "unique")
+DOCUMENT_HEALTH_STATUSES = (
+    "doi_gap",
+    "citation_review",
+    "missing_summary",
+    "identity_gap",
+    "unfiled_domains",
+    "untagged",
+    "no_project_use",
+)
+OPENAI_USAGE_PERIODS = ("last_day", "last_month", "last_3_months", "all_time")
 RECENT_AI_FAILURE_NOTICE_LIMIT = 8
 RECENT_AI_FAILURE_NOTICE_MAX_AGE = timedelta(minutes=30)
 IMPORT_ESTIMATE_CALIBRATION_MIN = 0.25
@@ -1300,6 +1315,46 @@ def document_list_cache_key_parts(
         "offset": int(offset),
         "limit": int(limit),
         "sort": sort,
+    }
+
+
+def document_summary_cache_key_parts(
+    *,
+    q: str | None = None,
+    domain_id: str | None = None,
+    tag_id: str | None = None,
+    read_status: str | None = None,
+    priority: str | None = None,
+    citation_status: str | None = None,
+    publication_id: str | None = None,
+    duplicate_status: str | None = None,
+    health_status: str | None = None,
+    include_duplicate_summary: bool = True,
+    include_projects: bool = True,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "q": q or "",
+        "domain_id": domain_id or "",
+        "tag_id": tag_id or "",
+        "read_status": read_status or "",
+        "priority": priority or "",
+        "citation_status": citation_status or "",
+        "publication_id": publication_id or "",
+        "duplicate_status": duplicate_status or "",
+        "health_status": health_status or "",
+        "include_duplicate_summary": bool(include_duplicate_summary),
+        "include_projects": bool(include_projects),
+        "limit": int(limit) if limit is not None else "",
+    }
+
+
+def document_detail_cache_key_parts(document: Document) -> dict[str, Any]:
+    return {
+        "document_id": document.id,
+        "updated_at": document.updated_at.isoformat() if document.updated_at else "",
+        "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
+        "processing_status": document.processing_status,
     }
 
 
@@ -3192,6 +3247,11 @@ def hydrate_cache_payloads(
         "list_page_keys": 0,
         "saved_search_keys": 0,
         "organization_keys": 0,
+        "document_adjunct_keys": 0,
+        "workspace_keys": 0,
+        "finance_keys": 0,
+        "job_keys": 0,
+        "backup_keys": 0,
         "skipped_payloads": 0,
         "errored_payloads": 0,
     }
@@ -3271,66 +3331,106 @@ def hydrate_cache_payloads(
                 return str(value)
             return ""
 
+        def normalized_document_filters(filters: dict[str, Any] | None) -> dict[str, str]:
+            return {
+                "domain_id": filter_value(filters, "domain_id"),
+                "tag_id": filter_value(filters, "tag_id"),
+                "read_status": filter_value(filters, "read_status"),
+                "priority": filter_value(filters, "priority"),
+                "citation_status": filter_value(filters, "citation_status"),
+                "publication_id": filter_value(filters, "publication_id"),
+                "duplicate_status": filter_value(filters, "duplicate_status"),
+                "health_status": filter_value(filters, "health_status"),
+            }
+
+        def hydrate_document_summary(
+            *,
+            q: str = "",
+            filters: dict[str, Any] | None = None,
+            saved_search: bool = False,
+        ) -> None:
+            normalized = normalized_document_filters(filters)
+            hydrate_payload(
+                family="documents:summary",
+                revision_families={"library", "organization", "jobs"},
+                key_parts=document_summary_cache_key_parts(q=q, **normalized),
+                loader=lambda normalized=normalized, q=q: document_summaries_out(db, q=q, **normalized),
+                bucket="saved_search_keys" if saved_search else "list_page_keys",
+            )
+
+        def hydrate_document_all_results(*, q: str = "", filters: dict[str, Any] | None = None, saved_search: bool = False) -> None:
+            normalized = normalized_document_filters(filters)
+            for sort in DOCUMENT_LIST_SORTS:
+                key_parts = document_list_cache_key_parts(
+                    q=q,
+                    all_results=True,
+                    offset=0,
+                    limit=CACHE_HYDRATE_LIST_PAGE_SIZE,
+                    sort=sort,
+                    **normalized,
+                )
+                hydrate_payload(
+                    family="documents:list",
+                    revision_families={"library", "organization", "jobs"},
+                    key_parts=key_parts,
+                    loader=lambda normalized=normalized, q=q, sort=sort: document_list_rows_out(
+                        db,
+                        q=q,
+                        all_results=True,
+                        offset=0,
+                        limit=CACHE_HYDRATE_LIST_PAGE_SIZE,
+                        sort=sort,
+                        **normalized,
+                    ),
+                    bucket="saved_search_keys" if saved_search else "list_page_keys",
+                )
+
         def hydrate_document_list_pages(
             *,
             q: str = "",
             filters: dict[str, Any] | None = None,
             saved_search: bool = False,
         ) -> None:
-            for list_page_size in library_page_sizes:
-                offset = 0
-                while True:
-                    domain_id = filter_value(filters, "domain_id")
-                    tag_id = filter_value(filters, "tag_id")
-                    read_status = filter_value(filters, "read_status")
-                    priority = filter_value(filters, "priority")
-                    citation_status = filter_value(filters, "citation_status")
-                    publication_id = filter_value(filters, "publication_id")
-                    duplicate_status = filter_value(filters, "duplicate_status")
-                    health_status = filter_value(filters, "health_status")
-                    key_parts = document_list_cache_key_parts(
-                        q=q,
-                        domain_id=domain_id,
-                        tag_id=tag_id,
-                        read_status=read_status,
-                        priority=priority,
-                        citation_status=citation_status,
-                        publication_id=publication_id,
-                        duplicate_status=duplicate_status,
-                        health_status=health_status,
-                        offset=offset,
-                        limit=list_page_size,
-                        sort="title",
-                    )
-
-                    def load_page(offset: int = offset, list_page_size: int = list_page_size) -> DocumentListOut:
-                        return document_list_rows_out(
-                            db,
+            normalized = normalized_document_filters(filters)
+            hydrate_document_summary(q=q, filters=normalized, saved_search=saved_search)
+            for sort in DOCUMENT_LIST_SORTS:
+                for list_page_size in library_page_sizes:
+                    offset = 0
+                    while True:
+                        key_parts = document_list_cache_key_parts(
                             q=q,
-                            domain_id=domain_id,
-                            tag_id=tag_id,
-                            read_status=read_status,
-                            priority=priority,
-                            citation_status=citation_status,
-                            publication_id=publication_id,
-                            duplicate_status=duplicate_status,
-                            health_status=health_status,
-                            all_results=False,
                             offset=offset,
                             limit=list_page_size,
-                            sort="title",
+                            sort=sort,
+                            **normalized,
                         )
 
-                    result = hydrate_payload(
-                        family="documents:list",
-                        revision_families={"library", "organization"},
-                        key_parts=key_parts,
-                        loader=load_page,
-                        bucket="saved_search_keys" if saved_search else "list_page_keys",
-                    )
-                    if not result or not getattr(result, "has_more", False):
-                        break
-                    offset += list_page_size
+                        def load_page(
+                            offset: int = offset,
+                            list_page_size: int = list_page_size,
+                            sort: str = sort,
+                            normalized: dict[str, str] = normalized,
+                        ) -> DocumentListOut:
+                            return document_list_rows_out(
+                                db,
+                                q=q,
+                                all_results=False,
+                                offset=offset,
+                                limit=list_page_size,
+                                sort=sort,
+                                **normalized,
+                            )
+
+                        result = hydrate_payload(
+                            family="documents:list",
+                            revision_families={"library", "organization", "jobs"},
+                            key_parts=key_parts,
+                            loader=load_page,
+                            bucket="saved_search_keys" if saved_search else "list_page_keys",
+                        )
+                        if not result or not getattr(result, "has_more", False):
+                            break
+                        offset += list_page_size
 
         for warmer in [
             {
@@ -3345,6 +3445,13 @@ def hydrate_cache_payloads(
                 "revision_families": {"status", "library", "organization"},
                 "key_parts": {"endpoint": "library_fun_stats"},
                 "loader": lambda: library_fun_stats_out(db),
+                "bucket": "base_keys",
+            },
+            {
+                "family": "preferences",
+                "revision_families": {"preferences", "organization"},
+                "key_parts": {"endpoint": "preferences"},
+                "loader": lambda: get_app_preferences(db),
                 "bucket": "base_keys",
             },
             {
@@ -3368,10 +3475,160 @@ def hydrate_cache_payloads(
                 "loader": lambda: project_list_out(db),
                 "bucket": "organization_keys",
             },
+            {
+                "family": "organization:saved_searches",
+                "revision_families": {"organization"},
+                "key_parts": {"endpoint": "saved_searches"},
+                "loader": lambda: db.query(SavedSearch)
+                .filter(SavedSearch.deleted_at.is_(None))
+                .order_by(SavedSearch.sort_order, SavedSearch.name)
+                .all(),
+                "bucket": "organization_keys",
+            },
+            {
+                "family": "organization:attributes",
+                "revision_families": {"organization", "library"},
+                "key_parts": {"endpoint": "attributes"},
+                "loader": lambda: db.query(AttributeDefinition).filter(AttributeDefinition.deleted_at.is_(None)).order_by(AttributeDefinition.name).all(),
+                "bucket": "organization_keys",
+            },
+            {
+                "family": "publications:list",
+                "revision_families": {"publications", "library", "organization"},
+                "key_parts": {"endpoint": "publications", "q": "", "limit": 200},
+                "loader": lambda: publication_list_out(db),
+                "bucket": "organization_keys",
+            },
+            *[
+                {
+                    "family": "finance:openai_usage",
+                    "revision_families": {"finance", "jobs", "dashboard"},
+                    "key_parts": {"endpoint": "openai_usage", "period": period},
+                    "loader": lambda period=period: openai_usage_summary(db, period=period),
+                    "bucket": "finance_keys",
+                }
+                for period in OPENAI_USAGE_PERIODS
+            ],
+            {
+                "family": "jobs:import_batches",
+                "revision_families": {"jobs", "dashboard", "status"},
+                "key_parts": {"endpoint": "import_batches", "limit": 50},
+                "loader": lambda: db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(50).all(),
+                "bucket": "job_keys",
+            },
+            {
+                "family": "jobs:ingestion_history",
+                "revision_families": {"jobs", "dashboard", "finance"},
+                "key_parts": {"endpoint": "ingestion_history", "limit": 50},
+                "loader": lambda: ingestion_history_out(db, limit=50),
+                "bucket": "job_keys",
+            },
+            {
+                "family": "jobs:concordance_capabilities",
+                "revision_families": {"jobs", "status"},
+                "key_parts": {"endpoint": "concordance_capabilities"},
+                "loader": current_capabilities,
+                "bucket": "job_keys",
+            },
+            {
+                "family": "jobs:concordance_runs",
+                "revision_families": {"jobs", "dashboard", "status"},
+                "key_parts": {"endpoint": "concordance_runs"},
+                "loader": lambda: concordance_runs_out(db),
+                "bucket": "job_keys",
+            },
+            {
+                "family": "jobs:concordance_jobs",
+                "revision_families": {"jobs", "dashboard", "status", "document_detail"},
+                "key_parts": {"endpoint": "concordance_jobs"},
+                "loader": lambda: concordance_jobs_out(db),
+                "bucket": "job_keys",
+            },
+            {
+                "family": "backups:runs",
+                "revision_families": {"backups", "jobs", "status"},
+                "key_parts": {"endpoint": "backup_runs"},
+                "loader": lambda: list_backup_runs(db),
+                "bucket": "backup_keys",
+            },
+            {
+                "family": "backups:estimate",
+                "revision_families": {"backups", "library", "document_detail", "jobs"},
+                "key_parts": {"endpoint": "backup_estimate"},
+                "loader": lambda: estimate_backup_size(db),
+                "bucket": "backup_keys",
+            },
+            {
+                "family": "recon:inquiries",
+                "revision_families": {"recon", "library", "organization"},
+                "key_parts": {"endpoint": "recon_inquiries"},
+                "loader": lambda: db.query(ReconInquiry)
+                .options(
+                    selectinload(ReconInquiry.runs).selectinload(ReconRun.evidence),
+                    selectinload(ReconInquiry.runs).selectinload(ReconRun.answers),
+                )
+                .filter(ReconInquiry.deleted_at.is_(None))
+                .order_by(ReconInquiry.updated_at.desc(), ReconInquiry.title)
+                .all(),
+                "bucket": "workspace_keys",
+            },
+            {
+                "family": "portfolio:list",
+                "revision_families": {"portfolio", "library", "organization", "jobs"},
+                "key_parts": {"endpoint": "portfolio"},
+                "loader": lambda: portfolio_items_out(db),
+                "bucket": "workspace_keys",
+            },
+            {
+                "family": "notes:list",
+                "revision_families": {"library", "document_detail", "organization", "dashboard"},
+                "key_parts": {"endpoint": "notes", "document_id": "", "domain_id": "", "project_id": ""},
+                "loader": lambda: notes_out(db),
+                "bucket": "workspace_keys",
+            },
+            {
+                "family": "review_queue",
+                "revision_families": {"dashboard", "document_detail", "library"},
+                "key_parts": {"endpoint": "review_queue"},
+                "loader": lambda: db.query(CitationCandidate)
+                .options(joinedload(CitationCandidate.document))
+                .filter(CitationCandidate.status == "needs_review")
+                .order_by(CitationCandidate.created_at.desc())
+                .all(),
+                "bucket": "workspace_keys",
+            },
         ]:
             hydrate_payload(**warmer)
 
-        hydrate_document_list_pages()
+        filter_scopes: list[tuple[str, dict[str, Any] | None, bool]] = []
+        seen_filter_scopes: set[str] = set()
+
+        def add_filter_scope(q: str = "", filters: dict[str, Any] | None = None, *, saved_search: bool = False) -> None:
+            normalized = normalized_document_filters(filters)
+            scope_key = json.dumps({"q": q or "", "filters": normalized, "saved_search": saved_search}, sort_keys=True)
+            if scope_key in seen_filter_scopes:
+                return
+            seen_filter_scopes.add(scope_key)
+            filter_scopes.append((q or "", normalized, saved_search))
+
+        add_filter_scope()
+        for domain_id, in db.query(Domain.id).filter(Domain.deleted_at.is_(None)).order_by(Domain.id).all():
+            add_filter_scope(filters={"domain_id": domain_id})
+        for tag_id, in db.query(Tag.id).order_by(Tag.id).all():
+            add_filter_scope(filters={"tag_id": tag_id})
+        for publication_id, in db.query(Publication.id).order_by(Publication.id).all():
+            add_filter_scope(filters={"publication_id": publication_id})
+        for read_status in DOCUMENT_READ_STATUSES:
+            add_filter_scope(filters={"read_status": read_status})
+        for priority in DOCUMENT_PRIORITIES:
+            add_filter_scope(filters={"priority": priority})
+        for citation_status in DOCUMENT_CITATION_STATUSES:
+            add_filter_scope(filters={"citation_status": citation_status})
+        for duplicate_status in DOCUMENT_DUPLICATE_STATUSES:
+            add_filter_scope(filters={"duplicate_status": duplicate_status})
+        for health_status in DOCUMENT_HEALTH_STATUSES:
+            add_filter_scope(filters={"health_status": health_status})
+
         if include_saved_searches:
             saved_searches = (
                 db.query(SavedSearch)
@@ -3380,7 +3637,52 @@ def hydrate_cache_payloads(
                 .all()
             )
             for saved_search in saved_searches:
-                hydrate_document_list_pages(q=saved_search.query or "", filters=saved_search.filters or {}, saved_search=True)
+                add_filter_scope(q=saved_search.query or "", filters=saved_search.filters or {}, saved_search=True)
+
+        for q, filters, saved_search in filter_scopes:
+            hydrate_document_list_pages(q=q, filters=filters, saved_search=saved_search)
+            if not q and not any((filters or {}).values()):
+                hydrate_document_all_results(q=q, filters=filters, saved_search=saved_search)
+
+        for project_id, in db.query(Project.id).filter(Project.deleted_at.is_(None)).order_by(Project.id).all():
+            hydrate_payload(
+                family="organization:project_detail",
+                revision_families={"organization", "library", "document_detail"},
+                key_parts={"endpoint": "project_detail", "project_id": project_id},
+                loader=lambda project_id=project_id: project_detail_out(db.get(Project, project_id)),
+                bucket="workspace_keys",
+            )
+            hydrate_payload(
+                family="notes:list",
+                revision_families={"library", "document_detail", "organization", "dashboard"},
+                key_parts={"endpoint": "notes", "document_id": "", "domain_id": "", "project_id": project_id},
+                loader=lambda project_id=project_id: notes_out(db, project_id=project_id),
+                bucket="workspace_keys",
+            )
+        for domain_id, in db.query(Domain.id).filter(Domain.deleted_at.is_(None)).order_by(Domain.id).all():
+            hydrate_payload(
+                family="notes:list",
+                revision_families={"library", "document_detail", "organization", "dashboard"},
+                key_parts={"endpoint": "notes", "document_id": "", "domain_id": domain_id, "project_id": ""},
+                loader=lambda domain_id=domain_id: notes_out(db, domain_id=domain_id),
+                bucket="workspace_keys",
+            )
+        for run_id, in db.query(ReconRun.id).join(ReconInquiry, ReconInquiry.id == ReconRun.inquiry_id).filter(ReconInquiry.deleted_at.is_(None)).order_by(ReconRun.id).all():
+            hydrate_payload(
+                family="recon:run",
+                revision_families={"recon", "library", "organization"},
+                key_parts={"endpoint": "recon_run", "run_id": run_id},
+                loader=lambda run_id=run_id: recon_run_or_404(db, run_id),
+                bucket="workspace_keys",
+            )
+        for portfolio_item_id, in db.query(PortfolioItem.id).filter(PortfolioItem.deleted_at.is_(None)).order_by(PortfolioItem.id).all():
+            hydrate_payload(
+                family="portfolio:detail",
+                revision_families={"portfolio", "library", "organization", "jobs"},
+                key_parts={"endpoint": "portfolio_detail", "portfolio_item_id": portfolio_item_id},
+                loader=lambda portfolio_item_id=portfolio_item_id: portfolio_item_or_404(db, portfolio_item_id),
+                bucket="workspace_keys",
+            )
 
         document_count = 0
         if include_document_details:
@@ -3397,14 +3699,43 @@ def hydrate_cache_payloads(
                 hydrate_payload(
                     family="documents:detail",
                     revision_families={"document_detail", "organization"},
-                    key_parts={
-                        "document_id": document.id,
-                        "updated_at": document.updated_at.isoformat() if document.updated_at else "",
-                        "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
-                        "processing_status": document.processing_status,
-                    },
+                    key_parts=document_detail_cache_key_parts(document),
                     loader=lambda document=document: document_detail_out(document, db),
                     bucket="document_detail_keys",
+                )
+                hydrate_payload(
+                    family="documents:composition",
+                    revision_families={"document_detail", "finance", "jobs"},
+                    key_parts={"endpoint": "document_composition", **document_detail_cache_key_parts(document)},
+                    loader=lambda document=document: document_composition_summary(db, document),
+                    bucket="document_adjunct_keys",
+                )
+                hydrate_payload(
+                    family="documents:annotations",
+                    revision_families={"document_detail", "library"},
+                    key_parts={"endpoint": "document_annotations", **document_detail_cache_key_parts(document)},
+                    loader=lambda document=document: db.query(Annotation)
+                    .filter(Annotation.document_id == document.id, Annotation.deleted_at.is_(None))
+                    .order_by(Annotation.page_number, Annotation.created_at.desc())
+                    .all(),
+                    bucket="document_adjunct_keys",
+                )
+                hydrate_payload(
+                    family="documents:events",
+                    revision_families={"document_detail", "jobs", "dashboard"},
+                    key_parts={"endpoint": "document_events", "document_id": document.id},
+                    loader=lambda document=document: db.query(ProcessingEvent)
+                    .filter(ProcessingEvent.document_id == document.id)
+                    .order_by(ProcessingEvent.created_at.desc())
+                    .all(),
+                    bucket="document_adjunct_keys",
+                )
+                hydrate_payload(
+                    family="notes:list",
+                    revision_families={"library", "document_detail", "organization", "dashboard"},
+                    key_parts={"endpoint": "notes", "document_id": document.id, "domain_id": "", "project_id": ""},
+                    loader=lambda document=document: notes_out(db, document_id=document.id),
+                    bucket="document_adjunct_keys",
                 )
 
         get_cache_backend().remember_hydration(hydrated_at)
@@ -3490,8 +3821,19 @@ def hydrate_cache(
 
 
 @app.get("/api/preferences", response_model=AppPreferencesOut)
-def read_preferences(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
-    return get_app_preferences(db)
+def read_preferences(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> dict[str, Any]:
+    return cache_or_load(
+        db,
+        response,
+        family="preferences",
+        revision_families={"preferences", "organization"},
+        key_parts={"endpoint": "preferences"},
+        loader=lambda: get_app_preferences(db),
+    )
 
 
 @app.patch("/api/preferences", response_model=AppPreferencesOut)
@@ -3653,9 +3995,17 @@ def refresh_models_and_pricing(
 def read_openai_usage(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
     period: str = Query("all_time", pattern="^(last_day|last_month|last_3_months|all_time)$"),
 ) -> dict[str, Any]:
-    return openai_usage_summary(db, period=period)
+    return cache_or_load(
+        db,
+        response,
+        family="finance:openai_usage",
+        revision_families={"finance", "jobs", "dashboard"},
+        key_parts={"endpoint": "openai_usage", "period": period},
+        loader=lambda: openai_usage_summary(db, period=period),
+    )
 
 
 def domain_list_out(db: Session) -> list[DomainOut]:
@@ -4642,8 +4992,16 @@ def optimize_tags(
 def list_saved_searches(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> list[SavedSearch]:
-    return db.query(SavedSearch).filter(SavedSearch.deleted_at.is_(None)).order_by(SavedSearch.sort_order, SavedSearch.name).all()
+    return cache_or_load(
+        db,
+        response,
+        family="organization:saved_searches",
+        revision_families={"organization"},
+        key_parts={"endpoint": "saved_searches"},
+        loader=lambda: db.query(SavedSearch).filter(SavedSearch.deleted_at.is_(None)).order_by(SavedSearch.sort_order, SavedSearch.name).all(),
+    )
 
 
 @app.post("/api/saved-searches", response_model=SavedSearchOut)
@@ -4730,16 +5088,24 @@ def recon_run_or_404(db: Session, run_id: str) -> ReconRun:
 def list_recon_inquiries(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> list[ReconInquiry]:
-    return (
-        db.query(ReconInquiry)
-        .options(
-            selectinload(ReconInquiry.runs).selectinload(ReconRun.evidence),
-            selectinload(ReconInquiry.runs).selectinload(ReconRun.answers),
-        )
-        .filter(ReconInquiry.deleted_at.is_(None))
-        .order_by(ReconInquiry.updated_at.desc(), ReconInquiry.title)
-        .all()
+    return cache_or_load(
+        db,
+        response,
+        family="recon:inquiries",
+        revision_families={"recon", "library", "organization"},
+        key_parts={"endpoint": "recon_inquiries"},
+        loader=lambda: (
+            db.query(ReconInquiry)
+            .options(
+                selectinload(ReconInquiry.runs).selectinload(ReconRun.evidence),
+                selectinload(ReconInquiry.runs).selectinload(ReconRun.answers),
+            )
+            .filter(ReconInquiry.deleted_at.is_(None))
+            .order_by(ReconInquiry.updated_at.desc(), ReconInquiry.title)
+            .all()
+        ),
     )
 
 
@@ -4813,8 +5179,16 @@ def get_recon_run_route(
     run_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> ReconRun:
-    return recon_run_or_404(db, run_id)
+    return cache_or_load(
+        db,
+        response,
+        family="recon:run",
+        revision_families={"recon", "library", "organization"},
+        key_parts={"endpoint": "recon_run", "run_id": run_id},
+        loader=lambda: recon_run_or_404(db, run_id),
+    )
 
 
 @app.post("/api/recon/runs/{run_id}/cancel", response_model=ReconRunOut)
@@ -4828,8 +5202,19 @@ def cancel_recon_run_route(
 
 
 @app.get("/api/attributes", response_model=list[AttributeDefinitionOut])
-def list_attributes(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[AttributeDefinition]:
-    return db.query(AttributeDefinition).filter(AttributeDefinition.deleted_at.is_(None)).order_by(AttributeDefinition.name).all()
+def list_attributes(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[AttributeDefinition]:
+    return cache_or_load(
+        db,
+        response,
+        family="organization:attributes",
+        revision_families={"organization", "library"},
+        key_parts={"endpoint": "attributes"},
+        loader=lambda: db.query(AttributeDefinition).filter(AttributeDefinition.deleted_at.is_(None)).order_by(AttributeDefinition.name).all(),
+    )
 
 
 @app.post("/api/attributes", response_model=AttributeDefinitionOut)
@@ -4884,11 +5269,22 @@ def get_project(
     project_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> ProjectDetail:
-    project = db.get(Project, project_id)
-    if not project or project.deleted_at:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project_detail_out(project)
+    def load_project() -> ProjectDetail:
+        project = db.get(Project, project_id)
+        if not project or project.deleted_at:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return project_detail_out(project)
+
+    return cache_or_load(
+        db,
+        response,
+        family="organization:project_detail",
+        revision_families={"organization", "library", "document_detail"},
+        key_parts={"endpoint": "project_detail", "project_id": project_id},
+        loader=load_project,
+    )
 
 
 @app.post("/api/projects/{project_id}/items", response_model=ProjectDetail)
@@ -4962,6 +5358,7 @@ def delete_project_item(
 def list_documents(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
     q: str | None = None,
     domain_id: str | None = None,
     tag_id: str | None = None,
@@ -4974,6 +5371,58 @@ def list_documents(
     include_duplicate_summary: bool = True,
     include_projects: bool = True,
     limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
+) -> list[DocumentSummary]:
+    return cache_or_load(
+        db,
+        response,
+        family="documents:summary",
+        revision_families={"library", "organization", "jobs"},
+        key_parts=document_summary_cache_key_parts(
+            q=q,
+            domain_id=domain_id,
+            tag_id=tag_id,
+            read_status=read_status,
+            priority=priority,
+            citation_status=citation_status,
+            publication_id=publication_id,
+            duplicate_status=duplicate_status,
+            health_status=health_status,
+            include_duplicate_summary=include_duplicate_summary,
+            include_projects=include_projects,
+            limit=limit,
+        ),
+        loader=lambda: document_summaries_out(
+            db,
+            q=q,
+            domain_id=domain_id,
+            tag_id=tag_id,
+            read_status=read_status,
+            priority=priority,
+            citation_status=citation_status,
+            publication_id=publication_id,
+            duplicate_status=duplicate_status,
+            health_status=health_status,
+            include_duplicate_summary=include_duplicate_summary,
+            include_projects=include_projects,
+            limit=limit,
+        ),
+    )
+
+
+def document_summaries_out(
+    db: Session,
+    q: str | None = None,
+    domain_id: str | None = None,
+    tag_id: str | None = None,
+    read_status: str | None = None,
+    priority: str | None = None,
+    citation_status: str | None = None,
+    publication_id: str | None = None,
+    duplicate_status: str | None = None,
+    health_status: str | None = None,
+    include_duplicate_summary: bool = True,
+    include_projects: bool = True,
+    limit: int | None = None,
 ) -> list[DocumentSummary]:
     query = filter_library_visible_documents(db.query(Document)).options(
         selectinload(Document.tags),
@@ -5169,9 +5618,21 @@ def list_document_rows(
 def list_publications(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
     q: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[PublicationListRow]:
+    return cache_or_load(
+        db,
+        response,
+        family="publications:list",
+        revision_families={"publications", "library", "organization"},
+        key_parts={"endpoint": "publications", "q": q or "", "limit": int(limit)},
+        loader=lambda: publication_list_out(db, q=q, limit=limit),
+    )
+
+
+def publication_list_out(db: Session, q: str | None = None, limit: int = 200) -> list[PublicationListRow]:
     count_rows = (
         db.query(DocumentPublication.publication_id, func.count(Document.id))
         .join(Document, Document.id == DocumentPublication.document_id)
@@ -5222,18 +5683,12 @@ def get_document(
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
-    key_parts = {
-        "document_id": document.id,
-        "updated_at": document.updated_at.isoformat() if document.updated_at else "",
-        "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
-        "processing_status": document.processing_status,
-    }
     return cache_or_load(
         db,
         response,
         family="documents:detail",
         revision_families={"document_detail", "organization"},
-        key_parts=key_parts,
+        key_parts=document_detail_cache_key_parts(document),
         loader=lambda: document_detail_out(document, db),
     )
 
@@ -5430,11 +5885,19 @@ def get_document_composition(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> dict[str, Any]:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
-    return document_composition_summary(db, document)
+    return cache_or_load(
+        db,
+        response,
+        family="documents:composition",
+        revision_families={"document_detail", "finance", "jobs"},
+        key_parts={"endpoint": "document_composition", **document_detail_cache_key_parts(document)},
+        loader=lambda: document_composition_summary(db, document),
+    )
 
 
 @app.post("/api/documents/{document_id}/lock", response_model=DocumentDetail)
@@ -6297,7 +6760,19 @@ def portfolio_overlap_score(terms: list[str], document: Document) -> float:
 def list_portfolio_items(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> list[PortfolioItem]:
+    return cache_or_load(
+        db,
+        response,
+        family="portfolio:list",
+        revision_families={"portfolio", "library", "organization", "jobs"},
+        key_parts={"endpoint": "portfolio"},
+        loader=lambda: portfolio_items_out(db),
+    )
+
+
+def portfolio_items_out(db: Session) -> list[PortfolioItem]:
     items = portfolio_item_query(db).order_by(PortfolioItem.updated_at.desc(), PortfolioItem.title).all()
     for item in items:
         sync_portfolio_processing_status(item)
@@ -6348,8 +6823,16 @@ def get_portfolio_item(
     portfolio_item_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> PortfolioItem:
-    return portfolio_item_or_404(db, portfolio_item_id)
+    return cache_or_load(
+        db,
+        response,
+        family="portfolio:detail",
+        revision_families={"portfolio", "library", "organization", "jobs"},
+        key_parts={"endpoint": "portfolio_detail", "portfolio_item_id": portfolio_item_id},
+        loader=lambda: portfolio_item_or_404(db, portfolio_item_id),
+    )
 
 
 @app.patch("/api/portfolio/{portfolio_item_id}", response_model=PortfolioItemOut)
@@ -8112,15 +8595,23 @@ def list_annotations(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> list[Annotation]:
     document = db.get(Document, document_id)
     if not document_is_library_visible(document):
         raise HTTPException(status_code=404, detail="Document not found")
-    return (
-        db.query(Annotation)
-        .filter(Annotation.document_id == document_id, Annotation.deleted_at.is_(None))
-        .order_by(Annotation.page_number, Annotation.created_at.desc())
-        .all()
+    return cache_or_load(
+        db,
+        response,
+        family="documents:annotations",
+        revision_families={"document_detail", "library"},
+        key_parts={"endpoint": "document_annotations", **document_detail_cache_key_parts(document)},
+        loader=lambda: (
+            db.query(Annotation)
+            .filter(Annotation.document_id == document_id, Annotation.deleted_at.is_(None))
+            .order_by(Annotation.page_number, Annotation.created_at.desc())
+            .all()
+        ),
     )
 
 
@@ -9711,8 +10202,19 @@ async def replace_document_in_place(
 
 
 @app.get("/api/imports/batches", response_model=list[ImportBatchOut])
-def list_import_batches(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[ImportBatch]:
-    return db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(50).all()
+def list_import_batches(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[ImportBatch]:
+    return cache_or_load(
+        db,
+        response,
+        family="jobs:import_batches",
+        revision_families={"jobs", "dashboard", "status"},
+        key_parts={"endpoint": "import_batches", "limit": 50},
+        loader=lambda: db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(50).all(),
+    )
 
 
 def import_job_file_size(document: Document | None) -> int | None:
@@ -9934,8 +10436,20 @@ def ingestion_history_row(batch: ImportBatch, *, actual_costs_by_job: dict[str, 
 def list_ingestion_history(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[dict[str, Any]]:
+    return cache_or_load(
+        db,
+        response,
+        family="jobs:ingestion_history",
+        revision_families={"jobs", "dashboard", "finance"},
+        key_parts={"endpoint": "ingestion_history", "limit": int(limit)},
+        loader=lambda: ingestion_history_out(db, limit=limit),
+    )
+
+
+def ingestion_history_out(db: Session, limit: int = 50) -> list[dict[str, Any]]:
     batches = (
         db.query(ImportBatch)
         .options(
@@ -11596,16 +12110,32 @@ def export_storage_manifest(
 def read_backup_runs(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> list[BackupRun]:
-    return list_backup_runs(db)
+    return cache_or_load(
+        db,
+        response,
+        family="backups:runs",
+        revision_families={"backups", "jobs", "status"},
+        key_parts={"endpoint": "backup_runs"},
+        loader=lambda: list_backup_runs(db),
+    )
 
 
 @app.get("/api/backups/estimate", response_model=BackupEstimateOut)
 def read_backup_estimate(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> dict[str, Any]:
-    return estimate_backup_size(db)
+    return cache_or_load(
+        db,
+        response,
+        family="backups:estimate",
+        revision_families={"backups", "library", "document_detail", "jobs"},
+        key_parts={"endpoint": "backup_estimate"},
+        loader=lambda: estimate_backup_size(db),
+    )
 
 
 @app.post("/api/backups/database", response_model=BackupRunOut)
@@ -11694,8 +12224,19 @@ async def start_database_restore_from_upload(
 
 
 @app.get("/api/concordance/capabilities", response_model=list[ConcordanceCapabilityOut])
-def list_concordance_capabilities(_: Annotated[User, Depends(current_user)]) -> list[dict[str, Any]]:
-    return current_capabilities()
+def list_concordance_capabilities(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[dict[str, Any]]:
+    return cache_or_load(
+        db,
+        response,
+        family="jobs:concordance_capabilities",
+        revision_families={"jobs", "status"},
+        key_parts={"endpoint": "concordance_capabilities"},
+        loader=current_capabilities,
+    )
 
 
 @app.post("/api/concordance/runs/estimate", response_model=ConcordanceRunEstimateOut)
@@ -11742,7 +12283,19 @@ def create_concordance_run_endpoint(
 def list_concordance_runs(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ):
+    return cache_or_load(
+        db,
+        response,
+        family="jobs:concordance_runs",
+        revision_families={"jobs", "dashboard", "status"},
+        key_parts={"endpoint": "concordance_runs"},
+        loader=lambda: concordance_runs_out(db),
+    )
+
+
+def concordance_runs_out(db: Session) -> list[ConcordanceRunOut]:
     active_runs = (
         db.query(ConcordanceRun)
         .filter(ConcordanceRun.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
@@ -11760,14 +12313,26 @@ def list_concordance_runs(
         .limit(CONCORDANCE_RECENT_RUN_HISTORY_LIMIT)
         .all()
     )
-    return [*active_runs, *recent_runs]
+    return [ConcordanceRunOut.model_validate(run) for run in [*active_runs, *recent_runs]]
 
 
 @app.get("/api/concordance/jobs", response_model=list[ConcordanceJobOut])
 def list_concordance_jobs(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ):
+    return cache_or_load(
+        db,
+        response,
+        family="jobs:concordance_jobs",
+        revision_families={"jobs", "dashboard", "status", "document_detail"},
+        key_parts={"endpoint": "concordance_jobs"},
+        loader=lambda: concordance_jobs_out(db),
+    )
+
+
+def concordance_jobs_out(db: Session) -> list[dict[str, Any]]:
     active_jobs = (
         db.query(ConcordanceJob)
         .filter(ConcordanceJob.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
@@ -11795,18 +12360,37 @@ def document_events(
     document_id: str,
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
 ) -> list[ProcessingEvent]:
-    return db.query(ProcessingEvent).filter(ProcessingEvent.document_id == document_id).order_by(ProcessingEvent.created_at.desc()).all()
+    return cache_or_load(
+        db,
+        response,
+        family="documents:events",
+        revision_families={"document_detail", "jobs", "dashboard"},
+        key_parts={"endpoint": "document_events", "document_id": document_id},
+        loader=lambda: db.query(ProcessingEvent).filter(ProcessingEvent.document_id == document_id).order_by(ProcessingEvent.created_at.desc()).all(),
+    )
 
 
 @app.get("/api/review-queue", response_model=list[CitationCandidateOut])
-def review_queue(_: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(get_db)]) -> list[CitationCandidate]:
-    return (
-        db.query(CitationCandidate)
-        .options(joinedload(CitationCandidate.document))
-        .filter(CitationCandidate.status == "needs_review")
-        .order_by(CitationCandidate.created_at.desc())
-        .all()
+def review_queue(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+) -> list[CitationCandidate]:
+    return cache_or_load(
+        db,
+        response,
+        family="review_queue",
+        revision_families={"dashboard", "document_detail", "library"},
+        key_parts={"endpoint": "review_queue"},
+        loader=lambda: (
+            db.query(CitationCandidate)
+            .options(joinedload(CitationCandidate.document))
+            .filter(CitationCandidate.status == "needs_review")
+            .order_by(CitationCandidate.created_at.desc())
+            .all()
+        ),
     )
 
 
@@ -11914,6 +12498,29 @@ def project_bibliography(
 def list_notes(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
+    response: Response = None,
+    document_id: str | None = None,
+    domain_id: str | None = None,
+    project_id: str | None = None,
+) -> list[Note]:
+    return cache_or_load(
+        db,
+        response,
+        family="notes:list",
+        revision_families={"library", "document_detail", "organization", "dashboard"},
+        key_parts={
+            "endpoint": "notes",
+            "document_id": document_id or "",
+            "domain_id": domain_id or "",
+            "project_id": project_id or "",
+        },
+        loader=lambda: notes_out(db, document_id=document_id, domain_id=domain_id, project_id=project_id),
+    )
+
+
+def notes_out(
+    db: Session,
+    *,
     document_id: str | None = None,
     domain_id: str | None = None,
     project_id: str | None = None,

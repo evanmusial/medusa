@@ -364,6 +364,11 @@ export type CacheHydrateResult = {
   list_page_keys: number;
   saved_search_keys: number;
   organization_keys: number;
+  document_adjunct_keys: number;
+  workspace_keys: number;
+  finance_keys: number;
+  job_keys: number;
+  backup_keys: number;
   skipped_payloads: number;
   errored_payloads: number;
   before: CacheStatus;
