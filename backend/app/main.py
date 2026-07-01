@@ -1070,9 +1070,66 @@ DOCUMENT_LIST_ROW_COLUMNS = (
 def document_list_row_load_options():
     return (
         load_only(*DOCUMENT_LIST_ROW_COLUMNS),
-        selectinload(Document.tags),
-        selectinload(Document.domains),
-        selectinload(Document.publication_links).selectinload(DocumentPublication.publication),
+        selectinload(Document.tags).load_only(
+            Tag.id,
+            Tag.name,
+            Tag.kind,
+            Tag.color,
+            Tag.status,
+            Tag.definition,
+            Tag.use_guidance,
+            Tag.avoid_guidance,
+        ),
+        selectinload(Document.domains).load_only(
+            Domain.id,
+            Domain.parent_id,
+            Domain.name,
+            Domain.description,
+            Domain.color,
+            Domain.sort_order,
+        ),
+        selectinload(Document.publication_links)
+        .load_only(
+            DocumentPublication.id,
+            DocumentPublication.document_id,
+            DocumentPublication.publication_id,
+            DocumentPublication.role,
+            DocumentPublication.appearance_type,
+            DocumentPublication.volume,
+            DocumentPublication.issue,
+            DocumentPublication.article_number,
+            DocumentPublication.page_range,
+            DocumentPublication.published_date,
+            DocumentPublication.published_year,
+            DocumentPublication.edition,
+            DocumentPublication.chapter,
+            DocumentPublication.section,
+            DocumentPublication.series_title,
+            DocumentPublication.event_name,
+            DocumentPublication.source_url,
+            DocumentPublication.identifiers,
+            DocumentPublication.confidence,
+            DocumentPublication.source,
+            DocumentPublication.model,
+            DocumentPublication.verification_status,
+            DocumentPublication.verified_at,
+            DocumentPublication.verified_by,
+            DocumentPublication.evidence,
+        )
+        .selectinload(DocumentPublication.publication)
+        .load_only(
+            Publication.id,
+            Publication.title,
+            Publication.publication_type,
+            Publication.publisher,
+            Publication.imprint,
+            Publication.issn_l,
+            Publication.issns,
+            Publication.isbns,
+            Publication.doi,
+            Publication.source_url,
+            Publication.external_ids,
+        ),
     )
 
 
@@ -4364,7 +4421,23 @@ def delete_domain(
 
 
 def tag_list_out(db: Session) -> list[TagOut]:
-    tags = db.query(Tag).order_by(Tag.name).all()
+    tags = (
+        db.query(Tag)
+        .options(
+            load_only(
+                Tag.id,
+                Tag.name,
+                Tag.kind,
+                Tag.color,
+                Tag.status,
+                Tag.definition,
+                Tag.use_guidance,
+                Tag.avoid_guidance,
+            )
+        )
+        .order_by(Tag.name)
+        .all()
+    )
     counts = tag_document_counts(db, [tag.id for tag in tags])
     return [tag_out(tag, db, document_count=counts.get(tag.id, 0)) for tag in tags]
 
