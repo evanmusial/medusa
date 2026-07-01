@@ -366,7 +366,7 @@ from app.services.recon import (
 from app.services.openai_usage import (
     OpenAIUsageContext,
     estimated_cost_usd_for_model_tokens,
-    estimated_cost_usd_for_record,
+    estimated_costs_usd_for_records,
     openai_usage_summary,
     refresh_model_pricing,
 )
@@ -954,6 +954,42 @@ def figure_counts_for_documents(db: Session, document_ids: list[str]) -> dict[st
     }
 
 
+def active_work_document_ids_for_documents(db: Session, document_ids: list[str]) -> set[str]:
+    unique_document_ids = unique_preserve_order(document_ids)
+    if not unique_document_ids:
+        return set()
+
+    active_document_ids: set[str] = set()
+    active_document_ids.update(
+        document_id
+        for (document_id,) in db.query(ImportJob.document_id)
+        .filter(ImportJob.document_id.in_(unique_document_ids), ImportJob.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
+        .distinct()
+        .all()
+        if document_id
+    )
+    active_document_ids.update(
+        document_id
+        for (document_id,) in db.query(ConcordanceJob.document_id)
+        .filter(ConcordanceJob.document_id.in_(unique_document_ids), ConcordanceJob.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
+        .distinct()
+        .all()
+        if document_id
+    )
+    active_document_ids.update(
+        document_id
+        for (document_id,) in db.query(DocumentAccessorySummary.document_id)
+        .filter(
+            DocumentAccessorySummary.document_id.in_(unique_document_ids),
+            DocumentAccessorySummary.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES),
+        )
+        .distinct()
+        .all()
+        if document_id
+    )
+    return active_document_ids
+
+
 def apply_document_filters(
     query,
     db: Session,
@@ -1293,7 +1329,12 @@ def document_has_verified_fields(document: Document) -> bool:
     )
 
 
-def document_list_row_out(document: Document, projects: list[ProjectOut] | None = None, figure_count: int = 0) -> DocumentListRow:
+def document_list_row_out(
+    document: Document,
+    projects: list[ProjectOut] | None = None,
+    figure_count: int = 0,
+    has_active_work: bool = False,
+) -> DocumentListRow:
     return DocumentListRow.model_validate(document).model_copy(
         update={
             "duplicate_count": int(document.duplicate_count or 0),
@@ -1301,6 +1342,7 @@ def document_list_row_out(document: Document, projects: list[ProjectOut] | None 
             "projects": projects or [],
             "no_doi": document_no_doi(document),
             "has_verified_fields": document_has_verified_fields(document),
+            "has_active_work": has_active_work,
             "figure_count": figure_count,
             "publication": document_publication_out(primary_document_publication(document)),
         }
@@ -2892,6 +2934,7 @@ def recent_failed_ai_call_notices(db: Session) -> list[dict[str, Any]]:
     )
     if not records:
         return []
+    costs_by_record = estimated_costs_usd_for_records(records, db)
     document_ids = sorted({record.document_id for record in records if record.document_id})
     document_titles = {
         document.id: document.title or document.original_filename
@@ -2899,7 +2942,7 @@ def recent_failed_ai_call_notices(db: Session) -> list[dict[str, Any]]:
     } if document_ids else {}
     notices: list[dict[str, Any]] = []
     for record in records:
-        cost = estimated_cost_usd_for_record(record, db)
+        cost = costs_by_record.get(record.id)
         notices.append(
             {
                 "id": record.id,
@@ -5037,6 +5080,7 @@ def document_list_rows_out(
     document_ids = [document.id for document in documents]
     project_map = project_summaries_for_documents(db, document_ids)
     figure_count_map = figure_counts_for_documents(db, document_ids)
+    active_work_document_ids = active_work_document_ids_for_documents(db, document_ids)
     revision_parts = [str(total_count), str(total_page_count), latest_updated.isoformat() if latest_updated else "none"]
     return DocumentListOut(
         items=[
@@ -5044,6 +5088,7 @@ def document_list_rows_out(
                 document,
                 project_map.get(document.id, []),
                 figure_count=figure_count_map.get(document.id, 0),
+                has_active_work=document.id in active_work_document_ids,
             )
             for document in documents
         ],
@@ -5098,7 +5143,7 @@ def list_document_rows(
         db,
         response,
         family="documents:list",
-        revision_families={"library", "organization"},
+        revision_families={"library", "organization", "jobs"},
         key_parts=key_parts,
         loader=lambda: document_list_rows_out(
             db,
@@ -9694,9 +9739,10 @@ def import_job_costs_usd(db: Session, import_job_ids: list[str]) -> dict[str, fl
         return {}
     costs: dict[str, float] = {job_id: 0.0 for job_id in import_job_ids}
     usage_rows = db.query(OpenAIUsageRecord).filter(OpenAIUsageRecord.import_job_id.in_(import_job_ids)).all()
+    costs_by_record = estimated_costs_usd_for_records(usage_rows, db)
     for usage in usage_rows:
         if usage.import_job_id:
-            costs[usage.import_job_id] = costs.get(usage.import_job_id, 0.0) + (estimated_cost_usd_for_record(usage, db) or 0.0)
+            costs[usage.import_job_id] = costs.get(usage.import_job_id, 0.0) + (costs_by_record.get(usage.id) or 0.0)
     return {job_id: round(cost, 6) for job_id, cost in costs.items()}
 
 
@@ -9992,11 +10038,12 @@ def import_cost_exemplar_rates(db: Session) -> dict[str, Any]:
     task_document_pages: dict[tuple[str, str], int] = {}
     document_costs: dict[str, float] = {}
     document_pages: dict[str, int] = {}
+    costs_by_record = estimated_costs_usd_for_records([record for record, _page_count in records], db)
 
     for record, page_count in records:
         if not record.document_id or not page_count:
             continue
-        cost = estimated_cost_usd_for_record(record, db) or 0.0
+        cost = costs_by_record.get(record.id) or 0.0
         if cost <= 0:
             continue
         pages = max(1, int(page_count))

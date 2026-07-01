@@ -749,6 +749,7 @@ class DocumentSummary(ApiModel):
     read_status: str
     priority: str
     has_verified_fields: bool = False
+    has_active_work: bool = False
     is_locked: bool = False
     locked_at: datetime | None = None
     created_at: datetime
@@ -780,6 +781,7 @@ class DocumentListRow(ApiModel):
     read_status: str
     priority: str
     has_verified_fields: bool = False
+    has_active_work: bool = False
     is_locked: bool = False
     locked_at: datetime | None = None
     updated_at: datetime

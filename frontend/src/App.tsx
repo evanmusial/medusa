@@ -3177,6 +3177,13 @@ function documentDetailHasVerifiedFields(document: DocumentDetail) {
   );
 }
 
+function documentRowHasActiveWork(document: LibraryDocumentRow, citationJobs: ConcordanceJob[]) {
+  return Boolean(
+    document.has_active_work ||
+      citationJobs.some((job) => job.document_id === document.id && isActiveConcordanceStatus(job.status)),
+  );
+}
+
 function patchCachedDocumentSummaries(
   queryClient: QueryClient,
   patch: Partial<LibraryDocumentRow> & Pick<LibraryDocumentRow, "id">,
@@ -8105,12 +8112,15 @@ function LibraryView({
       ? "unlock the selected locked document before applying changes."
       : `unlock the ${selectedLockedCount} selected locked documents before applying changes.`;
   const allVisibleSelected = sortedDocuments.length > 0 && sortedDocuments.every((item) => selectedIds.includes(item.id));
-  const visibleStart = totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
-  const visibleEnd = Math.min(pageOffset + sortedDocuments.length, totalDocumentCount);
-  const libraryCountLabel =
-    totalDocumentCount === sortedDocuments.length && pageOffset === 0
-      ? `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`
-      : `Browsing ${formatWholeNumber(visibleStart)}-${formatWholeNumber(visibleEnd)} of ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
+  const hasVisibleDocumentRows = sortedDocuments.length > 0;
+  const visibleStart = hasVisibleDocumentRows && totalDocumentCount > 0 ? Math.min(pageOffset + 1, totalDocumentCount) : 0;
+  const visibleEnd = hasVisibleDocumentRows ? Math.min(pageOffset + sortedDocuments.length, totalDocumentCount) : 0;
+  let libraryCountLabel = `Browsing ${formatWholeNumber(visibleStart)}-${formatWholeNumber(visibleEnd)} of ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
+  if (loading && !hasVisibleDocumentRows && totalDocumentCount > 0) {
+    libraryCountLabel = `Loading ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"}`;
+  } else if (totalDocumentCount === sortedDocuments.length && pageOffset === 0) {
+    libraryCountLabel = `Browsing ${formatWholeNumber(totalDocumentCount)} document${totalDocumentCount === 1 ? "" : "s"} (${formatWholeNumber(totalPageCount)} page${totalPageCount === 1 ? "" : "s"})`;
+  }
   const resultCountLabel = selectedIds.length
     ? `${formatWholeNumber(selectedIds.length)} selected of ${formatWholeNumber(totalDocumentCount)}`
     : libraryCountLabel;
@@ -8978,6 +8988,7 @@ function LibraryView({
             const actualIndex = virtualStartIndex + virtualIndex;
             const figureCount = figureCountMarker(item);
             const hasVerifiedFields = Boolean(item.has_verified_fields);
+            const hasActiveWork = documentRowHasActiveWork(item, citationJobs);
             const titleIconLabel = [
               hasVerifiedFields ? "Has verified fields" : "",
               item.is_locked ? "Locked for editing" : "",
@@ -9004,6 +9015,14 @@ function LibraryView({
               }}
               onClick={() => activateDocument(item.id)}
             >
+              <span
+                aria-label={hasActiveWork ? "Document background work in progress" : undefined}
+                className={`doc-row-work-indicator${hasActiveWork ? " active" : ""}`}
+                data-tooltip={hasActiveWork ? "Document background work is queued or running." : undefined}
+                role={hasActiveWork ? "img" : undefined}
+              >
+                {hasActiveWork ? <RefreshCw className="spin" size={14} aria-hidden="true" /> : null}
+              </span>
               <input
                 aria-label={`Select ${item.title}`}
                 data-tooltip={`Toggle selection for ${item.title} for bulk edits.`}
@@ -26829,10 +26848,13 @@ export default function App() {
     refetchInterval: 30000,
   });
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
-  const activeLibraryListWork = (dashboard.data?.active_import_jobs ?? 0) > 0;
+  const activeLibraryListWork =
+    activeLocalBackgroundJobs ||
+    (dashboard.data?.active_import_jobs ?? 0) > 0 ||
+    (dashboard.data?.active_concordance_jobs ?? 0) > 0 ||
+    (dashboard.data?.active_accessory_summary_jobs ?? 0) > 0;
   const activeDocumentWork = activeDashboardWork || activeLocalBackgroundJobs;
-  const dashboardHasImportRows = (dashboard.data?.queue_import_jobs ?? 0) > 0 || (dashboard.data?.active_import_jobs ?? 0) > 0;
-  const needsImportJobs = needsImportJobsSurface || dashboardHasImportRows;
+  const needsImportJobs = needsImportJobsSurface;
   const needsConcordanceData =
     activeView === "settings" ||
     activeView === "activity" ||
@@ -27451,6 +27473,7 @@ export default function App() {
           ),
         );
         void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        void queryClient.invalidateQueries({ queryKey: ["documents"] });
         void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
         void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
         return run;
@@ -27611,6 +27634,7 @@ export default function App() {
       if (refreshed.has(refreshKey)) continue;
       refreshed.add(refreshKey);
       refreshActiveDocumentDetail(queryClient, job.documentId);
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
       if (job.capabilityKey === "bibliography_extraction" || job.capabilityKey === "formula_capture") {
         void queryClient.invalidateQueries({ queryKey: ["document-composition", job.documentId] });
       }

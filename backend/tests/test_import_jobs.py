@@ -343,8 +343,8 @@ def test_dashboard_surfaces_recent_failed_ai_calls(monkeypatch, tmp_path):
         notice = counts.recent_failed_ai_calls[0]
         assert notice.task_key == "bibliography_cleanup"
         assert notice.model == "gpt-5.4-nano"
-        assert notice.document_title == "Bibliography Trouble"
-        assert notice.error_message == "context_length_exceeded"
+    assert notice.document_title == "Bibliography Trouble"
+    assert notice.error_message == "context_length_exceeded"
 
 
 def test_dashboard_splits_queued_and_running_background_work(monkeypatch, tmp_path):
@@ -561,6 +561,76 @@ def test_import_estimates_use_prior_estimate_accuracy(monkeypatch, tmp_path):
     assert staged_row["estimated_cost_usd"] > 0
 
 
+def test_import_cost_exemplar_rates_prices_records_in_one_batch(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app import main as main_module
+    from app.models import Document, OpenAIUsageRecord
+
+    batched_record_ids: list[list[str]] = []
+
+    def fake_estimated_costs(records, db):
+        batched_record_ids.append([record.id for record in records])
+        return {record.id: 0.2 for record in records}
+
+    monkeypatch.setattr(main_module, "estimated_costs_usd_for_records", fake_estimated_costs)
+
+    with Session() as db:
+        first_document = Document(
+            title="First",
+            original_filename="first.pdf",
+            checksum_sha256="5" * 64,
+            page_count=10,
+            processing_status="ready",
+        )
+        second_document = Document(
+            title="Second",
+            original_filename="second.pdf",
+            checksum_sha256="6" * 64,
+            page_count=5,
+            processing_status="ready",
+        )
+        db.add_all([first_document, second_document])
+        db.flush()
+        db.add_all(
+            [
+                OpenAIUsageRecord(
+                    document_id=first_document.id,
+                    source="import",
+                    task_key="metadata",
+                    operation="metadata",
+                    endpoint="responses",
+                    model="gpt-5.5",
+                    status="success",
+                    input_tokens=100,
+                    output_tokens=50,
+                    total_tokens=150,
+                    usage_metadata={},
+                ),
+                OpenAIUsageRecord(
+                    document_id=second_document.id,
+                    source="import",
+                    task_key="summary",
+                    operation="summary",
+                    endpoint="responses",
+                    model="gpt-5.4",
+                    status="success",
+                    input_tokens=100,
+                    output_tokens=50,
+                    total_tokens=150,
+                    usage_metadata={},
+                ),
+            ]
+        )
+        db.commit()
+
+        rates = main_module.import_cost_exemplar_rates(db)
+
+    assert len(batched_record_ids) == 1
+    assert len(batched_record_ids[0]) == 2
+    assert rates["exemplar_count"] == 2
+    assert rates["overall_rate"] == pytest.approx(0.4 / 15)
+
+
 def test_import_estimates_reflect_processing_preset_steps(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import estimate_import_job_cost
@@ -614,7 +684,7 @@ def test_ingestion_history_aggregates_batch_costs_and_preset(monkeypatch, tmp_pa
     from app.main import list_ingestion_history
     from app.models import Document, DocumentCompositionRecord, ImportBatch, ImportJob, OpenAIUsageRecord, ProcessingEvent, utc_now
 
-    monkeypatch.setattr(main_module, "estimated_cost_usd_for_record", lambda _record, _db=None: 0.42)
+    monkeypatch.setattr(main_module, "estimated_costs_usd_for_records", lambda records, _db=None: {record.id: 0.42 for record in records})
     started = utc_now() - timedelta(minutes=12)
     completed = utc_now() - timedelta(minutes=2)
     with Session() as db:

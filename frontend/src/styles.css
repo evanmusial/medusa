@@ -3830,8 +3830,8 @@ textarea {
   background: transparent;
   color: var(--ink);
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) minmax(270px, auto);
-  gap: 10px;
+  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(270px, auto);
+  gap: 8px;
   align-items: center;
   text-align: left;
   padding: 11px 8px 11px 10px;
@@ -3839,13 +3839,13 @@ textarea {
 }
 
 .library-density-compact .doc-row {
-  grid-template-columns: 18px minmax(0, 1fr) minmax(220px, auto);
+  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(220px, auto);
   gap: 8px;
   padding-block: 8px;
 }
 
 .library-density-reading .doc-row {
-  grid-template-columns: 18px minmax(0, 1fr) minmax(250px, auto);
+  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(250px, auto);
   align-items: start;
   padding-block: 14px;
 }
@@ -3865,6 +3865,28 @@ textarea {
   min-height: 0;
   margin-top: 3px;
   padding: 0;
+}
+
+.doc-row-work-indicator {
+  align-self: start;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.doc-row-work-indicator:not(.active) {
+  visibility: hidden;
+}
+
+.doc-row-work-indicator svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.35;
 }
 
 .doc-row:hover {
@@ -15109,12 +15131,12 @@ button.history-row,
   }
 
   .doc-row {
-    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-columns: 16px 18px minmax(0, 1fr);
   }
 
   .row-meta,
   .doc-row-summary {
-    grid-column: 2 / -1;
+    grid-column: 3 / -1;
   }
 
   .row-meta {

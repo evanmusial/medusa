@@ -1012,6 +1012,57 @@ def test_document_list_rows_marks_documents_with_verified_fields(monkeypatch, tm
     assert row_by_title["Broad Citation Status"].has_verified_fields is False
 
 
+def test_document_list_rows_mark_active_background_work(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_document_rows
+    from app.models import ConcordanceJob, ConcordanceRun, Document
+
+    Session = make_session()
+    with Session() as db:
+        active = Document(
+            title="Active Bibliography Refresh",
+            original_filename="active.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+        )
+        idle = Document(
+            title="Idle Library Row",
+            original_filename="idle.pdf",
+            checksum_sha256="i" * 64,
+            processing_status="ready",
+        )
+        db.add_all([active, idle])
+        db.flush()
+        run = ConcordanceRun(
+            label="Bibliography refresh",
+            scope_type="documents",
+            scope_data={"document_ids": [active.id]},
+            capability_keys=["bibliography_extraction"],
+            status="running",
+            total_jobs=1,
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            ConcordanceJob(
+                run_id=run.id,
+                document_id=active.id,
+                capability_key="bibliography_extraction",
+                target_version=1,
+                status="queued",
+            )
+        )
+        db.commit()
+
+        rows = list_document_rows(object(), db).items
+
+    row_by_title = {row.title: row for row in rows}
+    assert row_by_title["Active Bibliography Refresh"].has_active_work is True
+    assert row_by_title["Idle Library Row"].has_active_work is False
+
+
 def test_document_list_rows_return_typed_publication(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
