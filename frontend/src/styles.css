@@ -2629,7 +2629,7 @@ textarea {
 .tag-cloud {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
+  gap: 3px;
 }
 
 .tag-cloud-empty {
@@ -2648,12 +2648,12 @@ textarea {
   min-height: 28px;
   display: grid;
   grid-template-columns: var(--tag-cloud-chip-count-width) minmax(0, auto);
-  column-gap: 12px;
-  align-items: baseline;
-  padding: 3px 6px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
+  column-gap: 10px;
+  align-items: center;
+  padding: 4px 8px 4px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 54%, transparent);
   color: var(--muted);
   font-size: var(--tag-cloud-chip-font-size);
   box-sizing: border-box;
@@ -2665,14 +2665,20 @@ textarea {
 .tag-cloud-chip:hover,
 .tag-cloud-chip:focus-visible,
 .tag-cloud-chip.active {
-  border-color: color-mix(in srgb, var(--blue) 24%, transparent);
-  background: color-mix(in srgb, var(--blue-soft) 42%, transparent);
+  background: color-mix(in srgb, var(--blue-soft) 46%, var(--panel-2));
   color: color-mix(in srgb, var(--blue) 72%, var(--ink));
   outline: 0;
 }
 
 .tag-cloud-chip-count {
+  align-self: stretch;
   width: var(--tag-cloud-chip-count-width);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 10px;
+  border-right: 1px solid color-mix(in srgb, var(--button-line) 34%, transparent);
+  box-sizing: border-box;
   color: color-mix(in srgb, var(--ink) 74%, var(--muted));
   font-size: var(--tag-cloud-chip-font-size) !important;
   font-weight: 650 !important;
