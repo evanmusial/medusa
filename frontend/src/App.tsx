@@ -557,11 +557,17 @@ function AppConfirmDialog({
   useEffect(() => {
     if (!request) return;
     window.requestAnimationFrame(() => {
-      if (request.mode === "alert") confirmButtonRef.current?.focus();
-      else cancelButtonRef.current?.focus();
+      confirmButtonRef.current?.focus();
     });
   }, [request]);
   if (!request) return null;
+
+  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
+    if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onResolve(true);
+  };
 
   const tone = request.tone || "default";
   const titleId = `app-confirm-title-${request.id}`;
@@ -591,6 +597,7 @@ function AppConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        onKeyDownCapture={handleDialogKeyDown}
         onSubmit={(event) => {
           event.preventDefault();
           onResolve(true);
