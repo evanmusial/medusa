@@ -459,6 +459,9 @@ STAGED_IMPORT_STATUS = "staged"
 IMPORT_JOB_QUEUE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
 IMPORT_JOB_CLEARABLE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
 IMPORT_CACHE_TERMINAL_JOB_STATUSES = ("cleared", "complete")
+ACTIVE_DOCUMENT_WORK_STATUSES = ("queued", "running")
+CONCORDANCE_RECENT_RUN_HISTORY_LIMIT = 50
+CONCORDANCE_RECENT_JOB_HISTORY_LIMIT = 100
 IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
     "ready",
     "complete",
@@ -11687,7 +11690,24 @@ def list_concordance_runs(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    return db.query(ConcordanceRun).order_by(ConcordanceRun.created_at.desc()).limit(50).all()
+    active_runs = (
+        db.query(ConcordanceRun)
+        .filter(ConcordanceRun.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
+        .order_by(
+            case((ConcordanceRun.status == "running", 0), else_=1),
+            ConcordanceRun.created_at.asc(),
+            ConcordanceRun.id.asc(),
+        )
+        .all()
+    )
+    recent_runs = (
+        db.query(ConcordanceRun)
+        .filter(~ConcordanceRun.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
+        .order_by(ConcordanceRun.created_at.desc(), ConcordanceRun.id.desc())
+        .limit(CONCORDANCE_RECENT_RUN_HISTORY_LIMIT)
+        .all()
+    )
+    return [*active_runs, *recent_runs]
 
 
 @app.get("/api/concordance/jobs", response_model=list[ConcordanceJobOut])
@@ -11695,7 +11715,24 @@ def list_concordance_jobs(
     _: Annotated[User, Depends(current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    jobs = db.query(ConcordanceJob).order_by(ConcordanceJob.created_at.desc()).limit(100).all()
+    active_jobs = (
+        db.query(ConcordanceJob)
+        .filter(ConcordanceJob.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
+        .order_by(
+            case((ConcordanceJob.status == "running", 0), else_=1),
+            ConcordanceJob.created_at.asc(),
+            ConcordanceJob.id.asc(),
+        )
+        .all()
+    )
+    recent_jobs = (
+        db.query(ConcordanceJob)
+        .filter(~ConcordanceJob.status.in_(ACTIVE_DOCUMENT_WORK_STATUSES))
+        .order_by(ConcordanceJob.created_at.desc(), ConcordanceJob.id.desc())
+        .limit(CONCORDANCE_RECENT_JOB_HISTORY_LIMIT)
+        .all()
+    )
+    jobs = [*active_jobs, *recent_jobs]
     leases = active_slipstream_leases_by_job(db, "concordance", [job.id for job in jobs])
     return [concordance_job_out(job, lease=leases.get(job.id)) for job in jobs]
 

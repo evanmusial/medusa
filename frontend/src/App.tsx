@@ -2292,6 +2292,23 @@ function backgroundAggregateDetail(jobs: BackgroundJob[]) {
   return [`${formatMetric(running)} running`, `${formatMetric(queued)} queued`].join(" / ");
 }
 
+function dashboardBackgroundWorkCount(dashboard?: Dashboard) {
+  if (!dashboard) return 0;
+  return Math.max(0, (dashboard.active_concordance_jobs || 0) + (dashboard.active_accessory_summary_jobs || 0));
+}
+
+function dashboardBackgroundWorkDetail(dashboard?: Dashboard) {
+  if (!dashboard) return "";
+  const concordance = Math.max(0, dashboard.active_concordance_jobs || 0);
+  const inquests = Math.max(0, dashboard.active_accessory_summary_jobs || 0);
+  return [
+    concordance ? `${formatMetric(concordance)} Concordance` : "",
+    inquests ? `${formatMetric(inquests)} ${inquests === 1 ? "Inquest" : "Inquests"}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function aiFailureTaskLabel(notice: AIFailureNotice) {
   return (notice.task_key || notice.operation || "model call").replaceAll("_", " ");
 }
@@ -2378,7 +2395,9 @@ function HeaderWorkProgress({
 }) {
   const importActive = Boolean(dashboard && dashboard.active_import_jobs > 0);
   const activeJobs = jobs.filter((job) => !isTerminalBackgroundStatus(job.status));
-  if (!importActive && !activeJobs.length && !completedImport) return <div className="header-work-slot empty" aria-hidden="true" />;
+  const dashboardActiveBackgroundCount = dashboardBackgroundWorkCount(dashboard);
+  const hasActiveBackgroundWork = activeJobs.length > 0 || dashboardActiveBackgroundCount > 0;
+  if (!importActive && !hasActiveBackgroundWork && !completedImport) return <div className="header-work-slot empty" aria-hidden="true" />;
 
   let label = "Background work";
   let detail = "Processing";
@@ -2396,25 +2415,31 @@ function HeaderWorkProgress({
     const activeCost = dashboard.import_active_cost_usd > 0 ? formatUsd(dashboard.import_active_cost_usd) : "";
     detail = [activeStep, activeEta, activeCost].filter(Boolean).join(" - ");
     if (!detail) detail = `${dashboard.import_running_jobs} importing / ${dashboard.import_queued_jobs} queued`;
+  } else if (hasActiveBackgroundWork) {
+    const job = activeJobs[0];
+    const listedActiveJobCount = backgroundActiveJobCount(activeJobs);
+    const activeJobCount = Math.max(listedActiveJobCount, dashboardActiveBackgroundCount);
+    const aggregate = activeJobCount > 1 || activeJobs.length > 1;
+    progress = job ? (aggregate ? backgroundAggregateProgress(activeJobs) : backgroundProgress(job)) : 18;
+    label = activeJobCount > 1 ? `${formatMetric(activeJobCount)} background jobs` : job?.label || "Background work";
+    detail =
+      dashboardActiveBackgroundCount > listedActiveJobCount
+        ? dashboardBackgroundWorkDetail(dashboard) || backgroundAggregateDetail(activeJobs)
+        : aggregate
+          ? backgroundAggregateDetail(activeJobs)
+          : job?.detail || (job ? backgroundStatusLabel(job) : dashboardBackgroundWorkDetail(dashboard));
+    activeClass = activeJobs.some((item) => item.status === "running") || dashboardActiveBackgroundCount > 0 ? "running" : job?.status || "running";
   } else if (completedImport) {
     progress = 100;
     activeClass = "complete";
     label = completedImport.label ? `Import complete: ${completedImport.label}` : "Import complete";
     detail = ingestionCompletionSummary(completedImport);
     tooltip = "Open Queue to inspect completed and active import work.";
-  } else {
-    const job = activeJobs[0];
-    const activeJobCount = backgroundActiveJobCount(activeJobs);
-    const aggregate = activeJobCount > 1 || activeJobs.length > 1;
-    progress = aggregate ? backgroundAggregateProgress(activeJobs) : backgroundProgress(job);
-    label = activeJobCount > 1 ? `${formatMetric(activeJobCount)} background jobs` : job.label;
-    detail = aggregate ? backgroundAggregateDetail(activeJobs) : job.detail || backgroundStatusLabel(job);
-    activeClass = aggregate && activeJobs.some((item) => item.status === "running") ? "running" : job.status;
   }
 
   return (
     <div className="header-work-slot">
-      <div className={`header-work-progress-wrap ${completedImport && !importActive && !activeJobs.length ? "dismissible" : ""}`}>
+      <div className={`header-work-progress-wrap ${completedImport && !importActive && !hasActiveBackgroundWork ? "dismissible" : ""}`}>
         <button
           className={`header-work-progress ${activeClass}`}
           data-tooltip={tooltip}
@@ -2442,7 +2467,7 @@ function HeaderWorkProgress({
             <span style={{ width: `${progress}%` }} />
           </span>
         </button>
-        {completedImport && !importActive && !activeJobs.length && onDismissCompletedImport ? (
+        {completedImport && !importActive && !hasActiveBackgroundWork && onDismissCompletedImport ? (
           <button
             aria-label="Dismiss completed import notice"
             className="header-work-dismiss"

@@ -74,6 +74,90 @@ def test_import_jobs_list_keeps_active_jobs_visible_beyond_recent_limit(monkeypa
     assert len(rows) == 121
 
 
+def test_concordance_lists_keep_active_work_visible_beyond_recent_limits(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import list_concordance_jobs, list_concordance_runs
+    from app.models import ConcordanceJob, ConcordanceRun, Document, utc_now
+
+    now = utc_now()
+    with Session() as db:
+        active_runs: list[ConcordanceRun] = []
+        active_jobs: list[ConcordanceJob] = []
+        for index in range(55):
+            document = Document(
+                title=f"Active Concordance {index}",
+                original_filename=f"active-{index}.pdf",
+                checksum_sha256=f"a{index:063x}"[-64:],
+                processing_status="ready",
+            )
+            run = ConcordanceRun(
+                label=f"Active run {index}",
+                scope_type="documents",
+                scope_data={"document_ids": []},
+                capability_keys=["summary_refresh"],
+                status="queued",
+                total_jobs=1,
+                created_at=now - timedelta(hours=3) + timedelta(seconds=index),
+                updated_at=now - timedelta(hours=3) + timedelta(seconds=index),
+            )
+            job = ConcordanceJob(
+                run=run,
+                document=document,
+                capability_key="summary_refresh",
+                target_version=1,
+                status="queued",
+                created_at=now - timedelta(hours=3) + timedelta(seconds=index),
+                updated_at=now - timedelta(hours=3) + timedelta(seconds=index),
+            )
+            active_runs.append(run)
+            active_jobs.append(job)
+            db.add_all([document, run, job])
+
+        for index in range(120):
+            document = Document(
+                title=f"Completed Concordance {index}",
+                original_filename=f"complete-{index}.pdf",
+                checksum_sha256=f"b{index:063x}"[-64:],
+                processing_status="ready",
+            )
+            run = ConcordanceRun(
+                label=f"Completed run {index}",
+                scope_type="documents",
+                scope_data={"document_ids": []},
+                capability_keys=["summary_refresh"],
+                status="complete",
+                total_jobs=1,
+                completed_jobs=1,
+                created_at=now + timedelta(seconds=index),
+                updated_at=now + timedelta(seconds=index),
+            )
+            job = ConcordanceJob(
+                run=run,
+                document=document,
+                capability_key="summary_refresh",
+                target_version=1,
+                status="complete",
+                completed_at=now + timedelta(seconds=index),
+                created_at=now + timedelta(seconds=index),
+                updated_at=now + timedelta(seconds=index),
+            )
+            db.add_all([document, run, job])
+        db.commit()
+
+        runs = list_concordance_runs(object(), db)
+        jobs = list_concordance_jobs(object(), db)
+
+    active_run_ids = {run.id for run in active_runs}
+    active_job_ids = {job.id for job in active_jobs}
+    returned_active_run_ids = {run.id for run in runs if run.status in {"queued", "running"}}
+    returned_active_job_ids = {job["id"] for job in jobs if job["status"] in {"queued", "running"}}
+
+    assert returned_active_run_ids == active_run_ids
+    assert returned_active_job_ids == active_job_ids
+    assert len(runs) == 105
+    assert len(jobs) == 155
+
+
 def test_staged_import_job_has_default_cost_estimate(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import list_import_jobs
