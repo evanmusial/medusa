@@ -857,6 +857,7 @@ def publication_to_dict(link: DocumentPublication | None) -> dict[str, Any] | No
     if not link or not link.publication:
         return None
     publication = link.publication
+    verified_at = link.verified_at.isoformat() if link.verified_at else None
     return {
         "id": link.id,
         "publication_id": publication.id,
@@ -888,7 +889,7 @@ def publication_to_dict(link: DocumentPublication | None) -> dict[str, Any] | No
         "source": link.source,
         "model": link.model,
         "verification_status": link.verification_status,
-        "verified_at": link.verified_at,
+        "verified_at": verified_at,
         "verified_by": link.verified_by,
         "evidence": link.evidence or {},
     }

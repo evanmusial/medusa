@@ -1,4 +1,5 @@
 from datetime import timezone
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
@@ -250,6 +251,47 @@ def test_verified_publication_is_not_overwritten_without_force(monkeypatch, tmp_
         assert "publication" in changed
         assert primary_document_publication(document).publication.title == "Conflicting Journal"
         assert document.journal == "Conflicting Journal"
+
+
+def test_verify_publication_records_json_safe_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import verify_document_publication
+    from app.models import DocumentVersion
+    from app.services.publications import apply_document_publication_patch, primary_document_publication
+
+    Session, _ = make_session()
+    user = SimpleNamespace(id="user-1", email="editor@example.com")
+    with Session() as db:
+        document = make_document(title="Publication Verify", checksum_sha256="v" * 64)
+        db.add(document)
+        db.commit()
+
+        apply_document_publication_patch(
+            db,
+            document,
+            {
+                "title": "Computers & Security",
+                "type": "journal",
+                "publisher": "Elsevier BV",
+                "volume": "157",
+                "article_number": "104606",
+                "page_range": "104606",
+                "appearance_type": "article",
+            },
+        )
+        db.commit()
+
+        updated = verify_document_publication(document.id, user, db)
+        version = db.query(DocumentVersion).filter(DocumentVersion.document_id == document.id).one()
+        link = primary_document_publication(document)
+
+        assert link.verification_status == "verified"
+        assert link.verified_by == "editor@example.com"
+        assert updated.publication["verification_status"] == "verified"
+        assert isinstance(version.metadata_snapshot["after"]["publication"]["verified_at"], str)
+        assert version.metadata_snapshot["after"]["publication"]["verified_by"] == "editor@example.com"
 
 
 def test_publication_export_restore_round_trip(monkeypatch, tmp_path):

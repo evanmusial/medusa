@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ChangeEvent,
   ClipboardEvent as ReactClipboardEvent,
@@ -7763,6 +7763,8 @@ function LibraryView({
   const rowsViewportRef = useRef<HTMLDivElement | null>(null);
   const selectedRowViewportTopRef = useRef<{ documentId: string; top: number } | null>(null);
   const [rowsScrollTop, setRowsScrollTop] = useState(0);
+  const rowsScrollTopRef = useRef(0);
+  const previousLibraryRowHeightRef = useRef<number | null>(null);
   const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
   const [rowsViewportWidth, setRowsViewportWidth] = useState(0);
   const [saveName, setSaveName] = useState("");
@@ -8059,6 +8061,10 @@ function LibraryView({
     }),
     [domainOptions, publicationOptions, tagOptions],
   );
+  const syncRowsScrollTop = useCallback((nextScrollTop: number) => {
+    rowsScrollTopRef.current = nextScrollTop;
+    setRowsScrollTop(nextScrollTop);
+  }, []);
   useEffect(() => {
     setBulkReadStatus("");
     setBulkPriority("");
@@ -8079,15 +8085,27 @@ function LibraryView({
     resizeObserver.observe(element);
     return () => resizeObserver.disconnect();
   }, [readerOpen]);
-  useEffect(() => {
-    if (readerOpen) return;
+  useLayoutEffect(() => {
+    if (readerOpen) {
+      previousLibraryRowHeightRef.current = libraryRowHeight;
+      return;
+    }
     const element = rowsViewportRef.current;
-    if (!element) return;
+    if (!element) {
+      previousLibraryRowHeightRef.current = libraryRowHeight;
+      return;
+    }
+    const previousRowHeight = previousLibraryRowHeightRef.current || libraryRowHeight;
+    previousLibraryRowHeightRef.current = libraryRowHeight;
+    let targetScrollTop = element.scrollTop;
+    if (previousRowHeight > 0 && previousRowHeight !== libraryRowHeight) {
+      targetScrollTop = (targetScrollTop / previousRowHeight) * libraryRowHeight;
+    }
     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-    const targetScrollTop = Math.min(rowsScrollTop, maxScrollTop);
-    if (targetScrollTop !== rowsScrollTop) setRowsScrollTop(targetScrollTop);
+    targetScrollTop = clampNumber(targetScrollTop, 0, maxScrollTop);
     if (Math.abs(element.scrollTop - targetScrollTop) > 1) element.scrollTop = targetScrollTop;
-  }, [libraryRowHeight, readerOpen, rowsScrollTop, sortedDocuments.length]);
+    if (Math.abs(rowsScrollTopRef.current - targetScrollTop) > 1) syncRowsScrollTop(targetScrollTop);
+  }, [libraryRowHeight, readerOpen, rowsViewportHeight, sortedDocuments.length, syncRowsScrollTop]);
   useEffect(() => {
     if (readerOpen || !scrollTargetId) return;
     const element = rowsViewportRef.current;
@@ -8112,10 +8130,10 @@ function LibraryView({
     }
     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     const nextScrollTop = clampNumber(targetScrollTop, 0, maxScrollTop);
-    setRowsScrollTop(nextScrollTop);
+    syncRowsScrollTop(nextScrollTop);
     if (Math.abs(element.scrollTop - nextScrollTop) > 1) element.scrollTop = nextScrollTop;
     onScrollTargetHandled?.(scrollTargetId);
-  }, [libraryRowHeight, onScrollTargetHandled, readerOpen, scrollTargetId, sortedDocuments, rowsViewportHeight]);
+  }, [libraryRowHeight, onScrollTargetHandled, readerOpen, scrollTargetId, sortedDocuments, rowsViewportHeight, syncRowsScrollTop]);
   const hasBulkUpdate = selectedBulkDocument
     ? Boolean(
         bulkReadStatus ||
@@ -8836,7 +8854,7 @@ function LibraryView({
         <div
           ref={rowsViewportRef}
           className={`rows virtual-rows ${alternatingRows ? "alternating-rows" : ""}`}
-          onScroll={(event) => setRowsScrollTop(event.currentTarget.scrollTop)}
+          onScroll={(event) => syncRowsScrollTop(event.currentTarget.scrollTop)}
         >
           <div className="virtual-rows-spacer" style={{ height: virtualSpacerHeight }}>
           {virtualDocuments.map((item, virtualIndex) => {
