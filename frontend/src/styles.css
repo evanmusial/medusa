@@ -507,6 +507,85 @@ textarea {
   transform-origin: center;
 }
 
+.primary-button.async-feedback-progress,
+.secondary-button.async-feedback-progress,
+.icon-button.async-feedback-progress,
+.release-upgrade-emblem,
+.motion-preview-dialog .confirm-dialog-icon {
+  position: relative;
+  overflow: hidden;
+}
+
+:where(:root[data-icon-motion="rail"], :root[data-icon-motion="rim"], :root[data-icon-motion="pulse"], :root[data-icon-motion="snap"], [data-icon-motion-preview])
+  :is(.async-feedback-progress svg, svg.spin):not(.lucide-refresh-cw):not(.lucide-rotate-cw):not(.lucide-rotate-ccw) {
+  animation: none;
+  transform: none;
+}
+
+:where(:root[data-icon-motion="rim"], [data-icon-motion-preview="rim"])
+  :is(.primary-button, .secondary-button, .icon-button).async-feedback-progress::after,
+:where(:root[data-icon-motion="rim"], [data-icon-motion-preview="rim"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon)::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 1px solid color-mix(in srgb, var(--blue) 46%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: motion-rim-sweep 1.4s ease-in-out infinite;
+}
+
+:where(:root[data-icon-motion="pulse"], [data-icon-motion-preview="pulse"])
+  :is(.primary-button, .secondary-button, .icon-button).async-feedback-progress,
+:where(:root[data-icon-motion="pulse"], [data-icon-motion-preview="pulse"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon) {
+  animation: motion-surface-pulse 1.45s ease-in-out infinite;
+}
+
+:where(:root[data-icon-motion="snap"], [data-icon-motion-preview="snap"])
+  :is(.primary-button, .secondary-button, .icon-button).async-feedback-progress {
+  box-shadow:
+    inset 3px 0 0 var(--blue),
+    0 0 0 1px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+:where(:root[data-icon-motion="snap"], [data-icon-motion-preview="snap"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon) {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--blue) 72%, transparent);
+}
+
+:where(:root[data-icon-motion="snap"], [data-icon-motion-preview="snap"]) .async-action-progress.indeterminate span,
+:where(:root[data-icon-motion="snap"], [data-icon-motion-preview="snap"]) .release-upgrade-track span {
+  width: 100%;
+  animation: none;
+  opacity: 0.58;
+  transform: none;
+}
+
+@keyframes motion-rim-sweep {
+  0%,
+  100% {
+    opacity: 0.36;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 0%, transparent);
+  }
+
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent);
+  }
+}
+
+@keyframes motion-surface-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 14%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+  }
+}
+
 @keyframes async-feedback-success {
   0% {
     background-color: var(--blue-soft);
@@ -11843,6 +11922,96 @@ pre {
   flex: 1 1 160px;
 }
 
+.motion-palette-panel {
+  gap: 8px;
+}
+
+.motion-palette-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.motion-palette-option {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 9px;
+  color: var(--ink);
+}
+
+.motion-palette-option.selected {
+  border-color: color-mix(in srgb, var(--blue) 44%, var(--line));
+  background: color-mix(in srgb, var(--blue-soft) 44%, var(--panel));
+}
+
+.motion-palette-option input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.motion-palette-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.motion-palette-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.motion-palette-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.motion-palette-preview {
+  grid-column: 2;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) 34px minmax(52px, 0.65fr);
+  align-items: center;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.motion-preview-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.motion-preview-dialog {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.motion-preview-dialog .confirm-dialog-icon {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+}
+
+.motion-preview-dialog > span {
+  display: block;
+  height: 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+
 .sticky-field-settings {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -14404,6 +14573,8 @@ button.history-row,
   .import-preset-grid,
   .import-preset-number-row,
   .import-toggle-list,
+  .motion-palette-options,
+  .motion-palette-preview,
   .import-processing-step-row,
   .import-picker-grid,
   .cloud-run-control-row,

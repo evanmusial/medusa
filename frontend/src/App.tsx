@@ -778,6 +778,15 @@ const navItems: WorkspaceNavItem[] = [
 ];
 const navShortcutByKey = new Map(navItems.map((item) => [item.shortcut.toLowerCase(), item.id]));
 const DEFAULT_VIEW: View = "library";
+const ICON_MOTION_STYLE_KEY = "medusa-icon-motion-style";
+const ICON_MOTION_STYLE_VALUES = ["rail", "rim", "pulse", "snap"] as const;
+type IconMotionStyle = (typeof ICON_MOTION_STYLE_VALUES)[number];
+const ICON_MOTION_OPTIONS: Array<{ id: IconMotionStyle; label: string; detail: string; sample: string }> = [
+  { id: "rail", label: "Rail Only", detail: "Still glyphs, moving progress rail", sample: "Save" },
+  { id: "rim", label: "Rim Sweep", detail: "Still glyphs, breathing control edge", sample: "Upload" },
+  { id: "pulse", label: "Surface Pulse", detail: "Still glyphs, soft surface pulse", sample: "Stage" },
+  { id: "snap", label: "State Snap", detail: "Still glyphs, static state marker", sample: "Apply" },
+];
 const VIEW_PATHS: Record<View, string> = {
   library: "/library",
   domains: "/domains",
@@ -24688,6 +24697,53 @@ function GcsLifecyclePolicy({
   );
 }
 
+function MotionPalettePanel({
+  onChange,
+  value,
+}: {
+  onChange: (style: IconMotionStyle) => void;
+  value: IconMotionStyle;
+}) {
+  return (
+    <fieldset className="preference-choice-group motion-palette-panel">
+      <legend>Button motion</legend>
+      <div className="motion-palette-options">
+        {ICON_MOTION_OPTIONS.map((option) => (
+          <label key={option.id} className={`motion-palette-option${value === option.id ? " selected" : ""}`}>
+            <input
+              checked={value === option.id}
+              data-tooltip={`Preview ${option.label} motion for Medusa buttons and dialogs.`}
+              name="button-motion"
+              onChange={() => onChange(option.id)}
+              type="radio"
+              value={option.id}
+            />
+            <span className="motion-palette-copy">
+              <strong>{option.label}</strong>
+              <small>{option.detail}</small>
+            </span>
+            <span className="motion-palette-preview" data-icon-motion-preview={option.id} aria-hidden="true">
+              <span className="motion-preview-button secondary-button async-feedback-progress">
+                <Save className="spin" size={15} />
+                {option.sample}
+              </span>
+              <span className="motion-preview-button icon-button async-feedback-progress">
+                <RefreshCw className="spin" size={15} />
+              </span>
+              <span className="motion-preview-dialog">
+                <i className="confirm-dialog-icon warning">
+                  <AlertTriangle className="spin" size={16} />
+                </i>
+                <span />
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 function SettingsView({
   capabilities,
   currentUser,
@@ -24700,6 +24756,8 @@ function SettingsView({
   savedSearches,
   selectedDocument,
   startConcordanceRun,
+  iconMotionStyle,
+  onIconMotionStyleChange,
   onDirtyChange,
   onRegisterSave,
   query,
@@ -24715,6 +24773,8 @@ function SettingsView({
   savedSearches: SavedSearch[];
   selectedDocument?: DocumentDetail;
   startConcordanceRun: StartConcordanceRun;
+  iconMotionStyle: IconMotionStyle;
+  onIconMotionStyleChange: (style: IconMotionStyle) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onRegisterSave?: (handler: SettingsSaveHandler | null) => void;
   query: string;
@@ -25625,6 +25685,7 @@ function SettingsView({
             <span>APA (7th Ed.)</span>
           </label>
         </fieldset>
+        <MotionPalettePanel value={iconMotionStyle} onChange={onIconMotionStyleChange} />
         <label className="checkbox-row preference-checkbox">
           <input
             data-tooltip="Toggle alternating row shading in the Library document list."
@@ -26500,6 +26561,7 @@ export default function App() {
   const [libraryFocusDocumentId, setLibraryFocusDocumentId] = useState<string | null>(() => initialRoute.documentId || null);
   const [libraryScrollTargetId, setLibraryScrollTargetId] = useState<string | null>(() => initialRoute.documentId || null);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
+  const [iconMotionStyle, setIconMotionStyle] = useStoredString(ICON_MOTION_STYLE_KEY, "rail", ICON_MOTION_STYLE_VALUES);
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [backgroundReconcileNow, setBackgroundReconcileNow] = useState(() => Date.now());
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
@@ -26520,6 +26582,10 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("medusa-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.iconMotion = iconMotionStyle;
+  }, [iconMotionStyle]);
 
   const needsLibraryDocumentList = activeView === "library";
   const needsReferenceDocumentList = activeView === "domains" || activeView === "projects" || activeView === "notes";
@@ -27778,6 +27844,8 @@ export default function App() {
             savedSearches={savedSearches.data || []}
             selectedDocument={selectedDocument.data}
             startConcordanceRun={startConcordanceRun}
+            iconMotionStyle={iconMotionStyle}
+            onIconMotionStyleChange={setIconMotionStyle}
             onDirtyChange={setSettingsDirty}
             onRegisterSave={registerSettingsSave}
           />
