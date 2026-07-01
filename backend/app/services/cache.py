@@ -27,7 +27,7 @@ from app.services.slipstream import client_is_online
 
 logger = logging.getLogger(__name__)
 
-CACHE_KEY_SCHEMA_VERSION = "v1"
+CACHE_KEY_SCHEMA_VERSION = "v3"
 CACHE_REVISION_FAMILIES = (
     "library",
     "document_detail",

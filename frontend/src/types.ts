@@ -1422,9 +1422,26 @@ export type DocumentListRow = {
   updated_at: string;
   duplicate_count: number;
   duplicate_reasons: string[];
-  tags: Tag[];
-  domains: Domain[];
-  projects?: Project[];
+  tags: DocumentListTag[];
+  domains: DocumentListDomain[];
+  projects?: DocumentListProject[];
+};
+
+export type DocumentListTag = {
+  id: string;
+  name: string;
+};
+
+export type DocumentListDomain = {
+  id: string;
+  parent_id?: string | null;
+  name: string;
+  color?: string | null;
+};
+
+export type DocumentListProject = {
+  id: string;
+  name: string;
 };
 
 export type DocumentListSort = "title" | "date" | "page_count";

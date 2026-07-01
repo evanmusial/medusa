@@ -120,6 +120,23 @@ class DomainOut(ApiModel):
     tags: list[TagOut] = Field(default_factory=list)
 
 
+class DocumentListTagOut(ApiModel):
+    id: str
+    name: str
+
+
+class DocumentListDomainOut(ApiModel):
+    id: str
+    parent_id: str | None = None
+    name: str
+    color: str | None = None
+
+
+class DocumentListProjectOut(ApiModel):
+    id: str
+    name: str
+
+
 class DomainDeleteOut(BaseModel):
     deleted_id: str
     updated_documents: int
@@ -790,9 +807,9 @@ class DocumentListRow(ApiModel):
     updated_at: datetime
     duplicate_count: int = 0
     duplicate_reasons: list[str] = Field(default_factory=list)
-    tags: list[TagOut] = Field(default_factory=list)
-    domains: list[DomainOut] = Field(default_factory=list)
-    projects: list[ProjectOut] = Field(default_factory=list)
+    tags: list[DocumentListTagOut] = Field(default_factory=list)
+    domains: list[DocumentListDomainOut] = Field(default_factory=list)
+    projects: list[DocumentListProjectOut] = Field(default_factory=list)
 
     @field_validator("title", "rich_summary", mode="before")
     @classmethod

@@ -716,6 +716,79 @@ def test_list_documents_filters_health_status_scopes(monkeypatch, tmp_path):
         assert [document.figure_count for document in no_project_rows.items] == [2]
 
 
+def test_document_list_rows_use_compact_relationships_and_summary_previews(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import DOCUMENT_LIST_SUMMARY_MAX_CHARS, document_list_rows_out
+    from app.models import Document, Domain, Project, ProjectItem, Tag
+
+    Session = make_session()
+    with Session() as db:
+        tag = Tag(name="long-form evidence", definition="Definition text that belongs in the Tags workbench.")
+        domain = Domain(name="Research", description="Domain description text that belongs in organization payloads.", tags=[tag])
+        project = Project(name="Run sheet", description="Project description text.")
+        document = Document(
+            title="Payload Test",
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            rich_summary=" ".join(["summary"] * 2000),
+            original_filename="payload.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+        )
+        document.tags.append(tag)
+        document.domains.append(domain)
+        db.add_all([tag, domain, project, document])
+        db.flush()
+        db.add(ProjectItem(project_id=project.id, document_id=document.id))
+        db.commit()
+
+        result = document_list_rows_out(db, offset=0, limit=50)
+
+    row = result.items[0]
+    payload = row.model_dump()
+    assert row.rich_summary is not None
+    assert len(row.rich_summary) <= DOCUMENT_LIST_SUMMARY_MAX_CHARS + 3
+    assert row.rich_summary.endswith("...")
+    assert set(payload["tags"][0]) == {"id", "name"}
+    assert set(payload["domains"][0]) == {"id", "parent_id", "name", "color"}
+    assert set(payload["projects"][0]) == {"id", "name"}
+
+
+def test_document_detail_caps_search_text_preview(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import DOCUMENT_DETAIL_SEARCH_TEXT_MAX_CHARS, document_detail_out
+    from app.models import Document, DocumentPage
+
+    Session = make_session()
+    long_search_text = "search-text " * 1000
+    long_page_text = "page-text " * 1000
+    with Session() as db:
+        document = Document(
+            title="Heavy Detail Payload",
+            authors=[{"given": "Ada", "family": "Lovelace"}],
+            search_text=long_search_text,
+            original_filename="heavy.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+        )
+        document.pages.append(
+            DocumentPage(page_number=1, text=long_page_text, normalized_text=long_page_text, text_source="test", low_text=False)
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        detail = document_detail_out(document, db)
+
+    assert detail.search_text == long_search_text[:DOCUMENT_DETAIL_SEARCH_TEXT_MAX_CHARS]
+    assert detail.pages[0].text is None
+    assert detail.pages[0].normalized_text == long_page_text
+    assert detail.pages[0].reader_text is None
+
+
 def test_get_document_uses_persisted_duplicate_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

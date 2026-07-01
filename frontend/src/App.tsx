@@ -418,6 +418,7 @@ const COLLAPSED_DETAIL_PANE_MAX = 860;
 const MIN_LIBRARY_PAGE_SIZE = 10;
 type LibraryPageSize = number;
 const DEFAULT_LIBRARY_PAGE_SIZE: LibraryPageSize = 50;
+const LIBRARY_PAGE_SIZE_STORAGE_KEY = "medusa-library-page-size";
 const DEFAULT_LIBRARY_SORT: DocumentListSort = "title";
 const LIBRARY_SORT_OPTIONS: Array<{ value: DocumentListSort; label: string }> = [
   { value: "title", label: "Title" },
@@ -670,6 +671,14 @@ function useAppDialogController() {
 function parseLibraryPageSize(value: string | null): LibraryPageSize {
   const numericValue = Number(value);
   return Number.isInteger(numericValue) && numericValue >= MIN_LIBRARY_PAGE_SIZE ? numericValue : DEFAULT_LIBRARY_PAGE_SIZE;
+}
+
+function readStoredLibraryPageSize(): LibraryPageSize {
+  return parseLibraryPageSize(localStorage.getItem(LIBRARY_PAGE_SIZE_STORAGE_KEY));
+}
+
+function writeStoredLibraryPageSize(value: LibraryPageSize) {
+  localStorage.setItem(LIBRARY_PAGE_SIZE_STORAGE_KEY, String(value));
 }
 
 function normalizeLibraryDensity(value?: string | null): LibraryDensity {
@@ -3201,18 +3210,22 @@ function documentRowHasActiveWork(document: LibraryDocumentRow, citationJobs: Co
   );
 }
 
-function patchCachedDocumentSummaries(
-  queryClient: QueryClient,
-  patch: Partial<LibraryDocumentRow> & Pick<LibraryDocumentRow, "id">,
-) {
-  queryClient.setQueriesData<DocumentSummary[] | DocumentListResponse>({ queryKey: ["documents"] }, (current) => {
-    if (!current) return current;
-    if (Array.isArray(current)) return current.map((item) => (item.id === patch.id ? { ...item, ...patch } : item));
-    return { ...current, items: current.items.map((item) => (item.id === patch.id ? { ...item, ...patch } : item)) };
-  });
+type CachedDocumentSummaryPatch = Partial<DocumentSummary> & Pick<DocumentSummary, "id">;
+type CachedDocumentListRowPatch = Partial<DocumentListRow> & Pick<DocumentListRow, "id">;
+
+function patchCachedDocumentSummaries(queryClient: QueryClient, summaryPatch: CachedDocumentSummaryPatch, listPatch: CachedDocumentListRowPatch = summaryPatch) {
+  queryClient.setQueriesData<DocumentSummary[]>({ queryKey: ["documents", "reference-list"] }, (current) =>
+    current?.map((item) => (item.id === summaryPatch.id ? { ...item, ...summaryPatch } : item)),
+  );
+  queryClient.setQueriesData<DocumentSummary[]>({ queryKey: ["documents", "health-reference"] }, (current) =>
+    current?.map((item) => (item.id === summaryPatch.id ? { ...item, ...summaryPatch } : item)),
+  );
+  queryClient.setQueriesData<DocumentListResponse>({ queryKey: ["documents", "library-list"] }, (current) =>
+    current ? { ...current, items: current.items.map((item) => (item.id === listPatch.id ? { ...item, ...listPatch } : item)) } : current,
+  );
 }
 
-function documentSummaryPatchFromDetail(document: DocumentDetail): Partial<LibraryDocumentRow> & Pick<LibraryDocumentRow, "id"> {
+function documentSummaryPatchFromDetail(document: DocumentDetail): CachedDocumentSummaryPatch {
   return {
     id: document.id,
     title: document.title,
@@ -26787,7 +26800,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<DocumentFilters>(() => emptyFilters());
   const [libraryOffset, setLibraryOffset] = useState(0);
-  const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(DEFAULT_LIBRARY_PAGE_SIZE);
+  const [libraryPageSize, setLibraryPageSize] = useState<LibraryPageSize>(readStoredLibraryPageSize);
   const [librarySort, setLibrarySort] = useState<DocumentListSort>(DEFAULT_LIBRARY_SORT);
   const [libraryPageTurnIntent, setLibraryPageTurnIntent] = useState<LibraryPageTurnIntent | null>(null);
   const [libraryDocumentMode, setLibraryDocumentMode] = useState<DocumentRouteMode>(() => initialRoute.documentMode || "detail");
@@ -26897,6 +26910,7 @@ export default function App() {
     const preferredPageSize = parseLibraryPageSize(String(preferences.data.library_page_size));
     setLibraryPageSize((current) => {
       if (current === preferredPageSize) return current;
+      writeStoredLibraryPageSize(preferredPageSize);
       if (selectedId && activeView === "library") {
         setLibraryFocusDocumentId(selectedId);
         setLibraryScrollTargetId(selectedId);
@@ -26991,10 +27005,13 @@ export default function App() {
     staleTime: activeLibraryListWork ? 0 : DOCUMENT_LIST_STALE_MS,
     refetchInterval: activeView === "health" && activeLibraryListWork ? DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS : false,
   });
+  const libraryInitialListSettled = activeView !== "library" || libraryDocumentList.data !== undefined || libraryDocumentList.isError;
+  const libraryInitialTagsSettled = activeView !== "library" || tags.data !== undefined || tags.isError;
+  const selectedDocumentDetailReady = activeView !== "library" || (libraryInitialListSettled && libraryInitialTagsSettled);
   const selectedDocument = useQuery({
     queryKey: ["document", selectedId],
     queryFn: () => api.document(selectedId!),
-    enabled: Boolean(me.data && needsSelectedDocument),
+    enabled: Boolean(me.data && needsSelectedDocument && selectedDocumentDetailReady),
     refetchInterval: needsSelectedDocument && activeDocumentWork ? ACTIVE_WORK_REFETCH_INTERVAL_MS : false,
   });
   useEffect(() => {
@@ -27179,16 +27196,12 @@ export default function App() {
     });
   }, []);
   const libraryPageData = libraryDocumentList.data;
-  const libraryPlaceholderPageMismatch = Boolean(
-    libraryDocumentList.isPlaceholderData &&
-      libraryPageData &&
-      (libraryPageData.offset !== libraryOffset || libraryPageData.limit !== libraryPageSize),
-  );
-  const libraryRows = libraryPlaceholderPageMismatch ? EMPTY_LIBRARY_ROWS : libraryPageData?.items ?? EMPTY_LIBRARY_ROWS;
+  const libraryPlaceholderOffsetMismatch = Boolean(libraryDocumentList.isPlaceholderData && libraryPageData && libraryPageData.offset !== libraryOffset);
+  const libraryRows = libraryPlaceholderOffsetMismatch ? EMPTY_LIBRARY_ROWS : libraryPageData?.items ?? EMPTY_LIBRARY_ROWS;
   const libraryTotalDocumentCount = libraryPageData?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
   const libraryTotalPageCount = libraryPageData?.total_page_count ?? 0;
-  const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? (libraryPlaceholderPageMismatch ? libraryOffset : libraryPageData?.offset ?? libraryOffset);
-  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryPlaceholderPageMismatch ? libraryPageSize : libraryPageData?.limit ?? libraryPageSize);
+  const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? (libraryPlaceholderOffsetMismatch ? libraryOffset : libraryPageData?.offset ?? libraryOffset);
+  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryPlaceholderOffsetMismatch ? libraryPageSize : libraryPageData?.limit ?? libraryPageSize);
   const libraryPageTurnPending = Boolean(libraryPageTurnIntent);
   const libraryHasMoreDocuments = libraryTotalDocumentCount > libraryDisplayOffset + libraryDisplayLimit;
   useEffect(() => {
@@ -27937,6 +27950,7 @@ export default function App() {
               }
             }}
             onPageSizeChange={(pageSize) => {
+              writeStoredLibraryPageSize(pageSize);
               setLibraryPageSize(pageSize);
               if (selectedId) {
                 setLibraryFocusDocumentId(selectedId);

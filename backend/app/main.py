@@ -139,8 +139,11 @@ from app.schemas import (
     DoiStashCreate,
     DoiStashImportOut,
     DoiStashOut,
+    DocumentListDomainOut,
     DocumentListOut,
+    DocumentListProjectOut,
     DocumentListRow,
+    DocumentListTagOut,
     DocumentSummary,
     FigurePatch,
     GcsBucketLifecycleOut,
@@ -962,6 +965,28 @@ def project_summaries_for_documents(db: Session, document_ids: list[str]) -> dic
     return summaries
 
 
+def project_refs_for_documents(db: Session, document_ids: list[str]) -> dict[str, list[DocumentListProjectOut]]:
+    unique_document_ids = unique_preserve_order(document_ids)
+    if not unique_document_ids:
+        return {}
+    rows = (
+        db.query(ProjectItem.document_id, Project.id, Project.name)
+        .join(Project, Project.id == ProjectItem.project_id)
+        .filter(ProjectItem.document_id.in_(unique_document_ids), Project.deleted_at.is_(None))
+        .order_by(func.lower(Project.name), Project.id)
+        .all()
+    )
+    refs: dict[str, list[DocumentListProjectOut]] = {document_id: [] for document_id in unique_document_ids}
+    seen_pairs: set[tuple[str, str]] = set()
+    for document_id, project_id, project_name in rows:
+        pair = (str(document_id), str(project_id))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        refs.setdefault(str(document_id), []).append(DocumentListProjectOut(id=str(project_id), name=project_name))
+    return refs
+
+
 def figure_counts_for_documents(db: Session, document_ids: list[str]) -> dict[str, int]:
     unique_document_ids = unique_preserve_order(document_ids)
     if not unique_document_ids:
@@ -1065,6 +1090,27 @@ DOCUMENT_LIST_ROW_COLUMNS = (
     Document.duplicate_count,
     Document.duplicate_reasons,
 )
+DOCUMENT_LIST_SUMMARY_MAX_CHARS = 1200
+DOCUMENT_DETAIL_SEARCH_TEXT_MAX_CHARS = 1600
+
+
+def document_list_summary_preview(value: str | None) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if len(text) <= DOCUMENT_LIST_SUMMARY_MAX_CHARS:
+        return text
+    preview = text[:DOCUMENT_LIST_SUMMARY_MAX_CHARS].rsplit(" ", 1)[0].rstrip()
+    return f"{preview or text[:DOCUMENT_LIST_SUMMARY_MAX_CHARS].rstrip()}..."
+
+
+def document_detail_search_text_preview(value: str | None) -> str | None:
+    text = value or ""
+    if not text:
+        return None
+    if len(text) <= DOCUMENT_DETAIL_SEARCH_TEXT_MAX_CHARS:
+        return text
+    return text[:DOCUMENT_DETAIL_SEARCH_TEXT_MAX_CHARS]
 
 
 def document_list_row_load_options():
@@ -1073,20 +1119,12 @@ def document_list_row_load_options():
         selectinload(Document.tags).load_only(
             Tag.id,
             Tag.name,
-            Tag.kind,
-            Tag.color,
-            Tag.status,
-            Tag.definition,
-            Tag.use_guidance,
-            Tag.avoid_guidance,
         ),
         selectinload(Document.domains).load_only(
             Domain.id,
             Domain.parent_id,
             Domain.name,
-            Domain.description,
             Domain.color,
-            Domain.sort_order,
         ),
         selectinload(Document.publication_links)
         .load_only(
@@ -1449,21 +1487,37 @@ def document_has_verified_fields(document: Document) -> bool:
 
 def document_list_row_out(
     document: Document,
-    projects: list[ProjectOut] | None = None,
+    projects: list[DocumentListProjectOut] | None = None,
     figure_count: int = 0,
     has_active_work: bool = False,
 ) -> DocumentListRow:
-    return DocumentListRow.model_validate(document).model_copy(
-        update={
-            "duplicate_count": int(document.duplicate_count or 0),
-            "duplicate_reasons": list(document.duplicate_reasons or []),
-            "projects": projects or [],
-            "no_doi": document_no_doi(document),
-            "has_verified_fields": document_has_verified_fields(document),
-            "has_active_work": has_active_work,
-            "figure_count": figure_count,
-            "publication": document_publication_out(primary_document_publication(document)),
-        }
+    return DocumentListRow(
+        id=document.id,
+        title=document.title,
+        authors=document.authors or [],
+        publication_year=document.publication_year,
+        publication=document_publication_out(primary_document_publication(document)),
+        rich_summary=document_list_summary_preview(document.rich_summary),
+        citation_status=document.citation_status,
+        no_doi=document_no_doi(document),
+        page_count=int(document.page_count or 0),
+        figure_count=int(figure_count or 0),
+        processing_status=document.processing_status,
+        read_status=document.read_status,
+        priority=document.priority,
+        has_verified_fields=document_has_verified_fields(document),
+        has_active_work=has_active_work,
+        is_locked=document_is_locked(document),
+        locked_at=document.locked_at,
+        updated_at=document.updated_at,
+        duplicate_count=int(document.duplicate_count or 0),
+        duplicate_reasons=list(document.duplicate_reasons or []),
+        tags=[DocumentListTagOut(id=tag.id, name=tag.name) for tag in sorted(document.tags, key=lambda item: item.name.lower())],
+        domains=[
+            DocumentListDomainOut(id=domain.id, parent_id=domain.parent_id, name=domain.name, color=domain.color)
+            for domain in sorted(document.domains, key=lambda item: ((item.name or "").lower(), item.id))
+        ],
+        projects=projects or [],
     )
 
 
@@ -1703,6 +1757,22 @@ def document_version_out(version: DocumentVersion) -> DocumentVersionOut:
     )
 
 
+def document_page_detail_out(page: DocumentPage, reader_text: str | None = None) -> DocumentPageOut:
+    normalized_text = page.normalized_text
+    compact_reader_text = reader_text
+    if compact_reader_text is not None and compact_reader_text == normalized_text:
+        compact_reader_text = None
+    raw_text = page.text
+    if normalized_text or compact_reader_text:
+        raw_text = None
+    return DocumentPageOut.model_validate(page).model_copy(
+        update={
+            "text": raw_text,
+            "reader_text": compact_reader_text,
+        }
+    )
+
+
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     duplicate_summary = persisted_duplicate_summary_by_document([document]).get(document.id, {})
     projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
@@ -1713,9 +1783,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     summary_validation = document_summary_validation(document)
     reader_text_by_page_number = document_reader_text_by_page_number(document)
     pages = [
-        DocumentPageOut.model_validate(page).model_copy(
-            update={"reader_text": reader_text_by_page_number.get(page.page_number)}
-        )
+        document_page_detail_out(page, reader_text=reader_text_by_page_number.get(page.page_number))
         for page in document.pages
     ]
     return DocumentDetail.model_validate(document).model_copy(
@@ -1743,6 +1811,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "bibliography_verified_at": bibliography_verification["verified_at"] if bibliography_verification else None,
             "bibliography_verified_by": bibliography_verification["verified_by"] if bibliography_verification else None,
             "publication": document_publication_out(primary_document_publication(document)),
+            "search_text": document_detail_search_text_preview(document.search_text),
             "pages": pages,
             "versions": [document_version_out(version) for version in document.versions],
         }
@@ -3321,10 +3390,11 @@ def hydrate_cache_payloads(
     document_count = 0
     document_limit = _cache_hydrate_document_limit(max_documents)
     resolved_page_size = _cache_hydrate_page_size(page_size)
-    library_page_sizes = [resolved_page_size]
     preferred_library_page_size = get_library_page_size(db)
-    if page_size is None and preferred_library_page_size not in library_page_sizes:
-        library_page_sizes.append(preferred_library_page_size)
+    library_page_sizes = [resolved_page_size]
+    if page_size is None:
+        library_page_sizes = [preferred_library_page_size, resolved_page_size]
+    library_page_sizes = list(dict.fromkeys(library_page_sizes))
 
     if not CACHE_HYDRATION_LOCK.acquire(blocking=False):
         after = cache_status_payload(db, request_metrics=metrics)
@@ -5722,7 +5792,7 @@ def document_list_rows_out(
     else:
         documents = row_query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
     document_ids = [document.id for document in documents]
-    project_map = project_summaries_for_documents(db, document_ids)
+    project_map = project_refs_for_documents(db, document_ids)
     figure_count_map = figure_counts_for_documents(db, document_ids)
     active_work_document_ids = active_work_document_ids_for_documents(db, document_ids)
     revision_parts = [str(total_count), str(total_page_count), latest_updated.isoformat() if latest_updated else "none"]
