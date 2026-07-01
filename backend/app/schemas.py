@@ -748,6 +748,7 @@ class DocumentSummary(ApiModel):
     processing_status: str
     read_status: str
     priority: str
+    has_verified_fields: bool = False
     is_locked: bool = False
     locked_at: datetime | None = None
     created_at: datetime
@@ -778,6 +779,7 @@ class DocumentListRow(ApiModel):
     processing_status: str
     read_status: str
     priority: str
+    has_verified_fields: bool = False
     is_locked: bool = False
     locked_at: datetime | None = None
     updated_at: datetime

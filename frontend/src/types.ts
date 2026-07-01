@@ -1361,6 +1361,7 @@ export type DocumentSummary = {
   processing_status: string;
   read_status: string;
   priority: string;
+  has_verified_fields?: boolean;
   is_locked: boolean;
   locked_at?: string | null;
   created_at: string;
@@ -1386,6 +1387,7 @@ export type DocumentListRow = {
   processing_status: string;
   read_status: string;
   priority: string;
+  has_verified_fields: boolean;
   is_locked: boolean;
   locked_at?: string | null;
   updated_at: string;

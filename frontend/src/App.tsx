@@ -3036,6 +3036,18 @@ function MissingDoiPill() {
   return <span className="pill warn doi-gap-pill">No DOI</span>;
 }
 
+function documentDetailHasVerifiedFields(document: DocumentDetail) {
+  return Boolean(
+    document.has_verified_fields ||
+      document.summary_validated_at ||
+      document.doi_verified_at ||
+      document.apa_citation_verified_at ||
+      document.apa_in_text_citation_verified_at ||
+      document.bibliography_verified_at ||
+      document.publication?.verified_at,
+  );
+}
+
 function patchCachedDocumentSummaries(
   queryClient: QueryClient,
   patch: Partial<LibraryDocumentRow> & Pick<LibraryDocumentRow, "id">,
@@ -3067,6 +3079,7 @@ function documentSummaryPatchFromDetail(document: DocumentDetail): Partial<Libra
     processing_status: document.processing_status,
     read_status: document.read_status,
     priority: document.priority,
+    has_verified_fields: documentDetailHasVerifiedFields(document),
     is_locked: document.is_locked,
     locked_at: document.locked_at,
     updated_at: document.updated_at,
@@ -8865,6 +8878,13 @@ function LibraryView({
           {virtualDocuments.map((item, virtualIndex) => {
             const actualIndex = virtualStartIndex + virtualIndex;
             const figureCount = figureCountMarker(item);
+            const hasVerifiedFields = Boolean(item.has_verified_fields);
+            const titleIconLabel = [
+              hasVerifiedFields ? "Has verified fields" : "",
+              item.is_locked ? "Locked for editing" : "",
+            ]
+              .filter(Boolean)
+              .join(", ");
             return (
             <div
               key={item.id}
@@ -8903,6 +8923,12 @@ function LibraryView({
                 <span className="doc-row-title">
                   <span>{item.title}</span>
                   {item.publication_year ? <span className="doc-row-title-year">({item.publication_year})</span> : null}
+                  {hasVerifiedFields || item.is_locked ? (
+                    <span className="doc-row-title-icons" role="img" aria-label={titleIconLabel} data-tooltip={titleIconLabel}>
+                      {hasVerifiedFields ? <BadgeCheck size={14} aria-hidden="true" /> : null}
+                      {item.is_locked ? <Lock size={14} aria-hidden="true" /> : null}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="doc-row-byline">
                   <span className="doc-row-pages" aria-label={`Pages: ${pageCountMarker(item)}`}>

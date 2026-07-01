@@ -3927,6 +3927,23 @@ textarea {
   font-weight: 400;
 }
 
+.doc-row-title-icons {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.doc-row-title-icons svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
+}
+
 .library-density-compact .doc-row .doc-row-title {
   font-size: 15px;
 }

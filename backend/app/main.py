@@ -1235,8 +1235,17 @@ def document_summary_out(
             "duplicate_reasons": duplicate_reasons or [],
             "projects": projects or [],
             "no_doi": document_no_doi(document),
+            "has_verified_fields": document_has_verified_fields(document),
             "publication": publication,
         }
+    )
+
+
+def document_has_verified_fields(document: Document) -> bool:
+    return (
+        any(document_field_is_verified(document, field) for field in DOCUMENT_FIELD_VERIFICATION_CONFIG)
+        or document_summary_is_validated(document)
+        or document_publication_is_verified(document)
     )
 
 
@@ -1248,6 +1257,7 @@ def document_list_row_out(document: Document, projects: list[ProjectOut] | None 
             "duplicate_reasons": list(document.duplicate_reasons or []),
             "projects": projects or [],
             "no_doi": document_no_doi(document),
+            "has_verified_fields": document_has_verified_fields(document),
             "figure_count": figure_count,
             "publication": publication,
         }
@@ -1513,6 +1523,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "duplicate_document_ids": [],
             "projects": projects,
             "no_doi": document_no_doi(document),
+            "has_verified_fields": document_has_verified_fields(document),
             "summary_generated_at": document_summary_generated_at(document, db),
             "summary_validated_at": summary_validation["validated_at"] if summary_validation else None,
             "summary_validated_by": summary_validation["validated_by"] if summary_validation else None,

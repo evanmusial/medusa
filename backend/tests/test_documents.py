@@ -972,6 +972,46 @@ def test_document_list_rows_omits_heavy_text_columns(monkeypatch, tmp_path):
     assert "documents.apa_in_text_citation" not in row_select
 
 
+def test_document_list_rows_marks_documents_with_verified_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_document_rows
+    from app.models import Document, utc_now
+
+    Session = make_session()
+    with Session() as db:
+        verified = Document(
+            title="Verified DOI",
+            original_filename="verified-doi.pdf",
+            checksum_sha256="v" * 64,
+            doi="10.1000/verified",
+            processing_status="ready",
+            metadata_evidence={
+                "doi_verification": {
+                    "status": "verified",
+                    "verified_at": utc_now().isoformat(),
+                    "verified_by": "editor@example.com",
+                }
+            },
+        )
+        broad_status_only = Document(
+            title="Broad Citation Status",
+            original_filename="broad-status.pdf",
+            checksum_sha256="s" * 64,
+            citation_status="verified",
+            processing_status="ready",
+        )
+        db.add_all([verified, broad_status_only])
+        db.commit()
+
+        rows = list_document_rows(object(), db).items
+
+    row_by_title = {row.title: row for row in rows}
+    assert row_by_title["Verified DOI"].has_verified_fields is True
+    assert row_by_title["Broad Citation Status"].has_verified_fields is False
+
+
 def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
