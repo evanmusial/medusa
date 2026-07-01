@@ -115,7 +115,7 @@ button :where(span, strong, b, small, em),
 }
 
 .loading-panel {
-  width: min(420px, calc(100vw - 32px));
+  width: min(280px, calc(100vw - 32px));
   display: grid;
   justify-items: center;
   gap: 14px;
@@ -129,34 +129,31 @@ button :where(span, strong, b, small, em),
   object-fit: contain;
 }
 
-.loading-copy {
-  display: grid;
-  gap: 6px;
-}
-
-.loading-copy span {
+.loading-wordmark {
   color: var(--accent);
-  font-size: 12px;
-  font-weight: 750;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
   text-transform: uppercase;
 }
 
-.loading-copy h1 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 21px;
-  letter-spacing: 0;
+.loading-progress-group {
+  width: min(260px, 72vw);
+  display: grid;
+  gap: 8px;
+  justify-items: center;
 }
 
-.loading-copy p {
-  margin: 0;
+.loading-progress-label {
   color: var(--muted);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
 }
 
 .loading-activity {
-  width: min(260px, 72vw);
+  width: 100%;
   height: 4px;
   overflow: hidden;
   border-radius: 999px;

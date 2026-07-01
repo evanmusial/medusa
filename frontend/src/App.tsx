@@ -5869,49 +5869,17 @@ function HeaderStatusButton({
   );
 }
 
-function startupLoadingCopy(startupHealthPending: boolean) {
-  const params = new URLSearchParams(window.location.search);
-  if (params.has(RELEASE_RELOAD_TARGET_PARAM)) {
-    return {
-      eyebrow: "Medusa upgrade",
-      title: "Finishing upgrade",
-      detail: "Loading the updated research cockpit after the restart health checks pass.",
-    };
-  }
-  if (params.has(RELEASE_RELOAD_PARAM)) {
-    return {
-      eyebrow: "Medusa reload",
-      title: "Reloading Medusa",
-      detail: "Waiting for the app shell to finish coming online.",
-    };
-  }
-  if (startupHealthPending) {
-    return {
-      eyebrow: "Medusa restart",
-      title: "Waiting for Medusa",
-      detail: "The app is still restarting. Health checks are retrying automatically.",
-    };
-  }
-  return {
-    eyebrow: "Medusa",
-    title: "Loading Medusa",
-    detail: "Checking your session and preparing the research cockpit.",
-  };
-}
-
-function StartupLoadingScreen({ startupHealthPending }: { startupHealthPending: boolean }) {
-  const copy = startupLoadingCopy(startupHealthPending);
+function StartupLoadingScreen() {
   return (
     <div className="loading-screen">
       <section aria-live="polite" className="loading-panel">
         <MedusaEmblemImage className="loading-emblem" />
-        <div className="loading-copy">
-          <span>{copy.eyebrow}</span>
-          <h1>{copy.title}</h1>
-          <p>{copy.detail}</p>
-        </div>
-        <div className="loading-activity" aria-hidden="true">
-          <span />
+        <strong className="loading-wordmark">MEDUSA...</strong>
+        <div className="loading-progress-group">
+          <span className="loading-progress-label">Loading</span>
+          <div className="loading-activity" aria-label="Loading" role="progressbar">
+            <span />
+          </div>
         </div>
       </section>
     </div>
@@ -27658,7 +27626,7 @@ export default function App() {
 
   const startupHealthPending =
     Boolean(me.error && isTransientAppStartupError(me.error)) && me.failureCount < STARTUP_HEALTH_RETRY_LIMIT;
-  if (me.isLoading || startupHealthPending) return <StartupLoadingScreen startupHealthPending={startupHealthPending} />;
+  if (me.isLoading || startupHealthPending) return <StartupLoadingScreen />;
   if (me.error || !me.data) {
     return (
       <AppTooltipProvider>

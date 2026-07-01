@@ -46,7 +46,7 @@
       }
 
       main {
-        width: min(420px, calc(100vw - 32px));
+        width: min(280px, calc(100vw - 32px));
         display: grid;
         justify-items: center;
         gap: 14px;
@@ -60,35 +60,24 @@
         object-fit: contain;
       }
 
-      .copy {
-        display: grid;
-        gap: 6px;
-      }
-
-      .eyebrow {
+      .wordmark {
         color: var(--accent);
-        font-size: 12px;
-        font-weight: 750;
+        font-size: 16px;
+        font-weight: 800;
+        letter-spacing: 0;
+        line-height: 1;
         text-transform: uppercase;
       }
 
-      h1 {
-        margin: 0;
-        color: var(--ink);
-        font-size: 21px;
-        font-weight: 750;
-        letter-spacing: 0;
-      }
-
-      p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.45;
+      .progress-group {
+        width: min(260px, 72vw);
+        display: grid;
+        gap: 8px;
+        justify-items: center;
       }
 
       .activity {
-        width: min(260px, 72vw);
+        width: 100%;
         height: 4px;
         overflow: hidden;
         border-radius: 999px;
@@ -102,6 +91,13 @@
         border-radius: inherit;
         background: var(--accent);
         animation: progress 1.1s ease-in-out infinite;
+      }
+
+      .progress-label {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 650;
+        line-height: 1;
       }
 
       @keyframes progress {
@@ -142,12 +138,11 @@
         <source srcset="/medusa-emblem-night.png" media="(prefers-color-scheme: dark)">
         <img class="emblem" src="/medusa-emblem.png" alt="" aria-hidden="true">
       </picture>
-      <div class="copy">
-        <div class="eyebrow">Medusa maintenance</div>
-        <h1>Waiting for Medusa</h1>
-        <p>The app is updating or coming back online. This page will keep checking and reload automatically.</p>
+      <strong class="wordmark">MEDUSA...</strong>
+      <div class="progress-group">
+        <span class="progress-label">Loading</span>
+        <div class="activity" aria-label="Loading" role="progressbar"><span></span></div>
       </div>
-      <div class="activity" aria-hidden="true"><span></span></div>
     </main>
   </body>
 </html>
