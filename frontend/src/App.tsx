@@ -8953,8 +8953,12 @@ function LibraryView({
                 {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
                 {hasVerifiedFields || item.is_locked ? (
                   <span className="doc-row-title-icons" role="img" aria-label={titleIconLabel} data-tooltip={titleIconLabel}>
-                    {hasVerifiedFields ? <BadgeCheck size={14} aria-hidden="true" /> : null}
-                    {item.is_locked ? <Lock size={14} aria-hidden="true" /> : null}
+                    <span className={`doc-row-title-icon-slot${hasVerifiedFields ? "" : " empty"}`} aria-hidden="true">
+                      {hasVerifiedFields ? <BadgeCheck size={14} /> : null}
+                    </span>
+                    <span className={`doc-row-title-icon-slot${item.is_locked ? "" : " empty"}`} aria-hidden="true">
+                      {item.is_locked ? <Lock size={14} /> : null}
+                    </span>
                   </span>
                 ) : null}
               </div>

@@ -3930,7 +3930,8 @@ textarea {
 .doc-row-title-icons {
   margin-left: auto;
   flex: 0 0 auto;
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: 14px 14px;
   align-items: center;
   justify-content: flex-end;
   gap: 5px;
@@ -3941,6 +3942,18 @@ textarea {
 .doc-row .doc-row-title-icons,
 .doc-row .doc-row-title-icons svg {
   color: var(--accent);
+}
+
+.doc-row-title-icon-slot {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-row-title-icon-slot.empty {
+  visibility: hidden;
 }
 
 .doc-row-title-icons svg {
