@@ -27178,11 +27178,17 @@ export default function App() {
       return next;
     });
   }, []);
-  const libraryRows = libraryDocumentList.data?.items ?? EMPTY_LIBRARY_ROWS;
-  const libraryTotalDocumentCount = libraryDocumentList.data?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
-  const libraryTotalPageCount = libraryDocumentList.data?.total_page_count ?? 0;
-  const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? libraryDocumentList.data?.offset ?? libraryOffset;
-  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryDocumentList.data?.limit ?? libraryPageSize);
+  const libraryPageData = libraryDocumentList.data;
+  const libraryPlaceholderPageMismatch = Boolean(
+    libraryDocumentList.isPlaceholderData &&
+      libraryPageData &&
+      (libraryPageData.offset !== libraryOffset || libraryPageData.limit !== libraryPageSize),
+  );
+  const libraryRows = libraryPlaceholderPageMismatch ? EMPTY_LIBRARY_ROWS : libraryPageData?.items ?? EMPTY_LIBRARY_ROWS;
+  const libraryTotalDocumentCount = libraryPageData?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
+  const libraryTotalPageCount = libraryPageData?.total_page_count ?? 0;
+  const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? (libraryPlaceholderPageMismatch ? libraryOffset : libraryPageData?.offset ?? libraryOffset);
+  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryPlaceholderPageMismatch ? libraryPageSize : libraryPageData?.limit ?? libraryPageSize);
   const libraryPageTurnPending = Boolean(libraryPageTurnIntent);
   const libraryHasMoreDocuments = libraryTotalDocumentCount > libraryDisplayOffset + libraryDisplayLimit;
   useEffect(() => {
