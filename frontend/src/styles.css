@@ -2642,6 +2642,7 @@ textarea {
 
 .tag-cloud-chip {
   --tag-cloud-chip-font-size: 13px;
+  --tag-cloud-chip-count-font-size: 11px;
   min-height: 34px;
   max-width: 100%;
   display: inline-flex;
@@ -2665,14 +2666,14 @@ textarea {
 
 .tag-cloud-chip-count {
   align-self: stretch;
-  width: 3.4em;
+  width: 44px;
   display: inline-grid;
   place-items: center;
-  flex: 0 0 3.4em;
+  flex: 0 0 44px;
   border-radius: 999px;
   background: #4b5563;
   color: #ffffff;
-  font-size: var(--tag-cloud-chip-font-size) !important;
+  font-size: var(--tag-cloud-chip-count-font-size) !important;
   font-weight: 650 !important;
   font-variant-numeric: tabular-nums;
   line-height: inherit;
