@@ -8793,8 +8793,8 @@ function LibraryView({
                 onClick={() => setFilterValue("tag_id", filters.tag_id === tag.id ? "" : tag.id)}
                 type="button"
               >
-                <span>{tag.name}</span>
-                <small>{formatWholeNumber(tag.count)}</small>
+                <span className="tag-cloud-chip-count">{formatWholeNumber(tag.count)}</span>
+                <span className="tag-cloud-chip-label">{tag.name}</span>
               </button>
             ))
           ) : (

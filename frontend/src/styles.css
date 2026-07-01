@@ -2637,17 +2637,20 @@ textarea {
   border: 0;
   background: color-mix(in srgb, var(--panel-2) 84%, transparent);
   border-radius: 999px;
-  padding: 5px 9px;
-  font-size: 13px;
   color: var(--muted);
 }
 
 .tag-cloud-chip {
-  min-height: 30px;
+  min-height: 34px;
+  max-width: 100%;
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 550;
+  align-items: stretch;
+  gap: 8px;
+  padding: 0 10px 0 0;
+  font-size: 15px;
+  overflow: hidden;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .tag-cloud-chip:hover,
@@ -2658,15 +2661,29 @@ textarea {
   outline: 0;
 }
 
-.tag-cloud-chip small {
-  color: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  opacity: 0.78;
+.tag-cloud-chip-count {
+  align-self: stretch;
+  width: 3.4em;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 3.4em;
+  border-radius: 999px;
+  background: #4b5563;
+  color: #ffffff;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag-cloud-chip-label {
+  min-width: 0;
+  align-self: center;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .tag-cloud-empty {
+  padding: 5px 9px;
   color: var(--muted);
+  font-size: 13px;
 }
 
 .domain-chip-list .domain-chip {
