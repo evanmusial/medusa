@@ -5935,10 +5935,10 @@ function StartupLoadingScreen() {
     <div className="loading-screen">
       <section aria-live="polite" className="loading-panel">
         <MedusaEmblemImage className="loading-emblem" />
-        <strong className="loading-wordmark">MEDUSA...</strong>
+        <strong className="loading-wordmark">MEDUSA</strong>
         <div className="loading-progress-group">
-          <span className="loading-progress-label">Loading</span>
-          <div className="loading-activity" aria-label="Loading" role="progressbar">
+          <span className="loading-progress-label">Loading...</span>
+          <div className="loading-activity" aria-label="Loading..." role="progressbar">
             <span />
           </div>
         </div>
