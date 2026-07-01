@@ -470,12 +470,12 @@ textarea {
 }
 
 .document-lock-button.active {
-  --async-feedback-base-bg: var(--amber-soft);
-  --async-feedback-base-border: color-mix(in srgb, var(--amber) 42%, var(--button-line));
-  --async-feedback-base-color: var(--amber);
-  background: var(--amber-soft);
-  border-color: color-mix(in srgb, var(--amber) 42%, var(--button-line));
-  color: var(--amber);
+  --async-feedback-base-bg: color-mix(in srgb, var(--blue) 8%, var(--panel));
+  --async-feedback-base-border: color-mix(in srgb, var(--blue) 32%, var(--button-line));
+  --async-feedback-base-color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 8%, var(--panel));
+  border-color: color-mix(in srgb, var(--blue) 32%, var(--button-line));
+  color: var(--blue);
 }
 
 .async-feedback-success,

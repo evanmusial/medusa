@@ -77,6 +77,7 @@ import {
   List,
   ListOrdered,
   Lock,
+  LockOpen,
   LogOut,
   MessageSquare,
   Merge,
@@ -102,7 +103,6 @@ import {
   Timer,
   Trash2,
   Underline,
-  Unlock,
   Upload,
   UploadCloud,
   Users,
@@ -10479,7 +10479,7 @@ function DocumentPanelContent({
       void queryClient.invalidateQueries({ queryKey: ["document", document.id] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
-    onError: (error) => setSummaryEditError(actionFailureMessage("Could not validate summary", error)),
+    onError: (error) => setSummaryEditError(actionFailureMessage("Could not verify summary", error)),
   });
   const updateBibliography = useMutation({
     mutationFn: ({ value, confirmVerified }: { value: string; confirmVerified: boolean }) =>
@@ -12248,9 +12248,9 @@ function DocumentPanelContent({
       const ok = await dialogs.confirm({
         cancelLabel: "Cancel",
         confirmLabel: "Edit Summary",
-        eyebrow: "Validated summary",
-        message: "This summary has been validated as an exemplar. Saving changes will remove validation until you validate it again.",
-        title: "Edit validated summary?",
+        eyebrow: "Verified summary",
+        message: "This summary has been verified as an exemplar. Saving changes will remove verification until you verify it again.",
+        title: "Edit verified summary?",
         tone: "warning",
       });
       if (!ok) return;
@@ -12284,10 +12284,10 @@ function DocumentPanelContent({
       const ok = await dialogs.confirm({
         cancelLabel: "Cancel",
         confirmLabel: "Refresh Summary",
-        eyebrow: "Validated summary",
+        eyebrow: "Verified summary",
         message:
-          "This summary has been validated as an exemplar. Refreshing it will remove validation and queue a replacement from the selected Summary model.",
-        title: "Refresh validated summary?",
+          "This summary has been verified as an exemplar. Refreshing it will remove verification and queue a replacement from the selected Summary model.",
+        title: "Refresh verified summary?",
         tone: "warning",
       });
       if (!ok) return;
@@ -12710,7 +12710,7 @@ function DocumentPanelContent({
   const summaryValidatedLabel = relativeTimeLabel(document.summary_validated_at, relativeTimeNow);
   const summaryValidatedBy = document.summary_validated_by || "Medusa user";
   const summaryValidatedTooltip = document.summary_validated_at
-    ? `Validated by ${summaryValidatedBy}${summaryValidatedLabel ? ` ${summaryValidatedLabel}` : ""}.`
+    ? `Verified by ${summaryValidatedBy}${summaryValidatedLabel ? ` ${summaryValidatedLabel}` : ""}.`
     : "";
   const summaryParagraphs = markdownParagraphCount(document.rich_summary);
   const summaryShowsRepeatedGeneratedTime = Boolean(summaryGeneratedLabel && summaryParagraphs > 4 && !editingSummary);
@@ -13381,9 +13381,9 @@ function DocumentPanelContent({
       <div className="detail-section-title-row summary-title-row">
         <h3>Summary</h3>
         {summaryIsValidated ? (
-          <span className="bibliography-verified-badge" data-tooltip={summaryValidatedTooltip || "This summary was manually validated."}>
+          <span className="bibliography-verified-badge" data-tooltip={summaryValidatedTooltip || "This summary was manually verified."}>
             <BadgeCheck size={15} />
-            Validated
+            Verified
           </span>
         ) : (
           <button
@@ -13392,18 +13392,18 @@ function DocumentPanelContent({
               documentLocked
                 ? documentLockedReason
                 : validateSummary.isPending
-                  ? "summary validation is already saving."
+                  ? "summary verification is already saving."
                   : !document.rich_summary?.trim()
-                    ? "this document does not have a summary to validate."
+                    ? "this document does not have a summary to verify."
                     : undefined
             }
-            data-tooltip="Mark this document's summary as validated and preserve it as the exemplar summary."
+            data-tooltip="Mark this document's summary as verified and preserve it as the exemplar summary."
             disabled={documentLocked || validateSummary.isPending || !document.rich_summary?.trim()}
             onClick={markSummaryValidated}
             type="button"
           >
             <BadgeCheck size={14} />
-            Validate
+            Verify
           </button>
         )}
       </div>
@@ -14758,7 +14758,7 @@ function DocumentPanelContent({
       onClick={() => updateDocumentLock.mutate(!documentLocked)}
       type="button"
     >
-      {documentLocked ? <Lock className={updateDocumentLock.isPending ? "spin" : ""} size={15} /> : <Unlock size={15} />}
+      {documentLocked ? <Lock className={updateDocumentLock.isPending ? "spin" : ""} size={15} /> : <LockOpen size={15} />}
     </button>
   );
   const trashDocumentButton = onTrashDocument ? (
