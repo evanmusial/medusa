@@ -319,6 +319,102 @@ def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
     assert cache.hydrated_at == result["hydrated_at"]
 
 
+def test_hydrate_cache_default_includes_saved_library_page_size(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, SavedSearch
+    from app.services import cache as cache_service
+    from app.services.preferences import update_app_preferences
+    from app import main
+
+    class RecordingCache:
+        def __init__(self):
+            self.data = {}
+            self.hydrated_at = None
+
+        def get_json(self, key, family):
+            return ("hit", self.data[key]) if key in self.data else ("miss", None)
+
+        def set_json(self, key, family, payload, ttl_seconds, max_payload_bytes):
+            del family, ttl_seconds, max_payload_bytes
+            self.data[key] = payload
+            return "write"
+
+        def remember_refresh(self, refreshed_at=None):
+            return None
+
+        def last_refresh_at(self):
+            return None
+
+        def remember_hydration(self, hydrated_at=None):
+            self.hydrated_at = hydrated_at
+
+        def last_hydration_at(self):
+            return self.hydrated_at
+
+        def status(self):
+            return {
+                "backend": "recording",
+                "enabled": True,
+                "reachable": True,
+                "mode": "online",
+                "message": "Recording cache online.",
+                "key_count": len(self.data),
+            }
+
+    cache = RecordingCache()
+    recorded_document_list_keys = []
+    original_warm_cache_payload_result = main.warm_cache_payload_result
+
+    def recording_warm_cache_payload_result(db, *, family, revision_families, key_parts, loader):
+        if family == "documents:list":
+            recorded_document_list_keys.append(dict(key_parts))
+        return original_warm_cache_payload_result(
+            db,
+            family=family,
+            revision_families=revision_families,
+            key_parts=key_parts,
+            loader=loader,
+        )
+
+    monkeypatch.setattr(cache_service, "_cache_backend", cache)
+    monkeypatch.setattr(main, "warm_cache_payload_result", recording_warm_cache_payload_result)
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(
+                    title="Alpha",
+                    original_filename="alpha.pdf",
+                    checksum_sha256="f" * 64,
+                    processing_status="ready",
+                    page_count=3,
+                ),
+                Document(
+                    title="Beta",
+                    original_filename="beta.pdf",
+                    checksum_sha256="0" * 64,
+                    processing_status="ready",
+                    page_count=5,
+                ),
+                SavedSearch(name="Publication", query=None, filters={"publication_id": "publication-1"}),
+            ]
+        )
+        update_app_preferences(db, library_page_size=75)
+        db.commit()
+
+        result = main.hydrate_cache_payloads(db, include_document_details=False)
+
+    assert result["status"] == "complete"
+    assert result["list_page_keys"] == 2
+    assert result["saved_search_keys"] == 2
+    assert {key["limit"] for key in recorded_document_list_keys if not key["publication_id"]} == {50, 75}
+    assert {key["limit"] for key in recorded_document_list_keys if key["publication_id"] == "publication-1"} == {50, 75}
+    assert all("publication_id" in key for key in recorded_document_list_keys)
+
+
 def test_hydrate_cache_default_document_limit_means_all(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

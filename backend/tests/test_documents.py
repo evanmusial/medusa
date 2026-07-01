@@ -1012,6 +1012,45 @@ def test_document_list_rows_marks_documents_with_verified_fields(monkeypatch, tm
     assert row_by_title["Broad Citation Status"].has_verified_fields is False
 
 
+def test_document_list_rows_return_typed_publication(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import list_document_rows
+    from app.models import Document, DocumentPublication, Publication
+    from app.schemas import DocumentPublicationOut
+
+    Session = make_session()
+    with Session() as db:
+        document = Document(
+            title="Published row",
+            original_filename="published-row.pdf",
+            checksum_sha256="p" * 64,
+            processing_status="ready",
+        )
+        publication = Publication(
+            title="Journal of Quiet Systems",
+            normalized_title="journal of quiet systems",
+            publication_type="journal-article",
+        )
+        db.add_all([document, publication])
+        db.flush()
+        db.add(
+            DocumentPublication(
+                document_id=document.id,
+                publication_id=publication.id,
+                role="primary",
+                title_snapshot=publication.title,
+            )
+        )
+        db.commit()
+
+        row = list_document_rows(object(), db, limit=1).items[0]
+
+    assert isinstance(row.publication, DocumentPublicationOut)
+    assert row.publication.title == "Journal of Quiet Systems"
+
+
 def test_cleanup_document_titles_normalizes_spacing_and_records_history(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

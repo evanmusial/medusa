@@ -123,6 +123,7 @@ from app.schemas import (
     DocumentPatch,
     DocumentPageOut,
     DocumentPagePatch,
+    DocumentPublicationOut,
     DocumentRecommendationDownloadCreate,
     DocumentRecommendationDownloadOut,
     DocumentRecommendationOut,
@@ -345,6 +346,7 @@ from app.services.preferences import (
     get_analysis_models,
     get_app_preferences,
     get_download_naming_template,
+    get_library_page_size,
     get_valkey_maxmemory,
     import_processing_snapshot,
     import_processing_cloud_page_cap,
@@ -1222,13 +1224,52 @@ def apply_document_health_filter(query, health_status: str | None):
     return query
 
 
+def document_publication_out(link: DocumentPublication | None) -> DocumentPublicationOut | None:
+    publication = publication_to_dict(link)
+    return DocumentPublicationOut.model_validate(publication) if publication else None
+
+
+def document_list_cache_key_parts(
+    *,
+    q: str | None = None,
+    domain_id: str | None = None,
+    tag_id: str | None = None,
+    read_status: str | None = None,
+    priority: str | None = None,
+    citation_status: str | None = None,
+    publication_id: str | None = None,
+    duplicate_status: str | None = None,
+    health_status: str | None = None,
+    all_results: bool = False,
+    focus_document_id: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    sort: str = "title",
+) -> dict[str, Any]:
+    return {
+        "q": q or "",
+        "domain_id": domain_id or "",
+        "tag_id": tag_id or "",
+        "read_status": read_status or "",
+        "priority": priority or "",
+        "citation_status": citation_status or "",
+        "publication_id": publication_id or "",
+        "duplicate_status": duplicate_status or "",
+        "health_status": health_status or "",
+        "all": bool(all_results),
+        "focus_document_id": focus_document_id or "",
+        "offset": int(offset),
+        "limit": int(limit),
+        "sort": sort,
+    }
+
+
 def document_summary_out(
     document: Document,
     duplicate_count: int = 0,
     projects: list[ProjectOut] | None = None,
     duplicate_reasons: list[str] | None = None,
 ) -> DocumentSummary:
-    publication = publication_to_dict(primary_document_publication(document))
     return DocumentSummary.model_validate(document).model_copy(
         update={
             "duplicate_count": duplicate_count,
@@ -1236,7 +1277,7 @@ def document_summary_out(
             "projects": projects or [],
             "no_doi": document_no_doi(document),
             "has_verified_fields": document_has_verified_fields(document),
-            "publication": publication,
+            "publication": document_publication_out(primary_document_publication(document)),
         }
     )
 
@@ -1250,7 +1291,6 @@ def document_has_verified_fields(document: Document) -> bool:
 
 
 def document_list_row_out(document: Document, projects: list[ProjectOut] | None = None, figure_count: int = 0) -> DocumentListRow:
-    publication = publication_to_dict(primary_document_publication(document))
     return DocumentListRow.model_validate(document).model_copy(
         update={
             "duplicate_count": int(document.duplicate_count or 0),
@@ -1259,7 +1299,7 @@ def document_list_row_out(document: Document, projects: list[ProjectOut] | None 
             "no_doi": document_no_doi(document),
             "has_verified_fields": document_has_verified_fields(document),
             "figure_count": figure_count,
-            "publication": publication,
+            "publication": document_publication_out(primary_document_publication(document)),
         }
     )
 
@@ -1507,7 +1547,6 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     apa_citation_verification = document_field_verification(document, "apa_citation")
     apa_in_text_citation_verification = document_field_verification(document, "apa_in_text_citation")
     bibliography_verification = document_bibliography_verification(document)
-    publication = publication_to_dict(primary_document_publication(document))
     summary_validation = document_summary_validation(document)
     reader_text_by_page_number = document_reader_text_by_page_number(document)
     pages = [
@@ -1540,7 +1579,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             ),
             "bibliography_verified_at": bibliography_verification["verified_at"] if bibliography_verification else None,
             "bibliography_verified_by": bibliography_verification["verified_by"] if bibliography_verification else None,
-            "publication": publication,
+            "publication": document_publication_out(primary_document_publication(document)),
             "pages": pages,
             "versions": [document_version_out(version) for version in document.versions],
         }
@@ -3005,6 +3044,7 @@ def refresh_cache(
     get_cache_backend().remember_refresh(refreshed_at)
 
     warmed_keys = 0
+    library_page_size = get_library_page_size(db)
     warmers = [
         {
             "family": "dashboard",
@@ -3039,22 +3079,8 @@ def refresh_cache(
         {
             "family": "documents:list",
             "revision_families": {"library", "organization"},
-            "key_parts": {
-                "q": "",
-                "domain_id": "",
-                "tag_id": "",
-                "read_status": "",
-                "priority": "",
-                "citation_status": "",
-                "duplicate_status": "",
-                "health_status": "",
-                "all": False,
-                "focus_document_id": "",
-                "offset": 0,
-                "limit": 50,
-                "sort": "title",
-            },
-            "loader": lambda: document_list_rows_out(db, offset=0, limit=50, sort="title"),
+            "key_parts": document_list_cache_key_parts(limit=library_page_size),
+            "loader": lambda: document_list_rows_out(db, offset=0, limit=library_page_size, sort="title"),
         },
     ]
     for warmer in warmers:
@@ -3119,6 +3145,10 @@ def hydrate_cache_payloads(
     }
     document_limit = _cache_hydrate_document_limit(max_documents)
     resolved_page_size = _cache_hydrate_page_size(page_size)
+    library_page_sizes = [resolved_page_size]
+    preferred_library_page_size = get_library_page_size(db)
+    if page_size is None and preferred_library_page_size not in library_page_sizes:
+        library_page_sizes.append(preferred_library_page_size)
 
     if not CACHE_HYDRATION_LOCK.acquire(blocking=False):
         after = cache_status_payload(db, request_metrics=metrics)
@@ -3195,58 +3225,60 @@ def hydrate_cache_payloads(
             filters: dict[str, Any] | None = None,
             saved_search: bool = False,
         ) -> None:
-            offset = 0
-            while True:
-                domain_id = filter_value(filters, "domain_id")
-                tag_id = filter_value(filters, "tag_id")
-                read_status = filter_value(filters, "read_status")
-                priority = filter_value(filters, "priority")
-                citation_status = filter_value(filters, "citation_status")
-                duplicate_status = filter_value(filters, "duplicate_status")
-                health_status = filter_value(filters, "health_status")
-                key_parts = {
-                    "q": q or "",
-                    "domain_id": domain_id,
-                    "tag_id": tag_id,
-                    "read_status": read_status,
-                    "priority": priority,
-                    "citation_status": citation_status,
-                    "duplicate_status": duplicate_status,
-                    "health_status": health_status,
-                    "all": False,
-                    "focus_document_id": "",
-                    "offset": offset,
-                    "limit": resolved_page_size,
-                    "sort": "title",
-                }
-
-                def load_page(offset: int = offset) -> DocumentListOut:
-                    return document_list_rows_out(
-                        db,
+            for list_page_size in library_page_sizes:
+                offset = 0
+                while True:
+                    domain_id = filter_value(filters, "domain_id")
+                    tag_id = filter_value(filters, "tag_id")
+                    read_status = filter_value(filters, "read_status")
+                    priority = filter_value(filters, "priority")
+                    citation_status = filter_value(filters, "citation_status")
+                    publication_id = filter_value(filters, "publication_id")
+                    duplicate_status = filter_value(filters, "duplicate_status")
+                    health_status = filter_value(filters, "health_status")
+                    key_parts = document_list_cache_key_parts(
                         q=q,
                         domain_id=domain_id,
                         tag_id=tag_id,
                         read_status=read_status,
                         priority=priority,
                         citation_status=citation_status,
+                        publication_id=publication_id,
                         duplicate_status=duplicate_status,
                         health_status=health_status,
-                        all_results=False,
                         offset=offset,
-                        limit=resolved_page_size,
+                        limit=list_page_size,
                         sort="title",
                     )
 
-                result = hydrate_payload(
-                    family="documents:list",
-                    revision_families={"library", "organization"},
-                    key_parts=key_parts,
-                    loader=load_page,
-                    bucket="saved_search_keys" if saved_search else "list_page_keys",
-                )
-                if not result or not getattr(result, "has_more", False):
-                    break
-                offset += resolved_page_size
+                    def load_page(offset: int = offset, list_page_size: int = list_page_size) -> DocumentListOut:
+                        return document_list_rows_out(
+                            db,
+                            q=q,
+                            domain_id=domain_id,
+                            tag_id=tag_id,
+                            read_status=read_status,
+                            priority=priority,
+                            citation_status=citation_status,
+                            publication_id=publication_id,
+                            duplicate_status=duplicate_status,
+                            health_status=health_status,
+                            all_results=False,
+                            offset=offset,
+                            limit=list_page_size,
+                            sort="title",
+                        )
+
+                    result = hydrate_payload(
+                        family="documents:list",
+                        revision_families={"library", "organization"},
+                        key_parts=key_parts,
+                        loader=load_page,
+                        bucket="saved_search_keys" if saved_search else "list_page_keys",
+                    )
+                    if not result or not getattr(result, "has_more", False):
+                        break
+                    offset += list_page_size
 
         for warmer in [
             {
@@ -5037,22 +5069,22 @@ def list_document_rows(
     limit: Annotated[int, Query(ge=1)] = 50,
     sort: Annotated[str, Query(pattern="^(title|date|page_count)$")] = "title",
 ) -> DocumentListOut:
-    key_parts = {
-        "q": q or "",
-        "domain_id": domain_id or "",
-        "tag_id": tag_id or "",
-        "read_status": read_status or "",
-        "priority": priority or "",
-        "citation_status": citation_status or "",
-        "publication_id": publication_id or "",
-        "duplicate_status": duplicate_status or "",
-        "health_status": health_status or "",
-        "all": bool(all_results),
-        "focus_document_id": focus_document_id or "",
-        "offset": int(offset),
-        "limit": int(limit),
-        "sort": sort,
-    }
+    key_parts = document_list_cache_key_parts(
+        q=q,
+        domain_id=domain_id,
+        tag_id=tag_id,
+        read_status=read_status,
+        priority=priority,
+        citation_status=citation_status,
+        publication_id=publication_id,
+        duplicate_status=duplicate_status,
+        health_status=health_status,
+        all_results=all_results,
+        focus_document_id=focus_document_id,
+        offset=offset,
+        limit=limit,
+        sort=sort,
+    )
     return cache_or_load(
         db,
         response,
