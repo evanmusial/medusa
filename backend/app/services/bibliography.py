@@ -941,9 +941,29 @@ def _page_text_result_is_more_complete(plain: dict[str, Any], formatted: dict[st
     )
 
 
-def _with_pdf_span_fallback_evidence(plain: dict[str, Any], formatted: dict[str, Any]) -> dict[str, Any]:
+def _page_text_result_is_preferable_without_pdf_formatting(plain: dict[str, Any], formatted: dict[str, Any]) -> bool:
+    plain_text = str(plain.get("bibliography") or "").strip()
+    formatted_text = str(formatted.get("bibliography") or "").strip()
+    if not plain_text or not formatted_text:
+        return False
+    formatted_evidence = formatted.get("evidence") if isinstance(formatted.get("evidence"), dict) else {}
+    if _positive_int(formatted_evidence.get("italic_marker_count")):
+        return False
+    plain_entries = _result_entry_count(plain)
+    formatted_entries = _result_entry_count(formatted)
+    if plain_entries < formatted_entries:
+        return False
+    return len(plain_text) >= int(len(formatted_text) * 0.8)
+
+
+def _with_pdf_span_fallback_evidence(
+    plain: dict[str, Any],
+    formatted: dict[str, Any],
+    *,
+    reason: str = "page_text_more_complete_than_pdf_span_layout",
+) -> dict[str, Any]:
     evidence = dict(plain.get("evidence") or {})
-    evidence["fallback_reason"] = "page_text_more_complete_than_pdf_span_layout"
+    evidence["fallback_reason"] = reason
     evidence["fallback_from_pdf_span_layout"] = formatted.get("evidence") or {}
     return {"bibliography": plain.get("bibliography"), "evidence": evidence}
 
@@ -1231,6 +1251,12 @@ def extract_document_bibliography(
     if formatted and formatted.get("bibliography"):
         if plain.get("bibliography") and _page_text_result_is_more_complete(plain, formatted):
             return _with_pdf_span_fallback_evidence(plain, formatted)
+        if plain.get("bibliography") and _page_text_result_is_preferable_without_pdf_formatting(plain, formatted):
+            return _with_pdf_span_fallback_evidence(
+                plain,
+                formatted,
+                reason="page_text_equivalent_and_pdf_span_has_no_formatting",
+            )
         return formatted
     if plain.get("bibliography") or not visual_ocr or not pdf_path or not pdf_path.exists():
         return plain

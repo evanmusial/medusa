@@ -205,6 +205,51 @@ def test_extract_document_bibliography_prefers_pdf_span_markdown(monkeypatch, tm
     assert result["evidence"]["formatting"] == "markdown_italics_from_pdf_spans"
 
 
+def test_extract_document_bibliography_prefers_page_text_when_pdf_span_has_no_formatting(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Unformatted Span References Paper",
+        original_filename="unformatted-span-references.pdf",
+        checksum_sha256="f" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=3,
+            normalized_text=(
+                "References\n"
+                "[1] Alpha Author, “First source,” Example Conference, 2017.\n"
+                "[2] Beta Author, “Second source,” Example Journal, 2018.\n"
+                "[3] Gamma Author, “Third source,” Example Symposium, 2019."
+            ),
+        )
+    )
+    pdf_path = tmp_path / "references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (3, "References"),
+            (3, "Alpha Author, “First source,” Example Conference, 2017."),
+            (3, "Beta Author, “Second source,” Example Journal, 2018. Gamma Author, “Third source,” Example Symposium, 2019."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, Path(pdf_path))
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["source"] == "page_text"
+    assert result["evidence"]["fallback_reason"] == "page_text_equivalent_and_pdf_span_has_no_formatting"
+    assert result["evidence"]["fallback_from_pdf_span_layout"]["italic_marker_count"] == 0
+    assert len(entries) == 3
+    assert entries[1].startswith("Beta Author")
+    assert entries[2].startswith("Gamma Author")
+
+
 def test_extract_document_bibliography_uses_visual_ocr_tail_pages(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service
