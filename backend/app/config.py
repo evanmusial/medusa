@@ -13,8 +13,9 @@ class Settings(BaseSettings):
     app_name: str = "Medusa"
     environment: str = "development"
     bind_host: str = "0.0.0.0"
-    public_port: int = 3737
+    public_port: int = Field(default=3737, validation_alias="MEDUSA_PUBLIC_PORT")
     public_host: str = Field(default="medusa.home.musial.io", validation_alias="MEDUSA_PUBLIC_HOST")
+    haproxy_port: int = Field(default=3737, validation_alias="MEDUSA_HAPROXY_PORT")
     haproxy_stats_url: str = Field(
         default="http://haproxy:8404/stats;csv",
         validation_alias="MEDUSA_HAPROXY_STATS_URL",

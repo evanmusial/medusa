@@ -190,7 +190,12 @@ def check_haproxy_ports(repo: Path, expected_host_ips: list[str], port: int) -> 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check a dedicated server before starting Medusa.")
     parser.add_argument("--repo", type=Path, default=repo_default(), help="Medusa repository path.")
-    parser.add_argument("--port", type=int, default=3737, help="Host port expected for HAProxy.")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Host port expected for HAProxy. Defaults to MEDUSA_HAPROXY_PORT or 3737.",
+    )
     args = parser.parse_args()
     repo = args.repo.resolve()
     if not (repo / "docker-compose.yml").exists():
@@ -199,6 +204,8 @@ def main() -> int:
 
     env = read_env(repo / ".env")
     public_host = env_value(env, "MEDUSA_PUBLIC_HOST", "") or ""
+    public_port = env_value(env, "MEDUSA_PUBLIC_PORT", "3737") or "3737"
+    haproxy_port = args.port or int(env_value(env, "MEDUSA_HAPROXY_PORT", "3737") or "3737")
     allowed_hosts = env_value(env, "MEDUSA_ALLOWED_HOSTS", "") or ""
     bind_ip = env_value(env, "MEDUSA_BIND_IP", "0.0.0.0") or "0.0.0.0"
     bind_ipv6 = env_value(env, "MEDUSA_BIND_IPV6", "::1") or "::1"
@@ -243,9 +250,11 @@ def main() -> int:
             status("CPU topology", "INFO", "run `lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE` to choose sibling-aware CPU IDs")
 
     if public_host:
-        status("MEDUSA_PUBLIC_HOST", "OK", public_host)
+        public_suffix = "" if public_port == "443" else f":{public_port}"
+        status("MEDUSA_PUBLIC_HOST", "OK", f"https://{public_host}{public_suffix}")
     else:
         status("MEDUSA_PUBLIC_HOST", "WARN", "not set; HAProxy will fall back to medusa.home.musial.io")
+    status("MEDUSA_HAPROXY_PORT", "OK", str(haproxy_port))
     if allowed_hosts:
         detail = "open to all Host headers" if allowed_hosts.strip().lower() in {"*", "all", "true"} else allowed_hosts
         status("MEDUSA_ALLOWED_HOSTS", "OK", detail)
@@ -262,9 +271,9 @@ def main() -> int:
     else:
         failures += 1
         status("MEDUSA_BIND_IPV6", "FAIL", f"{bind_ipv6} was not found on this host")
-    if not check_port(bind_ip, args.port):
+    if not check_port(bind_ip, haproxy_port):
         failures += 1
-    if not check_port(bind_ipv6, args.port, label=f"Port {args.port} IPv6 bind"):
+    if not check_port(bind_ipv6, haproxy_port, label=f"Port {haproxy_port} IPv6 bind"):
         failures += 1
 
     print("")
@@ -289,7 +298,7 @@ def main() -> int:
     config = run_command(["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.server.yml", "config"], cwd=repo)
     if config.returncode == 0:
         status("Server Compose config", "OK", "base plus server override renders")
-        if not check_haproxy_ports(repo, [bind_ip, bind_ipv6], args.port):
+        if not check_haproxy_ports(repo, [bind_ip, bind_ipv6], haproxy_port):
             failures += 1
     else:
         failures += 1

@@ -137,8 +137,10 @@ services:
         required: false
     environment:
       MEDUSA_PUBLIC_HOST: ${MEDUSA_PUBLIC_HOST:-medusa.home.musial.io}
+      MEDUSA_PUBLIC_PORT: ${MEDUSA_PUBLIC_PORT:-3737}
+      MEDUSA_HAPROXY_PORT: ${MEDUSA_HAPROXY_PORT:-3737}
     ports:
-      - "${MEDUSA_BIND_IP:-0.0.0.0}:3737:3737"
+      - "${MEDUSA_BIND_IP:-0.0.0.0}:${MEDUSA_HAPROXY_PORT:-3737}:${MEDUSA_HAPROXY_PORT:-3737}"
     volumes:
       - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - ./deploy/haproxy/restarting.html:/usr/local/etc/haproxy/restarting.html:ro
@@ -152,7 +154,25 @@ services:
       - -ec
       - |
         export MEDUSA_PUBLIC_HOST="$${MEDUSA_PUBLIC_HOST:-medusa.home.musial.io}"
-        awk -v host="$${MEDUSA_PUBLIC_HOST}" '{ gsub(/__MEDUSA_PUBLIC_HOST__/, host); print }' /usr/local/etc/haproxy/haproxy.cfg > /tmp/haproxy.cfg
+        export MEDUSA_PUBLIC_PORT="$${MEDUSA_PUBLIC_PORT:-3737}"
+        export MEDUSA_HAPROXY_PORT="$${MEDUSA_HAPROXY_PORT:-3737}"
+        if [ "$${MEDUSA_PUBLIC_PORT}" = "443" ]; then
+          public_port_suffix=""
+        else
+          public_port_suffix=":$${MEDUSA_PUBLIC_PORT}"
+        fi
+        awk \
+          -v host="$${MEDUSA_PUBLIC_HOST}" \
+          -v public_port="$${MEDUSA_PUBLIC_PORT}" \
+          -v public_port_suffix="$${public_port_suffix}" \
+          -v haproxy_port="$${MEDUSA_HAPROXY_PORT}" \
+          '{
+            gsub(/__MEDUSA_PUBLIC_HOST__/, host);
+            gsub(/__MEDUSA_PUBLIC_PORT__/, public_port);
+            gsub(/__MEDUSA_PUBLIC_PORT_SUFFIX__/, public_port_suffix);
+            gsub(/__MEDUSA_HAPROXY_PORT__/, haproxy_port);
+            print
+          }' /usr/local/etc/haproxy/haproxy.cfg > /tmp/haproxy.cfg
         cat /usr/local/etc/haproxy/certs/fullchain.pem > /tmp/medusa.pem
         printf '\n' >> /tmp/medusa.pem
         cat /usr/local/etc/haproxy/certs/privatekey.pem >> /tmp/medusa.pem

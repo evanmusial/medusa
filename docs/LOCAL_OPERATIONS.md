@@ -50,7 +50,7 @@ Open:
 https://medusa.home.musial.io:3737
 ```
 
-Backend startup runs Alembic migrations for PostgreSQL before serving traffic. The base Compose stack exposes only HAProxy on port `3737`; backend, worker, database, frontend, and Valkey stay on internal Compose networks.
+Backend startup runs Alembic migrations for PostgreSQL before serving traffic. The base Compose stack exposes only HAProxy on `MEDUSA_HAPROXY_PORT`, defaulting to port `3737`; backend, worker, database, frontend, and Valkey stay on internal Compose networks.
 
 The login email defaults to `admin@medusa.local`, and the first admin password comes from `MEDUSA_PASSWORD`. After first boot, the live password is the hash stored on the PostgreSQL `users` row. Settings > Account changes the live login email or password and can enable authenticator-app 2FA plus recovery codes.
 
@@ -62,11 +62,15 @@ Common proxy settings:
 
 ```bash
 MEDUSA_PUBLIC_HOST=medusa.home.musial.io
+MEDUSA_PUBLIC_PORT=3737
+MEDUSA_HAPROXY_PORT=3737
 MEDUSA_HAPROXY_STATS_URL=http://haproxy:8404/stats;csv
 MEDUSA_ALLOWED_HOSTS=medusa.home.musial.io
 ```
 
 `MEDUSA_ALLOWED_HOSTS` accepts a comma-separated Vite allowed-host list, or `*` / `all` / `true` for a controlled migration window.
+
+For Cloudflare-proxied deployments where users visit `https://medusa.evan.engineer` but Cloudflare routes to origin port `3737`, set `MEDUSA_PUBLIC_PORT=443` while leaving `MEDUSA_HAPROXY_PORT=3737`. The release agent probes `MEDUSA_RELEASE_HEALTHCHECK_PORT` when set, otherwise `MEDUSA_HAPROXY_PORT`, so health checks should continue to target the origin listener rather than the Cloudflare edge port.
 
 Valkey response cache settings:
 
@@ -261,7 +265,7 @@ Basic Slipstream client:
 
 ```bash
 cd backend
-python -m app.slipstream.client --server https://medusa.evan.engineer:3737 --enroll TOKEN --name "Remote worker" --capacity 4 --concurrency 4
+python -m app.slipstream.client --server https://medusa.evan.engineer --enroll TOKEN --name "Remote worker" --capacity 4 --concurrency 4
 ```
 
 ## Development

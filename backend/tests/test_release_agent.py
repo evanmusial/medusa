@@ -34,6 +34,46 @@ def write_haproxy_tls_placeholders(repo: Path) -> None:
     (cert_dir / "privatekey.pem").write_text("private key\n")
 
 
+def test_release_agent_probes_origin_port_when_public_port_is_standard(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    for key in (
+        "MEDUSA_PUBLIC_HOST",
+        "MEDUSA_PUBLIC_PORT",
+        "MEDUSA_HAPROXY_PORT",
+        "MEDUSA_RELEASE_HEALTHCHECK_PORT",
+        "MEDUSA_RELEASE_HEALTHCHECK_IP",
+        "MEDUSA_BIND_IP",
+        "MEDUSA_BIND_IPV6",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "MEDUSA_PUBLIC_HOST=medusa.evan.engineer",
+                "MEDUSA_PUBLIC_PORT=443",
+                "MEDUSA_HAPROXY_PORT=3737",
+                "MEDUSA_BIND_IP=23.227.185.85",
+            ]
+        )
+        + "\n"
+    )
+
+    command, url = agent.health_url(tmp_path)
+
+    assert url == "https://medusa.evan.engineer:3737/api/health"
+    assert command == [
+        "curl",
+        "-kfsS",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "10",
+        "--resolve",
+        "medusa.evan.engineer:3737:23.227.185.85",
+        "https://medusa.evan.engineer:3737/api/health",
+    ]
+
+
 def test_release_agent_classifies_safe_dependency_and_risky_runtime_updates(tmp_path):
     agent = load_release_agent()
     repo = tmp_path / "repo"

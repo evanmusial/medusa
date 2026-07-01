@@ -32,7 +32,8 @@ Environment:
                            Defaults to 99, the haproxy image group.
 
 Standalone HTTP-01 validation requires inbound TCP/80 on the bind IP to be free
-and publicly reachable. Medusa itself normally uses HTTPS port 3737.
+and publicly reachable. Medusa itself normally uses MEDUSA_HAPROXY_PORT, which
+defaults to HTTPS port 3737.
 EOF
 }
 

@@ -158,6 +158,19 @@ def env_file_value(repo: Path, key: str) -> str | None:
     return None
 
 
+def env_port_value(repo: Path, key: str, default: int) -> int:
+    raw = os.environ.get(key) or env_file_value(repo, key)
+    if raw is None:
+        return default
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{key} must be an integer port, got {raw!r}") from exc
+    if port < 1 or port > 65535:
+        raise RuntimeError(f"{key} must be between 1 and 65535, got {port}")
+    return port
+
+
 def env_flag_value(repo: Path, key: str) -> bool | None:
     raw = os.environ.get(key)
     if raw is None:
@@ -758,11 +771,17 @@ def curl_resolve_address(address: str) -> str:
     return f"[{address}]" if ":" in address and not address.startswith("[") else address
 
 
+def release_healthcheck_port(repo: Path) -> int:
+    return env_port_value(repo, "MEDUSA_RELEASE_HEALTHCHECK_PORT", env_port_value(repo, "MEDUSA_HAPROXY_PORT", 3737))
+
+
 def probe_url(repo: Path, path: str) -> tuple[list[str], str]:
     host = os.environ.get("MEDUSA_PUBLIC_HOST") or env_file_value(repo, "MEDUSA_PUBLIC_HOST") or "medusa.home.musial.io"
+    port = release_healthcheck_port(repo)
+    port_suffix = "" if port == 443 else f":{port}"
     address = curl_resolve_address(release_healthcheck_ip(repo))
-    url = f"https://{host}:3737{path}"
-    return ["curl", "-kfsS", "--connect-timeout", "5", "--max-time", "10", "--resolve", f"{host}:3737:{address}", url], url
+    url = f"https://{host}{port_suffix}{path}"
+    return ["curl", "-kfsS", "--connect-timeout", "5", "--max-time", "10", "--resolve", f"{host}:{port}:{address}", url], url
 
 
 def health_url(repo: Path) -> tuple[list[str], str]:

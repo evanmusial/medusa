@@ -20,6 +20,8 @@ Edit `.env` and set the local host, login, and local-first defaults:
 
 ```bash
 MEDUSA_PUBLIC_HOST=localhost
+MEDUSA_PUBLIC_PORT=3737
+MEDUSA_HAPROXY_PORT=3737
 MEDUSA_ALLOWED_HOSTS=localhost
 MEDUSA_ADMIN_EMAIL=admin@medusa.local
 MEDUSA_PASSWORD=replace-with-a-real-local-password
@@ -69,7 +71,7 @@ In another terminal, verify health:
 curl -kfsS https://localhost:3737/api/health
 ```
 
-The first startup runs PostgreSQL migrations automatically. Docker Compose exposes HAProxy on `3737`; the backend, frontend preview server, worker, PostgreSQL, and Valkey remain inside Compose networks.
+The first startup runs PostgreSQL migrations automatically. Docker Compose exposes HAProxy on `MEDUSA_HAPROXY_PORT`, which defaults to `3737`; the backend, frontend preview server, worker, PostgreSQL, and Valkey remain inside Compose networks.
 
 ## 5. Run Without Cloud Credentials
 

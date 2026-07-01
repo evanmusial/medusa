@@ -158,6 +158,8 @@ def report_env(repo: Path) -> None:
     status(".env", "OK", str(env_path))
     important_keys = [
         "MEDUSA_PUBLIC_HOST",
+        "MEDUSA_PUBLIC_PORT",
+        "MEDUSA_HAPROXY_PORT",
         "MEDUSA_ALLOWED_HOSTS",
         "MEDUSA_DOCUMENT_CACHE_SIZE_MB",
         "MEDUSA_IMPORT_WORKER_CONCURRENCY",

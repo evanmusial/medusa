@@ -578,7 +578,7 @@ def run_forever(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a Medusa Slipstream remote import-preprocessing client.")
-    parser.add_argument("--server", default=os.getenv("MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL"), help="Central Medusa base URL, for example https://medusa.evan.engineer:3737")
+    parser.add_argument("--server", default=os.getenv("MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL"), help="Central Medusa base URL, for example https://medusa.evan.engineer")
     parser.add_argument("--work-dir", default="./data/slipstream-client", help="Ignored local directory for client key and downloaded artifacts.")
     parser.add_argument("--state-file", default=STATE_FILE)
     parser.add_argument("--name", default="Slipstream client")

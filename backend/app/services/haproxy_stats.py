@@ -124,10 +124,13 @@ def haproxy_stats_status() -> HAProxyStatsStatusOut:
         + row.redispatches
         for row in services
     )
+    port_detail = f"public HTTPS port {settings.public_port}"
+    if settings.haproxy_port != settings.public_port:
+        port_detail = f"{port_detail} via origin listener {settings.haproxy_port}"
     return HAProxyStatsStatusOut(
         checked_at=checked_at,
         available=True,
-        message="HAProxy is terminating TLS on port 3737.",
+        message=f"HAProxy is serving Medusa on {port_detail}.",
         public_url=public_url,
         stats_url=stats_url,
         total_current_sessions=sum(row.current_sessions for row in frontend_rows),

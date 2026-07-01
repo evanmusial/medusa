@@ -441,3 +441,49 @@ def test_haproxy_stats_csv_parses_core_proxy_rows():
     assert server.check_status == "L7OK"
     assert server.check_code == 200
     assert server.check_duration_ms == 3
+
+
+def test_haproxy_public_url_omits_standard_https_port(monkeypatch):
+    from app.config import get_settings
+    from app.services import haproxy_stats
+
+    monkeypatch.setenv("MEDUSA_PUBLIC_HOST", "medusa.evan.engineer")
+    monkeypatch.setenv("MEDUSA_PUBLIC_PORT", "443")
+    get_settings.cache_clear()
+
+    try:
+        assert haproxy_stats.haproxy_public_url() == "https://medusa.evan.engineer"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_haproxy_status_reports_distinct_origin_listener(monkeypatch):
+    from app.config import get_settings
+    from app.services import haproxy_stats
+
+    raw = "\n".join(
+        [
+            "# pxname,svname,qcur,qmax,scur,smax,slim,stot,bin,bout,dreq,dresp,ereq,econ,eresp,wretr,wredis,status,act,bck,chkfail,chkdown,lastchg,downtime,type,rate,check_status,check_code,check_duration",
+            "medusa_https,FRONTEND,0,0,2,4,2048,12,345,678,0,0,0,0,0,0,0,OPEN,,,,,42,0,0,2,,,",
+        ]
+    )
+
+    class FakeResponse:
+        text = raw
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setenv("MEDUSA_PUBLIC_HOST", "medusa.evan.engineer")
+    monkeypatch.setenv("MEDUSA_PUBLIC_PORT", "443")
+    monkeypatch.setenv("MEDUSA_HAPROXY_PORT", "3737")
+    monkeypatch.setattr(haproxy_stats.httpx, "get", lambda *_args, **_kwargs: FakeResponse())
+    get_settings.cache_clear()
+
+    try:
+        status = haproxy_stats.haproxy_stats_status()
+    finally:
+        get_settings.cache_clear()
+
+    assert status.public_url == "https://medusa.evan.engineer"
+    assert status.message == "HAProxy is serving Medusa on public HTTPS port 443 via origin listener 3737."

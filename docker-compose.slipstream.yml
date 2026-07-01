@@ -13,7 +13,7 @@ services:
       - /bin/sh
       - -ec
       - >
-        : "$${MEDUSA_SLIPSTREAM_SERVER:=https://medusa.evan.engineer:3737}";
+        : "$${MEDUSA_SLIPSTREAM_SERVER:=https://medusa.evan.engineer}";
         : "$${MEDUSA_SLIPSTREAM_WORK_DIR:=/app/data/slipstream-client}";
         : "$${MEDUSA_SLIPSTREAM_NAME:=Evan laptop Slipstream worker}";
         : "$${MEDUSA_SLIPSTREAM_VERSION:=slipstream-import-preprocess-1}";

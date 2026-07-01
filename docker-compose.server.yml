@@ -36,7 +36,7 @@ services:
   haproxy:
     <<: *app-cpu
     ports:
-      - "[${MEDUSA_BIND_IPV6:-::1}]:3737:3737"
+      - "[${MEDUSA_BIND_IPV6:-::1}]:${MEDUSA_HAPROXY_PORT:-3737}:${MEDUSA_HAPROXY_PORT:-3737}"
 
   valkey:
     <<: *app-cpu
