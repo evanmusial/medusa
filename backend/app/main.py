@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import mimetypes
 import re
 import secrets
@@ -271,12 +272,17 @@ from app.services.backups import (
 )
 from app.services.cache import (
     CACHE_ALL_REVISION_FAMILIES,
+    add_cache_hydration_work,
+    advance_cache_hydration,
     bump_cache_revisions,
     cache_status_payload,
+    finish_cache_hydration,
     get_cached_payload,
     get_cache_backend,
     install_cache_revision_hooks,
+    set_cache_hydration_plan,
     set_cached_payload,
+    start_cache_hydration,
 )
 from app.services.concordance import create_concordance_run, current_capabilities, estimate_concordance_run
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
@@ -3255,6 +3261,7 @@ def hydrate_cache_payloads(
         "skipped_payloads": 0,
         "errored_payloads": 0,
     }
+    document_count = 0
     document_limit = _cache_hydrate_document_limit(max_documents)
     resolved_page_size = _cache_hydrate_page_size(page_size)
     library_page_sizes = [resolved_page_size]
@@ -3287,6 +3294,8 @@ def hydrate_cache_payloads(
                 "after": after,
             }
 
+        start_cache_hydration(planned_payloads=1, phase="Planning", detail="Sizing cache hydration payloads")
+
         def record_write_status(status: str, bucket: str) -> None:
             if status == "write":
                 counters["hydrated_keys"] += 1
@@ -3304,6 +3313,8 @@ def hydrate_cache_payloads(
             loader,
             bucket: str,
         ) -> Any | None:
+            status = "error"
+            result = None
             try:
                 status, result = warm_cache_payload_result(
                     db,
@@ -3313,11 +3324,49 @@ def hydrate_cache_payloads(
                     loader=loader,
                 )
                 record_write_status(status, bucket)
-                return result
             except Exception:
                 counters["errored_payloads"] += 1
                 logger.debug("Cache hydration failed for %s %s", family, key_parts, exc_info=True)
-                return None
+            finally:
+                advance_cache_hydration(
+                    phase=cache_hydration_phase(bucket),
+                    detail=cache_hydration_detail(family, key_parts),
+                    hydrated_keys=counters["hydrated_keys"],
+                    skipped_payloads=counters["skipped_payloads"],
+                    errored_payloads=counters["errored_payloads"],
+                )
+            return result
+
+        def cache_hydration_phase(bucket: str) -> str:
+            return {
+                "base_keys": "Core payloads",
+                "organization_keys": "Organization payloads",
+                "list_page_keys": "Library pages",
+                "saved_search_keys": "Saved-search pages",
+                "document_detail_keys": "Document details",
+                "document_adjunct_keys": "Document adjuncts",
+                "workspace_keys": "Workspace payloads",
+                "finance_keys": "Finance payloads",
+                "job_keys": "Job payloads",
+                "backup_keys": "Backup payloads",
+            }.get(bucket, "Cache payloads")
+
+        def cache_hydration_detail(family: str, key_parts: dict[str, Any]) -> str:
+            endpoint = str(key_parts.get("endpoint") or family)
+            if family == "documents:list":
+                if key_parts.get("all"):
+                    return "Hydrating all-document reference lists"
+                if key_parts.get("q"):
+                    return "Hydrating searched Library pages"
+                sort = key_parts.get("sort") or "title"
+                return f"Hydrating Library pages sorted by {sort}"
+            if family == "documents:summary":
+                return "Hydrating Library count summaries"
+            if family == "documents:detail":
+                return "Hydrating document detail payloads"
+            if family.startswith("documents:"):
+                return "Hydrating document companion payloads"
+            return f"Hydrating {endpoint.replace('_', ' ')}"
 
         def filter_value(filters: dict[str, Any] | None, key: str) -> str:
             if not filters:
@@ -3396,7 +3445,10 @@ def hydrate_cache_payloads(
             for sort in DOCUMENT_LIST_SORTS:
                 for list_page_size in library_page_sizes:
                     offset = 0
+                    page_index = 0
                     while True:
+                        if page_index > 0:
+                            add_cache_hydration_work(1)
                         key_parts = document_list_cache_key_parts(
                             q=q,
                             offset=offset,
@@ -3431,8 +3483,9 @@ def hydrate_cache_payloads(
                         if not result or not getattr(result, "has_more", False):
                             break
                         offset += list_page_size
+                        page_index += 1
 
-        for warmer in [
+        base_warmers = [
             {
                 "family": "dashboard",
                 "revision_families": {"dashboard", "jobs", "library", "organization"},
@@ -3597,8 +3650,7 @@ def hydrate_cache_payloads(
                 .all(),
                 "bucket": "workspace_keys",
             },
-        ]:
-            hydrate_payload(**warmer)
+        ]
 
         filter_scopes: list[tuple[str, dict[str, Any] | None, bool]] = []
         seen_filter_scopes: set[str] = set()
@@ -3612,11 +3664,14 @@ def hydrate_cache_payloads(
             filter_scopes.append((q or "", normalized, saved_search))
 
         add_filter_scope()
-        for domain_id, in db.query(Domain.id).filter(Domain.deleted_at.is_(None)).order_by(Domain.id).all():
+        domain_ids = [domain_id for domain_id, in db.query(Domain.id).filter(Domain.deleted_at.is_(None)).order_by(Domain.id).all()]
+        tag_ids = [tag_id for tag_id, in db.query(Tag.id).order_by(Tag.id).all()]
+        publication_ids = [publication_id for publication_id, in db.query(Publication.id).order_by(Publication.id).all()]
+        for domain_id in domain_ids:
             add_filter_scope(filters={"domain_id": domain_id})
-        for tag_id, in db.query(Tag.id).order_by(Tag.id).all():
+        for tag_id in tag_ids:
             add_filter_scope(filters={"tag_id": tag_id})
-        for publication_id, in db.query(Publication.id).order_by(Publication.id).all():
+        for publication_id in publication_ids:
             add_filter_scope(filters={"publication_id": publication_id})
         for read_status in DOCUMENT_READ_STATUSES:
             add_filter_scope(filters={"read_status": read_status})
@@ -3629,6 +3684,7 @@ def hydrate_cache_payloads(
         for health_status in DOCUMENT_HEALTH_STATUSES:
             add_filter_scope(filters={"health_status": health_status})
 
+        saved_searches = []
         if include_saved_searches:
             saved_searches = (
                 db.query(SavedSearch)
@@ -3639,12 +3695,59 @@ def hydrate_cache_payloads(
             for saved_search in saved_searches:
                 add_filter_scope(q=saved_search.query or "", filters=saved_search.filters or {}, saved_search=True)
 
+        project_ids = [project_id for project_id, in db.query(Project.id).filter(Project.deleted_at.is_(None)).order_by(Project.id).all()]
+        recon_run_ids = [
+            run_id
+            for run_id, in db.query(ReconRun.id)
+            .join(ReconInquiry, ReconInquiry.id == ReconRun.inquiry_id)
+            .filter(ReconInquiry.deleted_at.is_(None))
+            .order_by(ReconRun.id)
+            .all()
+        ]
+        portfolio_item_ids = [
+            portfolio_item_id
+            for portfolio_item_id, in db.query(PortfolioItem.id).filter(PortfolioItem.deleted_at.is_(None)).order_by(PortfolioItem.id).all()
+        ]
+        estimated_document_count = 0
+        if include_document_details:
+            estimated_document_count = filter_library_visible_documents(db.query(Document.id)).count()
+            if document_limit is not None:
+                estimated_document_count = min(estimated_document_count, document_limit)
+
+        def estimated_list_page_units() -> int:
+            base_pages = sum(max(1, math.ceil(max(0, estimated_document_count) / list_page_size)) for list_page_size in library_page_sizes)
+            default_scope_units = base_pages * len(DOCUMENT_LIST_SORTS)
+            filtered_scope_count = max(0, len(filter_scopes) - 1)
+            filtered_scope_units = filtered_scope_count * len(DOCUMENT_LIST_SORTS) * len(library_page_sizes)
+            summary_units = len(filter_scopes)
+            all_results_units = len(DOCUMENT_LIST_SORTS)
+            return summary_units + default_scope_units + filtered_scope_units + all_results_units
+
+        estimated_payloads = (
+            len(base_warmers)
+            + estimated_list_page_units()
+            + len(project_ids) * 2
+            + len(domain_ids)
+            + len(recon_run_ids)
+            + len(portfolio_item_ids)
+            + (estimated_document_count * 5 if include_document_details else 0)
+        )
+        set_cache_hydration_plan(
+            planned_payloads=max(1, estimated_payloads),
+            document_count=estimated_document_count,
+            phase="Hydrating",
+            detail=f"Preloading {max(1, estimated_payloads)} cache payloads",
+        )
+
+        for warmer in base_warmers:
+            hydrate_payload(**warmer)
+
         for q, filters, saved_search in filter_scopes:
             hydrate_document_list_pages(q=q, filters=filters, saved_search=saved_search)
             if not q and not any((filters or {}).values()):
                 hydrate_document_all_results(q=q, filters=filters, saved_search=saved_search)
 
-        for project_id, in db.query(Project.id).filter(Project.deleted_at.is_(None)).order_by(Project.id).all():
+        for project_id in project_ids:
             hydrate_payload(
                 family="organization:project_detail",
                 revision_families={"organization", "library", "document_detail"},
@@ -3659,7 +3762,7 @@ def hydrate_cache_payloads(
                 loader=lambda project_id=project_id: notes_out(db, project_id=project_id),
                 bucket="workspace_keys",
             )
-        for domain_id, in db.query(Domain.id).filter(Domain.deleted_at.is_(None)).order_by(Domain.id).all():
+        for domain_id in domain_ids:
             hydrate_payload(
                 family="notes:list",
                 revision_families={"library", "document_detail", "organization", "dashboard"},
@@ -3667,7 +3770,7 @@ def hydrate_cache_payloads(
                 loader=lambda domain_id=domain_id: notes_out(db, domain_id=domain_id),
                 bucket="workspace_keys",
             )
-        for run_id, in db.query(ReconRun.id).join(ReconInquiry, ReconInquiry.id == ReconRun.inquiry_id).filter(ReconInquiry.deleted_at.is_(None)).order_by(ReconRun.id).all():
+        for run_id in recon_run_ids:
             hydrate_payload(
                 family="recon:run",
                 revision_families={"recon", "library", "organization"},
@@ -3675,7 +3778,7 @@ def hydrate_cache_payloads(
                 loader=lambda run_id=run_id: recon_run_or_404(db, run_id),
                 bucket="workspace_keys",
             )
-        for portfolio_item_id, in db.query(PortfolioItem.id).filter(PortfolioItem.deleted_at.is_(None)).order_by(PortfolioItem.id).all():
+        for portfolio_item_id in portfolio_item_ids:
             hydrate_payload(
                 family="portfolio:detail",
                 revision_families={"portfolio", "library", "organization", "jobs"},
@@ -3684,7 +3787,6 @@ def hydrate_cache_payloads(
                 bucket="workspace_keys",
             )
 
-        document_count = 0
         if include_document_details:
             document_query = (
                 filter_library_visible_documents(db.query(Document))
@@ -3738,20 +3840,40 @@ def hydrate_cache_payloads(
                     bucket="document_adjunct_keys",
                 )
 
+        message = (
+            f"Hydrated {counters['hydrated_keys']} cache payloads from PostgreSQL"
+            f" for {document_count} document details."
+        )
         get_cache_backend().remember_hydration(hydrated_at)
+        finish_cache_hydration(
+            status="complete",
+            message=message,
+            hydrated_keys=counters["hydrated_keys"],
+            skipped_payloads=counters["skipped_payloads"],
+            errored_payloads=counters["errored_payloads"],
+            document_count=document_count,
+        )
         after = cache_status_payload(db, request_metrics=metrics)
         return {
             "status": "complete",
-            "message": (
-                f"Hydrated {counters['hydrated_keys']} cache payloads from PostgreSQL"
-                f" for {document_count} document details."
-            ),
+            "message": message,
             "hydrated_at": hydrated_at,
             "document_count": document_count,
             **counters,
             "before": before,
             "after": after,
         }
+    except Exception as exc:
+        finish_cache_hydration(
+            status="error",
+            message="Cache hydration failed.",
+            detail=str(exc) or "Cache hydration failed.",
+            hydrated_keys=counters["hydrated_keys"],
+            skipped_payloads=counters["skipped_payloads"],
+            errored_payloads=counters["errored_payloads"],
+            document_count=document_count,
+        )
+        raise
     finally:
         CACHE_HYDRATION_LOCK.release()
 

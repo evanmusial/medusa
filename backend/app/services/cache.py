@@ -106,6 +106,23 @@ _cache_backend: CacheBackend | None = None
 _cache_lock = threading.Lock()
 _family_stats_lock = threading.Lock()
 _family_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"hit": 0, "miss": 0, "bypass": 0, "error": 0, "write": 0})
+_hydration_status_lock = threading.Lock()
+_hydration_status: dict[str, Any] = {
+    "active": False,
+    "status": "idle",
+    "phase": "Idle",
+    "detail": None,
+    "progress": 0,
+    "planned_payloads": 0,
+    "completed_payloads": 0,
+    "hydrated_keys": 0,
+    "skipped_payloads": 0,
+    "errored_payloads": 0,
+    "document_count": 0,
+    "started_at": None,
+    "updated_at": None,
+    "completed_at": None,
+}
 _revision_hooks_installed = False
 
 
@@ -153,6 +170,147 @@ def cache_family_stats() -> list[dict[str, Any]]:
                 }
             )
         return rows
+
+
+def _hydration_progress(completed_payloads: int, planned_payloads: int, *, active: bool) -> int:
+    if planned_payloads <= 0:
+        return 1 if active else 0
+    progress = round((max(0, completed_payloads) / planned_payloads) * 100)
+    if active:
+        return max(1, min(99, progress))
+    return max(0, min(100, progress))
+
+
+def cache_hydration_status() -> dict[str, Any]:
+    with _hydration_status_lock:
+        return dict(_hydration_status)
+
+
+def start_cache_hydration(*, planned_payloads: int = 0, document_count: int = 0, phase: str = "Planning", detail: str | None = None) -> None:
+    now = utc_now()
+    planned = max(0, int(planned_payloads or 0))
+    with _hydration_status_lock:
+        _hydration_status.update(
+            {
+                "active": True,
+                "status": "running",
+                "phase": phase,
+                "detail": detail,
+                "progress": _hydration_progress(0, planned, active=True),
+                "planned_payloads": planned,
+                "completed_payloads": 0,
+                "hydrated_keys": 0,
+                "skipped_payloads": 0,
+                "errored_payloads": 0,
+                "document_count": max(0, int(document_count or 0)),
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": None,
+            }
+        )
+
+
+def set_cache_hydration_plan(
+    *,
+    planned_payloads: int | None = None,
+    document_count: int | None = None,
+    phase: str | None = None,
+    detail: str | None = None,
+) -> None:
+    now = utc_now()
+    with _hydration_status_lock:
+        completed = int(_hydration_status.get("completed_payloads") or 0)
+        planned = int(_hydration_status.get("planned_payloads") or 0)
+        if planned_payloads is not None:
+            planned = max(completed, int(planned_payloads or 0))
+            _hydration_status["planned_payloads"] = planned
+        if document_count is not None:
+            _hydration_status["document_count"] = max(0, int(document_count or 0))
+        if phase is not None:
+            _hydration_status["phase"] = phase
+        if detail is not None:
+            _hydration_status["detail"] = detail
+        _hydration_status["progress"] = _hydration_progress(completed, planned, active=bool(_hydration_status.get("active")))
+        _hydration_status["updated_at"] = now
+
+
+def add_cache_hydration_work(units: int = 1) -> None:
+    if units <= 0:
+        return
+    now = utc_now()
+    with _hydration_status_lock:
+        _hydration_status["planned_payloads"] = int(_hydration_status.get("planned_payloads") or 0) + int(units)
+        _hydration_status["progress"] = _hydration_progress(
+            int(_hydration_status.get("completed_payloads") or 0),
+            int(_hydration_status.get("planned_payloads") or 0),
+            active=bool(_hydration_status.get("active")),
+        )
+        _hydration_status["updated_at"] = now
+
+
+def advance_cache_hydration(
+    *,
+    completed_payloads: int = 1,
+    phase: str | None = None,
+    detail: str | None = None,
+    hydrated_keys: int | None = None,
+    skipped_payloads: int | None = None,
+    errored_payloads: int | None = None,
+) -> None:
+    now = utc_now()
+    with _hydration_status_lock:
+        completed = int(_hydration_status.get("completed_payloads") or 0) + max(0, int(completed_payloads or 0))
+        planned = max(int(_hydration_status.get("planned_payloads") or 0), completed)
+        _hydration_status["completed_payloads"] = completed
+        _hydration_status["planned_payloads"] = planned
+        if phase is not None:
+            _hydration_status["phase"] = phase
+        if detail is not None:
+            _hydration_status["detail"] = detail
+        if hydrated_keys is not None:
+            _hydration_status["hydrated_keys"] = max(0, int(hydrated_keys or 0))
+        if skipped_payloads is not None:
+            _hydration_status["skipped_payloads"] = max(0, int(skipped_payloads or 0))
+        if errored_payloads is not None:
+            _hydration_status["errored_payloads"] = max(0, int(errored_payloads or 0))
+        _hydration_status["progress"] = _hydration_progress(completed, planned, active=bool(_hydration_status.get("active")))
+        _hydration_status["updated_at"] = now
+
+
+def finish_cache_hydration(
+    *,
+    status: str,
+    message: str | None = None,
+    phase: str | None = None,
+    detail: str | None = None,
+    hydrated_keys: int | None = None,
+    skipped_payloads: int | None = None,
+    errored_payloads: int | None = None,
+    document_count: int | None = None,
+) -> None:
+    now = utc_now()
+    with _hydration_status_lock:
+        completed = int(_hydration_status.get("completed_payloads") or 0)
+        planned = max(int(_hydration_status.get("planned_payloads") or 0), completed)
+        if status == "complete":
+            completed = planned
+        _hydration_status["active"] = False
+        _hydration_status["status"] = status
+        _hydration_status["phase"] = phase or ("Complete" if status == "complete" else status.title())
+        _hydration_status["detail"] = detail or message
+        _hydration_status["completed_payloads"] = completed
+        _hydration_status["planned_payloads"] = planned
+        _hydration_status["progress"] = 100 if status == "complete" else _hydration_progress(completed, planned, active=False)
+        if hydrated_keys is not None:
+            _hydration_status["hydrated_keys"] = max(0, int(hydrated_keys or 0))
+        if skipped_payloads is not None:
+            _hydration_status["skipped_payloads"] = max(0, int(skipped_payloads or 0))
+        if errored_payloads is not None:
+            _hydration_status["errored_payloads"] = max(0, int(errored_payloads or 0))
+        if document_count is not None:
+            _hydration_status["document_count"] = max(0, int(document_count or 0))
+        _hydration_status["updated_at"] = now
+        _hydration_status["completed_at"] = now
 
 
 class CacheBackend:
@@ -670,6 +828,7 @@ def cache_status_payload(db: Session, request_metrics: list[dict[str, Any]] | No
         "last_refresh_at": last_refresh,
         "last_hydration_at": last_hydration,
         "last_invalidation_at": last_invalidation,
+        "hydration": cache_hydration_status(),
         "families": cache_family_stats(),
         "request_metrics": request_metrics or [],
         "queue_stats": queue_stats(db),

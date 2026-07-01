@@ -1619,6 +1619,23 @@ class CacheQueueStatOut(BaseModel):
     oldest_age_seconds: int | None = None
 
 
+class CacheHydrationStatusOut(BaseModel):
+    active: bool = False
+    status: str = "idle"
+    phase: str | None = "Idle"
+    detail: str | None = None
+    progress: int = 0
+    planned_payloads: int = 0
+    completed_payloads: int = 0
+    hydrated_keys: int = 0
+    skipped_payloads: int = 0
+    errored_payloads: int = 0
+    document_count: int = 0
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
 class CacheStatusOut(BaseModel):
     checked_at: datetime
     backend: str
@@ -1645,6 +1662,7 @@ class CacheStatusOut(BaseModel):
     last_refresh_at: datetime | None = None
     last_hydration_at: datetime | None = None
     last_invalidation_at: datetime | None = None
+    hydration: CacheHydrationStatusOut = Field(default_factory=CacheHydrationStatusOut)
     families: list[CacheFamilyStatsOut] = Field(default_factory=list)
     request_metrics: list[CacheRequestMetricOut] = Field(default_factory=list)
     queue_stats: list[CacheQueueStatOut] = Field(default_factory=list)

@@ -281,7 +281,21 @@ def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
             }
 
     cache = RecordingCache()
+    observed_hydration_statuses = []
+    original_warm_cache_payload_result = main.warm_cache_payload_result
+
+    def recording_warm_cache_payload_result(db, *, family, revision_families, key_parts, loader):
+        observed_hydration_statuses.append(cache_service.cache_hydration_status())
+        return original_warm_cache_payload_result(
+            db,
+            family=family,
+            revision_families=revision_families,
+            key_parts=key_parts,
+            loader=loader,
+        )
+
     monkeypatch.setattr(cache_service, "_cache_backend", cache)
+    monkeypatch.setattr(main, "warm_cache_payload_result", recording_warm_cache_payload_result)
 
     Session = make_session()
     with Session() as db:
@@ -322,6 +336,11 @@ def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
     assert result["backup_keys"] >= 2
     assert result["hydrated_keys"] >= 24
     assert result["after"]["last_hydration_at"] == result["hydrated_at"]
+    assert any(status["active"] and status["planned_payloads"] > 1 for status in observed_hydration_statuses)
+    assert result["after"]["hydration"]["active"] is False
+    assert result["after"]["hydration"]["status"] == "complete"
+    assert result["after"]["hydration"]["progress"] == 100
+    assert result["after"]["hydration"]["planned_payloads"] >= result["after"]["hydration"]["completed_payloads"]
     assert cache.hydrated_at == result["hydrated_at"]
 
 

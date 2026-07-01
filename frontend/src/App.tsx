@@ -120,6 +120,7 @@ import type {
   BackupEstimate,
   BackupRun,
   CacheHydrateResult,
+  CacheHydrationStatus,
   Bibliography,
   CacheRefreshResult,
   CacheStatus,
@@ -1825,6 +1826,22 @@ function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | 
 
 function progressPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function cacheHydrationActionProgress(localProgress: ActionProgressState, hydration?: CacheHydrationStatus | null): ActionProgressState {
+  if (hydration?.active) {
+    return {
+      progress: progressPercent(hydration.progress),
+      running: true,
+      visible: true,
+    };
+  }
+  return localProgress;
+}
+
+function cacheHydrationDetail(hydration?: CacheHydrationStatus | null) {
+  if (!hydration?.active) return null;
+  return hydration.detail || hydration.phase || "Preloading cache entries";
 }
 
 function AsyncActionSlot({
@@ -3636,6 +3653,11 @@ function ratioPercent(numerator?: number | null, denominator?: number | null) {
 
 function cacheMemoryPercent(cache?: CacheStatus | null) {
   return ratioPercent(cache?.used_memory_bytes, cache?.maxmemory_bytes);
+}
+
+function formatCacheUsedMemory(bytes?: number | null) {
+  const value = bytes === undefined || bytes === null || !Number.isFinite(bytes) ? 0 : bytes / 1024 ** 3;
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 1 }).format(value)} GB`;
 }
 
 function formatDecimal(value?: number | null, maximumFractionDigits = 1) {
@@ -6114,8 +6136,11 @@ function Header({
     searchInputRef.current?.blur();
   };
   const cacheActionBusy = cacheRefreshing || cacheHydrating;
-  const cacheHitPercent = cacheStatus ? Math.round((cacheStatus.hit_rate || 0) * 100) : null;
+  const cacheHitPercent = cacheStatus ? (cacheStatus.hit_rate || 0) * 100 : null;
   const cacheUsagePercent = cacheMemoryPercent(cacheStatus);
+  const cacheHitLabel = formatPercent(cacheHitPercent) || "0%";
+  const cacheUsageLabel = formatPercent(cacheUsagePercent) || "0%";
+  const cacheUsedMemoryLabel = formatCacheUsedMemory(cacheStatus?.used_memory_bytes);
   const cacheGlanceTone = valkeyResourceTone(cacheUsagePercent);
   const cacheGlanceMeterStyle = { "--user-cache-used": `${progressPercent(cacheUsagePercent ?? 0)}%` } as CSSProperties;
   const cacheRefreshPercent = cacheRefreshProgress.visible ? cacheRefreshProgress.progress : null;
@@ -6129,8 +6154,8 @@ function Header({
   const cacheGlance = cacheStatus
     ? cacheStatus.reachable
       ? cacheUsagePercent !== null
-        ? `Cache ${formatPercent(cacheUsagePercent) || "0%"} used / ${cacheHitPercent}% hit`
-        : `Cache ${formatDatabaseSize(cacheStatus.used_memory_bytes)} / ${cacheHitPercent}% hit`
+        ? `Cache ${cacheUsageLabel} used (${cacheUsedMemoryLabel}), matching ${cacheHitLabel}`
+        : `Cache ${cacheUsedMemoryLabel} used, matching ${cacheHitLabel}`
       : `Cache ${cacheStatus.mode}`
     : "Cache loading";
 
@@ -26841,11 +26866,16 @@ export default function App() {
     refetchInterval: (query) =>
       dashboardHasActiveWork(query.state.data as Dashboard | undefined) ? ACTIVE_WORK_REFETCH_INTERVAL_MS : IDLE_SHELL_REFETCH_INTERVAL_MS,
   });
+  const cacheHydrationPollUntilRef = useRef(0);
   const cacheStatus = useQuery({
     queryKey: ["cache-status"],
     queryFn: api.cacheStatus,
     enabled: Boolean(me.data),
-    refetchInterval: 30000,
+    refetchInterval: (query) => {
+      const current = query.state.data as CacheStatus | undefined;
+      if (current?.hydration?.active || Date.now() < cacheHydrationPollUntilRef.current) return ACTIVE_WORK_REFETCH_INTERVAL_MS;
+      return 30000;
+    },
   });
   const activeDashboardWork = dashboardHasActiveWork(dashboard.data);
   const activeLibraryListWork =
@@ -27088,13 +27118,21 @@ export default function App() {
   });
   const hydrateCache = useMutation<CacheHydrateResult, Error>({
     mutationFn: api.hydrateCache,
+    onMutate: () => {
+      cacheHydrationPollUntilRef.current = Date.now() + 10 * 60_000;
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+    },
     onSuccess: (result) => {
       queryClient.setQueryData(["cache-status"], result.after);
       void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
     },
+    onSettled: () => {
+      cacheHydrationPollUntilRef.current = Date.now() + ACTION_PROGRESS_COMPLETE_MS;
+    },
   });
   const cacheRefreshProgress = useActionProgress(refreshCache.isPending);
-  const cacheHydrateProgress = useActionProgress(hydrateCache.isPending);
+  const localCacheHydrateProgress = useActionProgress(hydrateCache.isPending);
+  const cacheHydrateProgress = cacheHydrationActionProgress(localCacheHydrateProgress, cacheStatus.data?.hydration);
   const confirmReleaseReload = useCallback(() => {
     return appDialogs.confirm({
       cancelLabel: "Not Yet",
@@ -27777,14 +27815,15 @@ export default function App() {
     });
   }
   if (cacheHydrateProgress.visible) {
+    const hydrationStartedAt = cacheStatus.data?.hydration?.started_at ? Date.parse(cacheStatus.data.hydration.started_at) : Date.now();
     cacheActionBackgroundJobs.push({
       id: "cache-hydrate",
       label: "Hydrate Cache",
-      detail: cacheHydrateProgress.running ? "Preloading common cache entries" : "Finishing",
+      detail: cacheHydrateProgress.running ? cacheHydrationDetail(cacheStatus.data?.hydration) || "Preloading common cache entries" : "Finishing",
       status: "running",
       runningJobs: 1,
       progress: cacheHydrateProgress.progress,
-      createdAt: Date.now(),
+      createdAt: Number.isFinite(hydrationStartedAt) ? hydrationStartedAt : Date.now(),
     });
   }
   const visibleBackgroundJobs = [
@@ -27807,7 +27846,7 @@ export default function App() {
       <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
-        cacheHydrating={hydrateCache.isPending}
+        cacheHydrating={cacheHydrateProgress.running}
         cacheHydrateProgress={cacheHydrateProgress}
         cacheRefreshProgress={cacheRefreshProgress}
         cacheRefreshing={refreshCache.isPending}

@@ -189,6 +189,23 @@ export type CacheQueueStat = {
   oldest_age_seconds?: number | null;
 };
 
+export type CacheHydrationStatus = {
+  active: boolean;
+  status: string;
+  phase?: string | null;
+  detail?: string | null;
+  progress: number;
+  planned_payloads: number;
+  completed_payloads: number;
+  hydrated_keys: number;
+  skipped_payloads: number;
+  errored_payloads: number;
+  document_count: number;
+  started_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+};
+
 export type CacheDatabaseFootprint = {
   name: string;
   kind: string;
@@ -230,6 +247,7 @@ export type CacheStatus = {
   last_refresh_at?: string | null;
   last_hydration_at?: string | null;
   last_invalidation_at?: string | null;
+  hydration: CacheHydrationStatus;
   families: CacheFamilyStats[];
   request_metrics: CacheRequestMetric[];
   queue_stats: CacheQueueStat[];
