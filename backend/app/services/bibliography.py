@@ -88,6 +88,24 @@ REFERENCE_SURNAME_BARE_INITIALS_YEAR_RE = re.compile(
     r"\(?\s*(?:18|19|20)\d{2}[a-z]?\)?(?=\W|$)",
     re.IGNORECASE,
 )
+REFERENCE_VANCOUVER_AUTHOR_START_WORD = (
+    rf"(?!(?:Bus|Care|Comput|Conf|Criminol|Econ|Eng|Enterp|Exp|Future|Health|Inf|Int|J|Manag|Priv|"
+    rf"Proc|Saf|Sci|Secur|Soc|Syst|Trans|Vol)\b){REFERENCE_AUTHOR_WORD}"
+)
+REFERENCE_VANCOUVER_AUTHOR_LIST_START = (
+    rf"{REFERENCE_VANCOUVER_AUTHOR_START_WORD}\s+{REFERENCE_BARE_INITIALS}"
+    rf"(?:,\s+{REFERENCE_AUTHOR_WORD}\s+{REFERENCE_BARE_INITIALS}){{0,12}}"
+)
+REFERENCE_VANCOUVER_AUTHOR_LIST_START_RE = re.compile(
+    rf"^\s*{REFERENCE_VANCOUVER_AUTHOR_LIST_START}\.\s+.+?\b(?:18|19|20)\d{{2}}[a-z]?\b",
+    re.IGNORECASE,
+)
+REFERENCE_FULL_NAME = rf"{REFERENCE_AUTHOR_WORD}(?:\s+{REFERENCE_AUTHOR_WORD}){{1,4}}"
+REFERENCE_SEMICOLON_FULL_AUTHOR_LIST_START_RE = re.compile(
+    rf"^\s*{REFERENCE_FULL_NAME}(?:\s*;\s*{REFERENCE_FULL_NAME}){{1,16}},\s*[\"“]?.+?"
+    r"\b(?:18|19|20)\d{2}[a-z]?\b",
+    re.IGNORECASE,
+)
 REFERENCE_ORGANIZATION_YEAR_RE = re.compile(r"^\s*[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b")
 REFERENCE_ENTITY_COMMA_YEAR_RE = re.compile(
     rf"^\s*{REFERENCE_AUTHOR_WORD}(?:\s+(?:{REFERENCE_AUTHOR_WORD}|&|and|of|the|for|in|on|[A-Z0-9&()./\-]+)){{0,12}},\s*"
@@ -99,6 +117,14 @@ REFERENCE_ORGANIZATION_DOT_YEAR_RE = re.compile(
 REFERENCE_ORGANIZATION_PAREN_YEAR_RE = re.compile(
     rf"^\s*(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
     r"\((?:18|19|20)\d{2}[a-z]?\)\.?,?\s+"
+)
+REFERENCE_ORGANIZATION_SENTENCE_STOPWORDS = (
+    r"Bus|Care|Comput|Conf|Criminol|Econ|Eng|Enterp|Exp|Future|Health|Inf|Int|J|Manag|Priv|"
+    r"Proc|Saf|Sci|Secur|Soc|Syst|Trans|Vol"
+)
+REFERENCE_ORGANIZATION_SENTENCE_START_RE = re.compile(
+    rf"^\s*(?!(?:{REFERENCE_ORGANIZATION_SENTENCE_STOPWORDS})\.)"
+    r"(?:[A-Z]{5,}|[A-Z][A-Za-z0-9&/\-]{4,})\.\s+.+?\b(?:18|19|20)\d{2}[a-z]?\b",
 )
 REFERENCE_LEGAL_CASE_START_RE = re.compile(
     r"^\s*(?:"
@@ -139,6 +165,15 @@ INLINE_SURNAME_BARE_INITIALS_YEAR_START_CANDIDATE_RE = re.compile(
     r"\(?\s*(?:18|19|20)\d{2}[a-z]?\)?[^\n]{0,260})",
     re.IGNORECASE,
 )
+INLINE_VANCOUVER_AUTHOR_LIST_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?={REFERENCE_VANCOUVER_AUTHOR_LIST_START}\.\s+[^\n]{{0,320}}?\b(?:18|19|20)\d{{2}}[a-z]?\b)",
+    re.IGNORECASE,
+)
+INLINE_SEMICOLON_FULL_AUTHOR_LIST_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?={REFERENCE_FULL_NAME}(?:\s*;\s*{REFERENCE_FULL_NAME}){{1,16}},\s*[\"“]?[^\n]{{0,320}}?"
+    r"\b(?:18|19|20)\d{2}[a-z]?\b)",
+    re.IGNORECASE,
+)
 INLINE_ORGANIZATION_START_CANDIDATE_RE = re.compile(
     r"\s+(?=[A-Z][A-Z0-9&()./\-\s\u00ae\u2122]{1,60},\s*(?:18|19|20)\d{2}[a-z]?\b)"
 )
@@ -149,6 +184,10 @@ INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE = re.compile(
 INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE = re.compile(
     rf"\s+(?=(?:[A-Z]{{2,}}|{REFERENCE_ORGANIZATION_NAME})\s+"
     r"\((?:18|19|20)\d{2}[a-z]?\)\.?,?\s+)"
+)
+INLINE_ORGANIZATION_SENTENCE_START_CANDIDATE_RE = re.compile(
+    rf"\s+(?=(?!(?:{REFERENCE_ORGANIZATION_SENTENCE_STOPWORDS})\.)"
+    r"(?:[A-Z]{5,}|[A-Z][A-Za-z0-9&/\-]{4,})\.\s+[^\n]{0,260}?\b(?:18|19|20)\d{2}[a-z]?\b)"
 )
 INLINE_CITATION_KEY_START_CANDIDATE_RE = re.compile(
     r"\s+(?=\[[^\]\n]{0,80}[A-Za-z][^\]\n]{0,80}(?:18|19|20)\d{2}[a-z]?\](?:\s+|(?=[A-Z])|$))"
@@ -178,6 +217,12 @@ AUTHOR_RUNNING_FOOTER_TRAILER_RE = re.compile(
     r"(?:\s+and\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+)?"
     r"\s*/\s*[A-Z][A-Za-z&.,'\u2019\-\s]{2,80}\s+\d+\s+\(\d{4}\)\s+"
     r"\d+\s*[-\u2010-\u2015]\s*\d+\s+\d+(?:\s+[A-Z]\.){0,3}\s*$"
+)
+REFERENCE_RUNNING_HEADER_TRAILER_RE = re.compile(
+    r"\s+(?:[A-Z]\.){1,3}\s*[A-Z][A-Za-z'`\u2019.-]+"
+    r"(?:,\s+(?:[A-Z]\.){1,3}\s*[A-Z][A-Za-z'`\u2019.-]+){0,4}"
+    r"\s*/\s*[A-Z][A-Za-z&.,'\u2019\-\s]{2,80}\s+\d+\s+\(\d{4}\)\s+"
+    r"\d+\s*[-\u2010-\u2015]\s*\d+\s*$"
 )
 PAGE_FURNITURE_RE = re.compile(
     r"^(?:"
@@ -255,7 +300,8 @@ def _strip_reference_entry_prefix(value: str) -> str:
 
 
 def _strip_author_running_footer_trailer(value: str) -> str:
-    return AUTHOR_RUNNING_FOOTER_TRAILER_RE.sub("", value).strip()
+    value = AUTHOR_RUNNING_FOOTER_TRAILER_RE.sub("", value).strip()
+    return REFERENCE_RUNNING_HEADER_TRAILER_RE.sub("", value).strip()
 
 
 def _reference_match_text(value: str) -> str:
@@ -280,10 +326,13 @@ def _line_starts_unmarked_reference_entry(line: str) -> bool:
         or REFERENCE_INITIAL_AUTHOR_START_RE.match(plain)
         or REFERENCE_SURNAME_INITIALS_START_RE.match(plain)
         or REFERENCE_SURNAME_BARE_INITIALS_YEAR_RE.match(plain)
+        or REFERENCE_VANCOUVER_AUTHOR_LIST_START_RE.match(plain)
+        or REFERENCE_SEMICOLON_FULL_AUTHOR_LIST_START_RE.match(plain)
         or REFERENCE_ORGANIZATION_YEAR_RE.match(plain)
         or REFERENCE_ENTITY_COMMA_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_DOT_YEAR_RE.match(plain)
         or REFERENCE_ORGANIZATION_PAREN_YEAR_RE.match(plain)
+        or REFERENCE_ORGANIZATION_SENTENCE_START_RE.match(plain)
         or REFERENCE_LEGAL_CASE_START_RE.match(plain)
         or REFERENCE_LEGAL_CAPTION_LINE_RE.match(plain)
         or REFERENCE_PERIODICAL_TITLE_START_RE.match(plain)
@@ -928,9 +977,12 @@ def _split_inline_reference_lines(line: str) -> list[str]:
         *INLINE_REFERENCE_START_CANDIDATE_RE.finditer(line),
         *INLINE_SURNAME_INITIALS_START_CANDIDATE_RE.finditer(line),
         *INLINE_SURNAME_BARE_INITIALS_YEAR_START_CANDIDATE_RE.finditer(line),
+        *INLINE_VANCOUVER_AUTHOR_LIST_START_CANDIDATE_RE.finditer(line),
+        *INLINE_SEMICOLON_FULL_AUTHOR_LIST_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_DOT_START_CANDIDATE_RE.finditer(line),
         *INLINE_ORGANIZATION_PAREN_START_CANDIDATE_RE.finditer(line),
+        *INLINE_ORGANIZATION_SENTENCE_START_CANDIDATE_RE.finditer(line),
         *INLINE_CITATION_KEY_START_CANDIDATE_RE.finditer(line),
         *INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE.finditer(line),
     ]
@@ -948,11 +1000,18 @@ def _split_inline_reference_lines(line: str) -> list[str]:
                 continue
         if not prefix_plain:
             continue
+        candidate_after = line[offset:].lstrip()
+        if REFERENCE_NUMBERED_ENTRY_MARKER_RE.match(candidate_after) and re.search(
+            r"\bpp?\.\s*$", prefix_plain, re.IGNORECASE
+        ):
+            continue
         ends_after_page_span = _reference_text_ends_after_page_span(prefix_plain)
+        ends_after_running_header = _reference_text_ends_after_running_header(prefix_plain)
         if (
             prefix_plain.endswith((".", ".)", "〉", "}", "]"))
             or REFERENCE_URL_DOI_RE.search(prefix_plain)
             or ends_after_page_span
+            or ends_after_running_header
         ):
             split_offsets.append(offset)
             segment_start = offset
@@ -979,6 +1038,10 @@ def _reference_text_ends_after_page_span(text: str) -> bool:
             re.IGNORECASE,
         )
     )
+
+
+def _reference_text_ends_after_running_header(text: str) -> bool:
+    return bool(REFERENCE_RUNNING_HEADER_TRAILER_RE.search(text))
 
 
 def _normalize_reference_entry(parts: list[str]) -> str:

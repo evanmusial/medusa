@@ -105,6 +105,74 @@ def test_extract_document_bibliography_handles_numbered_uppercase_section_headin
     assert "ACKNOWLEDGEMENT" not in result["bibliography"]
 
 
+def test_extract_document_bibliography_handles_inline_elsevier_references():
+    from app.models import Document, DocumentPage
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Inline Elsevier References Paper",
+        original_filename="inline-elsevier-references.pdf",
+        checksum_sha256="8" * 64,
+    )
+    document.pages.append(
+        DocumentPage(
+            page_number=13,
+            normalized_text=(
+                "The classifiers are currently trained on a limited dataset. "
+                "A tool can also be developed on the basis of proposed approach. "
+                "References Breiman L, Friedman J, Stone CJ, Olshen RA. Classification and regression trees. "
+                "Chapman & Hall/CRC; 1984. Chow K, Frank YL, Michael YK, Pierre KL. The rules of time on ntfs "
+                "file system. In: Proceedings of the second international workshop on systematic approaches to "
+                "digital forensic engineering. Washington, DC, USA: IEEE Computer Society; 2007. p. 71-85. "
+                "Gordon LA, Loeb MP, Lucyshyn W, Richardson R. Computer crime and security survey. Technical "
+                "report. CSI/FBI; 2006. Grier J. Detecting data theft using stochastic forensics. Digital Invest "
+                "2011; 8(Suppl.):S71-7. P.C. Patel, U. Singh / Digital Investigation 10 (2013) 385-397 "
+                "Harlan C. Windows forensic analysis DVD toolkit. 2nd ed. Syngress Publishing; 2009. p. 217. "
+                "Jang JSR. Anfis: adaptive-network-based fuzzy inference system. IEEE Trans Syst Man Cybern "
+                "1993;23:665-85. MATLAB. version 7.14.0.739 (R2012a). Natick, Massachusetts: The MathWorks Inc.; "
+                "2012. Microsoft. Microsoft developer network: Implementation of file.copy. "
+                "http://msdn.microsoft.com/en-us/library/c6cfw35a.aspx; 2009a. accessed 08.02.13. "
+                "SunMicrosystems. Solaris mv command implementation. http://src.opensolaris.org/sourse/xref/"
+                "onnv/onnv-gate/usr/src/cmd/mv/mv.c; 2009a. accessed 20.11.12. "
+                "Zadeh LA. Fuzzy sets. Inf Control 1965;8:338-53."
+            ),
+        )
+    )
+
+    result = extract_document_bibliography(document)
+    entries = result["bibliography"].splitlines()
+
+    assert result["evidence"]["source"] == "page_text"
+    assert result["evidence"]["page_start"] == 13
+    assert result["evidence"]["entry_count_estimate"] == 10
+    assert entries[0].startswith("Breiman L, Friedman J")
+    assert entries[3].startswith("Grier J. Detecting data theft")
+    assert entries[4] == "Harlan C. Windows forensic analysis DVD toolkit. 2nd ed. Syngress Publishing; 2009. p. 217."
+    assert entries[5].startswith("Jang JSR. Anfis")
+    assert entries[-1].startswith("Zadeh LA. Fuzzy sets")
+    assert not any("P.C. Patel" in entry for entry in entries)
+
+
+def test_bibliography_cleanup_keeps_semicolon_full_name_entries_distinct():
+    from app.services.concordance import _bibliography_entries_for_cleanup
+
+    bibliography = (
+        "C. Yue and H. Wang, \"BogusBiter: A transparent protection against phishing attacks,\" "
+        "ACM Trans. Int. Technol., vol. 10, no. 2, pp. 1-31, May 2010.\n"
+        "Tara Baniya; Dipesh Gautam; Yoohwan Kim,\"Safeguarding Web Surfing with URL Blacklisting\","
+        "Information Technology - New Generations (ITNG), 2015 12th International Conference,13-15 April 2015\n"
+        "Song Wang; Karina Gomez Chavez; Sithamparanathan Kandeepan,\"SECO: SDN sEcure COntroller algorithm\","
+        "Information and Communication Technology (ICoIC7), 2017 5th International Conference,17-19 May 2017"
+    )
+
+    entries = _bibliography_entries_for_cleanup(bibliography)
+
+    assert len(entries) == 3
+    assert entries[0].startswith("C. Yue and H. Wang")
+    assert entries[1].startswith("Tara Baniya; Dipesh Gautam; Yoohwan Kim")
+    assert entries[2].startswith("Song Wang; Karina Gomez Chavez")
+
+
 def test_extract_document_bibliography_prefers_pdf_span_markdown(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service
