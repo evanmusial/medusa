@@ -286,6 +286,10 @@ def test_cloud_run_claim_is_disabled_by_default_and_uses_same_lease_quorum(monke
 
 
 def test_cloud_run_cost_formula_and_scale_down_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDUSA_CLOUD_RUN_PROJECT", "musial-medusa")
+    monkeypatch.setenv("MEDUSA_CLOUD_RUN_IMAGE", "us-south1-docker.pkg.dev/musial-medusa/medusa/worker:latest")
+    monkeypatch.setenv("MEDUSA_CLOUD_RUN_SERVICE_ACCOUNT", "medusa-cloud-run-worker@musial-medusa.iam.gserviceaccount.com")
+    monkeypatch.setenv("MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL", "https://medusa.home.musial.io:3737")
     Session = make_session(monkeypatch, tmp_path)
     from app.services.preferences import update_app_preferences
     from app.services.slipstream import CLOUD_RUN_WORKER_KIND, claim_next_job_lease, cloud_run_cost_estimates, cloud_run_scale_plan
@@ -311,6 +315,8 @@ def test_cloud_run_cost_formula_and_scale_down_guard(monkeypatch, tmp_path):
         assert "--instances 0" in forced["command"]
         assert "--cpu 4.0" in forced["status"]["commands"]["deploy"]
         assert "--memory 8.0Gi" in forced["status"]["commands"]["deploy"]
+        assert "--args=-m,app.slipstream.client,--cloud-run" in forced["status"]["commands"]["deploy"]
+        assert "MEDUSA_CLOUD_RUN_PROJECT=musial-medusa" in forced["status"]["commands"]["deploy"]
 
 
 def test_heartbeat_extends_lease_and_expiry_requeues_job(monkeypatch, tmp_path):

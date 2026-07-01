@@ -83,7 +83,7 @@ The runtime service account should not retain project-level Cloud Run Builder, C
 
 ## Cost Model
 
-The backend constants use the current published Cloud Run worker-pool rates checked on 2026-06-30 for `us-central1`:
+The backend constants use the current published Cloud Run worker-pool rates checked on 2026-06-30 for `us-south1`:
 
 - vCPU: `$0.000011244` per vCPU-second
 - Memory: `$0.000001235` per GiB-second
@@ -112,6 +112,7 @@ python -m app.slipstream.client --cloud-run
 Cloud Run mode:
 
 - Reads `MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL` from env.
+- Reads `MEDUSA_CLOUD_RUN_PROJECT` from env for Secret Manager lookups.
 - Reads client state from Secret Manager.
 - Uses `/tmp/medusa-cloud-run/slipstream-client.json` as the scratch state path.
 - Claims with `worker_kind=cloud_run`.
@@ -124,7 +125,14 @@ Cloud Run mode:
 1. Enable Slipstream in Medusa with a public HTTPS base URL.
 2. Create a Slipstream enrollment in Settings.
 3. Register a Cloud Run client once and store the resulting `client_id` plus private key in Secret Manager.
-4. Build and push the Medusa worker image to Artifact Registry.
+4. Build and push the Medusa worker image to Artifact Registry. Cloud Run currently requires a `linux/amd64` image, so local Apple Silicon builds must use Buildx:
+
+```bash
+docker buildx build --platform linux/amd64 --provenance=false \
+  -t us-south1-docker.pkg.dev/musial-medusa/medusa/worker:latest \
+  --push ./backend
+```
+
 5. Deploy/update the worker pool with the Settings-generated command.
 6. Save Cloud Run preferences in Settings:
    - enabled/disabled
@@ -140,6 +148,7 @@ Scale-down planning blocks target `0` when active Cloud Run leases exist unless 
 - Idle pool time that cannot be tied to a document should be recorded as an operational event later; per-document runtime is recorded through Composition rows.
 - Secret Manager versions for the Slipstream `client_id` and private key must be populated after the Cloud Run client is registered.
 - Marker/model cache downloads should be avoided unless the image bakes the cache or the pool is intentionally kept warm.
+- V1 deploys the full backend image as the worker image. It works, but it pulls in the Marker/Torch stack and should become a lean Cloud Run worker image before frequent deployments.
 
 ## Verification
 

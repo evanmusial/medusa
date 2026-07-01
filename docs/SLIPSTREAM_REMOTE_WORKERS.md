@@ -56,7 +56,7 @@ Cloud Run uses the same client with `python -m app.slipstream.client --cloud-run
 
 Settings exposes Cloud Run as a separate capacity control next to local import workers and online Slipstream clients. It is disabled by default, uses numeric concurrency to represent desired worker-pool instances, and treats disabled as a target of `0`. The sane default flavor is Economy (`1 vCPU`, `2 GiB`), import-only, max `4` instances, and target concurrency `1` when enabled; the dropdown can also save Balanced, Performance, or High Memory shapes.
 
-At current `us-central1` worker-pool rates, the default shape costs about `$0.000823/minute`, `$0.0494/hour`, and `$0.0041` for a five-minute typical document before model/OCR costs. The UI shows these estimates and generates deploy/update command text, but Medusa does not execute cloud scaling commands itself.
+At current `us-south1` worker-pool rates, the default shape costs about `$0.000823/minute`, `$0.0494/hour`, and `$0.0041` for a five-minute typical document before model/OCR costs. The UI shows these estimates and generates deploy/update command text, but Medusa does not execute cloud scaling commands itself.
 
 ## Laptop Worker Profile
 

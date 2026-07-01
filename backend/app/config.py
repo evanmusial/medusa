@@ -178,7 +178,7 @@ class Settings(BaseSettings):
     cloud_run_workers_enabled: bool = Field(default=False, validation_alias="MEDUSA_CLOUD_RUN_WORKERS_ENABLED")
     cloud_run_flavor: str = Field(default="economy", validation_alias="MEDUSA_CLOUD_RUN_FLAVOR")
     cloud_run_project: str | None = Field(default=None, validation_alias="MEDUSA_CLOUD_RUN_PROJECT")
-    cloud_run_region: str = Field(default="us-central1", validation_alias="MEDUSA_CLOUD_RUN_REGION")
+    cloud_run_region: str = Field(default="us-south1", validation_alias="MEDUSA_CLOUD_RUN_REGION")
     cloud_run_worker_pool: str = Field(default="medusa-processing", validation_alias="MEDUSA_CLOUD_RUN_WORKER_POOL")
     cloud_run_image: str | None = Field(default=None, validation_alias="MEDUSA_CLOUD_RUN_IMAGE")
     cloud_run_service_account: str | None = Field(default=None, validation_alias="MEDUSA_CLOUD_RUN_SERVICE_ACCOUNT")

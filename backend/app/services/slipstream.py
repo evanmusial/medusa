@@ -146,6 +146,7 @@ def _cloud_run_env_vars() -> dict[str, str]:
     settings = get_settings()
     env_vars = {
         "MEDUSA_SLIPSTREAM_PUBLIC_BASE_URL": settings.slipstream_public_base_url or "",
+        "MEDUSA_CLOUD_RUN_PROJECT": settings.cloud_run_project or "",
         "MEDUSA_CLOUD_RUN_WORKER_STATE_PATH": settings.cloud_run_worker_state_path,
         "MEDUSA_CLOUD_RUN_CLIENT_ID_SECRET": settings.cloud_run_client_id_secret,
         "MEDUSA_CLOUD_RUN_PRIVATE_KEY_SECRET": settings.cloud_run_private_key_secret,
@@ -161,7 +162,7 @@ def _cloud_run_env_var_arg() -> str:
 def cloud_run_commands(*, desired_instances: int | None = None, cpu: float | None = None, memory_gib: float | None = None) -> dict[str, str]:
     settings = get_settings()
     project = settings.cloud_run_project or "PROJECT"
-    region = settings.cloud_run_region or "us-central1"
+    region = settings.cloud_run_region or "us-south1"
     worker_pool = settings.cloud_run_worker_pool or "medusa-processing"
     image = settings.cloud_run_image or f"{region}-docker.pkg.dev/{project}/medusa/worker:latest"
     service_account = settings.cloud_run_service_account or f"medusa-cloud-run-worker@{project}.iam.gserviceaccount.com"
@@ -191,8 +192,7 @@ def cloud_run_commands(*, desired_instances: int | None = None, cpu: float | Non
         str(instances),
         "--command",
         "python",
-        "--args",
-        "-m,app.slipstream.client,--cloud-run",
+        "--args=-m,app.slipstream.client,--cloud-run",
     ]
     if env_arg:
         base.extend(["--set-env-vars", env_arg])

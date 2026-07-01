@@ -199,7 +199,7 @@ MEDUSA_SLIPSTREAM_SIGNATURE_WINDOW_SECONDS=300
 MEDUSA_CLOUD_RUN_WORKERS_ENABLED=false
 MEDUSA_CLOUD_RUN_FLAVOR=economy
 MEDUSA_CLOUD_RUN_PROJECT=
-MEDUSA_CLOUD_RUN_REGION=us-central1
+MEDUSA_CLOUD_RUN_REGION=us-south1
 MEDUSA_CLOUD_RUN_WORKER_POOL=medusa-processing
 MEDUSA_CLOUD_RUN_IMAGE=
 MEDUSA_CLOUD_RUN_SERVICE_ACCOUNT=
@@ -225,22 +225,28 @@ The current bundled runner supports `import_preprocess`: it downloads the origin
 
 Cloud Run worker pools are a disabled-by-default Slipstream profile, not a second queue. Settings > Cloud Run stores the effective enable switch, numeric target concurrency, and worker flavor; disabled means a target of `0` instances, and enabling defaults to `1`. The conservative default flavor is Economy (`1 vCPU`, `2 GiB`), import-only, maximum `4` instances, and `/tmp` scratch storage. Other saved flavors are Balanced (`2 vCPU`, `4 GiB`), Performance (`4 vCPU`, `8 GiB`), and High Memory (`4 vCPU`, `16 GiB`). Cloud Run workers run `python -m app.slipstream.client --cloud-run`, claim `worker_kind=cloud_run` leases over HTTPS, and append a Cloud Run runtime cost row to the returned Composition manifest. They do not receive PostgreSQL, OpenAI, Gemini, Google Vision, or GCS credentials.
 
-At the current published `us-central1` Cloud Run worker-pool rates, the default shape costs about `$0.000823/minute`, `$0.0494/hour`, and roughly `$0.0041` for a five-minute typical 12-page document before model/OCR costs. Keeping one instance always on for a 30-day month is about `$35.55` gross before any free-tier effects, so Cloud Run is recommended for burst batches or local CPU relief, not occasional single-document imports.
+At the current published `us-south1` Cloud Run worker-pool rates, the default shape costs about `$0.000823/minute`, `$0.0494/hour`, and roughly `$0.0041` for a five-minute typical 12-page document before model/OCR costs. Keeping one instance always on for a 30-day month is about `$35.55` gross before any free-tier effects, so Cloud Run is recommended for burst batches or local CPU relief, not occasional single-document imports.
 
 Cloud Run runtime credentials should stay narrow. The runtime service account needs `roles/secretmanager.secretAccessor` on the Slipstream client-id and private-key secrets only. The user or deployer identity that builds/deploys needs Cloud Run deploy/update access, Artifact Registry write access, and `roles/iam.serviceAccountUser` on the runtime service account.
 
 Example worker-pool deploy/update commands are generated in Settings > Cloud Run. The underlying command shape is:
 
 ```bash
+docker buildx build --platform linux/amd64 --provenance=false \
+  -t us-south1-docker.pkg.dev/PROJECT/medusa/worker:latest \
+  --push ./backend
+```
+
+```bash
 gcloud run worker-pools deploy medusa-processing \
-  --region us-central1 \
-  --image us-central1-docker.pkg.dev/PROJECT/medusa/IMAGE \
+  --region us-south1 \
+  --image us-south1-docker.pkg.dev/PROJECT/medusa/worker:latest \
   --service-account medusa-cloud-run-worker@PROJECT.iam.gserviceaccount.com \
   --cpu 1 \
   --memory 2Gi \
   --instances 0 \
   --command python \
-  --args -m,app.slipstream.client,--cloud-run
+  --args=-m,app.slipstream.client,--cloud-run
 ```
 
 The local laptop worker profile lives in `docker-compose.slipstream.yml`. Copy `.env.slipstream.example` to ignored `.env.slipstream`, set `MEDUSA_SLIPSTREAM_ENROLLMENT_TOKEN` to a fresh Settings token, then run:

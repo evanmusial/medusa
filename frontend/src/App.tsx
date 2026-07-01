@@ -24787,7 +24787,7 @@ function CloudRunWorkerSettingsPanel({
         </div>
         <div>
           <span>Region</span>
-          <strong>{status?.region || "us-central1"}</strong>
+          <strong>{status?.region || "us-south1"}</strong>
         </div>
         <div>
           <span>Jobs</span>
