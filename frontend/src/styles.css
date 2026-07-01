@@ -516,10 +516,31 @@ textarea {
   overflow: hidden;
 }
 
-:where(:root[data-icon-motion="rail"], :root[data-icon-motion="rim"], :root[data-icon-motion="pulse"], :root[data-icon-motion="snap"], [data-icon-motion-preview])
+:where(:root[data-icon-motion], [data-icon-motion-preview])
   :is(.async-feedback-progress svg, svg.spin):not(.lucide-refresh-cw):not(.lucide-rotate-cw):not(.lucide-rotate-ccw) {
   animation: none;
   transform: none;
+}
+
+:where(:root[data-icon-motion="sheen"], [data-icon-motion-preview="sheen"])
+  :is(.primary-button, .secondary-button, .icon-button).async-feedback-progress::before,
+:where(:root[data-icon-motion="sheen"], [data-icon-motion-preview="sheen"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    transparent 34%,
+    color-mix(in srgb, white 42%, transparent) 48%,
+    transparent 64%,
+    transparent 100%
+  );
+  pointer-events: none;
+  transform: translateX(-130%);
+  animation: motion-sheen-pass 1.35s ease-in-out infinite;
 }
 
 :where(:root[data-icon-motion="rim"], [data-icon-motion-preview="rim"])
@@ -533,6 +554,61 @@ textarea {
   border-radius: inherit;
   pointer-events: none;
   animation: motion-rim-sweep 1.4s ease-in-out infinite;
+}
+
+:where(:root[data-icon-motion="halo"], [data-icon-motion-preview="halo"])
+  :is(.primary-button, .secondary-button, .icon-button).async-feedback-progress,
+:where(:root[data-icon-motion="halo"], [data-icon-motion-preview="halo"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon) {
+  animation: motion-halo-breath 1.55s ease-in-out infinite;
+}
+
+:where(:root[data-icon-motion="beacon"], [data-icon-motion-preview="beacon"])
+  :is(.primary-button, .secondary-button, .icon-button).async-feedback-progress::after,
+:where(:root[data-icon-motion="beacon"], [data-icon-motion-preview="beacon"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon)::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--blue);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 24%, transparent);
+  pointer-events: none;
+  animation: motion-beacon-dot 1.2s ease-in-out infinite;
+}
+
+:where(:root[data-icon-motion="meter"], [data-icon-motion-preview="meter"]) .async-action-progress.indeterminate span,
+:where(:root[data-icon-motion="meter"], [data-icon-motion-preview="meter"]) .release-upgrade-track span {
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--blue) 18%, white) 0%,
+    var(--blue) 34%,
+    color-mix(in srgb, var(--teal) 48%, var(--blue)) 50%,
+    var(--blue) 66%,
+    color-mix(in srgb, var(--blue) 18%, white) 100%
+  );
+  background-size: 220% 100%;
+  animation: motion-meter-fill 1.25s linear infinite;
+  transform: none;
+}
+
+:where(:root[data-icon-motion="meter"], [data-icon-motion-preview="meter"])
+  :is(.release-upgrade-emblem, .motion-preview-dialog .confirm-dialog-icon)::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--blue), color-mix(in srgb, var(--teal) 48%, var(--blue)), var(--blue));
+  background-size: 220% 100%;
+  pointer-events: none;
+  animation: motion-meter-fill 1.25s linear infinite;
 }
 
 :where(:root[data-icon-motion="pulse"], [data-icon-motion-preview="pulse"])
@@ -562,6 +638,23 @@ textarea {
   transform: none;
 }
 
+@keyframes motion-sheen-pass {
+  0% {
+    opacity: 0;
+    transform: translateX(-130%);
+  }
+
+  18%,
+  76% {
+    opacity: 0.78;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(130%);
+  }
+}
+
 @keyframes motion-rim-sweep {
   0%,
   100% {
@@ -572,6 +665,46 @@ textarea {
   50% {
     opacity: 1;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent);
+  }
+}
+
+@keyframes motion-halo-breath {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--blue) 16%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--blue) 0%, transparent);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--blue) 24%, transparent),
+      0 0 0 5px color-mix(in srgb, var(--blue) 10%, transparent);
+  }
+}
+
+@keyframes motion-beacon-dot {
+  0%,
+  100% {
+    opacity: 0.48;
+    transform: scale(0.86);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 24%, transparent);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--blue) 0%, transparent);
+  }
+}
+
+@keyframes motion-meter-fill {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  100% {
+    background-position: 220% 50%;
   }
 }
 
@@ -11928,7 +12061,7 @@ pre {
 
 .motion-palette-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
   gap: 8px;
 }
 
@@ -11977,18 +12110,45 @@ pre {
 }
 
 .motion-palette-preview {
-  grid-column: 2;
+  grid-column: 1 / -1;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(92px, 1fr) 34px minmax(52px, 0.65fr);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding-top: 1px;
+}
+
+.motion-preview-button-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) minmax(72px, 1fr) 34px;
   align-items: center;
-  gap: 7px;
-  padding-top: 2px;
+  gap: 6px;
 }
 
 .motion-preview-button {
   width: 100%;
   min-width: 0;
+  height: 31px;
+  min-height: 31px;
+  justify-content: center;
+  padding-inline: 9px;
+  font-size: 12px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.motion-preview-button.icon-button {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+}
+
+.motion-preview-button .async-action-progress {
+  left: 6px;
+  right: 6px;
+  bottom: 3px;
+  height: 2px;
 }
 
 .motion-preview-dialog {
@@ -11997,6 +12157,9 @@ pre {
   grid-template-columns: 32px minmax(0, 1fr);
   align-items: center;
   gap: 5px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-2) 68%, transparent);
+  padding: 5px 6px;
 }
 
 .motion-preview-dialog .confirm-dialog-icon {
@@ -12005,11 +12168,21 @@ pre {
   height: 32px;
 }
 
-.motion-preview-dialog > span {
+.motion-preview-dialog-lines {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.motion-preview-dialog-lines span {
   display: block;
-  height: 14px;
+  height: 6px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+
+.motion-preview-dialog-lines span:last-child {
+  width: 72%;
 }
 
 .sticky-field-settings {

@@ -779,13 +779,17 @@ const navItems: WorkspaceNavItem[] = [
 const navShortcutByKey = new Map(navItems.map((item) => [item.shortcut.toLowerCase(), item.id]));
 const DEFAULT_VIEW: View = "library";
 const ICON_MOTION_STYLE_KEY = "medusa-icon-motion-style";
-const ICON_MOTION_STYLE_VALUES = ["rail", "rim", "pulse", "snap"] as const;
+const ICON_MOTION_STYLE_VALUES = ["rail", "sheen", "rim", "halo", "beacon", "meter", "pulse", "snap"] as const;
 type IconMotionStyle = (typeof ICON_MOTION_STYLE_VALUES)[number];
 const ICON_MOTION_OPTIONS: Array<{ id: IconMotionStyle; label: string; detail: string; sample: string }> = [
   { id: "rail", label: "Rail Only", detail: "Still glyphs, moving progress rail", sample: "Save" },
-  { id: "rim", label: "Rim Sweep", detail: "Still glyphs, breathing control edge", sample: "Upload" },
-  { id: "pulse", label: "Surface Pulse", detail: "Still glyphs, soft surface pulse", sample: "Stage" },
-  { id: "snap", label: "State Snap", detail: "Still glyphs, static state marker", sample: "Apply" },
+  { id: "sheen", label: "Sheen Pass", detail: "Still glyphs, quiet surface sweep", sample: "Save" },
+  { id: "rim", label: "Rim Sweep", detail: "Still glyphs, moving control edge", sample: "Upload" },
+  { id: "halo", label: "Halo Breath", detail: "Still glyphs, soft outside glow", sample: "Stage" },
+  { id: "beacon", label: "Beacon Dot", detail: "Still glyphs, small status pulse", sample: "Apply" },
+  { id: "meter", label: "Meter Fill", detail: "Still glyphs, moving status strip", sample: "Sync" },
+  { id: "pulse", label: "Surface Pulse", detail: "Still glyphs, whole control breath", sample: "Index" },
+  { id: "snap", label: "State Snap", detail: "Still glyphs, static state marker", sample: "Done" },
 ];
 const VIEW_PATHS: Record<View, string> = {
   library: "/library",
@@ -24723,18 +24727,36 @@ function MotionPalettePanel({
               <small>{option.detail}</small>
             </span>
             <span className="motion-palette-preview" data-icon-motion-preview={option.id} aria-hidden="true">
-              <span className="motion-preview-button secondary-button async-feedback-progress">
-                <Save className="spin" size={15} />
-                {option.sample}
-              </span>
-              <span className="motion-preview-button icon-button async-feedback-progress">
-                <RefreshCw className="spin" size={15} />
+              <span className="motion-preview-button-row">
+                <span className="motion-preview-button primary-button async-feedback-progress">
+                  <Save className="spin" size={15} />
+                  {option.sample}
+                  <span className="async-action-progress indeterminate">
+                    <span />
+                  </span>
+                </span>
+                <span className="motion-preview-button secondary-button async-feedback-progress">
+                  <Upload className="spin" size={15} />
+                  Stage
+                  <span className="async-action-progress indeterminate">
+                    <span />
+                  </span>
+                </span>
+                <span className="motion-preview-button icon-button async-feedback-progress">
+                  <RefreshCw className="spin" size={15} />
+                  <span className="async-action-progress indeterminate">
+                    <span />
+                  </span>
+                </span>
               </span>
               <span className="motion-preview-dialog">
                 <i className="confirm-dialog-icon warning">
                   <AlertTriangle className="spin" size={16} />
                 </i>
-                <span />
+                <span className="motion-preview-dialog-lines">
+                  <span />
+                  <span />
+                </span>
               </span>
             </span>
           </label>
