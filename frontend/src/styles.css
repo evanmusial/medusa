@@ -2647,7 +2647,7 @@ textarea {
   align-items: stretch;
   gap: 8px;
   padding: 0 10px 0 0;
-  font-size: 15px;
+  font-size: 13px;
   overflow: hidden;
   font-weight: 400;
   line-height: 1.2;
@@ -2680,6 +2680,9 @@ textarea {
 .tag-cloud-chip-label {
   min-width: 0;
   align-self: center;
+  font-size: inherit !important;
+  font-weight: 400 !important;
+  line-height: inherit;
   overflow-wrap: anywhere;
   text-align: left;
 }
