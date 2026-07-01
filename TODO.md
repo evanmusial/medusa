@@ -6,10 +6,6 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
 
 ## Highest Priority
 
-- [x] Implement exhaustive DOI/source-link resolution for APA citations.
-  - Acceptance: build on the current DOI regex plus Crossref DOI/title/author/year baseline by searching document metadata, extracted text, references, Crossref Simple Text Query/reference matching, OpenAlex, Semantic Scholar, DataCite, OpenCitations Meta, PubMed/Europe PMC, DOI.org/Registration Agency checks, publisher pages, and targeted web evidence to locate a DOI whenever one exists; APA output favors DOI links; when no DOI can be verified, APA output uses the best direct stable source link, preferably a PDF or other static document; all evidence, attempted sources, conflicts, and confidence are recorded for Queue inspection.
-  - Completed: import enrichment and `citation_refresh` now run a shared DOI/source-link resolution path that scores document metadata, extracted text, and Bibliography/reference text; rejects unrelated reference-list DOI noise without strong current-document context; queries Crossref bibliographic matching, Semantic Scholar, OpenAlex, DataCite, Europe PMC/PubMed evidence, OpenCitations Meta, DOI.org Registration Agency checks, and targeted title web evidence; stores compact candidates, attempted sources, selected DOI/source URL, conflicts, confidence, and Registration Agency evidence under document metadata; copies resolution evidence into Queue citation-candidate metadata when review is needed; retries Crossref by any selected DOI; and fills `Document.source_url` with the best high-confidence stable source link when no DOI verifies.
-
 - [ ] Add real low-text OCR fallback with Google Vision.
   - Acceptance: low-text/scanned PDF pages are detected, OCR is run only when needed, OCR text is stored per page, and processing remains resumable.
   - Partial: bibliography extraction now records symbol-heavy unreadable text pages with `ocr_recommended=true` when a PDF has a corrupt but non-empty text layer, and can use visual OCR as a tail-page rescue when PDF span/page-text bibliography extraction finds nothing. Google Vision is tried when available, with Tesseract as the backend image's local fallback. Remaining work is real OCR execution for whole-page low-text and corrupt-text-layer page text, plus persistence of rescued OCR page text.
@@ -18,10 +14,10 @@ This is the planned-work ledger for Medusa. Keep this file focused on work that 
   - Acceptance: Reader PDF/Scan Page offers an Add Region or Draw Region mode where the user can draw one or more rough bounding boxes on a rendered PDF page, label each region as table/figure/chart/photo/diagram, optionally provide a label and description, preview the exact crop, and keep or discard each candidate. Kept regions create durable figure/table extraction records with page geometry, searchable captions/descriptions, document history, and safe retry semantics; the flow must support multiple regions on one page and work as a rescue path when automatic table/visual extraction misses subtle or mostly text-based tables.
 
 - [ ] Add robust citation verification beyond current Crossref basics.
-  - Acceptance: DOI, Crossref, Semantic Scholar, DOI.org, publisher, PDF/static-source, and web evidence can be compared field by field; uncertain conflicts create Queue candidates instead of overwriting trusted metadata.
+  - Acceptance: compare the already persisted DOI/source-link resolver evidence, Crossref metadata, publisher/static-source evidence, model metadata, and user-corrected fields field by field; conflicting title, author, year, publication, DOI, source URL, page, volume/issue, or article-number evidence creates Queue candidates instead of overwriting trusted metadata. DOI/source-link discovery provider plumbing is complete; this item is about verification policy, conflict adjudication, and safe partial acceptance.
 
 - [ ] Add richer citation review evidence UI.
-  - Acceptance: Queue shows source evidence side by side, supports partial field-level acceptance, and records which source supplied each accepted field.
+  - Acceptance: Queue renders `doi_source_resolution`, `doi_discovery`, `source_link_resolution`, Crossref, AI, publisher/static-source, and user/manual evidence side by side; shows selected/conflicting DOI and source-link candidates with confidence and attempted-source details; supports partial field-level acceptance for citation metadata; and records which source supplied each accepted field.
 
 ## Document Processing And Intelligence
 
