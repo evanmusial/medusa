@@ -59,6 +59,8 @@ from app.services.verifier import (
     discover_doi_from_title,
     enough_metadata_for_verified_citation,
     extract_doi_from_text,
+    local_doi_resolution_evidence,
+    stable_source_link_evidence,
 )
 
 
@@ -988,8 +990,35 @@ class DocumentProcessor:
             },
         }
 
-        if not document.doi:
+        doi_resolution = local_doi_resolution_evidence(
+            doi=document.doi,
+            title=document.title,
+            authors=document.authors,
+            year=document.publication_year,
+            text=document.search_text,
+            bibliography=document.bibliography,
+        )
+        document.metadata_evidence["doi_source_resolution"] = doi_resolution
+        local_doi_selection = doi_resolution.get("selected") if isinstance(doi_resolution.get("selected"), dict) else None
+        if not document.doi and local_doi_selection and not doi_resolution.get("conflicts"):
+            document.doi = local_doi_selection.get("doi")
+        if not document.doi and not (doi_resolution.get("candidates") or document.title):
             document.doi = extract_doi_from_text(document.search_text)
+
+        source_link_resolution = stable_source_link_evidence(
+            title=document.title,
+            authors=document.authors,
+            year=document.publication_year,
+            source_url=document.source_url,
+            text=document.search_text,
+            bibliography=document.bibliography,
+        )
+        document.metadata_evidence["source_link_resolution"] = source_link_resolution
+        source_link_selection = (
+            source_link_resolution.get("selected") if isinstance(source_link_resolution.get("selected"), dict) else None
+        )
+        if not document.source_url and source_link_selection:
+            document.source_url = source_link_selection.get("source_url")
 
         crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year)
         doi_discovery: dict[str, Any] | None = None
@@ -998,6 +1027,13 @@ class DocumentProcessor:
             if doi_discovery:
                 document.doi = doi_discovery["doi"]
                 document.metadata_evidence["doi_discovery"] = doi_discovery
+                document.metadata_evidence["doi_source_resolution"] = {
+                    **doi_resolution,
+                    "title_discovery": doi_discovery,
+                    "conflicts": [*(doi_resolution.get("conflicts") or []), *(doi_discovery.get("conflicts") or [])],
+                }
+                if not document.source_url and doi_discovery.get("source_url"):
+                    document.source_url = doi_discovery.get("source_url")
                 crossref = crossref_lookup(document.doi, document.title, document.authors, document.publication_year)
         crossref_metadata: dict[str, Any] = {}
         if crossref:
@@ -1020,6 +1056,11 @@ class DocumentProcessor:
         }
 
         citation_metadata = merge_citation_metadata(crossref_metadata, document_metadata(document))
+        if document.metadata_evidence.get("doi_source_resolution") or document.metadata_evidence.get("source_link_resolution"):
+            citation_metadata["_resolution_evidence"] = {
+                "doi_source_resolution": document.metadata_evidence.get("doi_source_resolution"),
+                "source_link_resolution": document.metadata_evidence.get("source_link_resolution"),
+            }
         citation_model = model_preferences[MODEL_APA_CITATION]
         apa_candidate = ai.generate_apa_citation_candidate(
             document.original_filename,
@@ -1047,7 +1088,20 @@ class DocumentProcessor:
             document.metadata_evidence["apa_validation_warnings"] = citation_validation_warnings
         else:
             document.metadata_evidence.pop("apa_validation_warnings", None)
-        if enough_metadata_for_verified_citation(citation_metadata) and (document.doi or crossref) and not apa_candidate_needs_review(apa_candidate):
+        source_link_confidence = 0.0
+        if isinstance(source_link_selection, dict):
+            try:
+                source_link_confidence = float(source_link_selection.get("confidence") or 0)
+            except (TypeError, ValueError):
+                source_link_confidence = 0.0
+        trusted_source_link = bool(document.source_url and source_link_confidence >= 0.76)
+        resolution_conflicts = bool(doi_resolution.get("conflicts") or (doi_discovery or {}).get("conflicts"))
+        if (
+            enough_metadata_for_verified_citation(citation_metadata)
+            and (document.doi or crossref or trusted_source_link)
+            and not resolution_conflicts
+            and not apa_candidate_needs_review(apa_candidate)
+        ):
             document.citation_status = "verified"
         else:
             document.citation_status = "needs_review"
@@ -1124,7 +1178,8 @@ class DocumentProcessor:
                 },
                 "citation_status": document.citation_status,
                 "crossref_used": bool(crossref),
-                "doi_discovery_source": doi_discovery.get("source") if doi_discovery else None,
+                "doi_discovery_source": doi_discovery.get("source") if doi_discovery else (local_doi_selection or {}).get("source"),
+                "source_link_resolution": source_link_resolution,
                 "publication_metadata": publication_result,
                 "tag_governance": tag_governance,
             },

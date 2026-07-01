@@ -1,14 +1,14 @@
 # Medusa TODO
 
-Last updated: 2026-06-30
+Last updated: 2026-07-01
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
 ## Highest Priority
 
-- [ ] Implement exhaustive DOI/source-link resolution for APA citations.
+- [x] Implement exhaustive DOI/source-link resolution for APA citations.
   - Acceptance: build on the current DOI regex plus Crossref DOI/title/author/year baseline by searching document metadata, extracted text, references, Crossref Simple Text Query/reference matching, OpenAlex, Semantic Scholar, DataCite, OpenCitations Meta, PubMed/Europe PMC, DOI.org/Registration Agency checks, publisher pages, and targeted web evidence to locate a DOI whenever one exists; APA output favors DOI links; when no DOI can be verified, APA output uses the best direct stable source link, preferably a PDF or other static document; all evidence, attempted sources, conflicts, and confidence are recorded for Queue inspection.
-  - Partial: import enrichment and `citation_refresh` now try Semantic Scholar title DOI lookup plus an enabled targeted `"paper title" DOI` static web-search fallback when local text and Crossref title matching do not find a DOI. Found DOI evidence is stored under document metadata and Crossref is retried by that DOI. Remaining work is reference-list mining, Crossref Simple Text Query/reference matching, OpenAlex, DataCite, OpenCitations Meta, PubMed/Europe PMC, DOI.org/Registration Agency checks, publisher pages, richer stable source-link fallback, conflict handling, and field-level review evidence.
+  - Completed: import enrichment and `citation_refresh` now run a shared DOI/source-link resolution path that scores document metadata, extracted text, and Bibliography/reference text; rejects unrelated reference-list DOI noise without strong current-document context; queries Crossref bibliographic matching, Semantic Scholar, OpenAlex, DataCite, Europe PMC/PubMed evidence, OpenCitations Meta, DOI.org Registration Agency checks, and targeted title web evidence; stores compact candidates, attempted sources, selected DOI/source URL, conflicts, confidence, and Registration Agency evidence under document metadata; copies resolution evidence into Queue citation-candidate metadata when review is needed; retries Crossref by any selected DOI; and fills `Document.source_url` with the best high-confidence stable source link when no DOI verifies.
 
 - [ ] Add real low-text OCR fallback with Google Vision.
   - Acceptance: low-text/scanned PDF pages are detected, OCR is run only when needed, OCR text is stored per page, and processing remains resumable.
