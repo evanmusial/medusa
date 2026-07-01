@@ -2641,13 +2641,14 @@ textarea {
 }
 
 .tag-cloud-chip {
+  --tag-cloud-chip-font-size: 13px;
   min-height: 34px;
   max-width: 100%;
   display: inline-flex;
   align-items: stretch;
   gap: 8px;
   padding: 0 10px 0 0;
-  font-size: 13px;
+  font-size: var(--tag-cloud-chip-font-size);
   overflow: hidden;
   font-weight: 400;
   line-height: 1.2;
@@ -2671,8 +2672,8 @@ textarea {
   border-radius: 999px;
   background: #4b5563;
   color: #ffffff;
-  font-size: inherit !important;
-  font-weight: 700 !important;
+  font-size: var(--tag-cloud-chip-font-size) !important;
+  font-weight: 650 !important;
   font-variant-numeric: tabular-nums;
   line-height: inherit;
 }
@@ -2680,7 +2681,7 @@ textarea {
 .tag-cloud-chip-label {
   min-width: 0;
   align-self: center;
-  font-size: inherit !important;
+  font-size: var(--tag-cloud-chip-font-size) !important;
   font-weight: 400 !important;
   line-height: inherit;
   overflow-wrap: anywhere;
