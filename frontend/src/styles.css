@@ -4254,6 +4254,11 @@ textarea {
   line-height: 1.25;
 }
 
+.detail-pane:not(.reader-detail) .detail-head h2 {
+  font-size: 21px;
+  line-height: 1.22;
+}
+
 .detail-head p {
   margin: 0;
   color: var(--muted);

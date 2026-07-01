@@ -983,6 +983,11 @@ function authorLine(document: LibraryDocumentRow) {
     .join(", ");
 }
 
+function detailAuthorLine(document: LibraryDocumentRow) {
+  const year = document.publication_year ? ` (${document.publication_year})` : "";
+  return `${authorLine(document)}${year}`;
+}
+
 function pageCountMarker(document: LibraryDocumentRow) {
   return document.page_count > 0 ? `${document.page_count}p` : "?p";
 }
@@ -14869,7 +14874,7 @@ function DocumentPanelContent({
           <div className="detail-head">
             <div className="detail-identity">
               {stickyFieldSet.has("title") ? <h2>{document.title}</h2> : null}
-              {stickyFieldSet.has("authors") ? <p>{authorLine(document)}</p> : null}
+              {stickyFieldSet.has("authors") ? <p>{detailAuthorLine(document)}</p> : null}
               {stickyFactItems.length ? (
                 <div className="detail-sticky-facts">
                   {stickyFactItems.map((item) => (
