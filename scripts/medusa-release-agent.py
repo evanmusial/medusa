@@ -68,6 +68,34 @@ def run_command(args: list[str], *, cwd: Path, env: dict[str, str] | None = None
     return result
 
 
+def json_payload_from_output(output: str) -> dict[str, Any]:
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def backend_json_error_detail(payload: dict[str, Any]) -> str | None:
+    for key in ("last_error", "status_detail", "error", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    blockers = payload.get("blockers")
+    if isinstance(blockers, list):
+        blocker_text = "; ".join(str(blocker).strip() for blocker in blockers if str(blocker).strip())
+        if blocker_text:
+            return blocker_text
+    if payload.get("idle") is False:
+        return "Medusa is not idle."
+    return None
+
+
 def git(repo: Path, *args: str, check: bool = True) -> str:
     result = run_command(["git", *args], cwd=repo, check=check)
     return result.stdout.strip()
@@ -623,17 +651,14 @@ def compose_exec_command(args: argparse.Namespace, service: str, command_args: l
     return [*compose_base_command(args), "exec", "-T", service, *command_args]
 
 
-def run_backend_json(args: argparse.Namespace, command_args: list[str]) -> dict[str, Any]:
+def run_backend_json(args: argparse.Namespace, command_args: list[str], *, allow_error_payload: bool = False) -> dict[str, Any]:
     result = run_command(compose_exec_command(args, "backend", command_args), cwd=args.repo.resolve(), check=False)
     output = result.stdout.strip()
-    payload: dict[str, Any] = {}
-    if output:
-        try:
-            payload = json.loads(output.splitlines()[-1])
-        except json.JSONDecodeError:
-            payload = {}
+    payload = json_payload_from_output(output)
     if result.returncode != 0:
-        detail = payload.get("last_error") or payload.get("status_detail") or result.stderr.strip() or output or "backend command failed"
+        if allow_error_payload and payload:
+            return payload
+        detail = backend_json_error_detail(payload) or result.stderr.strip() or output or "backend command failed"
         raise RuntimeError(str(detail))
     return payload
 
@@ -649,7 +674,7 @@ def check_maintenance_readiness(args: argparse.Namespace, *, ignore_active_sessi
     ]
     if ignore_active_sessions:
         command.append("--ignore-active-sessions")
-    payload = run_backend_json(args, command)
+    payload = run_backend_json(args, command, allow_error_payload=True)
     if not payload.get("idle"):
         blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
         raise RuntimeError("; ".join(str(blocker) for blocker in blockers) or "Medusa is not idle.")
@@ -677,6 +702,7 @@ def run_pre_maintenance_backup(args: argparse.Namespace, *, reason: str) -> dict
             "--wait",
             "--json",
         ],
+        allow_error_payload=True,
     )
     if not payload.get("verified"):
         raise RuntimeError(payload.get("last_error") or payload.get("status_detail") or "Pre-maintenance backup was not verified.")

@@ -246,6 +246,36 @@ def test_release_agent_does_not_run_compose_when_required_backup_gate_fails(monk
     assert compose_calls == []
 
 
+def test_release_agent_readiness_reports_json_blockers_instead_of_stderr_noise(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    args = SimpleNamespace(
+        repo=tmp_path,
+        compose_file=["docker-compose.yml"],
+        idle_grace_seconds=300,
+    )
+    payload = {
+        "idle": False,
+        "blockers": ["database maintenance is running"],
+    }
+
+    def fake_run_command(_command, **_kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps(payload) + "\n",
+            stderr=(
+                "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n"
+                "INFO  [alembic.runtime.migration] Will assume transactional DDL.\n"
+            ),
+        )
+
+    monkeypatch.setattr(agent, "run_command", fake_run_command)
+
+    with pytest.raises(RuntimeError, match="database maintenance is running") as exc:
+        agent.check_maintenance_readiness(args, ignore_active_sessions=True)
+
+    assert "alembic.runtime.migration" not in str(exc.value)
+
+
 def test_release_agent_keeps_metrics_overlay_optional(monkeypatch, tmp_path):
     agent = load_release_agent()
     (tmp_path / "docker-compose.yml").write_text("services: {}\n")
