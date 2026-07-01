@@ -1083,73 +1083,6 @@ textarea {
   transition: width 160ms ease;
 }
 
-.user-options-recent {
-  display: grid;
-  gap: 4px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
-  padding: 8px 0;
-}
-
-.user-options-section {
-  display: grid;
-  gap: 4px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
-  padding: 8px 0;
-}
-
-.user-options-section-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px 2px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
-  text-transform: uppercase;
-}
-
-.user-options-recent-item {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink);
-  padding: 7px 8px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.user-options-recent-item:hover,
-.user-options-recent-item:focus-visible {
-  border-color: color-mix(in srgb, var(--line) 58%, transparent);
-  background: color-mix(in srgb, var(--blue-soft) 52%, transparent);
-  outline: 0;
-}
-
-.user-options-recent-item strong,
-.user-options-recent-item span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.user-options-recent-item strong {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.user-options-recent-item span {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
-}
-
 .command-palette-backdrop {
   position: fixed;
   inset: 0;
@@ -6728,7 +6661,7 @@ pre {
   gap: 10px;
 }
 
-.dropzone {
+.import-workbench .dropzone {
   min-height: 204px;
   border: 1px dashed var(--blue);
   background: var(--blue-soft);
@@ -6784,13 +6717,13 @@ pre {
   background: color-mix(in srgb, var(--teal) 10%, var(--panel));
 }
 
-.dropzone strong {
+.import-workbench .dropzone strong {
   font-size: 20px;
   letter-spacing: 0;
 }
 
-.dropzone-hint,
-.dropzone-status {
+.import-workbench .dropzone-hint,
+.import-workbench .dropzone-status {
   color: var(--muted);
   font-size: 13px;
 }
@@ -11482,201 +11415,6 @@ pre {
   text-transform: none;
 }
 
-.release-history-workbench {
-  display: grid;
-  justify-items: stretch;
-}
-
-.release-history-panel {
-  width: 100%;
-  display: grid;
-  gap: 14px;
-  align-content: start;
-}
-
-.release-history-title-row h2 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 18px;
-  line-height: 1.1;
-}
-
-.release-history-title-row > svg {
-  color: var(--blue);
-}
-
-.release-history-list {
-  display: grid;
-  gap: 12px;
-}
-
-.release-history-entry {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-  border: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
-  border-left: 0;
-  border-right: 0;
-  background: transparent;
-  padding: 16px 0;
-}
-
-.release-history-entry-head {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.release-history-entry-head > div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.release-history-entry-head strong {
-  min-width: 0;
-  color: var(--ink);
-  font-size: 17px;
-  font-weight: 850;
-  line-height: 1.15;
-  overflow-wrap: anywhere;
-}
-
-.release-history-entry-head span,
-.release-history-summary,
-.release-history-change p,
-.release-history-empty span {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.4;
-  text-transform: none;
-}
-
-.release-history-entry-head code,
-.release-history-files code {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-2);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
-  padding: 3px 7px;
-  overflow-wrap: anywhere;
-}
-
-.release-history-entry-head code {
-  flex: 0 1 auto;
-  max-width: 50%;
-}
-
-.release-history-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.release-history-meta-grid > div {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 3px 7px;
-  border: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 10px 11px;
-}
-
-.release-history-meta-grid svg {
-  grid-row: 1 / 3;
-  color: var(--blue);
-  margin-top: 1px;
-}
-
-.release-history-meta-grid span {
-  min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.2;
-}
-
-.release-history-meta-grid strong {
-  min-width: 0;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1.2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.release-history-summary {
-  margin: 0;
-}
-
-.release-history-change-list {
-  display: grid;
-  gap: 8px;
-}
-
-.release-history-change {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 44%, var(--line));
-  padding-left: 10px;
-}
-
-.release-history-change strong {
-  min-width: 0;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 800;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.release-history-change p {
-  margin: 0;
-}
-
-.release-history-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.release-history-files span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.release-history-empty {
-  min-height: 220px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 8px;
-  color: var(--muted);
-  text-align: center;
-}
-
-.release-history-empty svg {
-  color: var(--blue);
-}
-
-.release-history-empty strong {
-  color: var(--ink);
-  font-size: 16px;
-  font-weight: 850;
-}
-
 .status-workbench {
   display: grid;
   justify-items: stretch;
@@ -13452,7 +13190,6 @@ button.history-row,
 .settings-grid,
 .budget-view,
 .utilities-workbench,
-.release-history-workbench,
 .status-workbench,
 .recon-workbench,
 .portfolio-workbench {
@@ -13810,6 +13547,550 @@ button.history-row,
   font-weight: 500;
 }
 
+/* Shared operational workbench language for Queue, Import, Settings, Utilities, and Finances. */
+.import-workbench,
+.queue-workbench,
+.settings-grid,
+.budget-view,
+.utilities-workbench {
+  --ops-copy-size: 15px;
+  --ops-label-size: 14px;
+  --ops-title-size: 20px;
+  --ops-subtitle-size: 17px;
+  --ops-control-height: 44px;
+  color: var(--ink);
+}
+
+.import-workbench,
+.queue-workbench,
+.budget-view,
+.utilities-workbench {
+  gap: 18px;
+  padding: 16px 0 24px;
+}
+
+.import-workbench > *,
+.queue-workbench > *,
+.budget-panel > *,
+.utilities-panel > *,
+.settings-grid > div {
+  min-width: 0;
+}
+
+.import-defaults,
+.import-receipt-card,
+.job-list,
+.queue-panel,
+.budget-command-surface,
+.budget-chart-panel,
+.budget-detail-panel,
+.budget-recent-panel,
+.utilities-section,
+.settings-grid > div {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 20px 0;
+}
+
+.import-workbench > :first-child,
+.queue-workbench > :first-child,
+.budget-panel > :first-child,
+.utilities-panel > :first-child,
+.settings-grid > div:first-of-type {
+  border-top: 0;
+  padding-top: 8px;
+}
+
+.import-workbench .panel-title-row h2,
+.queue-workbench .panel-title-row h2,
+.settings-grid h2,
+.budget-command-surface h2,
+.utilities-panel h2 {
+  color: var(--ink);
+  font-size: var(--ops-title-size);
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: 0;
+}
+
+.import-defaults-head h2,
+.job-list-head h2,
+.budget-chart-head h3,
+.budget-section-head h3,
+.utility-section-title h3 {
+  color: var(--ink);
+  font-size: var(--ops-subtitle-size);
+  font-weight: 560;
+  line-height: 1.22;
+  letter-spacing: 0;
+}
+
+.import-workbench :is(p, .empty-note, .import-preset-note, .dropzone-hint, .dropzone-status),
+.queue-workbench :is(.panel-title-row span, .empty-note, .review-card-title small),
+.settings-grid :is(p, .panel-title-row span, label, legend, .empty-note, .preference-warning),
+.budget-view :is(.panel-title-row span, .budget-chart-head span, .budget-section-head span, .budget-footnote, .budget-trend-axis, .budget-chart-empty, .budget-trend-empty),
+.utilities-workbench :is(.panel-title-row span, .empty-note, .container-path-empty) {
+  color: color-mix(in srgb, var(--ink) 70%, var(--muted));
+  font-size: var(--ops-copy-size);
+  font-weight: 400;
+  line-height: 1.42;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.import-workbench label,
+.budget-controls label,
+.settings-grid label,
+.settings-grid legend {
+  color: var(--ink);
+  font-size: var(--ops-label-size);
+  font-weight: 560;
+  line-height: 1.28;
+}
+
+.import-workbench input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.import-workbench select,
+.budget-controls select,
+.settings-grid input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="file"]),
+.settings-grid select,
+.settings-grid textarea {
+  min-height: var(--ops-control-height);
+  border-color: color-mix(in srgb, var(--line) 82%, var(--ink));
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.dropzone {
+  min-height: 232px;
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--panel));
+}
+
+.dropzone strong {
+  font-size: 23px;
+  font-weight: 620;
+  line-height: 1.15;
+}
+
+.dropzone-hint,
+.dropzone-status {
+  font-size: 15px;
+}
+
+.import-defaults {
+  margin: 0;
+}
+
+.import-defaults-head,
+.job-list-head,
+.budget-chart-head,
+.budget-section-head,
+.utility-section-title {
+  align-items: flex-start;
+}
+
+.import-default-controls {
+  grid-template-columns: minmax(240px, 1.2fr) repeat(3, minmax(180px, 0.7fr));
+  gap: 14px;
+}
+
+.import-picker {
+  border-color: color-mix(in srgb, var(--line) 54%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 42%, transparent);
+  padding: 14px;
+}
+
+.import-picker h3 {
+  font-size: 16px;
+  font-weight: 560;
+}
+
+.import-picker p {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.38;
+}
+
+.import-receipt-grid,
+.budget-metric-grid,
+.utilities-status-grid,
+.backup-status-grid,
+.bulk-intake-summary,
+.usage-metric-grid,
+.cloud-run-config-grid,
+.slipstream-metric-grid {
+  gap: 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  padding-block: 10px;
+}
+
+.import-receipt-grid > div,
+.budget-metric-grid > div,
+.utilities-status-grid > div,
+.backup-status-grid > div,
+.bulk-intake-summary > div,
+.usage-metric-grid > div,
+.cloud-run-config-grid > div,
+.slipstream-metric-grid > div {
+  min-height: 0;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 14px;
+}
+
+.import-receipt-grid > div:first-child,
+.budget-metric-grid > div:first-child,
+.utilities-status-grid > div:first-child,
+.backup-status-grid > div:first-child,
+.bulk-intake-summary > div:first-child,
+.usage-metric-grid > div:first-child,
+.cloud-run-config-grid > div:first-child,
+.slipstream-metric-grid > div:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.import-receipt-grid span,
+.import-receipt-grid em,
+.budget-metric-grid span,
+.utilities-status-grid span,
+.backup-status-grid span,
+.bulk-intake-summary span,
+.usage-metric-grid span,
+.cloud-run-config-grid span,
+.slipstream-metric-grid span {
+  color: color-mix(in srgb, var(--ink) 66%, var(--muted));
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 430;
+  line-height: 1.32;
+  text-transform: none;
+}
+
+.import-receipt-grid strong,
+.budget-metric-grid strong,
+.utilities-status-grid strong,
+.backup-status-grid strong,
+.bulk-intake-summary strong,
+.usage-metric-grid strong,
+.cloud-run-config-grid strong,
+.slipstream-metric-grid strong {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 560;
+  line-height: 1.2;
+}
+
+.import-receipt-card {
+  gap: 14px;
+}
+
+.import-receipt-head h2 {
+  font-size: 17px;
+  font-weight: 560;
+}
+
+.import-receipt-head span {
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+  font-size: 15px;
+  font-weight: 400;
+}
+
+.job-list,
+.queue-job-list,
+.review-list {
+  gap: 0;
+}
+
+.job-row,
+.review-card,
+.budget-recent-row,
+.ingestion-history-row {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.job-row:first-child,
+.review-card:first-child,
+.budget-recent-row:first-child,
+.ingestion-history-row:first-child {
+  border-top: 0;
+}
+
+.job-row {
+  min-height: 64px;
+  padding: 13px 0;
+}
+
+.job-copy strong,
+.review-card-title strong,
+.budget-recent-row strong,
+.ingestion-history-row strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 560;
+  line-height: 1.28;
+}
+
+.job-copy span,
+.job-copy small,
+.review-card-meta span,
+.review-citation .markdown-content.compact p,
+.budget-recent-row span,
+.budget-recent-row em,
+.ingestion-history-row span {
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+  font-size: 14px;
+  font-weight: 430;
+  line-height: 1.35;
+}
+
+.review-card {
+  padding: 14px 0;
+}
+
+.review-card-meta span {
+  min-height: 28px;
+  border-color: color-mix(in srgb, var(--line) 54%, transparent);
+  background: transparent;
+}
+
+.review-citation {
+  border-left-color: color-mix(in srgb, var(--line) 76%, transparent);
+}
+
+.budget-panel {
+  gap: 18px;
+}
+
+.budget-command-surface {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.budget-controls {
+  gap: 12px;
+}
+
+.budget-controls label {
+  min-width: 190px;
+}
+
+.budget-chart-panel,
+.budget-detail-panel,
+.budget-recent-panel {
+  padding: 18px 0;
+}
+
+.budget-chart-head strong,
+.budget-pie span {
+  font-size: 15px;
+  font-weight: 560;
+}
+
+.budget-trend-axis,
+.budget-trend-axis strong,
+.budget-chart-legend-row,
+.budget-chart-legend-row strong,
+.budget-chart-legend-row em,
+.budget-row,
+.budget-row.header {
+  font-size: 14px;
+  line-height: 1.32;
+}
+
+.budget-row {
+  padding-block: 10px;
+}
+
+.budget-footnote {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.bulk-intake-dropzone {
+  min-height: 112px;
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 26%, var(--panel));
+}
+
+.bulk-intake-dropzone strong {
+  font-size: 16px;
+  font-weight: 560;
+}
+
+.bulk-intake-dropzone span,
+.bulk-intake-results-head span,
+.bulk-intake-footer span {
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+  font-size: 14px;
+  line-height: 1.36;
+}
+
+.utility-action-block strong,
+.container-control-row strong,
+.container-path-row strong,
+.container-version-row strong,
+.backup-action-block strong,
+.restore-action-heading strong,
+.backup-history-head strong {
+  font-size: 15px;
+  font-weight: 560;
+}
+
+.utility-action-block span,
+.container-control-row span,
+.container-path-row span,
+.container-version-row span,
+.backup-action-block span,
+.restore-action-heading span,
+.backup-size-estimate,
+.backup-history-head span,
+.backup-history-main small,
+.backup-history-row > span:not(.pill) {
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+  font-size: 14px;
+  font-weight: 430;
+  line-height: 1.36;
+}
+
+/* Top-right shell popovers use the same readable operational typography. */
+.topbar-status-preview {
+  width: min(420px, calc(100vw - 24px));
+  gap: 12px;
+  padding: 14px;
+}
+
+.topbar-status-preview-heading {
+  gap: 10px;
+}
+
+.topbar-status-preview-heading strong {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.22;
+}
+
+.topbar-status-preview-heading span {
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.topbar-status-preview-grid {
+  gap: 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  padding-block: 8px;
+}
+
+.topbar-status-preview-grid > div {
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 10px;
+}
+
+.topbar-status-preview-grid > div:first-child,
+.topbar-status-preview-grid > div:nth-child(3) {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.topbar-status-preview-grid strong {
+  font-size: 16px;
+  font-weight: 560;
+  line-height: 1.24;
+}
+
+.topbar-status-preview-grid span,
+.topbar-status-preview-grid em,
+.topbar-status-preview p {
+  color: color-mix(in srgb, var(--ink) 66%, var(--muted));
+  font-size: 14px;
+  font-weight: 430;
+  line-height: 1.34;
+  text-transform: none;
+}
+
+.topbar-status-preview p {
+  font-size: 14px;
+}
+
+.user-options-menu {
+  width: 304px;
+  gap: 5px;
+  padding: 8px;
+}
+
+.user-options-cache-glance {
+  min-height: 62px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  padding: 9px 10px 12px;
+}
+
+.user-options-cache-glance-body {
+  gap: 7px;
+}
+
+.user-options-cache-glance-body > span {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 520;
+  line-height: 1.28;
+}
+
+.user-options-cache-meter {
+  height: 8px;
+}
+
+.user-options-menu-item {
+  min-height: 42px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 450;
+  padding: 0 10px;
+}
+
+.user-options-menu-item small {
+  color: color-mix(in srgb, var(--ink) 58%, var(--muted));
+  font-size: 14px;
+  font-weight: 520;
+}
+
+.info-popover-tooltip {
+  max-width: min(440px, calc(100vw - 24px));
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 430;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
+.import-workbench :is(small, em, .markdown-content.compact p),
+.queue-workbench :is(small, em, .markdown-content.compact p),
+.settings-grid :is(small, em),
+.budget-view :is(small, em),
+.utilities-workbench :is(small, em) {
+  font-size: 14px;
+  line-height: 1.36;
+}
+
 /* Cloud Run has real controls, so it uses a quiet form rhythm instead of cramming every action into one row. */
 .cloud-run-settings-panel .panel-title-row span,
 .cloud-run-settings-panel p,
@@ -13962,10 +14243,6 @@ button.history-row,
 
   .status-metric-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .release-history-meta-grid {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .status-detail-grid {

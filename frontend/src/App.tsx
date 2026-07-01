@@ -181,7 +181,6 @@ import type {
   ReconEstimate,
   ReconInquiry,
   ReconRun,
-  ReleaseHistory,
   ReleaseStatus,
   SavedSearch,
   SlipstreamLease,
@@ -214,7 +213,6 @@ type View =
   | "stashes"
   | "budget"
   | "utilities"
-  | "release-history"
   | "status"
   | "settings";
 type NavCounts = Partial<Record<View, number>>;
@@ -392,8 +390,6 @@ const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
 const DISMISSED_AI_FAILURE_NOTICE_KEY = "medusa-dismissed-ai-failure-notices";
 const DISMISSED_AI_FAILURE_NOTICE_MAX = 240;
 const COMPLETED_INGESTION_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
-const RECENT_DOCUMENTS_KEY = "medusa-recent-documents";
-const MAX_RECENT_DOCUMENTS = 8;
 const COMMAND_PALETTE_MAX_RESULTS = 14;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
@@ -764,13 +760,6 @@ const STASH_LANE_OPTIONS: Array<{ id: StashLane; label: string; description: str
 ];
 
 type WorkspaceNavItem = { id: View; label: string; icon: typeof Library; shortcut: string };
-type RecentDocumentShortcut = {
-  authors?: string;
-  id: string;
-  title: string;
-  updatedAt: number;
-  year?: string;
-};
 
 const navItems: WorkspaceNavItem[] = [
   { id: "library", label: "Library", icon: Library, shortcut: "L" },
@@ -804,7 +793,6 @@ const VIEW_PATHS: Record<View, string> = {
   stashes: "/stashes",
   budget: "/budget",
   utilities: "/utilities",
-  "release-history": "/release-history",
   status: "/status",
   settings: "/settings",
 };
@@ -823,7 +811,6 @@ const VIEW_TITLE_LABELS: Record<View, string> = {
   stashes: "DOI Stashes",
   budget: "Finances",
   utilities: "Utilities",
-  "release-history": "Release History",
   status: "Status",
   settings: "Settings",
 };
@@ -924,30 +911,6 @@ function writeDismissedAiFailureNoticeIds(ids: Set<string>) {
   window.localStorage.setItem(DISMISSED_AI_FAILURE_NOTICE_KEY, JSON.stringify(bounded));
 }
 
-function readRecentDocuments() {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(RECENT_DOCUMENTS_KEY) || "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is RecentDocumentShortcut => {
-        return (
-          item &&
-          typeof item === "object" &&
-          typeof item.id === "string" &&
-          typeof item.title === "string" &&
-          typeof item.updatedAt === "number"
-        );
-      })
-      .slice(0, MAX_RECENT_DOCUMENTS);
-  } catch {
-    return [];
-  }
-}
-
-function writeRecentDocuments(documents: RecentDocumentShortcut[]) {
-  window.localStorage.setItem(RECENT_DOCUMENTS_KEY, JSON.stringify(documents.slice(0, MAX_RECENT_DOCUMENTS)));
-}
-
 function ingestionHistoryCompletionTime(row: IngestionHistory) {
   const parsed = new Date(row.completed_at || row.updated_at || row.created_at).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -1000,16 +963,6 @@ function authorLine(document: LibraryDocumentRow) {
     .slice(0, 3)
     .map((author) => [author.given, author.family].filter(Boolean).join(" "))
     .join(", ");
-}
-
-function recentDocumentFromDetail(document: DocumentDetail): RecentDocumentShortcut {
-  return {
-    authors: authorLine(document),
-    id: document.id,
-    title: document.title || "Untitled document",
-    updatedAt: Date.now(),
-    year: document.publication_year ? String(document.publication_year) : undefined,
-  };
 }
 
 function pageCountMarker(document: LibraryDocumentRow) {
@@ -3185,11 +3138,9 @@ function CommandPalette({
   onClearSearch,
   onClose,
   onHydrateCache,
-  onOpenDocument,
   onOpenView,
   onRefreshCache,
   open,
-  recentDocuments,
   savedSearches,
   tags,
 }: {
@@ -3201,11 +3152,9 @@ function CommandPalette({
   onClearSearch: () => boolean | void | Promise<boolean | void>;
   onClose: () => void;
   onHydrateCache: () => void;
-  onOpenDocument: (documentId: string) => boolean | void | Promise<boolean | void>;
   onOpenView: (view: View) => boolean | void | Promise<boolean | void>;
   onRefreshCache: () => void;
   open: boolean;
-  recentDocuments: RecentDocumentShortcut[];
   savedSearches: SavedSearch[];
   tags: Tag[];
 }) {
@@ -3250,15 +3199,6 @@ function CommandPalette({
         section: "Workspaces",
       },
       {
-        detail: activeView === "release-history" ? "Current workspace" : "Open release notes",
-        icon: Rocket,
-        id: "workspace-release-history",
-        keywords: ["release", "history", "notes", "changelog", "version"],
-        label: "Release History",
-        run: () => onOpenView("release-history"),
-        section: "Workspaces",
-      },
-      {
         detail: activeView === "settings" ? "Current workspace" : "Open preferences and operations",
         icon: Settings,
         id: "workspace-settings",
@@ -3268,15 +3208,6 @@ function CommandPalette({
         section: "Workspaces",
       },
     ];
-    const recentItems = recentDocuments.map<CommandPaletteItem>((document) => ({
-      detail: [document.authors, document.year].filter(Boolean).join(" / ") || "Recently viewed document",
-      icon: BookOpen,
-      id: `recent-${document.id}`,
-      keywords: [document.title, document.authors || "", document.year || "", "recent", "continue", "document"],
-      label: document.title,
-      run: () => onOpenDocument(document.id),
-      section: "Continue",
-    }));
     const savedSearchItems = savedSearches.map<CommandPaletteItem>((savedSearch) => ({
       detail: savedSearchSummary(savedSearch, savedSearchLookup),
       icon: Bookmark,
@@ -3321,7 +3252,7 @@ function CommandPalette({
         section: "Actions",
       },
     ];
-    return [...workspaceItems, ...recentItems, ...savedSearchItems, ...actionItems];
+    return [...workspaceItems, ...savedSearchItems, ...actionItems];
   }, [
     activeView,
     cacheActionBusy,
@@ -3329,10 +3260,8 @@ function CommandPalette({
     onApplySavedSearch,
     onClearSearch,
     onHydrateCache,
-    onOpenDocument,
     onOpenView,
     onRefreshCache,
-    recentDocuments,
     savedSearchLookup,
     savedSearches,
   ]);
@@ -3369,7 +3298,7 @@ function CommandPalette({
           <Search size={18} />
           <input
             ref={inputRef}
-            aria-label="Search commands, workspaces, recent documents, and saved searches"
+            aria-label="Search commands, workspaces, and saved searches"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
@@ -3386,7 +3315,7 @@ function CommandPalette({
                 void executeItem(activeItem);
               }
             }}
-            placeholder="Jump to a workspace, document, saved search..."
+            placeholder="Jump to a workspace or saved search..."
           />
           <span>{commandPaletteShortcutLabel()}</span>
         </div>
@@ -5962,15 +5891,12 @@ function Header({
   onDismissCompletedImport,
   onOpenCommandPalette,
   onOpenQueue,
-  onOpenRecentDocument,
-  onOpenReleaseHistory,
   onOpenSettings,
   onOpenStatus,
   onHydrateCache,
   onRefreshCache,
   onReleaseUpgrade,
   query,
-  recentDocuments,
   releaseStatus,
   releaseUpgradeBusy,
   setQuery,
@@ -5990,15 +5916,12 @@ function Header({
   onDismissCompletedImport?: (batchId: string) => void;
   onOpenCommandPalette: () => void;
   onOpenQueue: () => void;
-  onOpenRecentDocument: (documentId: string) => void;
-  onOpenReleaseHistory: () => void;
   onOpenSettings: () => void;
   onOpenStatus: () => void;
   onHydrateCache: () => void;
   onRefreshCache: () => void;
   onReleaseUpgrade: () => void;
   query: string;
-  recentDocuments: RecentDocumentShortcut[];
   releaseStatus?: ReleaseStatus;
   releaseUpgradeBusy: boolean;
   setQuery: (query: string) => void;
@@ -6034,16 +5957,6 @@ function Header({
   const openCommandPaletteFromUserMenu = () => {
     setUserMenuOpen(false);
     onOpenCommandPalette();
-  };
-
-  const openReleaseHistoryFromUserMenu = () => {
-    setUserMenuOpen(false);
-    onOpenReleaseHistory();
-  };
-
-  const openRecentDocumentFromUserMenu = (documentId: string) => {
-    setUserMenuOpen(false);
-    onOpenRecentDocument(documentId);
   };
 
   const toggleThemeFromUserMenu = () => {
@@ -6206,36 +6119,6 @@ function Header({
                 <span>Quick switcher</span>
                 <small>{commandPaletteShortcutLabel()}</small>
               </button>
-              {recentDocuments.length ? (
-                <div className="user-options-recent" aria-label="Recently viewed documents">
-                  <div className="user-options-section-label">
-                    <Timer size={14} aria-hidden="true" />
-                    <span>Continue</span>
-                  </div>
-                  {recentDocuments.slice(0, 3).map((document) => (
-                    <button
-                      key={document.id}
-                      className="user-options-recent-item"
-                      onClick={() => openRecentDocumentFromUserMenu(document.id)}
-                      role="menuitem"
-                      type="button"
-                    >
-                      <strong>{document.title}</strong>
-                      <span>{[document.authors, document.year].filter(Boolean).join(" / ") || "Recently viewed"}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <div className="user-options-section" aria-label="Release History">
-                <div className="user-options-section-label">
-                  <Rocket size={14} aria-hidden="true" />
-                  <span>Release History</span>
-                </div>
-                <button className="user-options-menu-item" onClick={openReleaseHistoryFromUserMenu} role="menuitem" type="button">
-                  <ListChecks size={16} aria-hidden="true" />
-                  <span>View releases</span>
-                </button>
-              </div>
               <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
                 {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
                 <span>{theme === "day" ? "Night mode" : "Day mode"}</span>
@@ -18091,7 +17974,7 @@ function ImportView({
   };
 
   return (
-    <section className="workbench">
+    <section className="workbench import-workbench">
       <div
         className={`dropzone${isDraggingFiles ? " active" : ""}${importBusy ? " uploading" : ""}`}
         onDragEnter={(event) => {
@@ -23699,101 +23582,6 @@ function ValkeyResourceMonitor({ cache }: { cache?: CacheStatus }) {
   );
 }
 
-function ReleaseHistoryView() {
-  const historyQuery = useQuery({
-    queryKey: ["release-history"],
-    queryFn: api.releaseHistory,
-    refetchInterval: 60000,
-  });
-  const history: ReleaseHistory | undefined = historyQuery.data;
-  const entries = history?.entries || [];
-  const updatedLabel = history?.updated_at
-    ? `Updated ${releaseDateLabel(history.updated_at)}`
-    : historyQuery.isFetching
-      ? "Loading releases"
-      : "No recorded releases";
-
-  return (
-    <section className="workbench release-history-workbench">
-      <div className="release-history-panel">
-        <div className="panel-title-row release-history-title-row">
-          <div>
-            <h2>Release History</h2>
-            <span>{updatedLabel}</span>
-          </div>
-          <Rocket size={20} aria-hidden="true" />
-        </div>
-        {entries.length ? (
-          <div className="release-history-list">
-            {entries.map((entry) => {
-              const releaseTime = releaseDateLabel(entry.released_at);
-              const commitTime = releaseDateLabel(entry.commit_date);
-              const shortHash = entry.git_sha_short || entry.git_sha?.slice(0, 12) || "unknown";
-              const changedFiles = entry.changed_files || [];
-              return (
-                <article className="release-history-entry" key={entry.id}>
-                  <div className="release-history-entry-head">
-                    <div>
-                      <strong>{entry.version || shortHash}</strong>
-                      <span>
-                        {releaseTime || "Recorded release"}
-                        {entry.branch ? ` / ${entry.branch}` : ""}
-                      </span>
-                    </div>
-                    <code title={entry.git_sha || shortHash}>{shortHash}</code>
-                  </div>
-                  <div className="release-history-meta-grid">
-                    <div>
-                      <Calendar size={14} aria-hidden="true" />
-                      <span>Date and time</span>
-                      <strong>{releaseTime || "Unavailable"}</strong>
-                    </div>
-                    <div>
-                      <Archive size={14} aria-hidden="true" />
-                      <span>Commit</span>
-                      <strong>{commitTime || "Unavailable"}</strong>
-                    </div>
-                    <div>
-                      <ListChecks size={14} aria-hidden="true" />
-                      <span>Changed files</span>
-                      <strong>{formatMetric(changedFiles.length)}</strong>
-                    </div>
-                  </div>
-                  {entry.summary ? <p className="release-history-summary">{entry.summary}</p> : null}
-                  <div className="release-history-change-list">
-                    {(entry.changes.length ? entry.changes : [{ title: "Release applied", description: "Medusa was updated to this build." }]).map(
-                      (change, index) => (
-                        <div className="release-history-change" key={`${entry.id}-${index}`}>
-                          <strong>{change.title}</strong>
-                          <p>{change.description}</p>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                  {changedFiles.length ? (
-                    <div className="release-history-files" aria-label="Changed files">
-                      {changedFiles.slice(0, 6).map((path) => (
-                        <code key={path}>{path}</code>
-                      ))}
-                      {changedFiles.length > 6 ? <span>+{formatMetric(changedFiles.length - 6)} more</span> : null}
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="release-history-empty">
-            <Rocket size={22} aria-hidden="true" />
-            <strong>{historyQuery.isFetching ? "Loading releases" : "No releases recorded yet"}</strong>
-            <span>{historyQuery.isError ? actionFailureMessage("Could not load release history", historyQuery.error) : "The next applied main release will appear here."}</span>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
 function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: AppDialogController }) {
   const queryClient = useQueryClient();
   const releaseCheckFeedback = useAsyncActionFeedback({ errorMs: 9000 });
@@ -26712,7 +26500,6 @@ export default function App() {
   const [libraryFocusDocumentId, setLibraryFocusDocumentId] = useState<string | null>(() => initialRoute.documentId || null);
   const [libraryScrollTargetId, setLibraryScrollTargetId] = useState<string | null>(() => initialRoute.documentId || null);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
-  const [recentDocuments, setRecentDocuments] = useState<RecentDocumentShortcut[]>(() => readRecentDocuments());
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [backgroundReconcileNow, setBackgroundReconcileNow] = useState(() => Date.now());
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
@@ -26906,15 +26693,6 @@ export default function App() {
     if (!selectedDocument.data) return;
     patchCachedDocumentSummaries(queryClient, documentSummaryPatchFromDetail(selectedDocument.data));
   }, [queryClient, selectedDocument.data]);
-  useEffect(() => {
-    if (!selectedDocument.data) return;
-    const nextEntry = recentDocumentFromDetail(selectedDocument.data);
-    setRecentDocuments((current) => {
-      const next = [nextEntry, ...current.filter((item) => item.id !== nextEntry.id)].slice(0, MAX_RECENT_DOCUMENTS);
-      writeRecentDocuments(next);
-      return next;
-    });
-  }, [selectedDocument.data]);
   const jobs = useQuery({
     queryKey: ["jobs"],
     queryFn: api.jobs,
@@ -27487,10 +27265,6 @@ export default function App() {
     async (view: View) => requestActiveViewChange(view),
     [requestActiveViewChange],
   );
-  const openDocumentFromCommandPalette = useCallback(
-    async (documentId: string) => requestDocumentFocus(documentId, "push", "detail"),
-    [requestDocumentFocus],
-  );
   const applySavedSearchFromCommandPalette = useCallback(
     async (savedSearch: SavedSearch) => {
       const changed = await requestActiveViewChange("library");
@@ -27762,15 +27536,12 @@ export default function App() {
         onDismissCompletedImport={dismissCompletedIngestion}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenQueue={() => void requestActiveViewChange("queue")}
-        onOpenRecentDocument={(documentId) => void requestDocumentFocus(documentId, "push", "detail")}
-        onOpenReleaseHistory={() => void requestActiveViewChange("release-history")}
         onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
         onHydrateCache={() => hydrateCache.mutate()}
         onRefreshCache={() => refreshCache.mutate()}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
-        recentDocuments={recentDocuments}
         releaseStatus={releaseStatus.data}
         releaseUpgradeBusy={releaseUpgrade.isPending}
         setQuery={setQuery}
@@ -27992,7 +27763,6 @@ export default function App() {
             preferences={preferences.data}
           />
         ) : null}
-        {activeView === "release-history" ? <ReleaseHistoryView /> : null}
         {activeView === "status" ? <StatusView dashboard={dashboard.data} dialogs={appDialogs} /> : null}
         {activeView === "settings" ? (
           <SettingsView
@@ -28022,11 +27792,9 @@ export default function App() {
         onClearSearch={clearSearchFromCommandPalette}
         onClose={() => setCommandPaletteOpen(false)}
         onHydrateCache={() => hydrateCache.mutate()}
-        onOpenDocument={openDocumentFromCommandPalette}
         onOpenView={openViewFromCommandPalette}
         onRefreshCache={() => refreshCache.mutate()}
         open={commandPaletteOpen}
-        recentDocuments={recentDocuments}
         savedSearches={savedSearches.data || []}
         tags={tags.data || []}
       />
