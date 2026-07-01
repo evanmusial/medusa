@@ -465,12 +465,10 @@ const DETAIL_STICKY_FIELD_OPTIONS: Array<{ value: DetailStickyField; label: stri
 ];
 const DEFAULT_DETAIL_STICKY_FIELDS: DetailStickyField[] = ["title", "authors"];
 const LIBRARY_PAGE_SIZE_SUGGESTIONS: Array<{ value: LibraryPageSize; label: string }> = [
-  { value: 25, label: "25" },
-  { value: 50, label: "50" },
   { value: 100, label: "100" },
-  { value: 150, label: "150" },
   { value: 200, label: "200" },
-  { value: 250, label: "250" },
+  { value: 300, label: "300" },
+  { value: 400, label: "400" },
   { value: 500, label: "500" },
 ];
 const LIBRARY_ROW_OVERSCAN = 6;
@@ -512,7 +510,7 @@ const IMPORT_FILE_TYPES = new Set([
   "text/x-markdown",
 ]);
 const DROPDOWN_VISIBLE_OPTION_LIMIT = 80;
-const APP_TOOLTIP_DELAY_MS = 2000;
+const APP_TOOLTIP_DELAY_MS = 1250;
 const HEADER_STATUS_TOOLTIP_DELAY_MS = 250;
 const APP_TOOLTIP_SELECTOR = [
   "[data-tooltip]",
@@ -6150,11 +6148,13 @@ function Header({
                 <UploadCloud className={cacheHydrating ? "spin" : ""} size={16} aria-hidden="true" />
                 <span>{cacheHydratePercent !== null ? `Hydrate Cache (${cacheHydratePercent}%)` : "Hydrate Cache"}</span>
               </button>
+              <div className="user-options-menu-divider" role="separator" />
               <button className="user-options-menu-item" onClick={openCommandPaletteFromUserMenu} role="menuitem" type="button">
                 <Search size={16} aria-hidden="true" />
-                <span>Quick switcher</span>
+                <span>Fast Finder</span>
                 <small>{commandPaletteShortcutLabel()}</small>
               </button>
+              <div className="user-options-menu-divider" role="separator" />
               <button className="user-options-menu-item" onClick={toggleThemeFromUserMenu} role="menuitem" type="button">
                 {theme === "day" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
                 <span>{theme === "day" ? "Night mode" : "Day mode"}</span>
@@ -8801,7 +8801,7 @@ function LibraryView({
                 <label className="library-page-size">
                   <span>Rows</span>
                   <input
-                    data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
+                    data-tooltip="Choose how many Library result rows to fetch for each page. Suggested values are 100, 200, 300, 400, and 500; any whole number 10 or greater is allowed."
                     list="library-page-size-suggestions"
                     min={MIN_LIBRARY_PAGE_SIZE}
                     onChange={(event) => onPageSizeChange(parseLibraryPageSize(event.target.value))}
@@ -25781,7 +25781,7 @@ function SettingsView({
             <strong>{formatWholeNumber(settingsLibraryPageSize)}</strong>
           </label>
           <input
-            data-tooltip="Set the default number of Library result rows fetched per page. Suggested values are 25, 50, 100, 150, 200, 250, and 500; any whole number 10 or greater is allowed."
+            data-tooltip="Set the default number of Library result rows fetched per page. Suggested values are 100, 200, 300, 400, and 500; any whole number 10 or greater is allowed."
             id="library-page-size"
             list="settings-library-page-size-suggestions"
             min={MIN_LIBRARY_PAGE_SIZE}
