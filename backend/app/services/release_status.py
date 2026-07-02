@@ -292,9 +292,10 @@ def release_status(client_version: str | None = None, db: Session | None = None)
         and normalized_client_version != running.version
         and running.source != "runtime-default"
     )
-    if browser_reload_recommended and not update_available and phase == "current":
-        message = "A newer Medusa build is already running. Reload the browser to use it."
-        phase = "reload_ready"
+    if browser_reload_recommended and not update_available:
+        message = "A newer Medusa build is already running. Reloading the browser to use it."
+        if phase in {"blocked", "complete", "current", "reload_ready"}:
+            phase = "verifying"
 
     maintenance_backup_required = bool(maintenance.get("backup_required", False))
     maintenance_backup_status = str(

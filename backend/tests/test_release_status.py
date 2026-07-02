@@ -100,7 +100,7 @@ def test_release_status_recommends_browser_reload_for_completed_release_request(
     status = release_status(client_version="20260624 (aaaaaaaaaaaa)")
     assert status.update_available is False
     assert status.browser_reload_recommended is True
-    assert status.phase == "complete"
+    assert status.phase == "verifying"
     assert status.request_id == "release-request-1"
 
     reset_settings_cache()
@@ -148,7 +148,7 @@ def test_release_status_recommends_browser_reload_for_any_stale_settled_client(m
     status = release_status(client_version="20260624 (aaaaaaaaaaaa)")
     assert status.update_available is False
     assert status.browser_reload_recommended is True
-    assert status.phase == "complete"
+    assert status.phase == "verifying"
 
     reset_settings_cache()
 
