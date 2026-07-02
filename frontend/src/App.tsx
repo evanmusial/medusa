@@ -423,6 +423,7 @@ const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
 const IDLE_RELEASE_REFETCH_INTERVAL_MS = 10000;
 const WORKSPACE_REFETCH_INTERVAL_MS = 15000;
 const DOCUMENT_ACTIVITY_REFETCH_INTERVAL_MS = 10000;
+const MEDUSA_DOCUMENT_DRAG_TYPE = "application/x-medusa-document-id";
 const DOCUMENT_LIST_STALE_MS = 30000;
 const SEARCH_DEBOUNCE_MS = 350;
 const DISMISSED_INGESTION_HISTORY_KEY = "medusa-dismissed-ingestion-history";
@@ -2040,6 +2041,10 @@ function asyncFeedbackClass(className: string, feedback?: AsyncActionFeedback | 
 
 function progressPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function dataTransferHasType(dataTransfer: DataTransfer, type: string) {
+  return Array.from(dataTransfer.types || []).includes(type);
 }
 
 function cacheHydrationActionProgress(localProgress: ActionProgressState, hydration?: CacheHydrationStatus | null): ActionProgressState {
@@ -6647,16 +6652,16 @@ function Header({
   const cacheActionBusy = cacheRefreshing || cacheHydrating || Boolean(activeHydration);
   const cacheRefreshPercent = cacheRefreshProgress.visible ? cacheRefreshProgress.progress : null;
   const cacheHydratePercent = cacheHydrateProgress.visible ? cacheHydrateProgress.progress : null;
-  const cacheHydrateMenuStatus = activeHydration ? cacheHydrationMenuDetail(activeHydration) : null;
   const cacheHydrateLabel =
     cacheHydratePercent !== null
       ? activeHydration?.status === "paused"
         ? `Hydrate Cache paused (${cacheHydratePercent}%)`
         : `Hydrate Cache ${cacheHydratePercent}%`
       : "Hydrate Cache";
-  const cacheHydrateTooltip = cacheHydrateMenuStatus
-    ? `${cacheHydrateLabel}. ${cacheHydrateMenuStatus}`
-    : "Preload safe PostgreSQL-derived cache payloads into Valkey.";
+  const cacheHydrateTooltip =
+    cacheHydratePercent !== null
+      ? `Cache hydration progress: ${cacheHydratePercent}% complete.`
+      : "Preload safe PostgreSQL-derived cache payloads into Valkey.";
   const cacheRefreshProgressStyle = cacheRefreshProgress.visible
     ? ({ "--user-cache-action-progress": `${cacheRefreshProgress.progress}%` } as CSSProperties)
     : undefined;
@@ -6789,7 +6794,6 @@ function Header({
                 <UploadCloud className={cacheHydrating ? "spin" : ""} size={16} aria-hidden="true" />
                 <span className="user-options-menu-item-copy">
                   <span>{cacheHydrateLabel}</span>
-                  {cacheHydrateMenuStatus ? <small>{cacheHydrateMenuStatus}</small> : null}
                 </span>
               </button>
               <div className="user-options-menu-divider" role="separator" />
@@ -7073,7 +7077,24 @@ function DomainTree({
   const roots = children.root || [];
   const domainIds = useMemo(() => new Set(domains.map((domain) => domain.id)), [domains]);
   const [dropHoverDomainId, setDropHoverDomainId] = useState<string | null>(null);
-  const dropReady = Boolean(draggedDocumentId && onAssignDocumentToDomain);
+  const [documentDragActive, setDocumentDragActive] = useState(false);
+  const dropReady = Boolean(onAssignDocumentToDomain && (draggedDocumentId || documentDragActive));
+
+  useEffect(() => {
+    const clearDocumentDrag = () => {
+      setDocumentDragActive(false);
+      setDropHoverDomainId(null);
+    };
+    window.addEventListener("dragend", clearDocumentDrag);
+    window.addEventListener("drop", clearDocumentDrag);
+    return () => {
+      window.removeEventListener("dragend", clearDocumentDrag);
+      window.removeEventListener("drop", clearDocumentDrag);
+    };
+  }, []);
+
+  const canAcceptDocumentDrag = (event: DragEvent<HTMLDivElement>) =>
+    Boolean(onAssignDocumentToDomain && (draggedDocumentId || dataTransferHasType(event.dataTransfer, MEDUSA_DOCUMENT_DRAG_TYPE)));
 
   const render = (domain: Domain, depth = 0) => {
     const countLabel = domainDocumentCountLabel(domain);
@@ -7089,19 +7110,22 @@ function DomainTree({
       "--domain-connector-width": `${depth > 0 ? depthStep : 0}px`,
     } as CSSProperties;
     const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-      if (!dropReady || !draggedDocumentId || alreadyAssigned || assigning) return;
+      if (!canAcceptDocumentDrag(event) || alreadyAssigned || assigning) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
+      setDocumentDragActive(true);
       setDropHoverDomainId(domain.id);
     };
     const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
       if ((event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) return;
       setDropHoverDomainId((current) => (current === domain.id ? null : current));
+      if (!draggedDocumentId) setDocumentDragActive(false);
     };
     const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-      if (!dropReady || alreadyAssigned || assigning) return;
+      if (!canAcceptDocumentDrag(event) || alreadyAssigned || assigning) return;
       event.preventDefault();
-      const droppedDocumentId = event.dataTransfer.getData("application/x-medusa-document-id") || draggedDocumentId;
+      const droppedDocumentId = event.dataTransfer.getData(MEDUSA_DOCUMENT_DRAG_TYPE) || draggedDocumentId;
+      setDocumentDragActive(false);
       setDropHoverDomainId(null);
       if (droppedDocumentId) onAssignDocumentToDomain?.(droppedDocumentId, domain.id);
     };
@@ -7128,6 +7152,7 @@ function DomainTree({
           }
           onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}
+          onDropCapture={() => setDocumentDragActive(false)}
           onDrop={handleDrop}
           title={label}
         >
@@ -9567,7 +9592,7 @@ function LibraryView({
                 setDraggedDocumentId(item.id);
                 setDomainDropError(null);
                 event.dataTransfer.effectAllowed = "copy";
-                event.dataTransfer.setData("application/x-medusa-document-id", item.id);
+                event.dataTransfer.setData(MEDUSA_DOCUMENT_DRAG_TYPE, item.id);
                 event.dataTransfer.setData("text/plain", item.title);
               }}
               onClick={() => activateDocument(item.id)}
@@ -9592,6 +9617,7 @@ function LibraryView({
               <a
                 className="doc-row-main"
                 data-tooltip={`Open ${item.title} in the detail pane.`}
+                draggable={false}
                 href={pathForDocument(item.id)}
                 onClick={(event) => handleDocumentLinkClick(event, item.id)}
               >
