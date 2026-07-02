@@ -472,25 +472,25 @@ const LIBRARY_PREVIEW_CAPACITY_STANDARD_WIDTH = 960;
 const LIBRARY_PREVIEW_CAPACITY_STANDARD_HEIGHT = 840;
 const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_WIDTH = 1280;
 const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_HEIGHT = 1020;
-const LIBRARY_ROW_GAP_PX = 19;
+const LIBRARY_ROW_EXTRA_HEIGHT_PX = 19;
 const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
   LibraryDensity,
   Record<LibraryPreviewCapacity, { rowHeight: number; summaryLines: number; excerptChars: number }>
 > = {
   compact: {
-    standard: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
-    roomy: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
-    expansive: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
+    standard: { rowHeight: 58 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 0, excerptChars: 0 },
+    roomy: { rowHeight: 58 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 0, excerptChars: 0 },
+    expansive: { rowHeight: 58 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 0, excerptChars: 0 },
   },
   comfortable: {
-    standard: { rowHeight: 88, summaryLines: 1, excerptChars: 250 },
-    roomy: { rowHeight: 88, summaryLines: 1, excerptChars: 310 },
-    expansive: { rowHeight: 88, summaryLines: 1, excerptChars: 370 },
+    standard: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 1, excerptChars: 250 },
+    roomy: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 1, excerptChars: 310 },
+    expansive: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 1, excerptChars: 370 },
   },
   reading: {
-    standard: { rowHeight: 108, summaryLines: 2, excerptChars: 420 },
-    roomy: { rowHeight: 114, summaryLines: 2, excerptChars: 520 },
-    expansive: { rowHeight: 120, summaryLines: 2, excerptChars: 620 },
+    standard: { rowHeight: 108 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 420 },
+    roomy: { rowHeight: 114 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 520 },
+    expansive: { rowHeight: 120 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 620 },
   },
 };
 type DetailStickyField = "title" | "authors" | "year" | "doi" | "priority" | "status";
@@ -8714,7 +8714,7 @@ function LibraryView({
   const libraryPreviewCapacity = libraryPreviewCapacityForViewport(measuredRowsViewportWidth, measuredRowsViewportHeight);
   const libraryRowPreview = LIBRARY_ROW_PREVIEW_BY_DENSITY[libraryDensity][libraryPreviewCapacity];
   const libraryRowHeight = libraryRowPreview.rowHeight;
-  const libraryRowPitch = libraryRowHeight + LIBRARY_ROW_GAP_PX;
+  const libraryRowPitch = libraryRowHeight;
   const librarySummaryExcerptChars = libraryRowPreview.excerptChars;
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
@@ -8746,7 +8746,7 @@ function LibraryView({
   const currentResultPage =
     totalDocumentCount > 0 ? Math.min(totalResultPages, Math.floor(pageOffset / effectivePageLimit) + 1) : 0;
   const pageCountLabel = `${formatWholeNumber(currentResultPage)} of ${formatWholeNumber(totalResultPages)}`;
-  const virtualSpacerHeight = sortedDocuments.length ? sortedDocuments.length * libraryRowPitch - LIBRARY_ROW_GAP_PX : 0;
+  const virtualSpacerHeight = sortedDocuments.length * libraryRowPitch;
   const effectiveRowsViewportHeight = measuredRowsViewportHeight || libraryRowPitch * 12;
   const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
   const virtualStartIndex = Math.max(0, Math.floor(boundedRowsScrollTop / libraryRowPitch) - LIBRARY_ROW_OVERSCAN);
