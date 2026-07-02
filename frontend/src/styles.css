@@ -4144,31 +4144,34 @@ textarea {
 .doc-row {
   position: relative;
   width: 100%;
+  box-sizing: border-box;
   border-bottom: 0;
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--line) 42%, transparent);
   background: transparent;
   color: var(--ink);
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) minmax(270px, auto);
-  gap: 8px;
+  column-gap: 9px;
+  row-gap: 6px;
   align-items: center;
-  align-content: start;
+  align-content: center;
   grid-auto-rows: min-content;
   text-align: left;
-  padding: 8px 8px 8px 4px;
+  padding: 10px 8px 10px 4px;
   cursor: pointer;
 }
 
 .library-density-compact .doc-row {
   grid-template-columns: 16px minmax(0, 1fr) minmax(220px, auto);
-  gap: 7px;
-  padding-block: 6px;
+  column-gap: 8px;
+  row-gap: 4px;
+  padding-block: 7px;
 }
 
 .library-density-reading .doc-row {
   grid-template-columns: 16px minmax(0, 1fr) minmax(250px, auto);
-  align-items: start;
-  padding-block: 10px;
+  padding-block: 12px;
+  row-gap: 7px;
 }
 
 .rows.alternating-rows:not(.virtual-rows) .doc-row:nth-child(even):not(:hover):not(.selected) {
@@ -4244,9 +4247,9 @@ textarea {
 
 .doc-row-main {
   min-width: 0;
-  align-self: start;
+  align-self: center;
   display: grid;
-  gap: 4px;
+  gap: 5px;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -4345,8 +4348,8 @@ textarea {
   gap: 12px;
   align-items: center;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 15px;
+  font-size: 12.5px;
+  line-height: 16px;
 }
 
 .library-density-compact .doc-row-byline {
@@ -4442,7 +4445,7 @@ textarea {
 
 .doc-row-summary .markdown-content.compact {
   font-size: 14px;
-  line-height: 1.36;
+  line-height: 1.4;
 }
 
 .library-density-compact .doc-row-summary .markdown-content.compact {
