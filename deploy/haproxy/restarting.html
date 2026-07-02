@@ -46,18 +46,34 @@
       }
 
       main {
-        width: min(280px, calc(100vw - 32px));
+        width: min(360px, calc(100vw - 32px));
         display: grid;
         justify-items: center;
-        gap: 14px;
+        gap: 12px;
         text-align: center;
       }
 
+      .emblem-stage {
+        position: relative;
+        isolation: isolate;
+        width: 136px;
+        height: 112px;
+        display: grid;
+        place-items: center;
+        margin-bottom: -2px;
+      }
+
+      .emblem-stage picture {
+        position: relative;
+        z-index: 3;
+      }
+
       .emblem {
-        width: 70px;
-        height: 70px;
+        width: 76px;
+        height: 76px;
         display: block;
         object-fit: contain;
+        filter: drop-shadow(0 10px 18px rgba(15, 23, 42, 0.12));
       }
 
       .wordmark {
@@ -70,7 +86,7 @@
       }
 
       .progress-group {
-        width: min(260px, 72vw);
+        width: min(340px, 78vw);
         display: grid;
         justify-items: center;
       }
@@ -78,49 +94,55 @@
       .activity {
         position: relative;
         width: 100%;
-        height: 8px;
+        height: 14px;
         overflow: hidden;
         border-radius: 999px;
         background: var(--track);
         box-shadow: inset 0 0 0 1px var(--line);
       }
 
-      .snake {
+      .snake,
+      .orbit-snake {
+        --snake-band: #22c55e;
+        --snake-head: 14px;
+        --snake-height: 8px;
+        --snake-ink: var(--accent);
+        --snake-width: 78px;
         position: absolute;
-        top: 50%;
         display: block;
-        width: 72px;
-        height: 6px;
+        width: var(--snake-width);
+        height: var(--snake-height);
         border-radius: 999px;
         background:
-          radial-gradient(circle at calc(100% - 5px) 50%, #f8fafc 0 1px, transparent 1.5px),
-          repeating-linear-gradient(90deg, var(--accent) 0 8px, #22c55e 8px 16px);
+          radial-gradient(circle at calc(100% - 6px) 50%, #f8fafc 0 1px, transparent 1.6px),
+          repeating-linear-gradient(90deg, var(--snake-ink) 0 9px, var(--snake-band) 9px 18px);
         box-shadow: 0 0 10px rgba(37, 99, 235, 0.34);
-        transform: translate(-92px, -50%);
-        animation: snake-slither 1.7s ease-in-out infinite;
+        pointer-events: none;
       }
 
-      .snake::before {
+      .snake::before,
+      .orbit-snake::before {
         content: "";
         position: absolute;
-        right: -5px;
+        right: -6px;
         top: 50%;
-        width: 11px;
-        height: 11px;
+        width: var(--snake-head);
+        height: var(--snake-head);
         border-radius: 50%;
-        background: var(--accent);
+        background: var(--snake-ink);
         box-shadow:
-          -2px 0 0 #22c55e,
+          -2px 0 0 var(--snake-band),
           0 0 10px rgba(37, 99, 235, 0.34);
         transform: translateY(-50%);
       }
 
-      .snake::after {
+      .snake::after,
+      .orbit-snake::after {
         content: "";
         position: absolute;
-        right: -10px;
+        right: -13px;
         top: 50%;
-        width: 8px;
+        width: 10px;
         height: 2px;
         border-radius: 999px;
         background: #ef4444;
@@ -129,26 +151,128 @@
         animation: snake-tongue 0.42s ease-in-out infinite;
       }
 
+      .orbit-snake {
+        left: 50%;
+        top: 50%;
+        z-index: 1;
+        animation: orbit-slither var(--orbit-duration, 4.2s) ease-in-out infinite;
+        transform: translate(calc(-50% + var(--orbit-x)), calc(-50% + var(--orbit-y))) rotate(var(--orbit-rotation));
+      }
+
+      .orbit-snake.primary {
+        --orbit-duration: 4.35s;
+        --orbit-rotation: -16deg;
+        --orbit-rotation-mid: 14deg;
+        --orbit-rotation-late: -28deg;
+        --orbit-x: -48px;
+        --orbit-x-mid: 18px;
+        --orbit-x-late: 45px;
+        --orbit-y: -34px;
+        --orbit-y-mid: -46px;
+        --orbit-y-late: 12px;
+        --snake-head: 15px;
+        --snake-height: 9px;
+        --snake-width: 64px;
+      }
+
+      .orbit-snake.secondary {
+        --orbit-duration: 3.8s;
+        --orbit-rotation: 30deg;
+        --orbit-rotation-mid: -12deg;
+        --orbit-rotation-late: 22deg;
+        --orbit-x: 42px;
+        --orbit-x-mid: -8px;
+        --orbit-x-late: -54px;
+        --orbit-y: -14px;
+        --orbit-y-mid: 28px;
+        --orbit-y-late: -3px;
+        --snake-band: #60a5fa;
+        --snake-head: 13px;
+        --snake-height: 7px;
+        --snake-ink: #0f9f8d;
+        --snake-width: 48px;
+        z-index: 4;
+        animation-delay: -1.2s;
+      }
+
+      .orbit-snake.tertiary {
+        --orbit-duration: 4.9s;
+        --orbit-rotation: 4deg;
+        --orbit-rotation-mid: 25deg;
+        --orbit-rotation-late: -9deg;
+        --orbit-x: -18px;
+        --orbit-x-mid: 52px;
+        --orbit-x-late: -42px;
+        --orbit-y: 42px;
+        --orbit-y-mid: 26px;
+        --orbit-y-late: -22px;
+        --snake-band: #60a5fa;
+        --snake-head: 16px;
+        --snake-height: 10px;
+        --snake-width: 74px;
+        animation-delay: -2.5s;
+      }
+
+      .snake {
+        top: calc(50% + var(--snake-track-y, 0px));
+        transform: translate(-140px, -50%);
+        animation: snake-slither var(--snake-speed, 1.75s) ease-in-out infinite;
+      }
+
+      .snake.primary {
+        --snake-head: 17px;
+        --snake-height: 10px;
+        --snake-track-y: -2px;
+        --snake-width: 112px;
+      }
+
       .snake.secondary {
-        width: 54px;
+        --snake-head: 14px;
+        --snake-height: 8px;
+        --snake-speed: 2.05s;
+        --snake-track-y: 3px;
+        --snake-width: 82px;
         opacity: 0.82;
         animation-delay: -0.82s;
-        animation-duration: 1.95s;
         filter: saturate(0.9);
+      }
+
+      .snake.tertiary {
+        --snake-band: #60a5fa;
+        --snake-head: 12px;
+        --snake-height: 7px;
+        --snake-ink: #0f9f8d;
+        --snake-speed: 2.35s;
+        --snake-width: 58px;
+        opacity: 0.7;
+        animation-delay: -1.44s;
+      }
+
+      @keyframes orbit-slither {
+        0%,
+        100% {
+          transform: translate(calc(-50% + var(--orbit-x)), calc(-50% + var(--orbit-y))) rotate(var(--orbit-rotation)) scaleX(0.82) scaleY(1);
+        }
+        28% {
+          transform: translate(calc(-50% + var(--orbit-x-mid)), calc(-50% + var(--orbit-y-mid))) rotate(var(--orbit-rotation-mid)) scaleX(1.1) scaleY(0.82);
+        }
+        62% {
+          transform: translate(calc(-50% + var(--orbit-x-late)), calc(-50% + var(--orbit-y-late))) rotate(var(--orbit-rotation-late)) scaleX(0.94) scaleY(1.12);
+        }
       }
 
       @keyframes snake-slither {
         0% {
-          transform: translate(-92px, -50%) rotate(0deg) scaleY(1);
+          transform: translate(-140px, -50%) rotate(0deg) scaleY(1);
         }
-        38% {
-          transform: translate(82px, -50%) rotate(1.5deg) scaleY(0.76);
+        32% {
+          transform: translate(82px, -50%) rotate(1.6deg) scaleY(0.72);
         }
-        72% {
-          transform: translate(210px, -50%) rotate(-1deg) scaleY(1.08);
+        67% {
+          transform: translate(235px, -50%) rotate(-1.4deg) scaleY(1.12);
         }
         100% {
-          transform: translate(310px, -50%) rotate(0deg) scaleY(1);
+          transform: translate(390px, -50%) rotate(0deg) scaleY(1);
         }
       }
 
@@ -166,7 +290,7 @@
     </style>
     <script>
       (() => {
-        const minimumVisibleMs = 2600;
+        const minimumVisibleMs = 5000;
         const startedAt = Date.now();
         let reloadScheduled = false;
 
@@ -200,15 +324,21 @@
   </head>
   <body>
     <main aria-live="polite">
-      <picture>
-        <source srcset="/medusa-emblem-night.png" media="(prefers-color-scheme: dark)">
-        <img class="emblem" src="/medusa-emblem.png" alt="" aria-hidden="true">
-      </picture>
+      <div class="emblem-stage">
+        <picture>
+          <source srcset="/medusa-emblem-night.png" media="(prefers-color-scheme: dark)">
+          <img class="emblem" src="/medusa-emblem.png" alt="" aria-hidden="true">
+        </picture>
+        <span class="orbit-snake primary" aria-hidden="true"></span>
+        <span class="orbit-snake secondary" aria-hidden="true"></span>
+        <span class="orbit-snake tertiary" aria-hidden="true"></span>
+      </div>
       <strong class="wordmark">MEDUSA</strong>
       <div class="progress-group">
         <div class="activity" aria-label="Loading" role="progressbar">
-          <span class="snake"></span>
+          <span class="snake primary"></span>
           <span class="snake secondary"></span>
+          <span class="snake tertiary"></span>
         </div>
       </div>
     </main>

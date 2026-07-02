@@ -415,7 +415,7 @@ const RELEASE_RESTART_WAIT_DETAIL =
 const BACKEND_HEALTH_WATCH_INTERVAL_MS = 5000;
 const BACKEND_RECOVERY_POLL_INTERVAL_MS = 1000;
 const BACKEND_RESTART_MIN_LOCK_MS = 1800;
-const STARTUP_LOADING_MIN_VISIBLE_MS = 2600;
+const STARTUP_LOADING_MIN_VISIBLE_MS = 5000;
 const STARTUP_HEALTH_RETRY_LIMIT = 120;
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
@@ -6249,12 +6249,18 @@ function StartupLoadingScreen() {
   return (
     <div className="loading-screen">
       <section aria-live="polite" className="loading-panel">
-        <MedusaEmblemImage className="loading-emblem" />
+        <div className="loading-emblem-stage">
+          <MedusaEmblemImage className="loading-emblem" />
+          <span aria-hidden="true" className="loading-orbit-snake loading-orbit-snake-primary" />
+          <span aria-hidden="true" className="loading-orbit-snake loading-orbit-snake-secondary" />
+          <span aria-hidden="true" className="loading-orbit-snake loading-orbit-snake-tertiary" />
+        </div>
         <strong className="loading-wordmark">MEDUSA</strong>
         <div className="loading-progress-group">
           <div className="loading-activity" aria-label="Loading..." role="progressbar">
             <span className="loading-snake loading-snake-primary" />
             <span className="loading-snake loading-snake-secondary" />
+            <span className="loading-snake loading-snake-tertiary" />
           </div>
         </div>
       </section>
