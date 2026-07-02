@@ -3540,6 +3540,20 @@ function libraryListScopeKey(query: string, filters: DocumentFilters, pageSize: 
   ]);
 }
 
+function libraryResultScopeKey(query: string, filters: DocumentFilters) {
+  return JSON.stringify([
+    query,
+    filters.domain_id || "",
+    filters.tag_id || "",
+    filters.publication_id || "",
+    filters.read_status || "",
+    filters.priority || "",
+    filters.citation_status || "",
+    filters.duplicate_status || "",
+    filters.health_status || "",
+  ]);
+}
+
 function selectOptionSearchText(option: SelectMenuOption) {
   return `${option.name} ${option.meta || ""} ${option.id}`.toLowerCase();
 }
@@ -27610,6 +27624,29 @@ export default function App() {
   const domains = useQuery({ queryKey: ["domains"], queryFn: api.domains, enabled: Boolean(me.data && needsDomains) });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.tags, enabled: Boolean(me.data && needsTags) });
   const savedSearches = useQuery({ queryKey: ["saved-searches"], queryFn: api.savedSearches, enabled: Boolean(me.data && needsSavedSearches) });
+  const libraryResultScopeKeyValue = useMemo(
+    () => libraryResultScopeKey(documentQuery, filters),
+    [
+      documentQuery,
+      filters.citation_status,
+      filters.domain_id,
+      filters.duplicate_status,
+      filters.health_status,
+      filters.priority,
+      filters.publication_id,
+      filters.read_status,
+      filters.tag_id,
+    ],
+  );
+  const previousLibraryResultScopeKeyRef = useRef(libraryResultScopeKeyValue);
+  useEffect(() => {
+    if (previousLibraryResultScopeKeyRef.current === libraryResultScopeKeyValue) return;
+    previousLibraryResultScopeKeyRef.current = libraryResultScopeKeyValue;
+    setLibraryPageTurnIntent(null);
+    setLibraryFocusDocumentId(null);
+    setLibraryScrollTargetId(null);
+    setLibraryOffset(0);
+  }, [libraryResultScopeKeyValue]);
   const libraryScopeKey = useMemo(
     () => libraryListScopeKey(documentQuery, filters, libraryPageSize, librarySort),
     [
