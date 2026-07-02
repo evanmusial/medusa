@@ -4132,7 +4132,7 @@ textarea {
   min-width: 100%;
 }
 
-.virtual-doc-row {
+.doc-row.virtual-doc-row {
   position: absolute;
   top: 0;
   left: 0;
