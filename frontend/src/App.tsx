@@ -1044,10 +1044,15 @@ function workspaceNavTooltip(item: WorkspaceNavItem) {
 const VIEW_BY_PATH = new Map<string, View>(
   Object.entries(VIEW_PATHS).map(([view, path]) => [path, view as View]),
 );
+const STARTUP_ANIMATION_PATH = "/startup-animation";
 
 function normalizedAppPath(pathname: string) {
   const normalized = pathname.replace(/\/+$/, "");
   return normalized || "/";
+}
+
+function isStartupAnimationPath(pathname = window.location.pathname) {
+  return normalizedAppPath(pathname).toLowerCase() === STARTUP_ANIMATION_PATH;
 }
 
 function viewFromPathname(pathname: string): View | undefined {
@@ -6473,45 +6478,67 @@ function HeaderStatusButton({
   );
 }
 
-const LOADING_SNAKE_WAVE_A = "M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22";
-const LOADING_SNAKE_WAVE_B = "M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22";
-const LOADING_SNAKE_WAVE_C = "M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22";
-const LOADING_SNAKE_WAVE_VALUES = `${LOADING_SNAKE_WAVE_A};${LOADING_SNAKE_WAVE_B};${LOADING_SNAKE_WAVE_C};${LOADING_SNAKE_WAVE_A}`;
-
-function LoadingSnakeGraphic({ className }: { className: string }) {
+function StartupLoadingScreen() {
   return (
-    <svg aria-hidden="true" className={className} focusable="false" viewBox="0 0 190 44">
-      <path className="loading-snake-body" d={LOADING_SNAKE_WAVE_A}>
-        <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values={LOADING_SNAKE_WAVE_VALUES} />
-      </path>
-      <path className="loading-snake-scales" d={LOADING_SNAKE_WAVE_A}>
-        <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values={LOADING_SNAKE_WAVE_VALUES} />
-      </path>
-      <circle className="loading-snake-head" cx="176" cy="22" r="8.5" />
-      <circle className="loading-snake-head-mark" cx="171" cy="20" r="2.2" />
-      <circle className="loading-snake-eye" cx="178.5" cy="18.8" r="1.2" />
-      <path className="loading-snake-tongue" d="M183 22 L190 19 M183 22 L190 25" />
+    <div className="loading-screen">
+      <section aria-label="Loading Medusa" aria-live="polite" className="loading-panel" role="status">
+        <span className="loading-emblem-stage">
+          <MedusaEmblemImage className="loading-emblem" />
+          <StartupHeadSnakeOverlay />
+        </span>
+        <strong className="brand-name loading-wordmark">{MEDUSA_APP_NAME}</strong>
+      </section>
+    </div>
+  );
+}
+
+function StartupHeadSnakeOverlay() {
+  return (
+    <svg className="startup-head-snakes" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+      <g className="startup-head-snake startup-head-snake-1">
+        <path d="M21 45 C8 40 10 26 24 27 C35 28 33 15 45 14" />
+        <circle cx="45" cy="14" r="2.5" />
+      </g>
+      <g className="startup-head-snake startup-head-snake-2">
+        <path d="M30 34 C22 23 30 11 41 14 C52 17 48 28 59 28" />
+        <circle cx="59" cy="28" r="2.4" />
+      </g>
+      <g className="startup-head-snake startup-head-snake-3">
+        <path d="M41 28 C41 14 55 10 62 20 C68 29 58 33 68 42" />
+        <circle cx="68" cy="42" r="2.3" />
+      </g>
+      <g className="startup-head-snake startup-head-snake-4">
+        <path d="M22 55 C10 55 8 67 21 69 C34 71 32 57 43 60" />
+        <circle cx="43" cy="60" r="2.2" />
+      </g>
+      <g className="startup-head-snake startup-head-snake-5">
+        <path d="M36 47 C48 38 61 44 58 57 C56 68 44 57 42 69" />
+        <circle cx="42" cy="69" r="2.1" />
+      </g>
     </svg>
   );
 }
 
-function StartupLoadingScreen() {
+function StartupAnimationPage() {
+  const [theme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.title = medusaBrowserTitle("Startup Animation");
+  }, [theme]);
+
   return (
-    <div className="loading-screen">
-      <section aria-live="polite" className="loading-panel">
-        <div className="loading-emblem-stage">
-          <MedusaEmblemImage className="loading-emblem" />
-        </div>
-        <strong className="loading-wordmark">MEDUSA</strong>
-        <div className="loading-progress-group">
-          <div className="loading-activity" aria-label="Loading..." role="progressbar">
-            <LoadingSnakeGraphic className="loading-snake loading-snake-primary" />
-            <LoadingSnakeGraphic className="loading-snake loading-snake-secondary" />
-            <LoadingSnakeGraphic className="loading-snake loading-snake-tertiary" />
-          </div>
+    <main className="startup-animation-page" aria-label="Medusa startup animation preview">
+      <section className="startup-animation-stage" aria-label="Medusa startup animation">
+        <div className="startup-animation-lockup">
+          <span className="startup-animation-emblem-stage">
+            <MedusaEmblemImage className="startup-animation-emblem" />
+            <StartupHeadSnakeOverlay />
+          </span>
+          <strong className="brand-name startup-animation-wordmark">{MEDUSA_APP_NAME}</strong>
         </div>
       </section>
-    </div>
+    </main>
   );
 }
 
@@ -27542,7 +27569,7 @@ function SettingsView({
   );
 }
 
-export default function App() {
+function AuthenticatedApp() {
   const initialRoute = routeFromCurrentLocation();
   const [activeView, setActiveView] = useState<View>(() => initialRoute.view);
   const [settingsDirty, setSettingsDirty] = useState(false);
@@ -29084,4 +29111,8 @@ export default function App() {
       </AppTooltipProvider>
     </MedusaMotionRoot>
   );
+}
+
+export default function App() {
+  return isStartupAnimationPath() ? <StartupAnimationPage /> : <AuthenticatedApp />;
 }

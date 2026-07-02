@@ -46,173 +46,117 @@
       }
 
       main {
-        width: min(360px, calc(100vw - 32px));
+        width: min(92vw, 520px);
         display: grid;
         justify-items: center;
-        gap: 10px;
+        gap: clamp(4px, 1.2vmin, 10px);
         text-align: center;
       }
 
       .emblem-stage {
         position: relative;
-        width: 92px;
-        height: 84px;
+        width: clamp(78px, 18vmin, 142px);
+        height: clamp(78px, 18vmin, 142px);
         display: grid;
         place-items: center;
-        margin-bottom: 0;
       }
 
       .emblem {
-        width: 76px;
-        height: 76px;
+        width: 100%;
+        height: 100%;
         display: block;
         object-fit: contain;
-        filter: drop-shadow(0 10px 18px rgba(15, 23, 42, 0.12));
+        filter: drop-shadow(0 14px 26px rgba(15, 23, 42, 0.15));
       }
 
       .wordmark {
-        color: var(--accent);
-        font-size: 16px;
-        font-weight: 800;
+        color: var(--ink);
+        font-family: "Century Schoolbook", "Century Schoolbook L", "New Century Schoolbook", Georgia, Cambria, "Times New Roman", Times, serif;
+        font-size: clamp(38px, 11vmin, 86px);
+        font-weight: 700;
+        font-kerning: normal;
         letter-spacing: 0;
-        line-height: 1;
-        text-transform: uppercase;
+        line-height: 0.88;
+        text-transform: lowercase;
+        white-space: nowrap;
       }
 
-      .progress-group {
-        width: min(340px, 78vw);
-        display: grid;
-        justify-items: center;
-      }
-
-      .activity {
-        position: relative;
-        width: 100%;
-        height: 48px;
-        overflow: hidden;
-        border-radius: 0;
-        background: transparent;
-        box-shadow: none;
-        -webkit-mask-image: linear-gradient(to right, transparent 0, #000 11%, #000 89%, transparent 100%);
-        mask-image: linear-gradient(to right, transparent 0, #000 11%, #000 89%, transparent 100%);
-      }
-
-      .snake {
-        --snake-band: #22c55e;
-        --snake-height: 44px;
-        --snake-ink: var(--accent);
-        --snake-speed: 4.4s;
-        --snake-top: 1px;
-        --snake-width: 190px;
+      .head-snakes {
         position: absolute;
-        top: var(--snake-top);
-        left: calc(-1 * var(--snake-width));
-        display: block;
-        width: var(--snake-width);
-        height: var(--snake-height);
+        top: -12%;
+        left: -13%;
+        width: 128%;
+        height: 128%;
         overflow: visible;
-        color: var(--snake-ink);
-        filter: drop-shadow(0 7px 10px rgba(37, 99, 235, 0.28));
         pointer-events: none;
-        animation: snake-travel var(--snake-speed) linear infinite;
-        animation-delay: var(--snake-delay, 0s);
+        filter: drop-shadow(0 2px 4px rgba(37, 99, 235, 0.18));
       }
 
-      .snake.secondary {
-        --snake-band: #60a5fa;
-        --snake-height: 38px;
-        --snake-ink: #0f9f8d;
-        --snake-speed: 5.2s;
-        --snake-top: 12px;
-        --snake-width: 158px;
-        opacity: 0.82;
-        animation-delay: -1.6s;
+      .head-snake {
+        --head-snake-anchor: 30% 44%;
+        --head-snake-color: #2563eb;
+        opacity: 0.72;
+        transform-box: view-box;
+        transform-origin: var(--head-snake-anchor);
+        animation: head-snake-sway 1.65s ease-in-out infinite alternate;
       }
 
-      .snake.tertiary {
-        --snake-band: #60a5fa;
-        --snake-height: 32px;
-        --snake-speed: 3.85s;
-        --snake-top: 18px;
-        --snake-width: 132px;
-        opacity: 0.66;
-        animation-delay: -2.55s;
-      }
-
-      .snake-body,
-      .snake-scales {
+      .head-snake path {
         fill: none;
+        stroke: var(--head-snake-color);
         stroke-linecap: round;
         stroke-linejoin: round;
+        stroke-width: 3.7;
       }
 
-      .snake-body {
-        stroke: var(--snake-ink);
-        stroke-width: 10px;
+      .head-snake circle {
+        fill: var(--head-snake-color);
+        stroke: var(--bg);
+        stroke-width: 0.9;
       }
 
-      .snake-scales {
-        stroke: var(--snake-band);
-        stroke-width: 10px;
-        stroke-dasharray: 8 14;
-        animation: snake-scales 0.7s linear infinite;
+      .head-snake-2 {
+        --head-snake-anchor: 38% 34%;
+        --head-snake-color: #0f9f8d;
+        animation-delay: -0.42s;
+        animation-duration: 1.92s;
       }
 
-      .snake-head {
-        fill: var(--snake-ink);
+      .head-snake-3 {
+        --head-snake-anchor: 48% 29%;
+        animation-delay: -0.8s;
+        animation-duration: 1.48s;
       }
 
-      .snake-head-mark {
-        fill: var(--snake-band);
-        opacity: 0.9;
+      .head-snake-4 {
+        --head-snake-anchor: 29% 55%;
+        --head-snake-color: #3b82f6;
+        animation-delay: -1.06s;
+        animation-duration: 2.08s;
       }
 
-      .snake-eye {
-        fill: #f8fafc;
+      .head-snake-5 {
+        --head-snake-anchor: 42% 47%;
+        --head-snake-color: #38bdf8;
+        animation-delay: -0.2s;
+        animation-duration: 1.74s;
       }
 
-      .snake-tongue {
-        fill: none;
-        stroke: #ef4444;
-        stroke-width: 2px;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        transform-origin: 183px 22px;
-        animation: snake-tongue 0.42s ease-in-out infinite;
-      }
-
-      @keyframes snake-travel {
+      @keyframes head-snake-sway {
         0% {
-          left: calc(-1 * var(--snake-width));
-          transform: translateY(0);
-        }
-        34% {
-          transform: translateY(-1px);
-        }
-        68% {
-          transform: translateY(1px);
-        }
-        100% {
-          left: 100%;
-          transform: translateY(0);
-        }
-      }
-
-      @keyframes snake-scales {
-        to {
-          stroke-dashoffset: -22;
-        }
-      }
-
-      @keyframes snake-tongue {
-        0%,
-        100% {
-          opacity: 0.15;
-          transform: scaleX(0.35);
+          transform: rotate(-6deg) scaleX(0.98);
         }
         50% {
-          opacity: 1;
-          transform: scaleX(1);
+          transform: rotate(4deg) scaleX(1.04);
+        }
+        100% {
+          transform: rotate(8deg) scaleX(0.99);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .head-snake {
+          animation: none;
         }
       }
     </style>
@@ -257,48 +201,30 @@
           <source srcset="/medusa-emblem-night.png" media="(prefers-color-scheme: dark)">
           <img class="emblem" src="/medusa-emblem.png" alt="" aria-hidden="true">
         </picture>
+        <svg class="head-snakes" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <g class="head-snake head-snake-1">
+            <path d="M21 45 C8 40 10 26 24 27 C35 28 33 15 45 14"></path>
+            <circle cx="45" cy="14" r="2.5"></circle>
+          </g>
+          <g class="head-snake head-snake-2">
+            <path d="M30 34 C22 23 30 11 41 14 C52 17 48 28 59 28"></path>
+            <circle cx="59" cy="28" r="2.4"></circle>
+          </g>
+          <g class="head-snake head-snake-3">
+            <path d="M41 28 C41 14 55 10 62 20 C68 29 58 33 68 42"></path>
+            <circle cx="68" cy="42" r="2.3"></circle>
+          </g>
+          <g class="head-snake head-snake-4">
+            <path d="M22 55 C10 55 8 67 21 69 C34 71 32 57 43 60"></path>
+            <circle cx="43" cy="60" r="2.2"></circle>
+          </g>
+          <g class="head-snake head-snake-5">
+            <path d="M36 47 C48 38 61 44 58 57 C56 68 44 57 42 69"></path>
+            <circle cx="42" cy="69" r="2.1"></circle>
+          </g>
+        </svg>
       </div>
-      <strong class="wordmark">MEDUSA</strong>
-      <div class="progress-group">
-        <div class="activity" aria-label="Loading" role="progressbar">
-          <svg class="snake primary" aria-hidden="true" focusable="false" viewBox="0 0 190 44">
-            <path class="snake-body" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
-              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
-            </path>
-            <path class="snake-scales" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
-              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
-            </path>
-            <circle class="snake-head" cx="176" cy="22" r="8.5"></circle>
-            <circle class="snake-head-mark" cx="171" cy="20" r="2.2"></circle>
-            <circle class="snake-eye" cx="178.5" cy="18.8" r="1.2"></circle>
-            <path class="snake-tongue" d="M183 22 L190 19 M183 22 L190 25"></path>
-          </svg>
-          <svg class="snake secondary" aria-hidden="true" focusable="false" viewBox="0 0 190 44">
-            <path class="snake-body" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
-              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
-            </path>
-            <path class="snake-scales" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
-              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
-            </path>
-            <circle class="snake-head" cx="176" cy="22" r="8.5"></circle>
-            <circle class="snake-head-mark" cx="171" cy="20" r="2.2"></circle>
-            <circle class="snake-eye" cx="178.5" cy="18.8" r="1.2"></circle>
-            <path class="snake-tongue" d="M183 22 L190 19 M183 22 L190 25"></path>
-          </svg>
-          <svg class="snake tertiary" aria-hidden="true" focusable="false" viewBox="0 0 190 44">
-            <path class="snake-body" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
-              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
-            </path>
-            <path class="snake-scales" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
-              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
-            </path>
-            <circle class="snake-head" cx="176" cy="22" r="8.5"></circle>
-            <circle class="snake-head-mark" cx="171" cy="20" r="2.2"></circle>
-            <circle class="snake-eye" cx="178.5" cy="18.8" r="1.2"></circle>
-            <path class="snake-tongue" d="M183 22 L190 19 M183 22 L190 25"></path>
-          </svg>
-        </div>
-      </div>
+      <strong class="wordmark">medusa</strong>
     </main>
   </body>
 </html>

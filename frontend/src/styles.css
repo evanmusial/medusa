@@ -115,174 +115,158 @@ button :where(span, strong, b, small, em),
 }
 
 .loading-panel {
-  width: min(360px, calc(100vw - 32px));
+  width: min(92vw, 520px);
   display: grid;
   justify-items: center;
-  gap: 10px;
+  gap: clamp(4px, 1.2vmin, 10px);
   text-align: center;
 }
 
 .loading-emblem-stage {
   position: relative;
-  width: 92px;
-  height: 84px;
+  width: clamp(78px, 18vmin, 142px);
+  height: clamp(78px, 18vmin, 142px);
   display: grid;
   place-items: center;
-  margin-bottom: 0;
 }
 
 .loading-emblem {
-  width: 76px;
-  height: 76px;
+  width: 100%;
+  height: 100%;
   display: block;
   object-fit: contain;
-  filter: drop-shadow(0 10px 18px rgb(15 23 42 / 12%));
+  filter: drop-shadow(0 14px 26px rgb(15 23 42 / 15%));
 }
 
-.loading-wordmark {
-  color: var(--accent);
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 0;
-  line-height: 1;
-  text-transform: uppercase;
+.brand-name.loading-wordmark {
+  color: var(--ink);
+  font-size: clamp(38px, 11vmin, 86px);
+  line-height: 0.88;
 }
 
-.loading-progress-group {
-  width: min(340px, 78vw);
+.startup-animation-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.startup-animation-stage {
+  position: relative;
+  width: min(92vw, 520px);
+  min-height: min(58vmin, 430px);
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+}
+
+.startup-animation-lockup {
+  position: relative;
+  z-index: 2;
   display: grid;
   justify-items: center;
+  gap: clamp(4px, 1.2vmin, 10px);
+  text-align: center;
 }
 
-.loading-activity {
+.startup-animation-emblem-stage {
   position: relative;
+  width: clamp(78px, 18vmin, 142px);
+  height: clamp(78px, 18vmin, 142px);
+  display: grid;
+  place-items: center;
+}
+
+.startup-animation-emblem {
   width: 100%;
-  height: 48px;
-  overflow: hidden;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 11%, #000 89%, transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0, #000 11%, #000 89%, transparent 100%);
-}
-
-.loading-snake {
-  --snake-band: color-mix(in srgb, var(--snake-ink) 62%, #22c55e);
-  --snake-height: 44px;
-  --snake-ink: var(--accent);
-  --snake-speed: 4.4s;
-  --snake-top: 1px;
-  --snake-width: 190px;
-  position: absolute;
-  top: var(--snake-top);
-  left: calc(-1 * var(--snake-width));
+  height: 100%;
   display: block;
-  width: var(--snake-width);
-  height: var(--snake-height);
+  object-fit: contain;
+  filter: drop-shadow(0 14px 26px rgb(15 23 42 / 15%));
+}
+
+.startup-head-snakes {
+  position: absolute;
+  top: -12%;
+  left: -13%;
+  width: 128%;
+  height: 128%;
   overflow: visible;
-  color: var(--snake-ink);
-  filter: drop-shadow(0 7px 10px color-mix(in srgb, var(--snake-ink) 28%, transparent));
   pointer-events: none;
-  animation: loading-snake-travel var(--snake-speed) linear infinite;
-  animation-delay: var(--snake-delay, 0s);
+  filter: drop-shadow(0 2px 4px color-mix(in srgb, var(--accent) 18%, transparent));
 }
 
-.loading-snake-secondary {
-  --snake-band: color-mix(in srgb, #0f9f8d 70%, #60a5fa);
-  --snake-height: 38px;
-  --snake-ink: #0f9f8d;
-  --snake-speed: 5.2s;
-  --snake-top: 12px;
-  --snake-width: 158px;
-  opacity: 0.82;
-  animation-delay: -1.6s;
+.startup-head-snake {
+  --head-snake-anchor: 30% 44%;
+  --head-snake-color: color-mix(in srgb, var(--accent) 74%, #0f9f8d);
+  transform-box: view-box;
+  transform-origin: var(--head-snake-anchor);
+  animation: startup-head-snake-sway 1.65s ease-in-out infinite alternate;
+  opacity: 0.72;
 }
 
-.loading-snake-tertiary {
-  --snake-band: color-mix(in srgb, var(--accent) 50%, #60a5fa);
-  --snake-height: 32px;
-  --snake-speed: 3.85s;
-  --snake-top: 18px;
-  --snake-width: 132px;
-  opacity: 0.66;
-  animation-delay: -2.55s;
-}
-
-.loading-snake-body,
-.loading-snake-scales {
+.startup-head-snake path {
   fill: none;
+  stroke: var(--head-snake-color);
   stroke-linecap: round;
   stroke-linejoin: round;
+  stroke-width: 3.7;
 }
 
-.loading-snake-body {
-  stroke: var(--snake-ink);
-  stroke-width: 10px;
+.startup-head-snake circle {
+  fill: var(--head-snake-color);
+  stroke: color-mix(in srgb, var(--head-snake-color) 55%, var(--bg));
+  stroke-width: 0.9;
 }
 
-.loading-snake-scales {
-  stroke: var(--snake-band);
-  stroke-width: 10px;
-  stroke-dasharray: 8 14;
-  animation: loading-snake-scales 0.7s linear infinite;
+.startup-head-snake-2 {
+  --head-snake-anchor: 38% 34%;
+  --head-snake-color: color-mix(in srgb, #0f9f8d 78%, var(--accent));
+  animation-delay: -0.42s;
+  animation-duration: 1.92s;
 }
 
-.loading-snake-head {
-  fill: var(--snake-ink);
+.startup-head-snake-3 {
+  --head-snake-anchor: 48% 29%;
+  animation-delay: -0.8s;
+  animation-duration: 1.48s;
 }
 
-.loading-snake-head-mark {
-  fill: var(--snake-band);
-  opacity: 0.9;
+.startup-head-snake-4 {
+  --head-snake-anchor: 29% 55%;
+  --head-snake-color: color-mix(in srgb, var(--accent) 62%, #60a5fa);
+  animation-delay: -1.06s;
+  animation-duration: 2.08s;
 }
 
-.loading-snake-eye {
-  fill: #f8fafc;
+.startup-head-snake-5 {
+  --head-snake-anchor: 42% 47%;
+  --head-snake-color: color-mix(in srgb, #0f9f8d 66%, #60a5fa);
+  animation-delay: -0.2s;
+  animation-duration: 1.74s;
 }
 
-.loading-snake-tongue {
-  fill: none;
-  stroke: #ef4444;
-  stroke-width: 2px;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transform-origin: 183px 22px;
-  animation: loading-snake-tongue 0.42s ease-in-out infinite;
-}
-
-@keyframes loading-snake-travel {
+@keyframes startup-head-snake-sway {
   0% {
-    left: calc(-1 * var(--snake-width));
-    transform: translateY(0);
+    transform: rotate(-6deg) scaleX(0.98);
   }
-  34% {
-    transform: translateY(-1px);
-  }
-  68% {
-    transform: translateY(1px);
-  }
-  100% {
-    left: 100%;
-    transform: translateY(0);
-  }
-}
 
-@keyframes loading-snake-scales {
-  to {
-    stroke-dashoffset: -22;
-  }
-}
-
-@keyframes loading-snake-tongue {
-  0%,
-  100% {
-    opacity: 0.18;
-    transform: scaleX(0.35);
-  }
   50% {
-    opacity: 1;
-    transform: scaleX(1);
+    transform: rotate(4deg) scaleX(1.04);
   }
+
+  100% {
+    transform: rotate(8deg) scaleX(0.99);
+  }
+}
+
+.brand-name.startup-animation-wordmark {
+  color: var(--ink);
+  font-size: clamp(38px, 11vmin, 86px);
+  line-height: 0.88;
 }
 
 .login-panel {
@@ -9645,10 +9629,7 @@ pre {
   }
 
   .job-activity-glyph,
-  .loading-snake,
-  .loading-snake-body,
-  .loading-snake-scales,
-  .loading-snake-tongue,
+  .startup-head-snake,
   .async-feedback-success,
   .async-feedback-error,
   .async-feedback-progress svg,
