@@ -754,6 +754,7 @@ type StashLane = "wishlist" | "open_pdf" | "queued" | "imported" | "all";
 type TagSortKey = "name" | "status" | "documents";
 type SortDirection = "asc" | "desc";
 type TagMergeChoice = { target_tag_id?: string; target_name?: string; source_tag_ids?: string[] };
+type ActiveResultChip = { key: string; label: string; onClear: () => void; tone?: "tag"; count?: number };
 type BrowserHistoryMode = "none" | "push" | "replace";
 type DocumentRouteMode = "detail" | "reader";
 type AppRoute = { view: View; documentId?: string; documentMode?: DocumentRouteMode };
@@ -8313,7 +8314,8 @@ function LibraryView({
   const setFilterValue = (key: keyof DocumentFilters, value: string) => {
     setFilters({ ...filters, [key]: value });
   };
-  const activeResultChips = [
+  const selectedFilterTag = filters.tag_id ? tags.find((tag) => tag.id === filters.tag_id) : undefined;
+  const activeResultChipCandidates: Array<ActiveResultChip | null> = [
     query.trim()
       ? {
           key: "query",
@@ -8331,7 +8333,9 @@ function LibraryView({
     filters.tag_id
       ? {
           key: "tag",
-          label: `Tag: ${tagOptions.find((option) => option.id === filters.tag_id)?.name || "selected"}`,
+          label: `Tag: ${selectedFilterTag?.name || tagOptions.find((option) => option.id === filters.tag_id)?.name || "selected"}`,
+          tone: "tag" as const,
+          count: selectedFilterTag?.document_count,
           onClear: () => setFilterValue("tag_id", ""),
         }
       : null,
@@ -8377,7 +8381,8 @@ function LibraryView({
           onClear: () => setFilterValue("health_status", ""),
         }
       : null,
-  ].filter((chip): chip is { key: string; label: string; onClear: () => void } => Boolean(chip));
+  ];
+  const activeResultChips = activeResultChipCandidates.filter((chip): chip is ActiveResultChip => Boolean(chip));
   const hasResultChips = activeResultChips.length > 0;
 
   const openDuplicateReview = () => {
@@ -8864,14 +8869,14 @@ function LibraryView({
           {visibleKeywordTags.length ? (
             visibleKeywordTags.map((tag) => (
               <button
-                className={`tag-cloud-chip${filters.tag_id === tag.id ? " active" : ""}`}
+                className={`tag-cloud-chip tag-count-chip${filters.tag_id === tag.id ? " active" : ""}`}
                 data-tooltip={`Filter this Library result set to ${tag.name}.`}
                 key={tag.id}
                 onClick={() => setFilterValue("tag_id", filters.tag_id === tag.id ? "" : tag.id)}
                 type="button"
               >
-                <span className="tag-cloud-chip-count">{formatWholeNumber(tag.count)}</span>
-                <span className="tag-cloud-chip-label">{tag.name}</span>
+                <span className="tag-cloud-chip-count tag-count-chip-count">{formatWholeNumber(tag.count)}</span>
+                <span className="tag-cloud-chip-label tag-count-chip-label">{tag.name}</span>
               </button>
             ))
           ) : (
@@ -8993,12 +8998,15 @@ function LibraryView({
               {activeResultChips.map((chip) => (
                 <button
                   key={chip.key}
-                  className="active-result-chip"
+                  className={`active-result-chip${chip.tone === "tag" ? " tag-count-chip" : ""}`}
                   data-tooltip={`Clear ${chip.label}.`}
                   onClick={chip.onClear}
                   type="button"
                 >
-                  <span>{chip.label}</span>
+                  {chip.tone === "tag" && typeof chip.count === "number" ? (
+                    <span className="tag-count-chip-count">{formatWholeNumber(chip.count)}</span>
+                  ) : null}
+                  <span className={chip.tone === "tag" ? "tag-count-chip-label" : ""}>{chip.label}</span>
                   <X size={13} />
                 </button>
               ))}
@@ -13114,8 +13122,9 @@ function DocumentPanelContent({
         <div className="detail-tag-list">
           {sortedDocumentTags.length ? (
             sortedDocumentTags.map((tag) => (
-              <span className="detail-tag-chip" key={tag.id}>
-                <span>{tag.name}</span>
+              <span className="detail-tag-chip tag-count-chip" key={tag.id}>
+                <span className="tag-count-chip-count">{formatWholeNumber(tag.document_count)}</span>
+                <span className="tag-count-chip-label">{tag.name}</span>
                 <button
                   aria-label={`Remove ${tag.name}`}
                   data-disabled-reason={tagUpdateBusyReason}
@@ -15724,6 +15733,7 @@ type ImportPickerItem = {
   id: string;
   name: string;
   color?: string | null;
+  count?: number;
   depth?: number;
   meta?: string;
 };
@@ -15743,7 +15753,7 @@ function ImportDefaultPicker({
   items: ImportPickerItem[];
   selectedIds: string[];
   onChange: (ids: string[]) => void;
-  chipTone?: "neutral" | "domain";
+  chipTone?: "neutral" | "domain" | "tag";
   createLabel: string;
   onCreate?: (name: string) => Promise<void>;
 }) {
@@ -15801,14 +15811,15 @@ function ImportDefaultPicker({
         {selected.length ? (
           selected.map((item) => (
             <button
-              className={`selected-chip${chipTone === "domain" ? " domain-chip" : ""}`}
+              className={`selected-chip${chipTone === "domain" ? " domain-chip" : ""}${chipTone === "tag" ? " tag-count-chip" : ""}`}
               key={item.id}
               data-tooltip={`Remove ${item.name} from the default ${title.toLocaleLowerCase()} applied to this import batch.`}
               style={chipTone === "domain" ? ({ "--domain-chip-color": item.color || "var(--blue)" } as CSSProperties) : undefined}
               type="button"
               onClick={() => removeItem(item.id)}
             >
-              <span>{item.name}</span>
+              {chipTone === "tag" && typeof item.count === "number" ? <span className="tag-count-chip-count">{formatWholeNumber(item.count)}</span> : null}
+              <span className={chipTone === "tag" ? "tag-count-chip-label" : ""}>{item.name}</span>
               <X size={13} />
             </button>
           ))
@@ -18026,7 +18037,7 @@ function ImportView({
   const sortedProjects = useMemo(() => [...projects].sort((left, right) => left.name.localeCompare(right.name)), [projects]);
   const domainItems = useMemo(() => domainPickerItems(domains), [domains]);
   const tagItems = useMemo<ImportPickerItem[]>(
-    () => sortedTags.map((tag) => ({ id: tag.id, name: tag.name })),
+    () => sortedTags.map((tag) => ({ id: tag.id, name: tag.name, count: tag.document_count })),
     [sortedTags],
   );
   const projectItems = useMemo<ImportPickerItem[]>(
@@ -18392,6 +18403,7 @@ function ImportView({
             title="Domains"
           />
           <ImportDefaultPicker
+            chipTone="tag"
             createLabel="New tag"
             hint="Apply known tags or create a tag before dropping files."
             items={tagItems}
@@ -18822,9 +18834,9 @@ function TagSuggestionMergeIntoDialog({
         </label>
         <div className="tag-merge-preview tag-suggestion-tags" aria-label="Source tags">
           {sortedSourceTags.map((tag) => (
-            <span key={tag.id}>
-              {tag.name}
-              <small>{tag.document_count}</small>
+            <span className="tag-count-chip" key={tag.id}>
+              <span className="tag-count-chip-count">{formatWholeNumber(tag.document_count)}</span>
+              <span className="tag-count-chip-label">{tag.name}</span>
             </span>
           ))}
         </div>
@@ -19321,9 +19333,9 @@ function TagsView({
           <p>{suggestion.rationale}</p>
           <div className="tag-suggestion-tags" aria-label="Source tags">
             {sortedSourceTags.map((tag) => (
-              <span key={tag.id}>
-                {tag.name}
-                <small>{tag.document_count}</small>
+              <span className="tag-count-chip" key={tag.id}>
+                <span className="tag-count-chip-count">{formatWholeNumber(tag.document_count)}</span>
+                <span className="tag-count-chip-label">{tag.name}</span>
               </span>
             ))}
           </div>
@@ -19415,13 +19427,13 @@ function TagsView({
         </div>
         <p>{suggestion.rationale}</p>
         <div className="tag-suggestion-tags" aria-label="Relationship tags">
-          <span>
-            {suggestion.source_tag.name}
-            <small>{formatTagStatus(suggestion.source_tag.status)}</small>
+          <span className="tag-count-chip">
+            <span className="tag-count-chip-count">{formatWholeNumber(suggestion.source_tag.document_count)}</span>
+            <span className="tag-count-chip-label">{suggestion.source_tag.name}</span>
           </span>
-          <span>
-            {suggestion.target_tag.name}
-            <small>{formatTagStatus(suggestion.target_tag.status)}</small>
+          <span className="tag-count-chip">
+            <span className="tag-count-chip-count">{formatWholeNumber(suggestion.target_tag.document_count)}</span>
+            <span className="tag-count-chip-label">{suggestion.target_tag.name}</span>
           </span>
         </div>
       </div>

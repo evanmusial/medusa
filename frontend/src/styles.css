@@ -7256,6 +7256,63 @@ pre {
   white-space: nowrap;
 }
 
+.tag-count-chip {
+  --tag-count-chip-font-size: 13px;
+  --tag-count-chip-count-width: 32px;
+  min-height: 28px;
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: var(--tag-count-chip-count-width) minmax(0, auto) auto;
+  column-gap: 6px;
+  align-items: center;
+  padding: 3px 7px 3px 5px;
+  border: 1px solid color-mix(in srgb, var(--button-line) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 92%, var(--button-line));
+  color: var(--muted);
+  font-size: var(--tag-count-chip-font-size);
+  box-sizing: border-box;
+  font-weight: 400;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.tag-count-chip:hover,
+.tag-count-chip:focus-visible {
+  border-color: color-mix(in srgb, var(--blue) 34%, var(--button-line));
+  background: color-mix(in srgb, var(--blue-soft) 46%, var(--panel-2));
+  color: color-mix(in srgb, var(--blue) 72%, var(--ink));
+  outline: 0;
+}
+
+.tag-count-chip-count {
+  align-self: stretch;
+  width: var(--tag-count-chip-count-width);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  border-right: 1px solid color-mix(in srgb, var(--button-line) 34%, transparent);
+  box-sizing: border-box;
+  color: color-mix(in srgb, var(--ink) 74%, var(--muted));
+  font-size: var(--tag-count-chip-font-size) !important;
+  font-weight: 650 !important;
+  font-variant-numeric: tabular-nums;
+  line-height: inherit;
+  text-align: right;
+}
+
+.tag-count-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  font-size: var(--tag-count-chip-font-size) !important;
+  font-weight: 400 !important;
+  line-height: inherit;
+  text-align: left;
+}
+
 .picker-options {
   min-height: 108px;
   max-height: 170px;
@@ -8768,7 +8825,7 @@ pre {
   gap: 6px;
 }
 
-.tag-suggestion-tags span {
+.tag-suggestion-tags > span:not(.tag-count-chip) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
