@@ -472,7 +472,7 @@ const LIBRARY_PREVIEW_CAPACITY_STANDARD_WIDTH = 960;
 const LIBRARY_PREVIEW_CAPACITY_STANDARD_HEIGHT = 840;
 const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_WIDTH = 1280;
 const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_HEIGHT = 1020;
-const LIBRARY_ROW_GAP_PX = 4;
+const LIBRARY_ROW_GAP_PX = 19;
 const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
   LibraryDensity,
   Record<LibraryPreviewCapacity, { rowHeight: number; summaryLines: number; excerptChars: number }>
