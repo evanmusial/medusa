@@ -1653,6 +1653,13 @@ textarea {
   animation: work-progress-pulse 1.6s linear infinite;
 }
 
+.header-work-track.indeterminate span {
+  width: 34%;
+  min-width: 56px;
+  transition: none;
+  animation: header-work-indeterminate 1.35s ease-in-out infinite;
+}
+
 .header-work-progress.paused .header-work-icon {
   color: var(--amber);
 }
@@ -1807,6 +1814,16 @@ textarea {
 
   to {
     background-position: 180% 0;
+  }
+}
+
+@keyframes header-work-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(330%);
   }
 }
 

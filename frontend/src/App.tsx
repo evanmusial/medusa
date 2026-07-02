@@ -2391,8 +2391,31 @@ function backgroundRunningJobCount(jobs: BackgroundJob[]) {
 function backgroundAggregateProgress(jobs: BackgroundJob[]) {
   const total = jobs.reduce((sum, job) => sum + backgroundJobTotal(job), 0);
   if (!total) return backgroundProgress(jobs[0]);
-  const finished = jobs.reduce((sum, job) => sum + backgroundJobFinished(job), 0);
-  return Math.max(8, Math.min(96, Math.round((finished / total) * 100)));
+  const progressed = jobs.reduce((sum, job) => {
+    const jobTotal = backgroundJobTotal(job);
+    if (job.progress !== undefined) return sum + (Math.max(0, Math.min(100, job.progress)) / 100) * jobTotal;
+    return sum + backgroundJobFinished(job);
+  }, 0);
+  return Math.max(8, Math.min(96, Math.round((progressed / total) * 100)));
+}
+
+function backgroundJobProgressIsIndeterminate(job?: BackgroundJob | null) {
+  if (!job || isTerminalBackgroundStatus(job.status) || job.status === "paused") return false;
+  if (job.progress !== undefined) return false;
+  const total = backgroundJobTotal(job);
+  if (total <= 0) return true;
+  return backgroundJobFinished(job) === 0;
+}
+
+function backgroundAggregateProgressIsIndeterminate(jobs: BackgroundJob[]) {
+  if (!jobs.length) return true;
+  if (jobs.some((job) => job.progress !== undefined)) return false;
+  const activeJobs = jobs.filter((job) => !isTerminalBackgroundStatus(job.status) && job.status !== "paused");
+  if (!activeJobs.length) return false;
+  const total = activeJobs.reduce((sum, job) => sum + backgroundJobTotal(job), 0);
+  if (total <= 0) return true;
+  const finished = activeJobs.reduce((sum, job) => sum + backgroundJobFinished(job), 0);
+  return finished === 0;
 }
 
 function backgroundAggregateDetail(jobs: BackgroundJob[]) {
@@ -2591,6 +2614,7 @@ function HeaderWorkProgress({
   let detail = "Processing";
   let progress = 10;
   let activeClass = "running";
+  let progressIndeterminate = false;
   let controlGroup: WorkControlGroup | null = null;
   let controlStatus: BackgroundJobStatus | "import" | null = null;
   let tooltip = "Open Queue to inspect active imports, Concordance runs, backups, restores, and citation review work.";
@@ -2628,6 +2652,11 @@ function HeaderWorkProgress({
     const runningJobCount = Math.max(listedRunningJobCount, dashboardRunningBackgroundWorkCount(dashboard));
     const aggregate = activeJobCount > 1 || activeJobs.length > 1;
     progress = job ? (aggregate ? backgroundAggregateProgress(activeJobs) : backgroundProgress(job)) : 18;
+    progressIndeterminate = job
+      ? aggregate
+        ? backgroundAggregateProgressIsIndeterminate(activeJobs)
+        : backgroundJobProgressIsIndeterminate(job)
+      : true;
     label =
       activeJobCount > 1
         ? `${formatMetric(activeJobCount)} background jobs (${formatMetric(runningJobCount)} active)`
@@ -2676,14 +2705,14 @@ function HeaderWorkProgress({
             </span>
           </span>
           <span
-            aria-label={`${label}: ${progress}%`}
+            aria-label={progressIndeterminate ? `${label}: work in progress` : `${label}: ${progress}%`}
             aria-valuemax={100}
             aria-valuemin={0}
-            aria-valuenow={progress}
-            className="header-work-track"
+            aria-valuenow={progressIndeterminate ? undefined : progress}
+            className={`header-work-track${progressIndeterminate ? " indeterminate" : ""}`}
             role="progressbar"
           >
-            <span style={{ width: `${progress}%` }} />
+            <span style={progressIndeterminate ? undefined : { width: `${progress}%` }} />
           </span>
         </button>
         {completedImport && !importActive && !hasActiveBackgroundWork && onDismissCompletedImport ? (
