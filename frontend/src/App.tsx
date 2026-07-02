@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ChangeEvent,
   ClipboardEvent as ReactClipboardEvent,
@@ -12,6 +12,7 @@ import type {
   RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, LazyMotion, MotionConfig, domAnimation, m, useScroll, useSpring, type HTMLMotionProps } from "motion/react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   Controls,
@@ -580,6 +581,165 @@ function AppDialogMessage({ message }: { message?: ReactNode }) {
   );
 }
 
+function MedusaMotionRoot({ children }: { children: ReactNode }) {
+  return (
+    <MotionConfig reducedMotion="user">
+      <LazyMotion features={domAnimation}>{children}</LazyMotion>
+    </MotionConfig>
+  );
+}
+
+const MotionActionButton = forwardRef<HTMLButtonElement, HTMLMotionProps<"button">>(function MotionActionButton(
+  { children, className = "", disabled, ...props },
+  ref,
+) {
+  const iconOnly = typeof className === "string" && /\bicon-button\b/.test(className);
+  const hoverTarget = iconOnly ? { scale: 1.025, y: -1 } : { y: -1 };
+  return (
+    <m.button
+      {...props}
+      className={className}
+      disabled={disabled}
+      ref={ref}
+      transition={{ type: "spring", stiffness: 520, damping: 34, mass: 0.42 }}
+      whileHover={disabled ? undefined : hoverTarget}
+      whileTap={disabled ? undefined : { scale: iconOnly ? 0.94 : 0.975 }}
+    >
+      {children}
+    </m.button>
+  );
+});
+
+function ScrollProgressRail({
+  className = "",
+  containerRef,
+}: {
+  className?: string;
+  containerRef: RefObject<HTMLElement | null>;
+}) {
+  const { scrollYProgress } = useScroll({ container: containerRef, trackContentSize: true });
+  const scaleX = useSpring(scrollYProgress, { stiffness: 360, damping: 42, mass: 0.28 });
+  const [scrollable, setScrollable] = useState(false);
+
+  useLayoutEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    let frame = 0;
+    const update = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        setScrollable(element.scrollHeight - element.clientHeight > 2);
+      });
+    };
+    update();
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    resizeObserver?.observe(element);
+    Array.from(element.children).forEach((child) => {
+      if (child instanceof HTMLElement) resizeObserver?.observe(child);
+    });
+    const mutationObserver = typeof MutationObserver !== "undefined" ? new MutationObserver(update) : null;
+    mutationObserver?.observe(element, { childList: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [containerRef]);
+
+  return (
+    <m.div
+      aria-hidden="true"
+      className={`scroll-progress-rail${scrollable ? "" : " inactive"}${className ? ` ${className}` : ""}`}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: scrollable ? 1 : 0 }}
+      exit={{ opacity: 0 }}
+    >
+      <m.span style={{ scaleX }} />
+    </m.div>
+  );
+}
+
+function SkeletonBlock({ className = "" }: { className?: string }) {
+  return <span aria-hidden="true" className={`skeleton-shimmer${className ? ` ${className}` : ""}`} />;
+}
+
+function LibraryRowsSkeleton({ count = 8, rowHeight }: { count?: number; rowHeight: number }) {
+  return (
+    <m.div className="library-row-skeleton-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      {Array.from({ length: count }).map((_, index) => (
+        <div className="library-row-skeleton" key={index} style={{ height: rowHeight }}>
+          <SkeletonBlock className="library-row-skeleton-check" />
+          <div>
+            <SkeletonBlock className="library-row-skeleton-title" />
+            <SkeletonBlock className="library-row-skeleton-meta" />
+          </div>
+          <SkeletonBlock className="library-row-skeleton-pill" />
+          <SkeletonBlock className="library-row-skeleton-summary" />
+        </div>
+      ))}
+    </m.div>
+  );
+}
+
+function DocumentDetailSkeleton() {
+  return (
+    <m.div className="document-detail-skeleton" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <SkeletonBlock className="document-detail-skeleton-title" />
+      <SkeletonBlock className="document-detail-skeleton-meta" />
+      <div className="document-detail-skeleton-actions">
+        <SkeletonBlock />
+        <SkeletonBlock />
+        <SkeletonBlock />
+      </div>
+      <SkeletonBlock className="document-detail-skeleton-tab" />
+      <SkeletonBlock className="document-detail-skeleton-preview" />
+      <SkeletonBlock className="document-detail-skeleton-line" />
+      <SkeletonBlock className="document-detail-skeleton-line short" />
+    </m.div>
+  );
+}
+
+function RecommendationListSkeleton({ label = "Loading recommendations" }: { label?: string }) {
+  return (
+    <div className="recommendation-list-skeleton" aria-label={label} role="status">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div className="recommendation-row-skeleton" key={index}>
+          <SkeletonBlock className="recommendation-row-skeleton-title" />
+          <SkeletonBlock className="recommendation-row-skeleton-meta" />
+          <SkeletonBlock className="recommendation-row-skeleton-detail" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CompositionLoadingSkeleton() {
+  return (
+    <div className="composition-loading-skeleton" aria-label="Loading composition" role="status">
+      <SkeletonBlock className="composition-loading-skeleton-title" />
+      <div className="composition-loading-skeleton-grid">
+        <SkeletonBlock />
+        <SkeletonBlock />
+      </div>
+      <SkeletonBlock className="composition-loading-skeleton-chart" />
+      <SkeletonBlock className="composition-loading-skeleton-line" />
+      <SkeletonBlock className="composition-loading-skeleton-line short" />
+    </div>
+  );
+}
+
+function ConcordanceEstimateSkeleton() {
+  return (
+    <div className="concordance-estimate-skeleton" aria-label="Estimating Concordance cost" role="status">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <SkeletonBlock key={index} />
+      ))}
+    </div>
+  );
+}
+
 function AppConfirmDialog({
   onResolve,
   request,
@@ -596,75 +756,86 @@ function AppConfirmDialog({
       confirmButtonRef.current?.focus();
     });
   }, [request]);
-  if (!request) return null;
 
-  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
-    if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    event.stopPropagation();
-    onResolve(true);
-  };
-
-  const tone = request.tone || "default";
-  const titleId = `app-confirm-title-${request.id}`;
-  const confirmLabel = request.confirmLabel || "OK";
-  const cancelLabel = request.cancelLabel || "Cancel";
-  const icon =
-    tone === "danger" ? (
-      <AlertTriangle size={18} />
-    ) : tone === "warning" ? (
-      <Info size={18} />
-    ) : request.mode === "alert" ? (
-      <Info size={18} />
-    ) : (
-      <CheckCircle2 size={18} />
-    );
-  const dialog = (
-    <div
-      className="confirm-backdrop"
-      data-escape-layer="dialog"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onResolve(false);
-      }}
-    >
-      <form
-        className={`confirm-dialog app-confirm-dialog ${tone}`}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        onKeyDownCapture={handleDialogKeyDown}
-        onSubmit={(event) => {
+  const dialog = request
+    ? (() => {
+        const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
+          if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
+          event.stopPropagation();
           onResolve(true);
-        }}
-      >
-        <div className="confirm-dialog-heading">
-          <div>
-            <span>{request.eyebrow || (request.mode === "alert" ? "Notice" : "Confirmation")}</span>
-            <h2 id={titleId}>{request.title}</h2>
-          </div>
-          <i className={`confirm-dialog-icon ${tone}`} aria-hidden="true">
-            {icon}
-          </i>
-        </div>
-        <AppDialogMessage message={request.message} />
-        <div className="confirm-dialog-actions">
-          {request.mode === "confirm" ? (
-            <button ref={cancelButtonRef} className="secondary-button" type="button" onClick={() => onResolve(false)}>
-              <X size={16} />
-              {cancelLabel}
-            </button>
-          ) : null}
-          <button ref={confirmButtonRef} className={`primary-button${tone === "danger" ? " danger" : ""}`} type="submit">
-            {tone === "danger" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-            {confirmLabel}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-  return createPortal(dialog, document.body);
+        };
+
+        const tone = request.tone || "default";
+        const titleId = `app-confirm-title-${request.id}`;
+        const confirmLabel = request.confirmLabel || "OK";
+        const cancelLabel = request.cancelLabel || "Cancel";
+        const icon =
+          tone === "danger" ? (
+            <AlertTriangle size={18} />
+          ) : tone === "warning" ? (
+            <Info size={18} />
+          ) : request.mode === "alert" ? (
+            <Info size={18} />
+          ) : (
+            <CheckCircle2 size={18} />
+          );
+        return (
+          <m.div
+            key={request.id}
+            className="confirm-backdrop"
+            data-escape-layer="dialog"
+            role="presentation"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) onResolve(false);
+            }}
+          >
+            <m.form
+              className={`confirm-dialog app-confirm-dialog ${tone}`}
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby={titleId}
+              initial={{ opacity: 0, scale: 0.985, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.985, y: 8 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onKeyDownCapture={handleDialogKeyDown}
+              onSubmit={(event) => {
+                event.preventDefault();
+                onResolve(true);
+              }}
+            >
+              <div className="confirm-dialog-heading">
+                <div>
+                  <span>{request.eyebrow || (request.mode === "alert" ? "Notice" : "Confirmation")}</span>
+                  <h2 id={titleId}>{request.title}</h2>
+                </div>
+                <i className={`confirm-dialog-icon ${tone}`} aria-hidden="true">
+                  {icon}
+                </i>
+              </div>
+              <AppDialogMessage message={request.message} />
+              <div className="confirm-dialog-actions">
+                {request.mode === "confirm" ? (
+                  <MotionActionButton ref={cancelButtonRef} className="secondary-button" type="button" onClick={() => onResolve(false)}>
+                    <X size={16} />
+                    {cancelLabel}
+                  </MotionActionButton>
+                ) : null}
+                <MotionActionButton ref={confirmButtonRef} className={`primary-button${tone === "danger" ? " danger" : ""}`} type="submit">
+                  {tone === "danger" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+                  {confirmLabel}
+                </MotionActionButton>
+              </div>
+            </m.form>
+          </m.div>
+        );
+      })()
+    : null;
+  return createPortal(<AnimatePresence>{dialog}</AnimatePresence>, document.body);
 }
 
 function useAppDialogController() {
@@ -3754,19 +3925,27 @@ function CommandPalette({
     if (result !== false) onClose();
   };
 
-  if (!open) return null;
-
   const activeItem = filteredItems[Math.min(activeIndex, Math.max(0, filteredItems.length - 1))];
-  const palette = (
-    <div
+  const palette = open ? (
+    <m.div
       className="command-palette-backdrop"
       data-escape-layer="menu"
       role="presentation"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section className="command-palette" aria-label="Command palette">
+      <m.section
+        className="command-palette"
+        aria-label="Command palette"
+        initial={{ opacity: 0, scale: 0.985, y: -6 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.985, y: -6 }}
+        transition={{ duration: 0.15, ease: "easeOut" }}
+      >
         <div className="command-palette-search">
           <Search size={18} />
           <input
@@ -3797,7 +3976,7 @@ function CommandPalette({
             filteredItems.map((item, index) => {
               const Icon = item.icon;
               return (
-                <button
+                <MotionActionButton
                   key={item.id}
                   aria-selected={index === activeIndex}
                   className={`command-palette-item${index === activeIndex ? " active" : ""}`}
@@ -3813,7 +3992,7 @@ function CommandPalette({
                     <small>{item.detail || item.section}</small>
                   </span>
                   <em>{item.section}</em>
-                </button>
+                </MotionActionButton>
               );
             })
           ) : (
@@ -3823,10 +4002,10 @@ function CommandPalette({
             </div>
           )}
         </div>
-      </section>
-    </div>
-  );
-  return createPortal(palette, document.body);
+      </m.section>
+    </m.div>
+  ) : null;
+  return createPortal(<AnimatePresence>{palette}</AnimatePresence>, document.body);
 }
 
 function attributeDisplayValue(value: Record<string, unknown>) {
@@ -8171,6 +8350,7 @@ function LibraryView({
   dialogs,
   documents,
   document,
+  detailLoading = false,
   selectedId,
   setSelectedId,
   domains,
@@ -8210,6 +8390,7 @@ function LibraryView({
   dialogs: AppDialogController;
   documents: LibraryDocumentRow[];
   document?: DocumentDetail;
+  detailLoading?: boolean;
   selectedId?: string;
   setSelectedId: (id: string, options?: { updateUrl?: boolean }) => void;
   domains: Domain[];
@@ -9289,7 +9470,7 @@ function LibraryView({
                     ))}
                   </datalist>
                 </label>
-                <button
+                <MotionActionButton
                   aria-label="Previous Library result page"
                   className="icon-button compact library-page-arrow"
                   data-disabled-reason={pageTurnPending ? "the requested result window is still loading." : pageOffset <= 0 ? "already at the first result window." : ""}
@@ -9299,9 +9480,9 @@ function LibraryView({
                   type="button"
                 >
                   <ArrowLeft size={18} strokeWidth={3} />
-                </button>
+                </MotionActionButton>
                 <span className="library-page-count">{pageCountLabel}</span>
-                <button
+                <MotionActionButton
                   aria-label="Next Library result page"
                   className="icon-button compact library-page-arrow"
                   data-disabled-reason={pageTurnPending ? "the requested result window is still loading." : !hasMoreDocuments ? "already at the last result window." : ""}
@@ -9311,7 +9492,7 @@ function LibraryView({
                   type="button"
                 >
                   <ArrowRight size={18} strokeWidth={3} />
-                </button>
+                </MotionActionButton>
               </div>
             </div>
           </div>
@@ -9322,7 +9503,7 @@ function LibraryView({
                 Showing only matches for
               </span>
               {activeResultChips.map((chip) => (
-                <button
+                <MotionActionButton
                   key={chip.key}
                   className={`active-result-chip${chip.tone === "tag" ? " tag-count-chip" : ""}`}
                   data-tooltip={`Clear ${chip.label}.`}
@@ -9334,9 +9515,9 @@ function LibraryView({
                   ) : null}
                   <span className={chip.tone === "tag" ? "tag-count-chip-label" : ""}>{chip.label}</span>
                   <X size={13} />
-                </button>
+                </MotionActionButton>
               ))}
-              <button
+              <MotionActionButton
                 className="active-result-clear"
                 data-tooltip="Clear the active search and every Library filter."
                 onClick={() => {
@@ -9346,7 +9527,7 @@ function LibraryView({
                 type="button"
               >
                 Clear all
-              </button>
+              </MotionActionButton>
             </div>
           ) : null}
         </div>
@@ -9355,6 +9536,10 @@ function LibraryView({
           className={`rows virtual-rows ${alternatingRows ? "alternating-rows" : ""}`}
           onScroll={(event) => syncRowsScrollTop(event.currentTarget.scrollTop)}
         >
+          <ScrollProgressRail containerRef={rowsViewportRef} />
+          {loading && !hasVisibleDocumentRows ? (
+            <LibraryRowsSkeleton count={Math.min(9, Math.max(5, Math.ceil(effectiveRowsViewportHeight / libraryRowHeight)))} rowHeight={libraryRowHeight} />
+          ) : (
           <div className="virtual-rows-spacer" style={{ height: virtualSpacerHeight }}>
           {virtualDocuments.map((item, virtualIndex) => {
             const actualIndex = virtualStartIndex + virtualIndex;
@@ -9459,6 +9644,7 @@ function LibraryView({
             );
           })}
           </div>
+          )}
         </div>
       </section>
       <ResizeHandle
@@ -9477,6 +9663,7 @@ function LibraryView({
         concordanceRuns={concordanceRuns}
         dialogs={dialogs}
         document={document}
+        loading={detailLoading}
         domains={domains}
         onTrashDocument={trashFocusedDocument}
         onOpenReader={() => {
@@ -9748,6 +9935,7 @@ function DocumentPanel({
   concordanceRuns,
   dialogs,
   document,
+  loading = false,
   domains,
   onCloseReader,
   onOpenReader,
@@ -9765,6 +9953,7 @@ function DocumentPanel({
   concordanceRuns: ConcordanceRun[];
   dialogs: AppDialogController;
   document?: DocumentDetail;
+  loading?: boolean;
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
@@ -9778,6 +9967,13 @@ function DocumentPanel({
   tags: Tag[];
 }) {
   if (!document) {
+    if (loading) {
+      return (
+        <aside className="detail-pane detail-pane-loading">
+          <DocumentDetailSkeleton />
+        </aside>
+      );
+    }
     return (
       <aside className="detail-pane empty">
         <Archive size={32} />
@@ -10235,15 +10431,27 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
   };
 
   return (
-    <div
+    <m.div
       className="modal-backdrop recommendations-modal-backdrop"
       data-escape-layer="dialog"
       role="presentation"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section className="recommendations-dialog" role="dialog" aria-modal="true" aria-labelledby="recommendations-title">
+      <m.section
+        className="recommendations-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="recommendations-title"
+        initial={{ opacity: 0, scale: 0.985, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.985, y: 8 }}
+        transition={{ duration: 0.16, ease: "easeOut" }}
+      >
         <div className="recommendations-head">
           <div>
             <span>Related</span>
@@ -10252,7 +10460,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
           </div>
           <div className="recommendation-actions">
             <AsyncActionSlot busy={refresh.isPending} feedback={refreshFeedback.feedback} label="Recommendation refresh in progress">
-              <button
+              <MotionActionButton
                 className={asyncFeedbackClass("secondary-button compact", refreshFeedback.feedback, refresh.isPending)}
                 data-disabled-reason={refreshDisabledReason}
                 data-tooltip="Refresh related-paper recommendations from scholarly metadata search, extracted bibliography references, and nearby project/domain/tag context."
@@ -10262,36 +10470,36 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
               >
                 <RefreshCw className={refresh.isPending ? "spin" : ""} size={14} />
                 Refresh
-              </button>
+              </MotionActionButton>
             </AsyncActionSlot>
-            <button className="icon-button compact" data-tooltip="Close Related." onClick={onClose} type="button">
+            <MotionActionButton className="icon-button compact" data-tooltip="Close Related." onClick={onClose} type="button">
               <X size={15} />
-            </button>
+            </MotionActionButton>
           </div>
         </div>
         <div className="recommendations-controls">
           <div className="recommendation-view-tabs" role="tablist" aria-label="Recommendation view">
             {RECOMMENDATION_VIEW_OPTIONS.map((option) => (
-              <button
+              <MotionActionButton
                 key={option.id}
                 className={view === option.id ? "selected" : ""}
                 onClick={() => setView(option.id)}
                 type="button"
               >
                 {option.label}
-              </button>
+              </MotionActionButton>
             ))}
           </div>
           <div className="recommendation-family-tabs" role="tablist" aria-label="Recommendation relation family">
             {RECOMMENDATION_FAMILY_OPTIONS.map((option) => (
-              <button
+              <MotionActionButton
                 key={option.id}
                 className={family === option.id ? "selected" : ""}
                 onClick={() => setFamily(option.id)}
                 type="button"
               >
                 {option.label}
-              </button>
+              </MotionActionButton>
             ))}
           </div>
         </div>
@@ -10308,7 +10516,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             <strong>{selectedCount ? `${selectedCount} selected` : "Select discovery leads"}</strong>
           </label>
           <AsyncActionSlot feedback={selectedDownloadFeedback.feedback}>
-            <button
+            <MotionActionButton
               className={asyncFeedbackClass("secondary-button compact", selectedDownloadFeedback.feedback)}
               data-disabled-reason={
                 documentLocked
@@ -10326,10 +10534,10 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             >
               <Download size={14} />
               Selected
-            </button>
+            </MotionActionButton>
           </AsyncActionSlot>
           <AsyncActionSlot feedback={newDownloadFeedback.feedback}>
-            <button
+            <MotionActionButton
               className={asyncFeedbackClass("primary-button compact", newDownloadFeedback.feedback)}
               data-disabled-reason={
                 documentLocked
@@ -10347,7 +10555,7 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             >
               <Download size={14} />
               All Open PDFs
-            </button>
+            </MotionActionButton>
           </AsyncActionSlot>
         </div>
         <div className="recommendation-notice-slot">
@@ -10378,7 +10586,9 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
                   <span>{otherRows.length} shown</span>
                 </div>
               </div>
-              {otherRows.length ? (
+              {recommendationsLoading ? (
+                <RecommendationListSkeleton />
+              ) : otherRows.length ? (
                 <div className="recommendation-list">{otherRows.map(renderRecommendationRow)}</div>
               ) : (
                 <div className="empty-inline">
@@ -10405,8 +10615,8 @@ function RecommendationsPanel({ document, onClose }: { document: DocumentDetail;
             </section>
           </div>
         )}
-      </section>
-    </div>
+      </m.section>
+    </m.div>
   );
 }
 
@@ -10475,10 +10685,7 @@ function CompositionDialog({
           </button>
         </div>
         {loading ? (
-          <div className="composition-empty">
-            <RefreshCw className="spin" size={22} />
-            <span>Loading composition</span>
-          </div>
+          <CompositionLoadingSkeleton />
         ) : !available ? (
           <div className="composition-empty">
             <Info size={22} />
@@ -10714,7 +10921,9 @@ function DocumentPanelContent({
   const titleEditInputRef = useRef<HTMLInputElement | null>(null);
   const doiEditInputRef = useRef<HTMLInputElement | null>(null);
   const summaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const detailPaneRef = useRef<HTMLElement | null>(null);
   const pdfPreviewScrollRef = useRef<HTMLDivElement | null>(null);
+  const textReaderScrollRef = useRef<HTMLElement | null>(null);
   const compareTextRef = useRef<HTMLElement | null>(null);
   const visualScanPageInputRef = useRef<HTMLInputElement | null>(null);
   const replacementFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -14646,9 +14855,11 @@ function DocumentPanelContent({
           role="region"
           aria-label={`PDF pages for ${document.title}`}
         >
+          <ScrollProgressRail containerRef={pdfPreviewScrollRef} />
           {renderedPageNumbers.map((pageNumber) => (
             <figure className="pdf-page-render" data-page-number={pageNumber} key={pageNumber}>
               <img
+                className="pdf-page-image"
                 alt={`Page ${pageNumber} of ${document.title}`}
                 loading={renderPageStack && pageNumber > 2 ? "lazy" : "eager"}
                 src={documentPageImageSrc(document, pageNumber)}
@@ -14685,7 +14896,7 @@ function DocumentPanelContent({
               />
             </label>
             <AsyncActionSlot busy={scanVisualPage.isPending} feedback={visualPageScanFeedback.feedback} label="Page visual scan in progress">
-              <button
+              <MotionActionButton
                 className={asyncFeedbackClass("secondary-button compact", visualPageScanFeedback.feedback, scanVisualPage.isPending)}
                 data-disabled-reason={visualScanBusyReason}
                 data-tooltip="Try a local one-page scan for figures, tables, graphs, photos, diagrams, and other visual assets."
@@ -14695,7 +14906,7 @@ function DocumentPanelContent({
               >
                 <Image className={scanVisualPage.isPending ? "spin" : ""} size={14} />
                 {scanVisualPage.isPending ? "Scanning" : "Scan Page"}
-              </button>
+              </MotionActionButton>
             </AsyncActionSlot>
           </div>
         </div>
@@ -14726,7 +14937,7 @@ function DocumentPanelContent({
           value={readerSearchQuery}
         />
         {readerSearchQuery ? (
-          <button
+          <MotionActionButton
             aria-label="Clear Reader search"
             className="icon-button compact"
             data-tooltip="Clear the Reader search."
@@ -14734,10 +14945,10 @@ function DocumentPanelContent({
             type="button"
           >
             <X size={14} />
-          </button>
+          </MotionActionButton>
         ) : null}
         {readerSearchNeedle ? <span className={!readerSearchTotal ? "empty" : ""}>{statusText}</span> : null}
-        <button
+        <MotionActionButton
           aria-label="Previous Reader search match"
           className="icon-button compact"
           data-disabled-reason="there are no parsed-text search matches."
@@ -14747,8 +14958,8 @@ function DocumentPanelContent({
           type="button"
         >
           <ChevronLeft size={14} />
-        </button>
-        <button
+        </MotionActionButton>
+        <MotionActionButton
           aria-label="Next Reader search match"
           className="icon-button compact"
           data-disabled-reason="there are no parsed-text search matches."
@@ -14758,7 +14969,7 @@ function DocumentPanelContent({
           type="button"
         >
           <ChevronRight size={14} />
-        </button>
+        </MotionActionButton>
       </div>
     );
   };
@@ -14767,7 +14978,7 @@ function DocumentPanelContent({
     const bottom = placement === "bottom";
     return (
       <div className={`reader-actions${bottom ? " reader-actions-bottom" : ""}`}>
-        <button
+        <MotionActionButton
           className="icon-button reader-arrow"
           type="button"
           data-disabled-reason={
@@ -14782,9 +14993,9 @@ function DocumentPanelContent({
           onClick={() => setReaderPageIndex((index) => Math.max(0, index - 1))}
         >
           <ChevronLeft size={18} />
-        </button>
+        </MotionActionButton>
         <span className="page-counter">{pages.length ? `${currentPage?.page_number ?? currentPageIndex + 1} / ${pages.length}` : "0 / 0"}</span>
-        <button
+        <MotionActionButton
           className="icon-button reader-arrow"
           type="button"
           data-disabled-reason={
@@ -14799,8 +15010,8 @@ function DocumentPanelContent({
           onClick={() => setReaderPageIndex((index) => Math.min(pages.length - 1, index + 1))}
         >
           <ChevronRight size={18} />
-        </button>
-        <button
+        </MotionActionButton>
+        <MotionActionButton
           aria-label={copiedKey === "full-text" ? "Parsed text copied" : "Copy parsed text"}
           className="icon-button compact"
           data-disabled-reason={pageTextBusy ? pageTextBusyReason : "this document does not have parsed text to copy."}
@@ -14810,10 +15021,10 @@ function DocumentPanelContent({
           type="button"
         >
           {copiedKey === "full-text" ? <CheckCircle2 size={14} /> : <Clipboard size={14} />}
-        </button>
+        </MotionActionButton>
         {pageTextEditing && bottom ? (
           <>
-            <button
+            <MotionActionButton
               className="primary-button compact"
               data-disabled-reason={pageTextBusyReason}
               data-tooltip="Save the edited parsed text for this page, rebuild document search, and record the change in history."
@@ -14823,8 +15034,8 @@ function DocumentPanelContent({
             >
               <Save size={14} />
               Save
-            </button>
-            <button
+            </MotionActionButton>
+            <MotionActionButton
               className="secondary-button compact"
               data-disabled-reason={pageTextBusyReason}
               data-tooltip="Discard parsed page text edits and close the editor."
@@ -14834,10 +15045,10 @@ function DocumentPanelContent({
             >
               <X size={14} />
               Cancel
-            </button>
+            </MotionActionButton>
           </>
         ) : !pageTextEditing ? (
-          <button
+          <MotionActionButton
             aria-label="Edit parsed page text"
             className="icon-button compact"
             data-disabled-reason={documentLocked ? documentLockedReason : pageTextBusy ? pageTextBusyReason : "there is no parsed page selected to edit."}
@@ -14847,91 +15058,95 @@ function DocumentPanelContent({
             type="button"
           >
             <Edit3 size={14} />
-          </button>
+          </MotionActionButton>
         ) : null}
       </div>
     );
   };
 
-  const renderTextReader = (compare = false) => (
-    <section className={`text-reader ${compare ? "compare-pane" : ""}`}>
-      <div className="text-reader-head">
-        <div className="text-reader-title">
-          <strong>Parsed text</strong>
-          <span>{pages.length ? `Page ${currentPageIndex + 1} of ${pages.length}` : `${document.page_count || "?"} pages`}</span>
+  const renderTextReader = (compare = false) => {
+    const textScrollerRef = compare ? compareTextRef : textReaderScrollRef;
+    return (
+      <section className={`text-reader ${compare ? "compare-pane" : ""}`}>
+        <div className="text-reader-head">
+          <div className="text-reader-title">
+            <strong>Parsed text</strong>
+            <span>{pages.length ? `Page ${currentPageIndex + 1} of ${pages.length}` : `${document.page_count || "?"} pages`}</span>
+          </div>
+          <div className="text-reader-toolbar">
+            {renderReaderSearchControls()}
+            {renderReaderActions("top")}
+          </div>
         </div>
-        <div className="text-reader-toolbar">
-          {renderReaderSearchControls()}
-          {renderReaderActions("top")}
-        </div>
-      </div>
-      {currentPage ? (
-        <article
-          className={`reader-page ${currentPage.low_text ? "low-text" : ""}`}
-          ref={compare ? compareTextRef : undefined}
-          onMouseUp={pageTextEditing ? undefined : captureReaderSelection}
-          onScroll={compare ? handleCompareTextScroll : undefined}
-        >
-          <header>
-            <div>
-              <strong>Page {currentPage.page_number}</strong>
-              <span>
-                {currentPageSource}
-                {currentPage.low_text ? " / low text" : ""}
-              </span>
-            </div>
-          </header>
-          {pageTextEditing ? (
-            <div className="reader-page-editor" data-escape-layer="expanded">
-              <textarea
-                aria-label={`Extracted text for page ${currentPage.page_number}`}
-                disabled={documentLocked || pageTextBusy}
-                onChange={(event) => {
-                  setPageTextDraft(event.target.value);
-                  updatePageTextSelection(event.currentTarget);
-                }}
-                onKeyUp={(event) => updatePageTextSelection(event.currentTarget)}
-                onMouseUp={(event) => updatePageTextSelection(event.currentTarget)}
-                onSelect={(event) => updatePageTextSelection(event.currentTarget)}
-                value={pageTextDraft}
-              />
-              <div className="reader-editor-tools">
-                <button
-                  className="secondary-button compact"
-                  data-disabled-reason={
-                    documentLocked
-                      ? documentLockedReason
-                      : pageTextBusy
-                      ? pageTextBusyReason
-                      : !scrubNeedle
-                        ? "select exact text in the parsed page editor first."
-                        : "the selected text does not appear in the parsed document text."
-                  }
-                  data-tooltip="Remove the selected exact text everywhere it appears in this document's parsed pages and record the edit in history."
-                  disabled={documentLocked || !scrubNeedle || scrubMatchCount <= 0 || pageTextBusy}
-                  onClick={scrubSelectedText}
-                  type="button"
-                >
-                  <Eraser size={14} />
-                  {scrubButtonLabel}
-                </button>
-                <span className="reader-tool-spacer" />
+        {currentPage ? (
+          <article
+            className={`reader-page ${currentPage.low_text ? "low-text" : ""}`}
+            ref={textScrollerRef}
+            onMouseUp={pageTextEditing ? undefined : captureReaderSelection}
+            onScroll={compare ? handleCompareTextScroll : undefined}
+          >
+            <ScrollProgressRail containerRef={textScrollerRef} />
+            <header>
+              <div>
+                <strong>Page {currentPage.page_number}</strong>
+                <span>
+                  {currentPageSource}
+                  {currentPage.low_text ? " / low text" : ""}
+                </span>
               </div>
-              {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
-            </div>
-          ) : (
-            <ReaderPageMarkdown content={currentPageText} empty="No extracted text." figures={document.figures} searchTerm={readerSearchNeedle} />
-          )}
-        </article>
-      ) : (
-        <div className="empty-inline">
-          <FileText size={17} />
-          <span>No parsed pages yet.</span>
-        </div>
-      )}
-      {renderReaderActions("bottom")}
-    </section>
-  );
+            </header>
+            {pageTextEditing ? (
+              <div className="reader-page-editor" data-escape-layer="expanded">
+                <textarea
+                  aria-label={`Extracted text for page ${currentPage.page_number}`}
+                  disabled={documentLocked || pageTextBusy}
+                  onChange={(event) => {
+                    setPageTextDraft(event.target.value);
+                    updatePageTextSelection(event.currentTarget);
+                  }}
+                  onKeyUp={(event) => updatePageTextSelection(event.currentTarget)}
+                  onMouseUp={(event) => updatePageTextSelection(event.currentTarget)}
+                  onSelect={(event) => updatePageTextSelection(event.currentTarget)}
+                  value={pageTextDraft}
+                />
+                <div className="reader-editor-tools">
+                  <MotionActionButton
+                    className="secondary-button compact"
+                    data-disabled-reason={
+                      documentLocked
+                        ? documentLockedReason
+                        : pageTextBusy
+                        ? pageTextBusyReason
+                        : !scrubNeedle
+                          ? "select exact text in the parsed page editor first."
+                          : "the selected text does not appear in the parsed document text."
+                    }
+                    data-tooltip="Remove the selected exact text everywhere it appears in this document's parsed pages and record the edit in history."
+                    disabled={documentLocked || !scrubNeedle || scrubMatchCount <= 0 || pageTextBusy}
+                    onClick={scrubSelectedText}
+                    type="button"
+                  >
+                    <Eraser size={14} />
+                    {scrubButtonLabel}
+                  </MotionActionButton>
+                  <span className="reader-tool-spacer" />
+                </div>
+                {pageTextError ? <p className="form-error">{pageTextError}</p> : null}
+              </div>
+            ) : (
+              <ReaderPageMarkdown content={currentPageText} empty="No extracted text." figures={document.figures} searchTerm={readerSearchNeedle} />
+            )}
+          </article>
+        ) : (
+          <div className="empty-inline">
+            <FileText size={17} />
+            <span>No parsed pages yet.</span>
+          </div>
+        )}
+        {renderReaderActions("bottom")}
+      </section>
+    );
+  };
   const renderAnnotationSection = () => {
     const annotationCanCreate = Boolean(!documentLocked && (annotationBody.trim() || readerSelectedText.trim()) && !createAnnotation.isPending);
     const createDisabledReason = documentLocked
@@ -15019,13 +15234,13 @@ function DocumentPanelContent({
               <span>Selected Text</span>
               <p>{readerSelectedText}</p>
               <div>
-                <button className="secondary-button compact" disabled={documentLocked} onClick={useReaderSelectionAsAnnotationBody} type="button">
+                <MotionActionButton className="secondary-button compact" disabled={documentLocked} onClick={useReaderSelectionAsAnnotationBody} type="button">
                   <Clipboard size={14} />
                   Use
-                </button>
-                <button className="icon-button compact" aria-label="Clear selected reader text" disabled={documentLocked} onClick={() => setReaderSelectedText("")} type="button">
+                </MotionActionButton>
+                <MotionActionButton className="icon-button compact" aria-label="Clear selected reader text" disabled={documentLocked} onClick={() => setReaderSelectedText("")} type="button">
                   <X size={14} />
-                </button>
+                </MotionActionButton>
               </div>
             </div>
           ) : null}
@@ -15036,7 +15251,7 @@ function DocumentPanelContent({
             placeholder="Reader note"
             value={annotationBody}
           />
-          <button
+          <MotionActionButton
             className="primary-button compact"
             data-disabled-reason={createDisabledReason}
             data-tooltip="Save this page-aware reader note and add it to document search."
@@ -15045,15 +15260,12 @@ function DocumentPanelContent({
           >
             <Plus className={createAnnotation.isPending ? "spin" : ""} size={14} />
             Add Note
-          </button>
+          </MotionActionButton>
           {annotationError ? <p className="form-error">{annotationError}</p> : null}
         </form>
         <div className="annotation-list">
           {annotations.isFetching && !annotations.data ? (
-            <div className="empty-inline">
-              <RefreshCw className="spin" size={17} />
-              <span>Loading reader notes.</span>
-            </div>
+            <RecommendationListSkeleton label="Loading reader notes" />
           ) : filteredAnnotations.length ? (
             filteredAnnotations.map((annotation) => {
               const editingThis = editingAnnotationId === annotation.id;
@@ -15069,11 +15281,11 @@ function DocumentPanelContent({
                     </div>
                     <div className="annotation-row-actions">
                       {annotation.page_number ? (
-                        <button className="icon-button compact" data-tooltip="Jump the Reader to this annotation's page." onClick={() => jumpToAnnotationPage(annotation)} type="button">
+                        <MotionActionButton className="icon-button compact" data-tooltip="Jump the Reader to this annotation's page." onClick={() => jumpToAnnotationPage(annotation)} type="button">
                           <CornerDownRight size={14} />
-                        </button>
+                        </MotionActionButton>
                       ) : null}
-                      <button
+                      <MotionActionButton
                         className="icon-button compact"
                         data-disabled-reason={documentLocked ? documentLockedReason : ""}
                         data-tooltip={editingThis ? "Cancel annotation editing." : "Edit this annotation."}
@@ -15085,8 +15297,8 @@ function DocumentPanelContent({
                         type="button"
                       >
                         {editingThis ? <X size={14} /> : <Edit3 size={14} />}
-                      </button>
-                      <button
+                      </MotionActionButton>
+                      <MotionActionButton
                         className="icon-button compact"
                         data-disabled-reason={documentLocked ? documentLockedReason : "an annotation delete is already running."}
                         data-tooltip="Delete this reader note from the active document."
@@ -15097,7 +15309,7 @@ function DocumentPanelContent({
                         type="button"
                       >
                         <Trash2 size={14} />
-                      </button>
+                      </MotionActionButton>
                     </div>
                   </div>
                   {editingThis ? (
@@ -15376,7 +15588,8 @@ function DocumentPanelContent({
   const annotationSection = renderAnnotationSection();
 
   return (
-    <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`}>
+    <aside className={`detail-pane ${readerExpanded ? "reader-detail" : ""}`} ref={detailPaneRef}>
+      <ScrollProgressRail containerRef={detailPaneRef} />
       <div className={readerExpanded ? "reader-frame" : undefined}>
         <div className="detail-sticky-zone">
           <div className="detail-head">
@@ -15448,7 +15661,7 @@ function DocumentPanelContent({
         ) : null}
         <div className="reader-surface">
           <div className="reader-tabs" role="tablist" aria-label="Document reader">
-            <button
+            <MotionActionButton
               className={readerMode === "pdf" ? "selected" : ""}
               data-tooltip="Show the authenticated original PDF preview."
               type="button"
@@ -15459,8 +15672,8 @@ function DocumentPanelContent({
             >
               <FileSearch size={15} />
               PDF
-            </button>
-            <button
+            </MotionActionButton>
+            <MotionActionButton
               className={readerMode === "text" ? "selected" : ""}
               data-tooltip="Show the normalized parsed-text reader for this document."
               type="button"
@@ -15471,8 +15684,8 @@ function DocumentPanelContent({
             >
               <FileText size={15} />
               Text
-            </button>
-            <button
+            </MotionActionButton>
+            <MotionActionButton
               className={readerMode === "compare" ? "selected" : ""}
               data-tooltip="Show the original PDF beside the parsed text editor for page-by-page comparison."
               type="button"
@@ -15483,7 +15696,7 @@ function DocumentPanelContent({
             >
               <BookOpen size={15} />
               Compare
-            </button>
+            </MotionActionButton>
           </div>
           {recommendationsOpen ? <RecommendationsPanel document={document} onClose={() => setRecommendationsOpen(false)} /> : null}
           {readerMode === "pdf" ? (
@@ -24780,24 +24993,28 @@ function ConcordanceEstimatePanel({
   const previewItems = (estimate?.items || []).slice(0, 6);
   return (
     <div className="concordance-estimate-panel">
-      <div className="concordance-estimate-summary">
-        <div>
-          <span>Estimated cloud cost</span>
-          <strong>{loading && !estimate ? "Estimating" : formatUsd(estimate?.estimated_cost_usd ?? 0)}</strong>
+      {loading && !estimate ? (
+        <ConcordanceEstimateSkeleton />
+      ) : (
+        <div className="concordance-estimate-summary">
+          <div>
+            <span>Estimated cloud cost</span>
+            <strong>{formatUsd(estimate?.estimated_cost_usd ?? 0)}</strong>
+          </div>
+          <div>
+            <span>Documents</span>
+            <strong>{formatMetric(estimate?.document_count)}</strong>
+          </div>
+          <div>
+            <span>Jobs to run</span>
+            <strong>{formatMetric(estimate?.planned_jobs)}</strong>
+          </div>
+          <div>
+            <span>No-op or skipped</span>
+            <strong>{formatMetric(estimate?.skipped_jobs)}</strong>
+          </div>
         </div>
-        <div>
-          <span>Documents</span>
-          <strong>{formatMetric(estimate?.document_count)}</strong>
-        </div>
-        <div>
-          <span>Jobs to run</span>
-          <strong>{formatMetric(estimate?.planned_jobs)}</strong>
-        </div>
-        <div>
-          <span>No-op or skipped</span>
-          <strong>{formatMetric(estimate?.skipped_jobs)}</strong>
-        </div>
-      </div>
+      )}
       <div className="concordance-estimate-detail">
         {estimate?.unpriced_call_count ? (
           <span className="estimate-warning">{formatMetric(estimate.unpriced_call_count)} unpriced model routes</span>
@@ -28370,8 +28587,9 @@ export default function App() {
     (notice) => !dismissedAiFailureNoticeIds.has(notice.id),
   );
   return (
-    <AppTooltipProvider>
-      <div className="app-shell" style={shellStyle}>
+    <MedusaMotionRoot>
+      <AppTooltipProvider>
+        <div className="app-shell" style={shellStyle}>
       <Header
         backgroundJobs={visibleBackgroundJobs}
         cacheHydrating={cacheHydrateProgress.running}
@@ -28414,6 +28632,7 @@ export default function App() {
             dialogs={appDialogs}
             documents={libraryRows}
             document={selectedDocument.data}
+            detailLoading={Boolean(selectedId && selectedDocument.isFetching && !selectedDocument.data)}
             selectedId={selectedId}
             setSelectedId={(id, options) => {
               if (options?.updateUrl === false) {
@@ -28664,7 +28883,8 @@ export default function App() {
       ) : backendConnectionIssue ? (
         <BackendUnavailableOverlay issue={backendConnectionIssue} />
       ) : null}
-      </div>
-    </AppTooltipProvider>
+        </div>
+      </AppTooltipProvider>
+    </MedusaMotionRoot>
   );
 }
