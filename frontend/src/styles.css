@@ -1425,7 +1425,34 @@ textarea {
 }
 
 .user-options-menu-item.in-flight:disabled {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--blue) 14%, var(--panel)) 0%,
+      color-mix(in srgb, var(--teal) 11%, var(--panel)) 100%
+    );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 32%, var(--line));
+  color: color-mix(in srgb, var(--blue) 78%, var(--ink));
   opacity: 1;
+}
+
+.user-options-menu-item.in-flight::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    110deg,
+    transparent 0%,
+    transparent 34%,
+    color-mix(in srgb, var(--panel) 56%, transparent) 45%,
+    transparent 58%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: user-menu-progress-sheen 1.35s ease-in-out infinite;
+  pointer-events: none;
 }
 
 .user-options-menu-item small {
@@ -1443,6 +1470,17 @@ textarea {
 
 .user-options-menu-item:disabled:hover {
   background: transparent;
+}
+
+.user-options-menu-item.in-flight:disabled:hover,
+.user-options-menu-item.in-flight:disabled:focus-visible {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--blue) 14%, var(--panel)) 0%,
+      color-mix(in srgb, var(--teal) 11%, var(--panel)) 100%
+    );
+  outline: 0;
 }
 
 .user-options-menu-item > span:not(.user-options-menu-item-progress) {
@@ -1486,9 +1524,9 @@ textarea {
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--blue) 14%, transparent) 0%,
-    color-mix(in srgb, var(--teal) 22%, transparent) 50%,
-    color-mix(in srgb, var(--blue) 14%, transparent) 100%
+    color-mix(in srgb, var(--blue) 34%, transparent) 0%,
+    color-mix(in srgb, var(--teal) 42%, transparent) 50%,
+    color-mix(in srgb, var(--blue) 34%, transparent) 100%
   );
   background-size: 180% 100%;
   animation: work-progress-pulse 1.6s linear infinite;
@@ -1978,6 +2016,16 @@ textarea {
 
   to {
     background-position: 180% 0;
+  }
+}
+
+@keyframes user-menu-progress-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
   }
 }
 
