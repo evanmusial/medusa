@@ -415,6 +415,7 @@ const RELEASE_RESTART_WAIT_DETAIL =
 const BACKEND_HEALTH_WATCH_INTERVAL_MS = 5000;
 const BACKEND_RECOVERY_POLL_INTERVAL_MS = 1000;
 const BACKEND_RESTART_MIN_LOCK_MS = 1800;
+const STARTUP_LOADING_MIN_VISIBLE_MS = 2600;
 const STARTUP_HEALTH_RETRY_LIMIT = 120;
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
@@ -6251,9 +6252,9 @@ function StartupLoadingScreen() {
         <MedusaEmblemImage className="loading-emblem" />
         <strong className="loading-wordmark">MEDUSA</strong>
         <div className="loading-progress-group">
-          <span className="loading-progress-label">Loading...</span>
           <div className="loading-activity" aria-label="Loading..." role="progressbar">
-            <span />
+            <span className="loading-snake loading-snake-primary" />
+            <span className="loading-snake loading-snake-secondary" />
           </div>
         </div>
       </section>
@@ -27175,6 +27176,7 @@ export default function App() {
   const [libraryFocusDocumentId, setLibraryFocusDocumentId] = useState<string | null>(() => initialRoute.documentId || null);
   const [libraryScrollTargetId, setLibraryScrollTargetId] = useState<string | null>(() => initialRoute.documentId || null);
   const [theme, setTheme] = useState<"day" | "night">(() => (localStorage.getItem("medusa-theme") as "day" | "night") || "day");
+  const [startupLoadingReady, setStartupLoadingReady] = useState(false);
   const [iconMotionStyle, setIconMotionStyle] = useStoredString(ICON_MOTION_STYLE_KEY, "rail", ICON_MOTION_STYLE_VALUES);
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [backgroundReconcileNow, setBackgroundReconcileNow] = useState(() => Date.now());
@@ -27201,6 +27203,11 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.iconMotion = iconMotionStyle;
   }, [iconMotionStyle]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setStartupLoadingReady(true), STARTUP_LOADING_MIN_VISIBLE_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(
     () =>
@@ -28232,7 +28239,7 @@ export default function App() {
 
   const startupHealthPending =
     Boolean(me.error && isTransientAppStartupError(me.error)) && me.failureCount < STARTUP_HEALTH_RETRY_LIMIT;
-  if (me.isLoading || startupHealthPending) return <StartupLoadingScreen />;
+  if (!startupLoadingReady || me.isLoading || startupHealthPending) return <StartupLoadingScreen />;
   if (me.error || !me.data) {
     return (
       <AppTooltipProvider>
