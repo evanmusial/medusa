@@ -4155,20 +4155,20 @@ textarea {
   align-content: start;
   grid-auto-rows: min-content;
   text-align: left;
-  padding: 11px 8px 11px 4px;
+  padding: 8px 8px 8px 4px;
   cursor: pointer;
 }
 
 .library-density-compact .doc-row {
   grid-template-columns: 16px minmax(0, 1fr) minmax(220px, auto);
-  gap: 8px;
-  padding-block: 8px;
+  gap: 7px;
+  padding-block: 6px;
 }
 
 .library-density-reading .doc-row {
   grid-template-columns: 16px minmax(0, 1fr) minmax(250px, auto);
   align-items: start;
-  padding-block: 14px;
+  padding-block: 10px;
 }
 
 .rows.alternating-rows:not(.virtual-rows) .doc-row:nth-child(even):not(:hover):not(.selected) {
@@ -4184,13 +4184,13 @@ textarea {
   width: 16px;
   height: 16px;
   min-height: 0;
-  margin-top: 3px;
+  margin-top: 2px;
   padding: 0;
 }
 
 .doc-row-work-indicator {
   position: absolute;
-  top: 14px;
+  top: 10px;
   left: 28px;
   width: 16px;
   height: 16px;
@@ -4246,11 +4246,11 @@ textarea {
   min-width: 0;
   align-self: start;
   display: grid;
-  gap: 7px;
+  gap: 4px;
   border: 0;
   background: transparent;
   color: var(--ink);
-  padding: 3px 0 0;
+  padding: 0;
   text-align: left;
   text-decoration: none;
 }
@@ -4345,8 +4345,8 @@ textarea {
   gap: 12px;
   align-items: center;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 16px;
+  font-size: 12px;
+  line-height: 15px;
 }
 
 .library-density-compact .doc-row-byline {
@@ -4436,13 +4436,13 @@ textarea {
   --doc-row-summary-lines: var(--library-summary-lines, 2);
   grid-column: 2 / -1;
   min-width: 0;
-  margin-top: -3px;
+  margin-top: 0;
   overflow: hidden;
 }
 
 .doc-row-summary .markdown-content.compact {
-  font-size: 15px;
-  line-height: 1.48;
+  font-size: 14px;
+  line-height: 1.36;
 }
 
 .library-density-compact .doc-row-summary .markdown-content.compact {
@@ -4452,10 +4452,11 @@ textarea {
 
 .library-density-compact .doc-row-summary {
   --doc-row-summary-lines: var(--library-summary-lines, 1);
+  display: none;
 }
 
 .library-density-reading .doc-row-summary {
-  --doc-row-summary-lines: var(--library-summary-lines, 3);
+  --doc-row-summary-lines: var(--library-summary-lines, 2);
 }
 
 .doc-row-summary .markdown-content.compact > p,
@@ -4474,7 +4475,7 @@ textarea {
 
 .library-density-reading .doc-row-summary .markdown-content.compact {
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.42;
 }
 
 .pill {

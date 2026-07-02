@@ -477,19 +477,19 @@ const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
   Record<LibraryPreviewCapacity, { rowHeight: number; summaryLines: number; excerptChars: number }>
 > = {
   compact: {
-    standard: { rowHeight: 88, summaryLines: 1, excerptChars: 220 },
-    roomy: { rowHeight: 88, summaryLines: 1, excerptChars: 300 },
-    expansive: { rowHeight: 88, summaryLines: 1, excerptChars: 340 },
+    standard: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
+    roomy: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
+    expansive: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
   },
   comfortable: {
-    standard: { rowHeight: 118, summaryLines: 2, excerptChars: 320 },
-    roomy: { rowHeight: 126, summaryLines: 2, excerptChars: 420 },
-    expansive: { rowHeight: 126, summaryLines: 2, excerptChars: 520 },
+    standard: { rowHeight: 82, summaryLines: 1, excerptChars: 220 },
+    roomy: { rowHeight: 82, summaryLines: 1, excerptChars: 280 },
+    expansive: { rowHeight: 82, summaryLines: 1, excerptChars: 340 },
   },
   reading: {
-    standard: { rowHeight: 154, summaryLines: 3, excerptChars: 520 },
-    roomy: { rowHeight: 166, summaryLines: 3, excerptChars: 680 },
-    expansive: { rowHeight: 178, summaryLines: 4, excerptChars: 820 },
+    standard: { rowHeight: 118, summaryLines: 2, excerptChars: 420 },
+    roomy: { rowHeight: 126, summaryLines: 2, excerptChars: 520 },
+    expansive: { rowHeight: 134, summaryLines: 2, excerptChars: 620 },
   },
 };
 type DetailStickyField = "title" | "authors" | "year" | "doi" | "priority" | "status";
