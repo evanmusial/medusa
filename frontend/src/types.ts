@@ -119,6 +119,7 @@ export type Dashboard = {
   active_import_jobs: number;
   import_queued_jobs: number;
   import_running_jobs: number;
+  import_paused_jobs: number;
   import_progress_total: number;
   import_progress_completed: number;
   import_progress_failed: number;
@@ -128,6 +129,7 @@ export type Dashboard = {
   active_concordance_jobs: number;
   concordance_queued_jobs: number;
   concordance_running_jobs: number;
+  concordance_paused_jobs: number;
   active_accessory_summary_jobs: number;
   accessory_summary_queued_jobs: number;
   accessory_summary_running_jobs: number;
@@ -393,6 +395,14 @@ export type CacheHydrateResult = {
   errored_payloads: number;
   before: CacheStatus;
   after: CacheStatus;
+};
+
+export type WorkControlResult = {
+  status: string;
+  message: string;
+  matched_count: number;
+  updated_count: number;
+  skipped_running_count: number;
 };
 
 export type AppPreferences = {

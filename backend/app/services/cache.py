@@ -107,6 +107,7 @@ _cache_lock = threading.Lock()
 _family_stats_lock = threading.Lock()
 _family_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"hit": 0, "miss": 0, "bypass": 0, "error": 0, "write": 0})
 _hydration_status_lock = threading.Lock()
+_hydration_control = threading.Condition(_hydration_status_lock)
 _hydration_status: dict[str, Any] = {
     "active": False,
     "status": "idle",
@@ -124,6 +125,8 @@ _hydration_status: dict[str, Any] = {
     "updated_at": None,
     "completed_at": None,
 }
+_hydration_pause_requested = False
+_hydration_stop_requested = False
 _revision_hooks_installed = False
 
 
@@ -187,10 +190,80 @@ def cache_hydration_status() -> dict[str, Any]:
         return dict(_hydration_status)
 
 
+def cache_hydration_pause_requested() -> bool:
+    with _hydration_status_lock:
+        return bool(_hydration_pause_requested and _hydration_status.get("active"))
+
+
+def pause_cache_hydration() -> dict[str, Any]:
+    global _hydration_pause_requested
+    with _hydration_control:
+        if not _hydration_status.get("active"):
+            return {"status": "idle", "message": "No cache hydration is active."}
+        _hydration_pause_requested = True
+        _hydration_status["status"] = "paused"
+        _hydration_status["phase"] = "Paused"
+        _hydration_status["detail"] = "Cache hydration is paused."
+        _hydration_status["updated_at"] = utc_now()
+        _hydration_control.notify_all()
+        return {"status": "paused", "message": "Cache hydration paused."}
+
+
+def resume_cache_hydration() -> dict[str, Any]:
+    global _hydration_pause_requested
+    with _hydration_control:
+        if not _hydration_status.get("active"):
+            _hydration_pause_requested = False
+            return {"status": "idle", "message": "No cache hydration is active."}
+        if _hydration_stop_requested:
+            return {"status": "stopping", "message": "Cache hydration is already stopping."}
+        _hydration_pause_requested = False
+        _hydration_status["status"] = "running"
+        _hydration_status["phase"] = "Resuming"
+        _hydration_status["detail"] = "Cache hydration is resuming."
+        _hydration_status["updated_at"] = utc_now()
+        _hydration_control.notify_all()
+        return {"status": "running", "message": "Cache hydration resumed."}
+
+
+def stop_cache_hydration() -> dict[str, Any]:
+    global _hydration_pause_requested, _hydration_stop_requested
+    with _hydration_control:
+        if not _hydration_status.get("active"):
+            return {"status": "idle", "message": "No cache hydration is active."}
+        _hydration_stop_requested = True
+        _hydration_pause_requested = False
+        _hydration_status["status"] = "stopping"
+        _hydration_status["phase"] = "Stopping"
+        _hydration_status["detail"] = "Cache hydration stop requested."
+        _hydration_status["updated_at"] = utc_now()
+        _hydration_control.notify_all()
+        return {"status": "stopping", "message": "Cache hydration stop requested."}
+
+
+def cache_hydration_stop_requested() -> bool:
+    with _hydration_status_lock:
+        return bool(_hydration_stop_requested)
+
+
+def wait_for_cache_hydration_resume_or_stop() -> str | None:
+    with _hydration_control:
+        while _hydration_pause_requested and not _hydration_stop_requested and _hydration_status.get("active"):
+            _hydration_status["status"] = "paused"
+            _hydration_status["phase"] = "Paused"
+            _hydration_status["detail"] = "Cache hydration is paused."
+            _hydration_status["updated_at"] = utc_now()
+            _hydration_control.wait(timeout=1.0)
+        return "stop" if _hydration_stop_requested else None
+
+
 def start_cache_hydration(*, planned_payloads: int = 0, document_count: int = 0, phase: str = "Planning", detail: str | None = None) -> None:
+    global _hydration_pause_requested, _hydration_stop_requested
     now = utc_now()
     planned = max(0, int(planned_payloads or 0))
-    with _hydration_status_lock:
+    with _hydration_control:
+        _hydration_pause_requested = False
+        _hydration_stop_requested = False
         _hydration_status.update(
             {
                 "active": True,
@@ -210,6 +283,7 @@ def start_cache_hydration(*, planned_payloads: int = 0, document_count: int = 0,
                 "completed_at": None,
             }
         )
+        _hydration_control.notify_all()
 
 
 def set_cache_hydration_plan(
@@ -294,8 +368,9 @@ def finish_cache_hydration(
     errored_payloads: int | None = None,
     document_count: int | None = None,
 ) -> None:
+    global _hydration_pause_requested, _hydration_stop_requested
     now = utc_now()
-    with _hydration_status_lock:
+    with _hydration_control:
         completed = int(_hydration_status.get("completed_payloads") or 0)
         planned = max(int(_hydration_status.get("planned_payloads") or 0), completed)
         if status == "complete":
@@ -319,6 +394,9 @@ def finish_cache_hydration(
             _hydration_status["document_count"] = max(0, int(document_count or 0))
         _hydration_status["updated_at"] = now
         _hydration_status["completed_at"] = now
+        _hydration_pause_requested = False
+        _hydration_stop_requested = False
+        _hydration_control.notify_all()
 
 
 class CacheBackend:
@@ -777,8 +855,8 @@ def storage_footprints() -> list[dict[str, Any]]:
 def queue_stats(db: Session) -> list[dict[str, Any]]:
     now = utc_now()
     specs = [
-        ("Imports", ImportJob, ("queued", "running")),
-        ("Concordance", ConcordanceJob, ("queued", "running")),
+        ("Imports", ImportJob, ("queued", "running", "paused")),
+        ("Concordance", ConcordanceJob, ("queued", "running", "paused")),
         ("Accessory summaries", DocumentAccessorySummary, ("queued", "running")),
         ("Slipstream leases", SlipstreamLease, ("active",)),
     ]

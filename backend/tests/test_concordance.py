@@ -45,6 +45,69 @@ def test_create_concordance_run_skips_current_capability(monkeypatch, tmp_path):
         assert run.status == "complete"
 
 
+def test_concordance_pause_resume_stop_controls(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import pause_concordance_runs, resume_concordance_runs, stop_concordance_runs
+    from app.models import ConcordanceJob, ConcordanceRun, Document, utc_now
+    from app.services.concordance import CAPABILITY_BY_KEY
+
+    Session = make_session()
+    with Session() as db:
+        paused_document = Document(title="Paused", original_filename="paused.pdf", checksum_sha256="p" * 64, processing_status="ready")
+        queued_document = Document(title="Queued", original_filename="queued.pdf", checksum_sha256="q" * 64, processing_status="ready")
+        running_document = Document(title="Running", original_filename="running.pdf", checksum_sha256="r" * 64, processing_status="ready")
+        run = ConcordanceRun(scope_type="documents", scope_data={"document_ids": []}, capability_keys=["search_index"], total_jobs=1)
+        mixed_run = ConcordanceRun(scope_type="documents", scope_data={"document_ids": []}, capability_keys=["search_index"], total_jobs=2)
+        paused_job = ConcordanceJob(
+            run=run,
+            document=paused_document,
+            capability_key="search_index",
+            target_version=CAPABILITY_BY_KEY["search_index"].version,
+            status="queued",
+        )
+        queued_job = ConcordanceJob(
+            run=mixed_run,
+            document=queued_document,
+            capability_key="search_index",
+            target_version=CAPABILITY_BY_KEY["search_index"].version,
+            status="queued",
+        )
+        running_job = ConcordanceJob(
+            run=mixed_run,
+            document=running_document,
+            capability_key="search_index",
+            target_version=CAPABILITY_BY_KEY["search_index"].version,
+            status="running",
+            locked_at=utc_now(),
+        )
+        db.add_all([paused_document, queued_document, running_document, run, mixed_run, paused_job, queued_job, running_job])
+        db.commit()
+
+        paused = pause_concordance_runs(object(), db)
+        assert paused.updated_count == 2
+        assert paused_job.status == "paused"
+        assert queued_job.status == "paused"
+        assert running_job.status == "running"
+        assert run.status == "paused"
+        assert mixed_run.status == "running"
+
+        resumed = resume_concordance_runs(object(), db)
+        assert resumed.updated_count == 2
+        assert paused_job.status == "queued"
+        assert queued_job.status == "queued"
+
+        stopped = stop_concordance_runs(object(), db)
+        assert stopped.updated_count == 2
+        assert stopped.skipped_running_count == 1
+        assert paused_job.status == "failed"
+        assert queued_job.status == "failed"
+        assert running_job.status == "running"
+        assert run.status == "complete_with_errors"
+        assert mixed_run.status == "running"
+
+
 def test_concordance_skips_locked_documents(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

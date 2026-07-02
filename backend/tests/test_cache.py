@@ -218,6 +218,32 @@ def test_valkey_cache_bypasses_oversized_payloads():
     assert client.setex_calls == []
 
 
+def test_cache_hydration_pause_resume_stop_state_machine():
+    from app.services import cache as cache_service
+
+    cache_service.start_cache_hydration(planned_payloads=10, phase="Testing")
+
+    paused = cache_service.pause_cache_hydration()
+    status = cache_service.cache_hydration_status()
+    assert paused["status"] == "paused"
+    assert status["active"] is True
+    assert status["status"] == "paused"
+
+    resumed = cache_service.resume_cache_hydration()
+    status = cache_service.cache_hydration_status()
+    assert resumed["status"] == "running"
+    assert status["status"] == "running"
+
+    stopping = cache_service.stop_cache_hydration()
+    assert stopping["status"] == "stopping"
+    assert cache_service.wait_for_cache_hydration_resume_or_stop() == "stop"
+
+    cache_service.finish_cache_hydration(status="stopped", phase="Stopped")
+    status = cache_service.cache_hydration_status()
+    assert status["active"] is False
+    assert status["status"] == "stopped"
+
+
 def test_valkey_cache_configures_maxmemory():
     from app.services.cache import ValkeyCache
 

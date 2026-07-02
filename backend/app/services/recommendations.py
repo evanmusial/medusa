@@ -70,7 +70,7 @@ RECOMMENDATION_FAMILIES = {
     "open_pdf",
     "reference_material",
 }
-RECOMMENDATION_IMPORT_KNOWN_STATUSES = {"staged", "queued", "running", "failed", "restored_paused"}
+RECOMMENDATION_IMPORT_KNOWN_STATUSES = {"staged", "queued", "running", "paused", "failed", "restored_paused"}
 RECOMMENDATION_FAMILY_LABELS = {
     "closest": "Closest",
     "newer": "Newer",

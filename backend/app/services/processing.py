@@ -508,7 +508,7 @@ def refresh_import_batch_progress(db: Session, batch: ImportBatch) -> None:
     ).count()
     active_files = db.query(ImportJob).filter(
         ImportJob.batch_id == batch.id,
-        ImportJob.status.in_(["queued", "running", "restored_paused"]),
+        ImportJob.status.in_(["queued", "running", "paused", "restored_paused"]),
     ).count()
     finished_files = batch.completed_files + batch.failed_files + cleared_files
     if finished_files >= batch.total_files:

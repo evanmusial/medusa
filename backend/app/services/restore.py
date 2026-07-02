@@ -74,7 +74,7 @@ FORBIDDEN_EXPORT_KEYS = {
     "two_factor_secret",
 }
 
-PARKED_JOB_STATUSES = {"queued", "running", "processing", "in_progress", "locked"}
+PARKED_JOB_STATUSES = {"queued", "running", "paused", "processing", "in_progress", "locked"}
 
 RESTORE_SECTIONS = [
     "domains",

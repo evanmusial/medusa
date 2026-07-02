@@ -83,6 +83,7 @@ import {
   Merge,
   Moon,
   Orbit,
+  Pause,
   PieChart,
   Play,
   Plus,
@@ -98,6 +99,7 @@ import {
   SlidersHorizontal,
   Sigma,
   Sparkles,
+  Square,
   Sun,
   Tags,
   Timer,
@@ -198,6 +200,7 @@ import type {
   User,
   VisualScanCandidate,
   VisualScanReview,
+  WorkControlResult,
 } from "./types";
 
 type View =
@@ -220,7 +223,18 @@ type View =
 type NavCounts = Partial<Record<View, number>>;
 type AsyncFeedbackTone = "success" | "error";
 type AsyncActionFeedback = { tone: AsyncFeedbackTone; message?: string; token: number };
-type BackgroundJobStatus = "starting" | "queued" | "running" | "complete" | "failed";
+type BackgroundJobStatus = "starting" | "queued" | "running" | "paused" | "complete" | "failed";
+type WorkControlGroup = "imports" | "concordance" | "cache-hydration";
+type HeaderWorkControlAction = {
+  kind: "pause" | "resume" | "stop";
+  label: string;
+  tooltip: string;
+  disabled?: boolean;
+};
+type HeaderWorkControlRequest = {
+  group: WorkControlGroup;
+  action: HeaderWorkControlAction["kind"];
+};
 type BackgroundJob = {
   id: string;
   label: string;
@@ -237,6 +251,7 @@ type BackgroundJob = {
   runningJobs?: number;
   totalJobs?: number;
   error?: string;
+  controlGroup?: WorkControlGroup;
   createdAt: number;
   completedAt?: number;
 };
@@ -500,8 +515,8 @@ const MEDUSA_APP_NAME = "medusa";
 const MEDUSA_EXPANSION = "Metadata-Enhanced Document Understanding, Search, and Analysis";
 const MEDUSA_EMBLEM_DAY_SRC = "/medusa-emblem.png";
 const MEDUSA_EMBLEM_NIGHT_SRC = "/medusa-emblem-night.png";
-const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "failed", "restored_paused"]);
-const LIVE_IMPORT_JOB_STATUSES = new Set(["queued", "running"]);
+const QUEUE_IMPORT_JOB_STATUSES = new Set(["staged", "queued", "running", "paused", "failed", "restored_paused"]);
+const LIVE_IMPORT_JOB_STATUSES = new Set(["queued", "running", "paused"]);
 const LIBRARY_DOCUMENT_STATUSES = new Set(["ready", "complete", "completed", "restored"]);
 const MANUAL_REFINEMENT_CAPABILITIES = new Set(["formula_capture", "publication_metadata"]);
 const ASYNC_ACTION_SUCCESS_FEEDBACK_MS = 900;
@@ -793,7 +808,7 @@ const RECON_SCOPE_OPTIONS: Array<{ id: ReconScopeType; label: string }> = [
 const STASH_LANE_OPTIONS: Array<{ id: StashLane; label: string; description: string }> = [
   { id: "wishlist", label: "Wishlist", description: "Saved DOI leads that still need a PDF or external acquisition." },
   { id: "open_pdf", label: "Open PDF", description: "Saved leads with open-PDF evidence that can be resolved through Import DOI." },
-  { id: "queued", label: "Queued", description: "Stashed PDFs already queued or running through import." },
+  { id: "queued", label: "Queued", description: "Stashed PDFs already queued, running, or paused through import." },
   { id: "imported", label: "In Library", description: "Stashes matched to documents already in the Library." },
   { id: "all", label: "All", description: "Every active DOI stash." },
 ];
@@ -1859,7 +1874,7 @@ function cacheHydrationActionProgress(localProgress: ActionProgressState, hydrat
   if (hydration?.active) {
     return {
       progress: progressPercent(hydration.progress),
-      running: true,
+      running: hydration.status !== "paused",
       visible: true,
     };
   }
@@ -2060,7 +2075,7 @@ function isTerminalBackgroundStatus(status: BackgroundJobStatus) {
 }
 
 function isActiveConcordanceStatus(status: string) {
-  return status === "queued" || status === "running";
+  return status === "queued" || status === "running" || status === "paused";
 }
 
 function concordanceRunAnchor(run?: ConcordanceRun | null, fallback?: number) {
@@ -2102,6 +2117,7 @@ function statusFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[]): Backgrou
   if (run.status === "complete") return "complete";
   if (run.status === "running") return "running";
   if (runJobs.some((job) => job.status === "running")) return "running";
+  if (run.status === "paused" || runJobs.some((job) => job.status === "paused")) return "paused";
   return "queued";
 }
 
@@ -2153,6 +2169,7 @@ function backgroundJobFromRun(run: ConcordanceRun, runJobs: ConcordanceJob[], ex
     failedJobs: run.failed_jobs,
     totalJobs: run.total_jobs,
     error: status === "failed" ? runFailureMessage(run, runJobs) : undefined,
+    controlGroup: "concordance",
     createdAt: existing?.createdAt || new Date(run.created_at).getTime() || now,
     completedAt: terminal ? existing?.completedAt || now : undefined,
   };
@@ -2334,6 +2351,7 @@ function backgroundProgress(job: BackgroundJob) {
   if (job.status === "complete" || job.status === "failed") return 100;
   if (job.progress !== undefined) return Math.max(0, Math.min(100, job.progress));
   if (job.status === "starting") return 10;
+  if (job.status === "paused") return Math.max(1, Math.min(99, Math.round(job.progress ?? 18)));
   const total = job.totalJobs || 0;
   if (!total) return job.status === "running" ? 35 : 18;
   return Math.max(8, Math.min(96, Math.round((((job.completedJobs || 0) + (job.failedJobs || 0)) / total) * 100)));
@@ -2352,6 +2370,7 @@ function backgroundJobFinished(job: BackgroundJob) {
 function backgroundStatusLabel(job: BackgroundJob) {
   if (job.status === "starting") return "Starting";
   if (job.status === "queued") return "Queued";
+  if (job.status === "paused") return "Paused";
   if (job.status === "running") return "Processing";
   if (job.status === "failed") return "Needs attention";
   return "Complete";
@@ -2390,7 +2409,14 @@ function backgroundAggregateDetail(jobs: BackgroundJob[]) {
   }
   const running = jobs.filter((job) => job.status === "running").length;
   const queued = jobs.filter((job) => job.status === "queued" || job.status === "starting").length;
-  return [`${formatMetric(running)} running`, `${formatMetric(queued)} queued`].join(" / ");
+  const paused = jobs.filter((job) => job.status === "paused").length;
+  return [
+    `${formatMetric(running)} running`,
+    `${formatMetric(queued)} queued`,
+    paused ? `${formatMetric(paused)} paused` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
 }
 
 function dashboardBackgroundWorkCount(dashboard?: Dashboard) {
@@ -2406,9 +2432,10 @@ function dashboardRunningBackgroundWorkCount(dashboard?: Dashboard) {
 function dashboardBackgroundWorkDetail(dashboard?: Dashboard) {
   if (!dashboard) return "";
   const concordance = Math.max(0, dashboard.active_concordance_jobs || 0);
+  const pausedConcordance = Math.max(0, dashboard.concordance_paused_jobs || 0);
   const inquests = Math.max(0, dashboard.active_accessory_summary_jobs || 0);
   return [
-    concordance ? `${formatMetric(concordance)} Concordance` : "",
+    concordance ? `${formatMetric(concordance)} Concordance${pausedConcordance ? ` (${formatMetric(pausedConcordance)} paused)` : ""}` : "",
     inquests ? `${formatMetric(inquests)} ${inquests === 1 ? "Inquest" : "Inquests"}` : "",
   ]
     .filter(Boolean)
@@ -2486,16 +2513,71 @@ function AIFailureNoticePanel({
   );
 }
 
+function headerControlActions(controlGroup: WorkControlGroup | null, status: BackgroundJobStatus | "import" | null): HeaderWorkControlAction[] {
+  if (!controlGroup) return [];
+  const paused = status === "paused";
+  const pauseOrResume: HeaderWorkControlAction = paused
+    ? {
+        kind: "resume",
+        label: "Resume",
+        tooltip: "Resume this paused work.",
+      }
+    : {
+        kind: "pause",
+        label: "Pause",
+        tooltip: "Pause this work after the current safe checkpoint.",
+      };
+  return [
+    pauseOrResume,
+    {
+      kind: "stop",
+      label: "Stop",
+      tooltip: "Stop queued work and leave completed work intact.",
+    },
+  ];
+}
+
+function HeaderWorkControlButton({
+  action,
+  busy,
+  onClick,
+}: {
+  action: HeaderWorkControlAction;
+  busy?: boolean;
+  onClick: (action: HeaderWorkControlAction) => void;
+}) {
+  const Icon = action.kind === "resume" ? Play : action.kind === "pause" ? Pause : Square;
+  return (
+    <button
+      aria-label={action.label}
+      className={`header-work-control ${action.kind}`}
+      data-tooltip={action.tooltip}
+      disabled={busy || action.disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick(action);
+      }}
+      type="button"
+    >
+      <Icon size={13} />
+    </button>
+  );
+}
+
 function HeaderWorkProgress({
   completedImport,
+  controlBusy = false,
   dashboard,
   jobs,
+  onControlAction,
   onDismissCompletedImport,
   onOpenQueue,
 }: {
   completedImport?: IngestionHistory | null;
+  controlBusy?: boolean;
   dashboard?: Dashboard;
   jobs: BackgroundJob[];
+  onControlAction?: (group: WorkControlGroup, action: HeaderWorkControlAction) => void;
   onDismissCompletedImport?: (batchId: string) => void;
   onOpenQueue: () => void;
 }) {
@@ -2509,18 +2591,35 @@ function HeaderWorkProgress({
   let detail = "Processing";
   let progress = 10;
   let activeClass = "running";
+  let controlGroup: WorkControlGroup | null = null;
+  let controlStatus: BackgroundJobStatus | "import" | null = null;
   let tooltip = "Open Queue to inspect active imports, Concordance runs, backups, restores, and citation review work.";
 
   if (importActive && dashboard) {
     const display = importProgressDisplay(dashboard);
     progress = display.progress;
-    label = display.total > 0 ? `Importing ${display.displayed} of ${display.total} (${display.percent}%)` : "Importing";
-    activeClass = dashboard.import_running_jobs > 0 ? "running" : "queued";
+    controlGroup = "imports";
+    activeClass = dashboard.import_running_jobs > 0 ? "running" : dashboard.import_queued_jobs > 0 ? "queued" : "paused";
+    controlStatus = activeClass as BackgroundJobStatus;
+    label =
+      activeClass === "paused"
+        ? `Imports paused (${formatMetric(dashboard.import_paused_jobs || dashboard.active_import_jobs)})`
+        : display.total > 0
+          ? `Importing ${display.displayed} of ${display.total} (${display.percent}%)`
+          : "Importing";
     const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
     const activeEta = formatEtaMinutes(display.etaSeconds);
     const activeCost = dashboard.import_active_cost_usd > 0 ? formatUsd(dashboard.import_active_cost_usd) : "";
     detail = [activeStep, activeEta, activeCost].filter(Boolean).join(" - ");
-    if (!detail) detail = `${dashboard.import_running_jobs} importing / ${dashboard.import_queued_jobs} queued`;
+    if (!detail) {
+      detail = [
+        `${dashboard.import_running_jobs} importing`,
+        `${dashboard.import_queued_jobs} queued`,
+        dashboard.import_paused_jobs ? `${dashboard.import_paused_jobs} paused` : "",
+      ]
+        .filter(Boolean)
+        .join(" / ");
+    }
   } else if (hasActiveBackgroundWork) {
     const job = activeJobs[0];
     const listedActiveJobCount = backgroundActiveJobCount(activeJobs);
@@ -2540,6 +2639,8 @@ function HeaderWorkProgress({
           ? backgroundAggregateDetail(activeJobs)
           : job?.detail || (job ? backgroundStatusLabel(job) : dashboardBackgroundWorkDetail(dashboard));
     activeClass = runningJobCount > 0 ? "running" : job?.status || "queued";
+    controlGroup = job?.controlGroup || null;
+    controlStatus = job?.status || null;
   } else if (completedImport) {
     progress = 100;
     activeClass = "complete";
@@ -2547,6 +2648,7 @@ function HeaderWorkProgress({
     detail = ingestionCompletionSummary(completedImport);
     tooltip = "Open Queue to inspect completed and active import work.";
   }
+  const controlActions = headerControlActions(controlGroup, controlStatus);
 
   return (
     <div className="header-work-slot">
@@ -2560,7 +2662,13 @@ function HeaderWorkProgress({
         >
           <span className="header-work-main">
             <span className="header-work-icon">
-              {activeClass === "complete" ? <CheckCircle2 size={15} /> : <RefreshCw className="spin" size={15} />}
+              {activeClass === "complete" ? (
+                <CheckCircle2 size={15} />
+              ) : activeClass === "paused" ? (
+                <Pause size={15} />
+              ) : (
+                <RefreshCw className="spin" size={15} />
+              )}
             </span>
             <span className="header-work-copy">
               <strong>{label}</strong>
@@ -2588,6 +2696,18 @@ function HeaderWorkProgress({
           >
             <X size={14} />
           </button>
+        ) : null}
+        {controlGroup && controlActions.length && onControlAction ? (
+          <span className="header-work-controls" aria-label="Work controls">
+            {controlActions.map((action) => (
+              <HeaderWorkControlButton
+                action={action}
+                busy={controlBusy}
+                key={action.kind}
+                onClick={(selectedAction) => onControlAction(controlGroup, selectedAction)}
+              />
+            ))}
+          </span>
         ) : null}
       </div>
     </div>
@@ -3322,7 +3442,7 @@ function documentDetailHasVerifiedFields(document: DocumentDetail) {
   );
 }
 
-const DOCUMENT_ROW_ACTIVE_WORK_LABEL = "Document field updates or processing are queued or running.";
+const DOCUMENT_ROW_ACTIVE_WORK_LABEL = "Document field updates or processing are queued, running, or paused.";
 
 function documentRowHasActiveWork(
   document: LibraryDocumentRow,
@@ -4218,12 +4338,13 @@ function importJobSortPriority(job: ImportJob) {
   if (job.status === "running") return 0;
   if (job.status === "failed") return 1;
   if (job.status === "restored_paused") return 2;
-  if (job.status === "queued") return 3;
-  if (job.status === "staged") return 4;
-  if (job.status === "complete") return 5;
-  if (job.status === "duplicate_skipped") return 6;
-  if (job.status === "cleared") return 7;
-  return 7;
+  if (job.status === "paused") return 3;
+  if (job.status === "queued") return 4;
+  if (job.status === "staged") return 5;
+  if (job.status === "complete") return 6;
+  if (job.status === "duplicate_skipped") return 7;
+  if (job.status === "cleared") return 8;
+  return 8;
 }
 
 function importJobTime(value?: string | null) {
@@ -4237,7 +4358,7 @@ function compareImportJobs(left: ImportJob, right: ImportJob) {
   if (left.status === "running") {
     return importJobTime(left.locked_at || left.updated_at || left.created_at) - importJobTime(right.locked_at || right.updated_at || right.created_at);
   }
-  if (left.status === "queued" || left.status === "staged" || left.status === "restored_paused") {
+  if (left.status === "queued" || left.status === "paused" || left.status === "staged" || left.status === "restored_paused") {
     return importJobTime(left.created_at) - importJobTime(right.created_at);
   }
   return importJobTime(right.updated_at || right.created_at) - importJobTime(left.updated_at || left.created_at);
@@ -4294,6 +4415,7 @@ function importJobStatusLabel(job: ImportJob) {
   if (job.status === "failed") return "failed";
   if (job.status === "staged") return "staged";
   if (job.status === "queued") return "queued";
+  if (job.status === "paused") return "paused";
   if (job.status === "restored_paused") return "restored paused";
   return importJobStage(job);
 }
@@ -4399,12 +4521,12 @@ function importJobWorkerLabel(job: ImportJob) {
 function importJobTone(job: ImportJob): "neutral" | "good" | "warn" | "blue" {
   if (job.status === "failed") return "warn";
   if (job.status === "complete" || job.status === "duplicate_skipped") return "good";
-  if (job.status === "restored_paused" || job.status === "staged") return "neutral";
+  if (job.status === "restored_paused" || job.status === "paused" || job.status === "staged") return "neutral";
   return "blue";
 }
 
 function importJobShowsActivityGlyph(job: ImportJob) {
-  return job.status === "queued" || job.status === "running" || job.status === "restored_paused";
+  return job.status === "queued" || job.status === "running" || job.status === "paused" || job.status === "restored_paused";
 }
 
 function ImportJobRow({
@@ -4495,7 +4617,7 @@ function ImportJobRow({
 
 function canRescueImportJob(job: ImportJob) {
   if (!job.document_id) return false;
-  if (job.status === "failed" || job.status === "restored_paused") return true;
+  if (job.status === "failed" || job.status === "paused" || job.status === "restored_paused") return true;
   if (job.status !== "running" || !job.locked_at) return false;
   return Date.now() - new Date(job.locked_at).getTime() > 15 * 60 * 1000;
 }
@@ -4508,7 +4630,7 @@ function canRetryImportJob(job: ImportJob) {
 }
 
 function canCancelImportJob(job: ImportJob) {
-  return job.status === "staged" || job.status === "queued" || job.status === "failed" || job.status === "restored_paused";
+  return job.status === "staged" || job.status === "queued" || job.status === "paused" || job.status === "failed" || job.status === "restored_paused";
 }
 
 function importJobRetryTitle(job: ImportJob) {
@@ -4521,6 +4643,7 @@ function importJobCancelTitle(job: ImportJob) {
   if (job.status === "running") return "Running imports cannot be canceled while the worker lock is active";
   if (!canCancelImportJob(job)) return "This import cannot be canceled";
   if (job.status === "staged") return "Remove this staged upload before it is processed";
+  if (job.status === "paused") return "Cancel this paused import/download";
   return "Cancel this import/download";
 }
 
@@ -6185,7 +6308,9 @@ function Header({
   cacheStatus,
   completedImport,
   dashboard,
+  headerWorkControlBusy,
   onDismissCompletedImport,
+  onHeaderWorkControl,
   onOpenCommandPalette,
   onOpenQueue,
   onOpenSettings,
@@ -6210,7 +6335,9 @@ function Header({
   cacheStatus?: CacheStatus;
   completedImport?: IngestionHistory | null;
   dashboard?: Dashboard;
+  headerWorkControlBusy?: boolean;
   onDismissCompletedImport?: (batchId: string) => void;
+  onHeaderWorkControl?: (group: WorkControlGroup, action: HeaderWorkControlAction) => void;
   onOpenCommandPalette: () => void;
   onOpenQueue: () => void;
   onOpenSettings: () => void;
@@ -6275,7 +6402,6 @@ function Header({
     setQuery("");
     searchInputRef.current?.blur();
   };
-  const cacheActionBusy = cacheRefreshing || cacheHydrating;
   const cacheHitPercent = cacheStatus ? (cacheStatus.hit_rate || 0) * 100 : null;
   const cacheUsagePercent = cacheMemoryPercent(cacheStatus);
   const cacheHitLabel = formatPercent(cacheHitPercent) || "0%";
@@ -6284,10 +6410,16 @@ function Header({
   const cacheGlanceTone = valkeyResourceTone(cacheUsagePercent);
   const cacheGlanceMeterStyle = { "--user-cache-used": `${progressPercent(cacheUsagePercent ?? 0)}%` } as CSSProperties;
   const activeHydration = cacheStatus?.hydration?.active ? cacheStatus.hydration : null;
+  const cacheActionBusy = cacheRefreshing || cacheHydrating || Boolean(activeHydration);
   const cacheRefreshPercent = cacheRefreshProgress.visible ? cacheRefreshProgress.progress : null;
   const cacheHydratePercent = cacheHydrateProgress.visible ? cacheHydrateProgress.progress : null;
   const cacheHydrateMenuStatus = activeHydration ? cacheHydrationMenuDetail(activeHydration) : null;
-  const cacheHydrateLabel = cacheHydratePercent !== null ? `Hydrate Cache ${cacheHydratePercent}%` : "Hydrate Cache";
+  const cacheHydrateLabel =
+    cacheHydratePercent !== null
+      ? activeHydration?.status === "paused"
+        ? `Hydrate Cache paused (${cacheHydratePercent}%)`
+        : `Hydrate Cache ${cacheHydratePercent}%`
+      : "Hydrate Cache";
   const cacheHydrateTooltip = cacheHydrateMenuStatus
     ? `${cacheHydrateLabel}. ${cacheHydrateMenuStatus}`
     : "Preload safe PostgreSQL-derived cache payloads into Valkey.";
@@ -6335,8 +6467,10 @@ function Header({
       <div className="topbar-actions">
         <HeaderWorkProgress
           completedImport={completedImport}
+          controlBusy={headerWorkControlBusy}
           dashboard={dashboard}
           jobs={backgroundJobs}
+          onControlAction={onHeaderWorkControl}
           onDismissCompletedImport={onDismissCompletedImport}
           onOpenQueue={onOpenQueue}
         />
@@ -11850,56 +11984,56 @@ function DocumentPanelContent({
     : refreshCitation.isPending
     ? "an APA citation refresh request is already starting."
     : citationRefreshActive || (citationRunId && !citationRunServerIdle)
-      ? "a DOI or APA citation refresh is already queued or running for this document."
+      ? "a DOI or APA citation refresh is already queued, running, or paused for this document."
       : "";
   const summaryRefreshBusyReason = documentLocked
     ? documentLockedReason
     : refreshSummary.isPending
     ? "a summary refresh request is already starting."
     : summaryRefreshActive || (summaryRunId && !summaryRunServerIdle)
-      ? "a summary refresh is already queued or running for this document."
+      ? "a summary refresh is already queued, running, or paused for this document."
       : "";
   const bibliographyRefreshBusyReason = documentLocked
     ? documentLockedReason
     : refreshBibliography.isPending
     ? "a bibliography refresh request is already starting."
     : bibliographyRefreshActive || (bibliographyRunId && !bibliographyRunServerIdle)
-      ? "a bibliography refresh is already queued or running for this document."
+      ? "a bibliography refresh is already queued, running, or paused for this document."
       : "";
   const publicationRefreshBusyReason = documentLocked
     ? documentLockedReason
     : refreshPublication.isPending
     ? "a publication refresh request is already starting."
     : publicationRefreshActive || (publicationRunId && !publicationRunServerIdle)
-      ? "a publication refresh is already queued or running for this document."
+      ? "a publication refresh is already queued, running, or paused for this document."
       : "";
   const formulaCaptureBusyReason = documentLocked
     ? documentLockedReason
     : captureFormulas.isPending
     ? "a formula capture request is already starting."
     : formulaCaptureActive || (formulaCaptureRunId && !formulaCaptureRunServerIdle)
-      ? "formula capture is already queued or running for this document."
+      ? "formula capture is already queued, running, or paused for this document."
       : "";
   const tagRefreshBusyReason = documentLocked
     ? documentLockedReason
     : refreshTags.isPending
     ? "a tag refresh request is already starting."
     : tagRefreshActive || (tagRefreshRunId && !tagRefreshRunServerIdle)
-      ? "a tag refresh is already queued or running for this document."
+      ? "a tag refresh is already queued, running, or paused for this document."
       : "";
   const documentConcordanceBusyReason = documentLocked
     ? documentLockedReason
     : runConcordance.isPending
     ? "a document Concordance request is already starting."
     : documentConcordanceBusy
-      ? "a document Concordance Run is already queued or running."
+      ? "a document Concordance Run is already queued, running, or paused."
       : "";
   const replacementBusyReason = documentLocked
     ? documentLockedReason
     : replaceDocumentFile.isPending
     ? "a document replacement upload is already starting."
     : document.processing_status !== "ready"
-      ? "this document is already queued or running."
+      ? "this document is already queued, running, or paused."
       : "";
   const accessorySummaries = document.accessory_summaries || [];
   const trackedAccessorySummary = trackedAccessorySummaryId
@@ -11948,7 +12082,7 @@ function DocumentPanelContent({
     ? documentLockedReason
     : updateDocumentTags.isPending
     ? "a tag update is already saving for this document."
-    : "a tag refresh is already queued or running for this document.";
+    : "a tag refresh is already queued, running, or paused for this document.";
   const domainUpdateBusyReason = documentLocked
     ? documentLockedReason
     : updateDocumentDomains.isPending
@@ -16472,7 +16606,7 @@ function StashesView({
                         importDoi.isPending
                           ? "a DOI import request is already running."
                           : stash.status === "import_queued"
-                            ? "this DOI stash already has an import queued or running."
+                            ? "this DOI stash already has an import queued, running, or paused."
                             : "this DOI stash is already matched to an imported document."
                       }
                       data-tooltip="Resolve this DOI through open-PDF metadata sources and queue the PDF through the normal import pipeline when available."
@@ -20616,7 +20750,7 @@ function activityTimestamp(value?: string | null) {
 function activityImportStatusTone(status: string): ActivityRow["tone"] {
   if (status === "complete") return "good";
   if (status === "failed" || status === "restored_paused") return "warn";
-  if (status === "running" || status === "queued" || status === "staged") return "blue";
+  if (status === "running" || status === "queued" || status === "paused" || status === "staged") return "blue";
   return "neutral";
 }
 
@@ -20630,7 +20764,7 @@ function activityBackupTone(run: BackupRun): ActivityRow["tone"] {
 function activityConcordanceTone(status: string): ActivityRow["tone"] {
   if (status === "complete") return "good";
   if (status === "failed") return "warn";
-  if (status === "queued" || status === "running") return "blue";
+  if (isActiveConcordanceStatus(status)) return "blue";
   return "neutral";
 }
 
@@ -20950,7 +21084,9 @@ function CorpusHealthView({
   const failedImportJobs = jobs.filter((job) => job.status === "failed");
   const failedConcordanceJobs = concordanceJobs.filter((job) => job.status === "failed");
   const failedBackupRuns = failedBackupRunsNeedingReview(backupRuns);
-  const activeRepairWork = jobs.filter((job) => job.status === "queued" || job.status === "running").length + concordanceJobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const activeRepairWork =
+    jobs.filter((job) => job.status === "queued" || job.status === "running" || job.status === "paused").length +
+    concordanceJobs.filter((job) => job.status === "queued" || job.status === "running" || job.status === "paused").length;
   const issueCards: CorpusHealthIssue[] = [
     {
       actionLabel: "Review DOI gaps",
@@ -25530,7 +25666,7 @@ function SettingsView({
     },
   });
   const latestRun = runs[0];
-  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running" || job.status === "paused").length;
   const progressTotal = latestRun?.total_jobs || 0;
   const progressDone = latestRun ? latestRun.completed_jobs + latestRun.failed_jobs : 0;
   const warningThreshold = preferences?.import_worker_cost_warning_threshold || 4;
@@ -27394,9 +27530,66 @@ export default function App() {
       cacheHydrationPollUntilRef.current = Date.now() + ACTION_PROGRESS_COMPLETE_MS;
     },
   });
+  const headerWorkControl = useMutation<WorkControlResult, Error, HeaderWorkControlRequest>({
+    mutationFn: ({ group, action }) => {
+      if (group === "cache-hydration") {
+        if (action === "pause") return api.pauseCacheHydration();
+        if (action === "resume") return api.resumeCacheHydration();
+        return api.stopCacheHydration();
+      }
+      if (group === "imports") {
+        if (action === "pause") return api.pauseImportQueue();
+        if (action === "resume") return api.resumeImportQueue();
+        return api.stopImportQueue();
+      }
+      if (action === "pause") return api.pauseConcordanceRuns();
+      if (action === "resume") return api.resumeConcordanceRuns();
+      return api.stopConcordanceRuns();
+    },
+    onMutate: ({ group }) => {
+      if (group === "cache-hydration") {
+        cacheHydrationPollUntilRef.current = Date.now() + 10 * 60_000;
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["concordance-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["review"] });
+    },
+    onSettled: (_result, _error, variables) => {
+      if (variables?.group === "cache-hydration") {
+        cacheHydrationPollUntilRef.current = Date.now() + ACTION_PROGRESS_COMPLETE_MS;
+      }
+    },
+  });
   const cacheRefreshProgress = useActionProgress(refreshCache.isPending);
   const localCacheHydrateProgress = useActionProgress(hydrateCache.isPending);
   const cacheHydrateProgress = cacheHydrationActionProgress(localCacheHydrateProgress, cacheStatus.data?.hydration);
+  const handleHeaderWorkControl = useCallback(
+    async (group: WorkControlGroup, action: HeaderWorkControlAction) => {
+      if (action.kind === "stop") {
+        const confirmed = await appDialogs.confirm({
+          cancelLabel: "Keep Running",
+          confirmLabel: "Stop",
+          eyebrow: "Active Work",
+          message:
+            group === "imports"
+              ? "Queued and paused imports will be canceled. Any import already running will finish or become recoverable if interrupted."
+              : group === "concordance"
+                ? "Queued and paused Concordance jobs will be stopped. Any job already running will finish before the run settles."
+                : "Cache hydration will stop at the next payload boundary. Already warmed cache entries will remain available.",
+          title: "Stop this work?",
+          tone: "danger",
+        });
+        if (!confirmed) return;
+      }
+      headerWorkControl.mutate({ group, action: action.kind });
+    },
+    [appDialogs, headerWorkControl],
+  );
   const confirmReleaseReload = useCallback(() => {
     return appDialogs.confirm({
       cancelLabel: "Not Yet",
@@ -27741,6 +27934,7 @@ export default function App() {
           label,
           detail,
           status: "starting",
+          controlGroup: "concordance",
           documentId: request.documentId,
           capabilityKey: request.capabilityKey,
           createdAt: Date.now(),
@@ -28060,7 +28254,7 @@ export default function App() {
             (concordanceJobs.data || []).filter((job) => job.run_id === run.id),
           ),
         )
-        .filter((job) => job.status === "queued" || job.status === "running");
+        .filter((job) => job.status === "queued" || job.status === "running" || job.status === "paused");
   const activeBackupBackgroundJobs = (backupRuns.data || [])
     .map(backgroundJobFromBackupRun)
     .filter((job) => job.status === "queued" || job.status === "running");
@@ -28083,13 +28277,19 @@ export default function App() {
   if (cacheHydrateProgress.visible) {
     const hydrationStatus = cacheStatus.data?.hydration;
     const hydrationStartedAt = hydrationStatus?.started_at ? Date.parse(hydrationStatus.started_at) : Date.now();
+    const hydrationPaused = hydrationStatus?.status === "paused";
     cacheActionBackgroundJobs.push({
       id: "cache-hydrate",
-      label: cacheHydrateProgress.running ? `Hydrate Cache ${cacheHydrateProgress.progress}%` : "Hydrate Cache",
-      detail: cacheHydrateProgress.running ? cacheHydrationDetail(hydrationStatus) || "Preloading common cache entries" : "Finishing",
-      status: "running",
-      runningJobs: 1,
+      label: hydrationPaused ? `Hydrate Cache paused at ${cacheHydrateProgress.progress}%` : cacheHydrateProgress.running ? `Hydrate Cache ${cacheHydrateProgress.progress}%` : "Hydrate Cache",
+      detail: hydrationPaused
+        ? cacheHydrationDetail(hydrationStatus) || "Paused"
+        : cacheHydrateProgress.running
+          ? cacheHydrationDetail(hydrationStatus) || "Preloading common cache entries"
+          : "Finishing",
+      status: hydrationPaused ? "paused" : "running",
+      runningJobs: hydrationPaused ? 0 : 1,
       progress: cacheHydrateProgress.progress,
+      controlGroup: "cache-hydration",
       createdAt: Number.isFinite(hydrationStartedAt) ? hydrationStartedAt : Date.now(),
     });
   }
@@ -28120,7 +28320,9 @@ export default function App() {
         cacheStatus={cacheStatus.data}
         completedImport={completedIngestionNotice}
         dashboard={dashboard.data}
+        headerWorkControlBusy={headerWorkControl.isPending}
         onDismissCompletedImport={dismissCompletedIngestion}
+        onHeaderWorkControl={handleHeaderWorkControl}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenQueue={() => void requestActiveViewChange("queue")}
         onOpenSettings={() => void requestActiveViewChange("settings")}

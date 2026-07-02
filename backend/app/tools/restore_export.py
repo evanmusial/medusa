@@ -48,7 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--reactivate-jobs",
         action="store_true",
-        help="Restore queued/running job statuses as-is instead of parking them as restored_paused.",
+        help="Restore queued/running/paused job statuses as-is instead of parking them as restored_paused.",
     )
     parser.add_argument("--json", action="store_true", help="Print the full restore report as JSON.")
     return parser.parse_args(argv)

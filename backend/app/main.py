@@ -159,6 +159,7 @@ from app.schemas import (
     ImportDuplicateFileOut,
     ImportJobOut,
     ImportQueueActionOut,
+    WorkControlOut,
     HAProxyStatsStatusOut,
     LibraryFunStatsOut,
     LoginRequest,
@@ -279,15 +280,20 @@ from app.services.cache import (
     advance_cache_hydration,
     bump_cache_revisions,
     cache_status_payload,
+    cache_hydration_stop_requested,
     finish_cache_hydration,
     get_cached_payload,
     get_cache_backend,
     install_cache_revision_hooks,
+    pause_cache_hydration,
+    resume_cache_hydration,
     set_cache_hydration_plan,
     set_cached_payload,
     start_cache_hydration,
+    stop_cache_hydration,
+    wait_for_cache_hydration_resume_or_stop,
 )
-from app.services.concordance import create_concordance_run, current_capabilities, estimate_concordance_run
+from app.services.concordance import create_concordance_run, current_capabilities, estimate_concordance_run, refresh_concordance_run_progress
 from app.services.composition import active_import_cost_usd, document_composition_summary, record_import_cost_estimate, record_manual_edit
 from app.services.citations import format_apa_citation, format_apa_in_text_citation, format_bibtex, format_ris, to_csl_json
 from app.services.container_footprint import container_footprint_status, request_container_restart
@@ -466,10 +472,15 @@ install_cache_revision_hooks()
 
 DUPLICATE_IMPORT_STRATEGIES = {"skip", "overwrite", "import_anyway"}
 STAGED_IMPORT_STATUS = "staged"
-IMPORT_JOB_QUEUE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
-IMPORT_JOB_CLEARABLE_STATUSES = ("staged", "queued", "running", "failed", "restored_paused")
+IMPORT_JOB_QUEUE_STATUSES = ("staged", "queued", "running", "paused", "failed", "restored_paused")
+IMPORT_JOB_CLEARABLE_STATUSES = ("staged", "queued", "running", "paused", "failed", "restored_paused")
+IMPORT_JOB_PAUSABLE_STATUSES = ("queued",)
+IMPORT_JOB_RESUMABLE_STATUSES = ("paused",)
+CONCORDANCE_ACTIVE_STATUSES = ("queued", "running", "paused")
+CONCORDANCE_PAUSABLE_STATUSES = ("queued",)
+CONCORDANCE_RESUMABLE_STATUSES = ("paused",)
 IMPORT_CACHE_TERMINAL_JOB_STATUSES = ("cleared", "complete")
-ACTIVE_DOCUMENT_WORK_STATUSES = ("queued", "running")
+ACTIVE_DOCUMENT_WORK_STATUSES = ("queued", "running", "paused")
 CONCORDANCE_RECENT_RUN_HISTORY_LIMIT = 50
 CONCORDANCE_RECENT_JOB_HISTORY_LIMIT = 100
 IMPORT_DUPLICATE_DOCUMENT_STATUSES = (
@@ -489,6 +500,16 @@ CACHE_HYDRATE_LIST_PAGE_SIZE = 50
 CACHE_HYDRATION_LOCK = threading.Lock()
 CACHE_STARTUP_HYDRATE_MAX_ATTEMPTS = 12
 CACHE_STARTUP_HYDRATE_RETRY_SECONDS = 2.5
+
+
+class CacheHydrationStopped(Exception):
+    pass
+
+
+def pluralize(noun: str, count: int) -> str:
+    return noun if count == 1 else f"{noun}s"
+
+
 DOCUMENT_LIST_SORTS = ("title", "date", "page_count")
 DOCUMENT_READ_STATUSES = ("unread", "skimmed", "read")
 DOCUMENT_PRIORITIES = ("urgent", "high", "normal", "low")
@@ -3213,11 +3234,13 @@ def recent_failed_ai_call_notices(db: Session) -> list[dict[str, Any]]:
 def dashboard_out(db: Session) -> DashboardOut:
     import_queued_jobs = db.query(ImportJob).filter(ImportJob.status == "queued").count()
     import_running_jobs = db.query(ImportJob).filter(ImportJob.status == "running").count()
+    import_paused_jobs = db.query(ImportJob).filter(ImportJob.status == "paused").count()
     queue_import_jobs = db.query(ImportJob).filter(ImportJob.status.in_(IMPORT_JOB_QUEUE_STATUSES)).count()
-    active_import_jobs = import_queued_jobs + import_running_jobs
+    active_import_jobs = import_queued_jobs + import_running_jobs + import_paused_jobs
     concordance_queued_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "queued").count()
     concordance_running_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "running").count()
-    active_concordance_jobs = concordance_queued_jobs + concordance_running_jobs
+    concordance_paused_jobs = db.query(ConcordanceJob).filter(ConcordanceJob.status == "paused").count()
+    active_concordance_jobs = concordance_queued_jobs + concordance_running_jobs + concordance_paused_jobs
     accessory_summary_queued_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "queued").count()
     accessory_summary_running_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "running").count()
     active_accessory_summary_jobs = accessory_summary_queued_jobs + accessory_summary_running_jobs
@@ -3226,11 +3249,11 @@ def dashboard_out(db: Session) -> DashboardOut:
     failed_accessory_summary_jobs = db.query(DocumentAccessorySummary).filter(DocumentAccessorySummary.status == "failed").count()
     active_batch_ids = [
         row[0]
-        for row in db.query(ImportJob.batch_id).filter(ImportJob.status.in_(["queued", "running"])).distinct().all()
+        for row in db.query(ImportJob.batch_id).filter(ImportJob.status.in_(["queued", "running", "paused"])).distinct().all()
     ]
     active_import_job_ids = [
         row[0]
-        for row in db.query(ImportJob.id).filter(ImportJob.status.in_(["queued", "running"])).all()
+        for row in db.query(ImportJob.id).filter(ImportJob.status.in_(["queued", "running", "paused"])).all()
     ]
     active_batches = db.query(ImportBatch).filter(ImportBatch.id.in_(active_batch_ids)).all() if active_batch_ids else []
     import_progress_total = sum(batch.total_files for batch in active_batches)
@@ -3268,6 +3291,7 @@ def dashboard_out(db: Session) -> DashboardOut:
         active_import_jobs=active_import_jobs,
         import_queued_jobs=import_queued_jobs,
         import_running_jobs=import_running_jobs,
+        import_paused_jobs=import_paused_jobs,
         import_progress_total=import_progress_total,
         import_progress_completed=import_progress_completed,
         import_progress_failed=import_progress_failed,
@@ -3277,6 +3301,7 @@ def dashboard_out(db: Session) -> DashboardOut:
         active_concordance_jobs=active_concordance_jobs,
         concordance_queued_jobs=concordance_queued_jobs,
         concordance_running_jobs=concordance_running_jobs,
+        concordance_paused_jobs=concordance_paused_jobs,
         active_accessory_summary_jobs=active_accessory_summary_jobs,
         accessory_summary_queued_jobs=accessory_summary_queued_jobs,
         accessory_summary_running_jobs=accessory_summary_running_jobs,
@@ -3505,6 +3530,10 @@ def hydrate_cache_payloads(
             elif status == "error":
                 counters["errored_payloads"] += 1
 
+        def check_cache_hydration_control() -> None:
+            if wait_for_cache_hydration_resume_or_stop() == "stop" or cache_hydration_stop_requested():
+                raise CacheHydrationStopped()
+
         def hydrate_payload(
             *,
             family: str,
@@ -3513,6 +3542,7 @@ def hydrate_cache_payloads(
             loader,
             bucket: str,
         ) -> Any | None:
+            check_cache_hydration_control()
             identity = hydration_payload_identity(family, revision_families, key_parts)
             if identity in hydrated_payload_results:
                 return hydrated_payload_results[identity]
@@ -3653,6 +3683,7 @@ def hydrate_cache_payloads(
                     offset = 0
                     page_index = 0
                     while True:
+                        check_cache_hydration_control()
                         if page_index > 0:
                             add_cache_hydration_work(1)
                         key_parts = document_list_cache_key_parts(
@@ -3976,19 +4007,24 @@ def hydrate_cache_payloads(
 
         landing_core_endpoints = {"dashboard", "preferences", "domains", "tags", "projects", "saved_searches"}
         for warmer in base_warmers:
+            check_cache_hydration_control()
             if warmer["key_parts"].get("endpoint") in landing_core_endpoints:
                 hydrate_payload(**warmer)
+        check_cache_hydration_control()
         hydrate_landing_library_list_pages()
 
         for warmer in base_warmers:
+            check_cache_hydration_control()
             hydrate_payload(**warmer)
 
         for q, filters, saved_search in filter_scopes:
+            check_cache_hydration_control()
             hydrate_document_list_pages(q=q, filters=filters, saved_search=saved_search)
             if not q and not any((filters or {}).values()):
                 hydrate_document_all_results(q=q, filters=filters, saved_search=saved_search)
 
         for project_id in project_ids:
+            check_cache_hydration_control()
             hydrate_payload(
                 family="organization:project_detail",
                 revision_families={"organization", "library", "document_detail"},
@@ -4004,6 +4040,7 @@ def hydrate_cache_payloads(
                 bucket="workspace_keys",
             )
         for domain_id in domain_ids:
+            check_cache_hydration_control()
             hydrate_payload(
                 family="notes:list",
                 revision_families={"library", "document_detail", "organization", "dashboard"},
@@ -4012,6 +4049,7 @@ def hydrate_cache_payloads(
                 bucket="workspace_keys",
             )
         for run_id in recon_run_ids:
+            check_cache_hydration_control()
             hydrate_payload(
                 family="recon:run",
                 revision_families={"recon", "library", "organization"},
@@ -4020,6 +4058,7 @@ def hydrate_cache_payloads(
                 bucket="workspace_keys",
             )
         for portfolio_item_id in portfolio_item_ids:
+            check_cache_hydration_control()
             hydrate_payload(
                 family="portfolio:detail",
                 revision_families={"portfolio", "library", "organization", "jobs"},
@@ -4039,6 +4078,7 @@ def hydrate_cache_payloads(
             documents = document_query.all()
             document_count = len(documents)
             for document in documents:
+                check_cache_hydration_control()
                 hydrate_payload(
                     family="documents:detail",
                     revision_families={"document_detail", "organization"},
@@ -4099,6 +4139,31 @@ def hydrate_cache_payloads(
         after = cache_status_payload(db, request_metrics=metrics)
         return {
             "status": "complete",
+            "message": message,
+            "hydrated_at": hydrated_at,
+            "document_count": document_count,
+            **counters,
+            "before": before,
+            "after": after,
+        }
+    except CacheHydrationStopped:
+        message = (
+            f"Stopped cache hydration after {counters['hydrated_keys']} writes"
+            f" and {counters['cached_payloads']} already-hot payloads."
+        )
+        finish_cache_hydration(
+            status="stopped",
+            message=message,
+            phase="Stopped",
+            hydrated_keys=counters["hydrated_keys"],
+            cached_payloads=counters["cached_payloads"],
+            skipped_payloads=counters["skipped_payloads"],
+            errored_payloads=counters["errored_payloads"],
+            document_count=document_count,
+        )
+        after = cache_status_payload(db, request_metrics=metrics)
+        return {
+            "status": "stopped",
             "message": message,
             "hydrated_at": hydrated_at,
             "document_count": document_count,
@@ -4185,6 +4250,24 @@ def hydrate_cache(
         page_size=page_size,
         request_metrics=route_performance_summary(),
     )
+
+
+@app.post("/api/cache/hydrate/pause", response_model=WorkControlOut)
+def pause_cache_hydrate_route(_: Annotated[User, Depends(current_user)]) -> WorkControlOut:
+    result = pause_cache_hydration()
+    return WorkControlOut(status=result["status"], message=result["message"])
+
+
+@app.post("/api/cache/hydrate/resume", response_model=WorkControlOut)
+def resume_cache_hydrate_route(_: Annotated[User, Depends(current_user)]) -> WorkControlOut:
+    result = resume_cache_hydration()
+    return WorkControlOut(status=result["status"], message=result["message"])
+
+
+@app.post("/api/cache/hydrate/stop", response_model=WorkControlOut)
+def stop_cache_hydrate_route(_: Annotated[User, Depends(current_user)]) -> WorkControlOut:
+    result = stop_cache_hydration()
+    return WorkControlOut(status=result["status"], message=result["message"])
 
 
 @app.get("/api/preferences", response_model=AppPreferencesOut)
@@ -8290,7 +8373,7 @@ def sync_doi_stash_import_status(stash: DoiStash) -> bool:
         stash.imported_at = stash.imported_at or stash.import_job.updated_at or utc_now()
     elif stash.import_job.status == "failed":
         stash.status = "import_failed"
-    elif stash.import_job.status in {"queued", "running", "restored_paused"}:
+    elif stash.import_job.status in {"queued", "running", "paused", "restored_paused"}:
         stash.status = "import_queued"
     return stash.status != previous_status
 
@@ -8774,7 +8857,7 @@ def import_doi_stash_pdf(
         raise HTTPException(status_code=404, detail="DOI stash not found")
     sync_doi_stash_import_status(stash)
     if stash.status == "import_queued":
-        raise HTTPException(status_code=409, detail="This DOI stash already has an import queued or running")
+        raise HTTPException(status_code=409, detail="This DOI stash already has an import queued, running, or paused")
     result = queue_doi_stash_open_pdf_import(db, stash)
     db.commit()
     db.refresh(stash)
@@ -10638,11 +10721,12 @@ IMPORT_JOB_STATUS_PRIORITY = {
     "running": 0,
     "failed": 1,
     "restored_paused": 2,
-    "queued": 3,
-    "staged": 4,
-    "complete": 5,
-    "duplicate_skipped": 6,
-    "cleared": 7,
+    "paused": 3,
+    "queued": 4,
+    "staged": 5,
+    "complete": 6,
+    "duplicate_skipped": 7,
+    "cleared": 8,
 }
 
 
@@ -10707,7 +10791,7 @@ def document_import_processing_preset(document: Document | None, batch: ImportBa
     return None
 
 
-ACTIVE_IMPORT_HISTORY_STATUSES = {"staged", "queued", "running", "restored_paused"}
+ACTIVE_IMPORT_HISTORY_STATUSES = {"staged", "queued", "running", "paused", "restored_paused"}
 
 
 def ingestion_history_timestamp(value: datetime | None) -> datetime | None:
@@ -11382,7 +11466,7 @@ def estimate_import_job_cost_usd(
 
 def import_job_sort_key(job: ImportJob) -> tuple[int, float, str]:
     priority = IMPORT_JOB_STATUS_PRIORITY.get(job.status, 7)
-    if job.status in {"running", "queued", "staged", "restored_paused"}:
+    if job.status in {"running", "queued", "paused", "staged", "restored_paused"}:
         timestamp = job.created_at or job.updated_at or utc_now()
         return (priority, timestamp.timestamp(), job.id)
     timestamp = job.updated_at or job.created_at or utc_now()
@@ -11508,6 +11592,8 @@ def import_execution_location(job: ImportJob, lease: SlipstreamLease | None) -> 
         return "Queued for central worker"
     if job.status == "running":
         return "Worker lock active"
+    if job.status == "paused":
+        return "Paused"
     if job.status == "restored_paused":
         return "Restored paused"
     if job.status == "failed":
@@ -11526,6 +11612,8 @@ def import_next_stage(job: ImportJob) -> str:
         return "Release with Process Uploads"
     if job.status == "failed":
         return "Retry or clear"
+    if job.status == "paused":
+        return "Resume or clear"
     if job.status == "restored_paused":
         return "Reactivate or clear"
     if job.status in {"complete", "duplicate_skipped"}:
@@ -11573,6 +11661,8 @@ def concordance_next_stage(job: ConcordanceJob) -> str:
         return f"Run {capability} v{job.target_version}"
     if job.status == "running":
         return f"Finish {capability}"
+    if job.status == "paused":
+        return f"Resume {capability}"
     if job.status == "failed":
         return "Review failure and retry"
     if job.status == "complete":
@@ -11591,12 +11681,12 @@ def import_job_out(
     model_preferences = model_preferences or {}
     projected_cost, estimate_basis, estimate_page_count = cost_estimate or (0.0, "none", document_estimated_page_count(job.document))
     persisted_estimate = document_persisted_cost_estimate(job.document)
-    if persisted_estimate and job.status in {STAGED_IMPORT_STATUS, "queued"}:
+    if persisted_estimate and job.status in {STAGED_IMPORT_STATUS, "queued", "paused"}:
         projected_cost, estimate_basis, estimate_page_count = persisted_estimate
     actual_cost = round(estimated_cost_usd, 6)
     display_cost = actual_cost
     display_basis = "actual" if actual_cost > 0 else "none"
-    if actual_cost <= 0 and job.status in {STAGED_IMPORT_STATUS, "queued"}:
+    if actual_cost <= 0 and job.status in {STAGED_IMPORT_STATUS, "queued", "paused"}:
         display_cost = projected_cost
         display_basis = estimate_basis
     event_title = import_job_event_value(job, "title", job.current_step) or import_job_event_value(job, "title")
@@ -11854,6 +11944,45 @@ def clear_import_job(
             document_id=job.document_id,
             event_type=event_type,
             message=message,
+            payload={"previous": previous},
+        )
+    )
+
+
+def pause_import_job(db: Session, job: ImportJob) -> None:
+    previous = import_job_previous_state(job)
+    job.status = "paused"
+    job.locked_at = None
+    if job.document and job.document.processing_status != "ready":
+        job.document.processing_status = "paused"
+    if job.batch:
+        refresh_import_batch_progress(db, job.batch)
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=job.document_id,
+            event_type="manual_import_pause",
+            message="Import job was paused from the header progress control.",
+            payload={"previous": previous},
+        )
+    )
+
+
+def resume_import_job(db: Session, job: ImportJob) -> None:
+    previous = import_job_previous_state(job)
+    job.status = "queued"
+    job.locked_at = None
+    job.last_error = None
+    if job.document and job.document.processing_status != "ready":
+        job.document.processing_status = "queued"
+    if job.batch:
+        refresh_import_batch_progress(db, job.batch)
+    db.add(
+        ProcessingEvent(
+            import_job_id=job.id,
+            document_id=job.document_id,
+            event_type="manual_import_resume",
+            message="Import job was resumed from the header progress control.",
             payload={"previous": previous},
         )
     )
@@ -12295,6 +12424,80 @@ def refresh_or_delete_import_batches(db: Session, batch_ids: set[str]) -> None:
         refresh_import_batch_progress(db, batch)
 
 
+@app.post("/api/imports/jobs/pause", response_model=WorkControlOut)
+def pause_import_queue(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> WorkControlOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status.in_(IMPORT_JOB_PAUSABLE_STATUSES))
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    for job in jobs:
+        pause_import_job(db, job)
+    db.commit()
+    return WorkControlOut(
+        status="paused",
+        message=f"Paused {len(jobs)} queued import {pluralize('job', len(jobs))}.",
+        matched_count=len(jobs),
+        updated_count=len(jobs),
+    )
+
+
+@app.post("/api/imports/jobs/resume", response_model=WorkControlOut)
+def resume_import_queue(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> WorkControlOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status.in_(IMPORT_JOB_RESUMABLE_STATUSES))
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    for job in jobs:
+        resume_import_job(db, job)
+    db.commit()
+    return WorkControlOut(
+        status="running",
+        message=f"Resumed {len(jobs)} paused import {pluralize('job', len(jobs))}.",
+        matched_count=len(jobs),
+        updated_count=len(jobs),
+    )
+
+
+@app.post("/api/imports/jobs/stop", response_model=WorkControlOut)
+def stop_import_queue(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> WorkControlOut:
+    jobs = (
+        db.query(ImportJob)
+        .options(joinedload(ImportJob.document), joinedload(ImportJob.batch))
+        .filter(ImportJob.status.in_(["queued", "paused"]))
+        .order_by(ImportJob.created_at.asc())
+        .all()
+    )
+    running_count = db.query(ImportJob).filter(ImportJob.status == "running").count()
+    for job in jobs:
+        clear_import_job(db, job, event_type="manual_import_stop", message="Import job was stopped from the header progress control.")
+    db.commit()
+    message = f"Stopped {len(jobs)} import {pluralize('job', len(jobs))}."
+    if running_count:
+        message += f" {running_count} running {pluralize('job', running_count)} will finish or become recoverable if interrupted."
+    return WorkControlOut(
+        status="stopped",
+        message=message,
+        matched_count=len(jobs) + running_count,
+        updated_count=len(jobs),
+        skipped_running_count=running_count,
+    )
+
+
 @app.post("/api/imports/jobs/process-staged", response_model=ImportQueueActionOut)
 def process_staged_import_jobs(
     _: Annotated[User, Depends(current_user)],
@@ -12435,8 +12638,8 @@ def cancel_import_job(
         raise HTTPException(status_code=404, detail="Import job not found")
     if job.status == "running":
         raise HTTPException(status_code=409, detail="Running imports cannot be canceled while the worker lock is active.")
-    if job.status not in {STAGED_IMPORT_STATUS, "queued", "failed", "restored_paused"}:
-        raise HTTPException(status_code=400, detail="Only staged, queued, failed, or restored imports can be canceled.")
+    if job.status not in {STAGED_IMPORT_STATUS, "queued", "paused", "failed", "restored_paused"}:
+        raise HTTPException(status_code=400, detail="Only staged, queued, paused, failed, or restored imports can be canceled.")
 
     clear_import_job(db, job, event_type="manual_import_cancel", message="Import job was canceled.")
     db.commit()
@@ -12663,6 +12866,95 @@ def create_concordance_run_endpoint(
     db.commit()
     db.refresh(run)
     return run
+
+
+def refresh_concordance_runs_for_jobs(db: Session, jobs: list[ConcordanceJob]) -> None:
+    runs = {job.run.id: job.run for job in jobs if job.run}
+    for run in runs.values():
+        refresh_concordance_run_progress(db, run)
+
+
+@app.post("/api/concordance/runs/pause", response_model=WorkControlOut)
+def pause_concordance_runs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> WorkControlOut:
+    jobs = (
+        db.query(ConcordanceJob)
+        .options(joinedload(ConcordanceJob.run))
+        .filter(ConcordanceJob.status.in_(CONCORDANCE_PAUSABLE_STATUSES))
+        .order_by(ConcordanceJob.created_at.asc())
+        .all()
+    )
+    for job in jobs:
+        job.status = "paused"
+        job.locked_at = None
+    refresh_concordance_runs_for_jobs(db, jobs)
+    db.commit()
+    return WorkControlOut(
+        status="paused",
+        message=f"Paused {len(jobs)} queued Concordance {pluralize('job', len(jobs))}.",
+        matched_count=len(jobs),
+        updated_count=len(jobs),
+    )
+
+
+@app.post("/api/concordance/runs/resume", response_model=WorkControlOut)
+def resume_concordance_runs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> WorkControlOut:
+    jobs = (
+        db.query(ConcordanceJob)
+        .options(joinedload(ConcordanceJob.run))
+        .filter(ConcordanceJob.status.in_(CONCORDANCE_RESUMABLE_STATUSES))
+        .order_by(ConcordanceJob.created_at.asc())
+        .all()
+    )
+    for job in jobs:
+        job.status = "queued"
+        job.locked_at = None
+        job.last_error = None
+    refresh_concordance_runs_for_jobs(db, jobs)
+    db.commit()
+    return WorkControlOut(
+        status="running",
+        message=f"Resumed {len(jobs)} paused Concordance {pluralize('job', len(jobs))}.",
+        matched_count=len(jobs),
+        updated_count=len(jobs),
+    )
+
+
+@app.post("/api/concordance/runs/stop", response_model=WorkControlOut)
+def stop_concordance_runs(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> WorkControlOut:
+    jobs = (
+        db.query(ConcordanceJob)
+        .options(joinedload(ConcordanceJob.run))
+        .filter(ConcordanceJob.status.in_(["queued", "paused"]))
+        .order_by(ConcordanceJob.created_at.asc())
+        .all()
+    )
+    running_count = db.query(ConcordanceJob).filter(ConcordanceJob.status == "running").count()
+    for job in jobs:
+        job.status = "failed"
+        job.locked_at = None
+        job.completed_at = utc_now()
+        job.last_error = "Stopped by user from the header progress control."
+    refresh_concordance_runs_for_jobs(db, jobs)
+    db.commit()
+    message = f"Stopped {len(jobs)} Concordance {pluralize('job', len(jobs))}."
+    if running_count:
+        message += f" {running_count} running {pluralize('job', running_count)} will finish before the run settles."
+    return WorkControlOut(
+        status="stopped",
+        message=message,
+        matched_count=len(jobs) + running_count,
+        updated_count=len(jobs),
+        skipped_running_count=running_count,
+    )
 
 
 @app.get("/api/concordance/runs", response_model=list[ConcordanceRunOut])

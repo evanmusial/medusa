@@ -22,7 +22,7 @@ from app.services.backups import ACTIVE_BACKUP_STATUSES
 
 
 DEFAULT_IDLE_GRACE_SECONDS = 300
-ACTIVE_WORK_STATUSES = {"queued", "running"}
+ACTIVE_WORK_STATUSES = {"queued", "running", "paused"}
 DATABASE_MAINTENANCE_MARKER = "database-maintenance-status.json"
 
 

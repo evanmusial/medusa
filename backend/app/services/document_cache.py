@@ -132,7 +132,7 @@ def _cache_entries(db: Session) -> list[dict[str, Any]]:
     protected_document_ids = {
         row[0]
         for row in db.query(ImportJob.document_id)
-        .filter(ImportJob.document_id.isnot(None), ImportJob.status.in_(["queued", "running", "failed", "restored_paused"]))
+        .filter(ImportJob.document_id.isnot(None), ImportJob.status.in_(["queued", "running", "paused", "failed", "restored_paused"]))
         .all()
     }
     for document in db.query(Document).all():

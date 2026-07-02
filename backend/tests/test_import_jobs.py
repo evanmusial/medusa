@@ -892,6 +892,59 @@ def test_cancel_import_job_clears_queued_row(monkeypatch, tmp_path):
         assert document.processing_status == "cleared"
 
 
+def test_cancel_import_job_clears_paused_row(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import cancel_import_job
+    from app.models import Document, ImportBatch, ImportJob
+
+    with Session() as db:
+        batch = ImportBatch(total_files=1, shared_defaults={})
+        document = Document(title="Paused", original_filename="paused.pdf", checksum_sha256="b" * 64, processing_status="paused")
+        job = ImportJob(batch=batch, document=document, status="paused", current_step="stored")
+        db.add_all([batch, document, job])
+        db.commit()
+
+        row = cancel_import_job(job.id, object(), db)
+
+        assert row["status"] == "cleared"
+        assert row["current_step"] == "cleared"
+        assert document.processing_status == "cleared"
+
+
+def test_import_queue_pause_resume_stop_controls_skip_running(monkeypatch, tmp_path):
+    Session = make_session(monkeypatch, tmp_path)
+    from app.main import pause_import_queue, resume_import_queue, stop_import_queue
+    from app.models import Document, ImportBatch, ImportJob, utc_now
+
+    with Session() as db:
+        batch = ImportBatch(total_files=2, shared_defaults={})
+        queued_document = Document(title="Queued", original_filename="queued.pdf", checksum_sha256="b" * 64, processing_status="queued")
+        running_document = Document(title="Running", original_filename="running.pdf", checksum_sha256="c" * 64, processing_status="running")
+        queued_job = ImportJob(batch=batch, document=queued_document, status="queued", current_step="stored")
+        running_job = ImportJob(batch=batch, document=running_document, status="running", current_step="enriching", locked_at=utc_now())
+        db.add_all([batch, queued_document, running_document, queued_job, running_job])
+        db.commit()
+
+        paused = pause_import_queue(object(), db)
+        assert paused.updated_count == 1
+        assert queued_job.status == "paused"
+        assert queued_document.processing_status == "paused"
+        assert running_job.status == "running"
+
+        resumed = resume_import_queue(object(), db)
+        assert resumed.updated_count == 1
+        assert queued_job.status == "queued"
+        assert queued_document.processing_status == "queued"
+
+        stopped = stop_import_queue(object(), db)
+        assert stopped.updated_count == 1
+        assert stopped.skipped_running_count == 1
+        assert queued_job.status == "cleared"
+        assert queued_document.processing_status == "cleared"
+        assert running_job.status == "running"
+        assert running_document.processing_status == "running"
+
+
 def test_cancel_import_job_rejects_running_row(monkeypatch, tmp_path):
     Session = make_session(monkeypatch, tmp_path)
     from app.main import cancel_import_job

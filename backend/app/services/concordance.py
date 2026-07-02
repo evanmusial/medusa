@@ -995,7 +995,7 @@ def _plan_concordance_item(
             "capability_label": capability.label,
             "target_version": capability.version,
             "status": "already_queued",
-            "reason": "A Concordance job for this document and capability is already queued or running.",
+            "reason": "A Concordance job for this document and capability is already queued, running, or paused.",
             "estimated_cost_usd": 0.0,
             "estimate_basis": "already_queued",
             "requirements": [_requirement_payload(requirement) for requirement in requirements],
@@ -1144,11 +1144,17 @@ def refresh_concordance_run_progress(db: Session, run: ConcordanceRun) -> None:
         ConcordanceJob.run_id == run.id,
         ConcordanceJob.status == "running",
     ).count()
+    paused_jobs = db.query(ConcordanceJob).filter(
+        ConcordanceJob.run_id == run.id,
+        ConcordanceJob.status == "paused",
+    ).count()
     finished_jobs = run.completed_jobs + run.failed_jobs
     if run.total_jobs == 0:
         run.status = "complete"
     elif finished_jobs >= run.total_jobs:
         run.status = "complete" if run.failed_jobs == 0 else "complete_with_errors"
+    elif paused_jobs > 0 and running_jobs == 0:
+        run.status = "paused"
     elif finished_jobs > 0 or running_jobs > 0:
         run.status = "running"
     else:
@@ -1173,7 +1179,7 @@ def _already_queued_or_running(db: Session, document_id: str, capability_key: st
         .filter(
             ConcordanceJob.document_id == document_id,
             ConcordanceJob.capability_key == capability_key,
-            ConcordanceJob.status.in_(["queued", "running"]),
+            ConcordanceJob.status.in_(["queued", "running", "paused"]),
         )
         .first()
     )

@@ -99,6 +99,7 @@ import type {
   User,
   VisualScanCandidate,
   VisualScanReview,
+  WorkControlResult,
 } from "../types";
 
 export class ApiError extends Error {
@@ -297,6 +298,9 @@ export const api = {
   health: () => request<{ status: string; app: string }>(`/api/health?release_check=${Date.now()}`),
   cacheStatus: () => request<CacheStatus>("/api/cache/status"),
   hydrateCache: () => request<CacheHydrateResult>("/api/cache/hydrate", { method: "POST" }),
+  pauseCacheHydration: () => request<WorkControlResult>("/api/cache/hydrate/pause", { method: "POST" }),
+  resumeCacheHydration: () => request<WorkControlResult>("/api/cache/hydrate/resume", { method: "POST" }),
+  stopCacheHydration: () => request<WorkControlResult>("/api/cache/hydrate/stop", { method: "POST" }),
   refreshCache: () => request<CacheRefreshResult>("/api/cache/refresh", { method: "POST" }),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   preferences: () => request<AppPreferences>("/api/preferences"),
@@ -691,6 +695,9 @@ export const api = {
   deleteNote: (id: string) => request<{ status: string }>(`/api/notes/${id}`, { method: "DELETE" }),
   jobs: () => request<ImportJob[]>("/api/imports/jobs"),
   processStagedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/process-staged", { method: "POST" }),
+  pauseImportQueue: () => request<WorkControlResult>("/api/imports/jobs/pause", { method: "POST" }),
+  resumeImportQueue: () => request<WorkControlResult>("/api/imports/jobs/resume", { method: "POST" }),
+  stopImportQueue: () => request<WorkControlResult>("/api/imports/jobs/stop", { method: "POST" }),
   rescueImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/rescue`, { method: "POST" }),
   cancelImportJob: (id: string) => request<ImportJob>(`/api/imports/jobs/${id}/cancel`, { method: "POST" }),
   retryFailedImportJobs: () => request<ImportQueueActionResult>("/api/imports/jobs/retry-failed", { method: "POST" }),
@@ -718,6 +725,9 @@ export const api = {
     capability_keys?: string[];
     force?: boolean;
   }) => request<ConcordanceRun>("/api/concordance/runs", { method: "POST", body: JSON.stringify(body) }),
+  pauseConcordanceRuns: () => request<WorkControlResult>("/api/concordance/runs/pause", { method: "POST" }),
+  resumeConcordanceRuns: () => request<WorkControlResult>("/api/concordance/runs/resume", { method: "POST" }),
+  stopConcordanceRuns: () => request<WorkControlResult>("/api/concordance/runs/stop", { method: "POST" }),
   reviewQueue: () => request<CitationCandidate[]>("/api/review-queue"),
   updateCitationCandidate: (id: string, body: { status?: string; apply_to_document?: boolean }) =>
     request<CitationCandidate>(`/api/review-queue/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

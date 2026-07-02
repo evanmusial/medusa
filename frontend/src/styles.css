@@ -1501,6 +1501,7 @@ textarea {
   min-width: 0;
   display: flex;
   align-items: center;
+  gap: 2px;
 }
 
 .header-work-progress-wrap.dismissible .header-work-progress {
@@ -1545,6 +1546,42 @@ textarea {
 .header-work-dismiss:hover {
   background: var(--panel-2);
   color: var(--ink);
+}
+
+.header-work-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+.header-work-control {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+}
+
+.header-work-control:hover,
+.header-work-control:focus-visible {
+  background: var(--panel-2);
+  color: var(--ink);
+  outline: 0;
+}
+
+.header-work-control.stop:hover,
+.header-work-control.stop:focus-visible {
+  color: var(--danger);
+}
+
+.header-work-control:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .header-work-main {
@@ -1614,6 +1651,14 @@ textarea {
   );
   background-size: 180% 100%;
   animation: work-progress-pulse 1.6s linear infinite;
+}
+
+.header-work-progress.paused .header-work-icon {
+  color: var(--amber);
+}
+
+.header-work-progress.paused .header-work-track span {
+  background: var(--amber);
 }
 
 .ai-failure-notice {

@@ -1551,6 +1551,7 @@ class DashboardOut(BaseModel):
     active_import_jobs: int
     import_queued_jobs: int
     import_running_jobs: int
+    import_paused_jobs: int = 0
     import_progress_total: int
     import_progress_completed: int
     import_progress_failed: int
@@ -1560,6 +1561,7 @@ class DashboardOut(BaseModel):
     active_concordance_jobs: int
     concordance_queued_jobs: int = 0
     concordance_running_jobs: int = 0
+    concordance_paused_jobs: int = 0
     active_accessory_summary_jobs: int = 0
     accessory_summary_queued_jobs: int = 0
     accessory_summary_running_jobs: int = 0
@@ -1719,6 +1721,14 @@ class CacheHydrateOut(BaseModel):
     errored_payloads: int = 0
     before: CacheStatusOut
     after: CacheStatusOut
+
+
+class WorkControlOut(BaseModel):
+    status: str
+    message: str
+    matched_count: int = 0
+    updated_count: int = 0
+    skipped_running_count: int = 0
 
 
 class BackupRunOut(ApiModel):
