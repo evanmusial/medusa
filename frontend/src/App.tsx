@@ -3244,9 +3244,16 @@ function documentDetailHasVerifiedFields(document: DocumentDetail) {
   );
 }
 
-function documentRowHasActiveWork(document: LibraryDocumentRow, citationJobs: ConcordanceJob[]) {
+const DOCUMENT_ROW_ACTIVE_WORK_LABEL = "Document field updates or processing are queued or running.";
+
+function documentRowHasActiveWork(
+  document: LibraryDocumentRow,
+  citationJobs: ConcordanceJob[],
+  backgroundJobs: BackgroundJob[] = [],
+) {
   return Boolean(
     document.has_active_work ||
+      backgroundJobs.some((job) => job.documentId === document.id && !isTerminalBackgroundStatus(job.status)) ||
       citationJobs.some((job) => job.document_id === document.id && isActiveConcordanceStatus(job.status)),
   );
 }
@@ -7902,6 +7909,7 @@ function LibraryView({
   tags,
   projects,
   citationJobs,
+  backgroundJobs,
   concordanceActivity,
   concordanceRuns,
   query,
@@ -7940,6 +7948,7 @@ function LibraryView({
   tags: Tag[];
   projects: Project[];
   citationJobs: ConcordanceJob[];
+  backgroundJobs: BackgroundJob[];
   concordanceActivity: ConcordanceActivitySnapshot;
   concordanceRuns: ConcordanceRun[];
   query: string;
@@ -9083,7 +9092,7 @@ function LibraryView({
             const actualIndex = virtualStartIndex + virtualIndex;
             const figureCount = figureCountMarker(item);
             const hasVerifiedFields = Boolean(item.has_verified_fields);
-            const hasActiveWork = documentRowHasActiveWork(item, citationJobs);
+            const hasActiveWork = documentRowHasActiveWork(item, citationJobs, backgroundJobs);
             const titleIconLabel = [
               hasVerifiedFields ? "Has verified fields" : "",
               item.is_locked ? "Locked for editing" : "",
@@ -9111,9 +9120,9 @@ function LibraryView({
               onClick={() => activateDocument(item.id)}
             >
               <span
-                aria-label={hasActiveWork ? "Document background work in progress" : undefined}
+                aria-label={hasActiveWork ? DOCUMENT_ROW_ACTIVE_WORK_LABEL : undefined}
                 className={`doc-row-work-indicator${hasActiveWork ? " active" : ""}`}
-                data-tooltip={hasActiveWork ? "Document background work is queued or running." : undefined}
+                data-tooltip={hasActiveWork ? DOCUMENT_ROW_ACTIVE_WORK_LABEL : undefined}
                 role={hasActiveWork ? "img" : undefined}
               >
                 {hasActiveWork ? <RefreshCw className="spin" size={14} aria-hidden="true" /> : null}
@@ -28030,6 +28039,7 @@ export default function App() {
             tags={tags.data || []}
             projects={projects.data || []}
             citationJobs={concordanceJobs.data || []}
+            backgroundJobs={backgroundJobs}
             concordanceActivity={concordanceActivity}
             concordanceRuns={concordanceRuns.data || []}
             query={query}
