@@ -473,8 +473,8 @@ CURRENT_CAPABILITIES: tuple[CapabilityDefinition, ...] = (
     CapabilityDefinition(
         key="bibliography_extraction",
         label="Bibliography extraction",
-        version=4,
-        description="Extract the source document's own reference list into the Bibliography field, rejecting publisher boilerplate, preserving Markdown italics from PDF span evidence when available, and using full-page or column-ordered visual OCR as a last-resort references rescue when the active preset allows it.",
+        version=5,
+        description="Extract the source document's own reference list into the Bibliography field, rejecting publisher boilerplate, preserving Markdown italics from PDF span evidence when available, recovering mid-page old-scan reference sections with OCR-damaged markers, and using full-page or column-ordered visual OCR as a last-resort references rescue when the active preset allows it.",
     ),
     CapabilityDefinition(
         key="formula_capture",

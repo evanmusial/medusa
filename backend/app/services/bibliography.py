@@ -46,6 +46,14 @@ REFERENCE_CITATION_KEY_ENTRY_MARKER_RE = re.compile(
 REFERENCE_ENTRY_MARKER_RE = re.compile(
     r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)]?)(?:\s+|(?=[A-Z])|$)"
 )
+OCR_REFERENCE_ENTRY_MARKER_RE = re.compile(
+    r"^\s*(?:"
+    r"\[\s*[*_`'\u2018\u2019]?\s*(?:\d{1,4}|[Iil1O0\s]{1,5}|[Yy]|[=Iil1]{1,4})\s*[*_`'\u2018\u2019]?\s*[\]\)]?|"
+    r"[iIl1][Iil1]?\d{1,2}\)?|"
+    r"P(?:[O0Iil1=]\d{0,2}|\d{1,2})|"
+    r"\d{2,3}\)"
+    r")(?:\s+|(?=[A-Z])|$)"
+)
 REFERENCE_BRACKETED_ENTRY_MARKER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\])(?:\s+|(?=[A-Z])|$)")
 REFERENCE_NUMBERED_ENTRY_MARKER_RE = re.compile(r"^\s*\d{1,3}[.)]?(?:\s+|(?=[A-Z])|$)")
 REFERENCE_ENTRY_PREFIX_RE = re.compile(
@@ -195,6 +203,16 @@ INLINE_CITATION_KEY_START_CANDIDATE_RE = re.compile(
 INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE = re.compile(
     r"\s+(?=(?:\[\d{1,4}\]|\[[IVXLC]{1,6}\]|\d{1,3}[.)])(?:\s+|(?=[A-Z])|$))"
 )
+INLINE_OCR_STRUCTURAL_MARKER_START_CANDIDATE_RE = re.compile(
+    r"\s+(?="
+    r"(?:"
+    r"\[\s*[*_`'\u2018\u2019]?\s*(?:\d{1,4}|[Iil1O0\s]{1,5}|[Yy]|[=Iil1]{1,4})\s*[*_`'\u2018\u2019]?\s*[\]\)]?|"
+    r"[iIl1][Iil1]?\d{1,2}\)?|"
+    r"P(?:[O0Iil1=]\d{0,2}|\d{1,2})|"
+    r"\d{2,3}\)"
+    r")(?:\s+|(?=[A-Z])|$)"
+    r")"
+)
 REFERENCE_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b")
 REFERENCE_URL_DOI_RE = re.compile(r"(?:https?://|doi:|10\.\d{4,9}/)", re.IGNORECASE)
 NON_REFERENCE_SECTION_TITLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'`\u2019-]*")
@@ -203,6 +221,9 @@ REFERENCE_CONTINUATION_PREFIX_RE = re.compile(
     r"https?://|doi:|url\b|vol\.?\b|pp\.?\b)",
     re.IGNORECASE,
 )
+SPLIT_INITIALS_LINE_RE = re.compile(r"^\s*(?:[A-Z]\.){1,5}\s*$")
+SPLIT_SURNAME_LINE_RE = re.compile(rf"^\s*{REFERENCE_AUTHOR_WORD},?\s*$")
+SPLIT_INITIAL_SURNAME_LINE_RE = re.compile(rf"^\s*{REFERENCE_INITIALS}{REFERENCE_AUTHOR_WORD}\s*$")
 ITALIC_FONT_RE = re.compile(r"(?:italic|oblique|kursiv)", re.IGNORECASE)
 AUTHOR_BIO_START_RE = re.compile(
     r"^[A-Z][A-Za-z'`.-]+(?:\s+[A-Z][A-Za-z'`.-]+){1,4}\s+"
@@ -253,6 +274,8 @@ PAGE_FURNITURE_RE = re.compile(
     r"(?:\s+and\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+)?"
     r"\s*/\s*[A-Z][A-Za-z&.,'\u2019\-\s]{2,80}\s+\d+\s+\(\d{4}\)\s+"
     r"\d+\s*[-\u2010-\u2015]\s*\d+\s+\d+|"
+    r"[A-Z]\.\s*(?:[A-Z]\.\s*)?[A-Z][A-Za-z'`\u2019.-]+"
+    r"\s*(?:/|t\s*l)\s*[A-Z][A-Za-z'`\u2019\-\s]{12,120}|"
     r"(?:©|\(c\))\s*\d{4}\s+by\s+the\s+authors|"
     r"Licensee\s+MDPI|"
     r"This article is an open access article distributed|"
@@ -296,6 +319,7 @@ def _strip_reference_list_marker(value: str) -> str:
 
 def _strip_reference_entry_prefix(value: str) -> str:
     value = MARKDOWN_WRAPPED_REFERENCE_ENTRY_PREFIX_RE.sub("", value, count=1)
+    value = OCR_REFERENCE_ENTRY_MARKER_RE.sub("", value, count=1)
     return REFERENCE_ENTRY_PREFIX_RE.sub("", value, count=1).strip()
 
 
@@ -349,6 +373,8 @@ def _reference_marker_style(line: str) -> str | None:
         return "citation_key"
     if REFERENCE_NUMBERED_ENTRY_MARKER_RE.match(plain):
         return "numbered"
+    if OCR_REFERENCE_ENTRY_MARKER_RE.match(plain):
+        return "ocr_structural"
     return None
 
 
@@ -428,7 +454,7 @@ def _expand_embedded_reference_heading(line: str) -> list[str]:
         return []
     for match in EMBEDDED_REFERENCE_HEADING_RE.finditer(text):
         after = text[match.end() :].lstrip(" \t:-\u2013\u2014")
-        if not after or not _line_starts_reference_entry(after):
+        if not after or not (_line_starts_reference_entry(after) or OCR_REFERENCE_ENTRY_MARKER_RE.match(after)):
             continue
         before = text[: match.start()].strip()
         expanded = [match.group(0), after]
@@ -663,10 +689,20 @@ def _pdf_standalone_reference_marker_count(items: list[PdfLineItem]) -> int:
     return sum(1 for *_, text in items if PDF_STANDALONE_REFERENCE_MARKER_RE.match(_strip_markdown(text).strip()))
 
 
+def _pdf_author_bio_top(items: list[PdfLineItem]) -> float | None:
+    tops = [
+        item[1]
+        for item in items
+        if AUTHOR_BIO_START_RE.match(_reference_match_text(_strip_markdown(item[4]).strip()))
+    ]
+    return min(tops) if tops else None
+
+
 def _sort_pdf_page_line_items(page_width: float, items: list[PdfLineItem]) -> list[PdfLineItem]:
     if len(items) < 8 or page_width <= 0:
         return items
-    if _pdf_standalone_reference_marker_count(items) >= 6:
+    author_bio_top = _pdf_author_bio_top(items)
+    if _pdf_standalone_reference_marker_count(items) >= 6 and author_bio_top is None:
         return items
     columns = [_pdf_line_column(page_width, item) for item in items]
     left_count = sum(1 for column in columns if column == 0)
@@ -678,16 +714,17 @@ def _sort_pdf_page_line_items(page_width: float, items: list[PdfLineItem]) -> li
     bottom = max(item[3] for item in column_items)
     midpoint = page_width / 2
 
-    def sort_key(item: PdfLineItem) -> tuple[int, float, float]:
+    def sort_key(item: PdfLineItem) -> tuple[int, int, float, float]:
+        band = 0 if author_bio_top is not None and item[1] < author_bio_top - 2 else 1
         column = _pdf_line_column(page_width, item)
         if column is not None:
-            return column + 1, item[1], item[0]
+            return band, column + 1, item[1], item[0]
         if item[3] < top:
-            return 0, item[1], item[0]
+            return band, 0, item[1], item[0]
         if item[1] > bottom:
-            return 3, item[1], item[0]
+            return band, 3, item[1], item[0]
         center = (item[0] + item[2]) / 2
-        return (1 if center < midpoint else 2), item[1], item[0]
+        return band, (1 if center < midpoint else 2), item[1], item[0]
 
     return sorted(items, key=sort_key)
 
@@ -1005,6 +1042,7 @@ def _split_inline_reference_lines(line: str) -> list[str]:
         *INLINE_ORGANIZATION_SENTENCE_START_CANDIDATE_RE.finditer(line),
         *INLINE_CITATION_KEY_START_CANDIDATE_RE.finditer(line),
         *INLINE_STRUCTURAL_MARKER_START_CANDIDATE_RE.finditer(line),
+        *INLINE_OCR_STRUCTURAL_MARKER_START_CANDIDATE_RE.finditer(line),
     ]
     candidate_offsets = sorted({match.start() for match in matches})
     segment_start = 0
@@ -1165,6 +1203,35 @@ def _following_lines_have_reference_signal(lines: list[str], index: int) -> bool
     return False
 
 
+def _merge_split_reference_author_lines(lines: list[str]) -> list[str]:
+    merged: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        plain = _strip_markdown(line).strip()
+        if index + 1 < len(lines):
+            next_line = lines[index + 1]
+            next_plain = _strip_markdown(next_line).strip()
+            if SPLIT_INITIALS_LINE_RE.match(plain) and SPLIT_SURNAME_LINE_RE.match(next_plain):
+                merged.append(f"{line.strip()} {next_line.strip()}")
+                index += 2
+                continue
+        if index + 2 < len(lines):
+            second_plain = _strip_markdown(lines[index + 1]).strip()
+            third_plain = _strip_markdown(lines[index + 2]).strip()
+            if (
+                SPLIT_INITIAL_SURNAME_LINE_RE.match(plain)
+                and second_plain.lower() in {"and", "&"}
+                and REFERENCE_INITIAL_AUTHOR_START_RE.match(third_plain)
+            ):
+                merged.append(f"{line.strip()} {lines[index + 1].strip()} {lines[index + 2].strip()}")
+                index += 3
+                continue
+        merged.append(line)
+        index += 1
+    return merged
+
+
 def _format_reference_lines(lines: list[str]) -> str:
     entries: list[str] = []
     current: list[str] = []
@@ -1178,6 +1245,7 @@ def _format_reference_lines(lines: list[str]) -> str:
             and not _line_starts_reference_section(cleaned)
         ):
             cleaned_lines.extend(_split_inline_reference_lines(cleaned))
+    cleaned_lines = _merge_split_reference_author_lines(cleaned_lines)
     marker_offsets = [index for index, line in enumerate(cleaned_lines) if _line_starts_structural_reference_marker(line)]
     marker_bounded = _should_use_marker_bounded_mode(cleaned_lines, marker_offsets)
     marker_style = _marker_bounded_style(cleaned_lines, marker_offsets) if marker_bounded else None

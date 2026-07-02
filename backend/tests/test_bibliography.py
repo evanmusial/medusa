@@ -823,6 +823,72 @@ def test_extract_document_bibliography_ignores_page_furniture_and_author_bios(mo
     assert result["evidence"]["page_end"] == 20
 
 
+def test_extract_document_bibliography_handles_ocr_damaged_reference_markers(monkeypatch, tmp_path):
+    from app.models import Document, DocumentPage
+    from app.services import bibliography as bibliography_service
+    from app.services.bibliography import extract_document_bibliography
+
+    document = Document(
+        title="Old Scan References Paper",
+        original_filename="old-scan-references.pdf",
+        checksum_sha256="a" * 64,
+    )
+    document.pages.append(DocumentPage(page_number=13, normalized_text="References [‘I\nC. Stoll. What do you feed a trojan horse?"))
+    pdf_path = tmp_path / "old-scan-references.pdf"
+    pdf_path.write_bytes(b"%PDF-pretend")
+
+    monkeypatch.setattr(
+        bibliography_service,
+        "_pdf_markdown_lines",
+        lambda _path: [
+            (13, "References"),
+            (13, "[‘I"),
+            (13, "C. Stoll. What do you feed a trojan horse? in Proceedings of the 10th National"),
+            (13, "Computer Security Conference, Baltimore, Maryland, September 1987."),
+            (13, "J.P."),
+            (13, "Anderson,"),
+            (13, "Computer Security Threat Monitoring and"),
+            (13, "[21"),
+            (13, "Surveillance, Technical report, James P. Anderson Co., Fort Washington, Pennsylvania, April 1980."),
+            (14, "T. F. LuntlA survey of intrusion detection techniques"),
+            (14, "[Y] T.F. Lunt, A. Tamaru, F. Gilham, R. Jagannathan, A Real-Time Expert System, 1990."),
+            (14, "Teresa F. Lunt is Program Director for Computer Security in SRI's Computer Science Laboratory."),
+        ],
+    )
+
+    result = extract_document_bibliography(document, pdf_path)
+
+    assert result["evidence"]["source"] == "pdf_span_layout"
+    assert result["evidence"]["page_start"] == 13
+    assert result["evidence"]["page_end"] == 14
+    entries = result["bibliography"].splitlines()
+    assert len(entries) >= 3
+    assert entries[0].startswith("C. Stoll")
+    assert entries[1].startswith("J.P. Anderson")
+    assert "T.F. Lunt, A. Tamaru" in result["bibliography"]
+    assert "T. F. LuntlA survey" not in result["bibliography"]
+    assert "Program Director" not in result["bibliography"]
+
+
+def test_pdf_reference_sort_keeps_top_reference_band_before_author_bio():
+    from app.services.bibliography import _sort_pdf_page_line_items
+
+    items = [
+        (50.0, 110.0, 280.0, 122.0, "[9] Left reference starts."),
+        (70.0, 130.0, 280.0, 142.0, "Left reference continues 1990."),
+        (50.0, 150.0, 280.0, 162.0, "[10] Another left reference."),
+        (70.0, 170.0, 280.0, 182.0, "Another left reference continues 1991."),
+        (330.0, 115.0, 560.0, 127.0, "[17] Right reference starts."),
+        (350.0, 135.0, 560.0, 147.0, "Right reference continues 1985."),
+        (50.0, 520.0, 280.0, 532.0, "Teresa F. Lunt is Program Director for"),
+        (330.0, 525.0, 560.0, 537.0, "won the Outstanding Paper Award"),
+    ]
+
+    sorted_text = [item[4] for item in _sort_pdf_page_line_items(612.0, items)]
+
+    assert sorted_text.index("[17] Right reference starts.") < sorted_text.index("Teresa F. Lunt is Program Director for")
+
+
 def test_extract_document_bibliography_ignores_book_chapter_running_headers(monkeypatch, tmp_path):
     from app.models import Document, DocumentPage
     from app.services import bibliography as bibliography_service
