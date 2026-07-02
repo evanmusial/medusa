@@ -1452,6 +1452,7 @@ def document_summary_cache_key_parts(
 
 def document_detail_cache_key_parts(document: Document) -> dict[str, Any]:
     return {
+        "detail_shape": "tag-counts-v1",
         "document_id": document.id,
         "updated_at": document.updated_at.isoformat() if document.updated_at else "",
         "deleted_at": document.deleted_at.isoformat() if document.deleted_at else "",
@@ -1776,6 +1777,11 @@ def document_page_detail_out(page: DocumentPage, reader_text: str | None = None)
 def document_detail_out(document: Document, db: Session) -> DocumentDetail:
     duplicate_summary = persisted_duplicate_summary_by_document([document]).get(document.id, {})
     projects = project_summaries_for_documents(db, [document.id]).get(document.id, [])
+    tag_counts = tag_document_counts(db, [tag.id for tag in document.tags])
+    tags = [
+        tag_out(tag, db, document_count=tag_counts.get(tag.id, 0))
+        for tag in sorted(document.tags, key=lambda item: item.name.lower())
+    ]
     doi_verification = document_field_verification(document, "doi")
     apa_citation_verification = document_field_verification(document, "apa_citation")
     apa_in_text_citation_verification = document_field_verification(document, "apa_in_text_citation")
@@ -1791,6 +1797,7 @@ def document_detail_out(document: Document, db: Session) -> DocumentDetail:
             "duplicate_count": duplicate_summary.get("duplicate_count", 0),
             "duplicate_reasons": duplicate_summary.get("duplicate_reasons", []),
             "duplicate_document_ids": [],
+            "tags": tags,
             "projects": projects,
             "no_doi": document_no_doi(document),
             "has_verified_fields": document_has_verified_fields(document),

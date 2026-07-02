@@ -817,6 +817,45 @@ def test_get_document_uses_persisted_duplicate_summary(monkeypatch, tmp_path):
         assert detail.duplicate_document_ids == []
 
 
+def test_get_document_includes_tag_document_counts(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.main import get_document
+    from app.models import Document, Tag
+
+    Session = make_session()
+    with Session() as db:
+        shared = Tag(name="shared concept")
+        selected = Document(
+            title="Selected",
+            original_filename="selected.pdf",
+            checksum_sha256="1" * 64,
+            processing_status="ready",
+            tags=[shared],
+        )
+        other_ready = Document(
+            title="Other ready",
+            original_filename="other.pdf",
+            checksum_sha256="2" * 64,
+            processing_status="ready",
+            tags=[shared],
+        )
+        staged = Document(
+            title="Staged",
+            original_filename="staged.pdf",
+            checksum_sha256="3" * 64,
+            processing_status="staged",
+            tags=[shared],
+        )
+        db.add_all([selected, other_ready, staged])
+        db.commit()
+
+        detail = get_document(selected.id, object(), db)
+
+        assert [(tag.name, tag.document_count) for tag in detail.tags] == [("shared concept", 2)]
+
+
 def test_list_documents_can_skip_library_only_enrichments(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
