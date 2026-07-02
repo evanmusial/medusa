@@ -263,6 +263,32 @@ def test_valkey_cache_configures_maxmemory():
     assert client.config_calls == [("maxmemory", "8gb")]
 
 
+def test_valkey_cache_quench_flushes_database():
+    from app.services.cache import ValkeyCache
+
+    class RecordingClient:
+        def __init__(self):
+            self.keys = 5
+            self.flushed = False
+
+        def dbsize(self):
+            return self.keys
+
+        def flushdb(self):
+            self.flushed = True
+            self.keys = 0
+            return True
+
+    client = RecordingClient()
+    cache = ValkeyCache("valkey://unused:6379/0")
+    cache._client = client
+
+    result = cache.quench()
+
+    assert client.flushed is True
+    assert result == {"before_key_count": 5, "after_key_count": 0, "quenched_keys": 5}
+
+
 def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

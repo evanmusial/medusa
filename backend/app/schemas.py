@@ -1701,6 +1701,17 @@ class CacheRefreshOut(BaseModel):
     after: CacheStatusOut
 
 
+class CacheQuenchOut(BaseModel):
+    status: str
+    message: str
+    quenched_at: datetime
+    before_key_count: int = 0
+    after_key_count: int = 0
+    quenched_keys: int = 0
+    before: CacheStatusOut
+    after: CacheStatusOut
+
+
 class CacheHydrateOut(BaseModel):
     status: str
     message: str

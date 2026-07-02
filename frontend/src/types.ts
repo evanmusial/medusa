@@ -375,6 +375,17 @@ export type CacheRefreshResult = {
   after: CacheStatus;
 };
 
+export type CacheQuenchResult = {
+  status: string;
+  message: string;
+  quenched_at: string;
+  before_key_count: number;
+  after_key_count: number;
+  quenched_keys: number;
+  before: CacheStatus;
+  after: CacheStatus;
+};
+
 export type CacheHydrateResult = {
   status: string;
   message: string;

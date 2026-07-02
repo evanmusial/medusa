@@ -94,6 +94,7 @@ from app.schemas import (
     BackupRunOut,
     BibliographyOut,
     CacheHydrateOut,
+    CacheQuenchOut,
     CacheRefreshOut,
     CacheStatusOut,
     CitationCandidatePatch,
@@ -281,6 +282,7 @@ from app.services.cache import (
     add_cache_hydration_work,
     advance_cache_hydration,
     bump_cache_revisions,
+    cache_hydration_status,
     cache_status_payload,
     cache_hydration_stop_requested,
     finish_cache_hydration,
@@ -3422,6 +3424,38 @@ def refresh_cache(
         "refreshed_at": refreshed_at,
         "refreshed_families": list(CACHE_ALL_REVISION_FAMILIES),
         "warmed_keys": warmed_keys,
+        "before": before,
+        "after": after,
+    }
+
+
+@app.post("/api/cache/quench", response_model=CacheQuenchOut)
+def quench_cache(
+    _: Annotated[User, Depends(current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    hydration = cache_hydration_status()
+    if hydration.get("active"):
+        raise HTTPException(status_code=409, detail="Stop cache hydration before quenching the cache.")
+
+    before = cache_status_payload(db, request_metrics=route_performance_summary())
+    quenched_at = utc_now()
+    try:
+        result = get_cache_backend().quench()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Could not quench cache: {exc}") from exc
+
+    after = cache_status_payload(db, request_metrics=route_performance_summary())
+    quenched_keys = int(result.get("quenched_keys") or 0)
+    before_key_count = int(result.get("before_key_count") or before.get("key_count") or 0)
+    after_key_count = int(result.get("after_key_count") or after.get("key_count") or 0)
+    return {
+        "status": "complete",
+        "message": f"Cache quenched. Removed {quenched_keys} resident keys.",
+        "quenched_at": quenched_at,
+        "before_key_count": before_key_count,
+        "after_key_count": after_key_count,
+        "quenched_keys": quenched_keys,
         "before": before,
         "after": after,
     }

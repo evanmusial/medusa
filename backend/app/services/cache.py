@@ -426,6 +426,9 @@ class CacheBackend:
     def configure_maxmemory(self, value: str) -> bool:
         return False
 
+    def quench(self) -> dict[str, Any]:
+        return {"before_key_count": 0, "after_key_count": 0, "quenched_keys": 0}
+
     def status(self) -> dict[str, Any]:
         return {
             "backend": self.name,
@@ -543,6 +546,17 @@ class ValkeyCache(CacheBackend):
             logger.debug("Valkey cache maxmemory update failed for %s", value, exc_info=True)
             return False
         return True
+
+    def quench(self) -> dict[str, Any]:
+        client = self._redis()
+        before_count = int(client.dbsize() or 0)
+        client.flushdb()
+        after_count = int(client.dbsize() or 0)
+        return {
+            "before_key_count": before_count,
+            "after_key_count": after_count,
+            "quenched_keys": max(0, before_count - after_count),
+        }
 
     def status(self) -> dict[str, Any]:
         started = perf_counter()

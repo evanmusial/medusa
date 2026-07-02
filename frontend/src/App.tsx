@@ -56,6 +56,7 @@ import {
   Cpu,
   Database,
   Download,
+  Droplets,
   Edit3,
   Eraser,
   ExternalLink,
@@ -123,9 +124,10 @@ import type {
   BackupArtifact,
   BackupEstimate,
   BackupRun,
+  Bibliography,
   CacheHydrateResult,
   CacheHydrationStatus,
-  Bibliography,
+  CacheQuenchResult,
   CacheRefreshResult,
   CacheStatus,
   CitationCandidate,
@@ -3824,6 +3826,7 @@ function CommandPalette({
   onClose,
   onHydrateCache,
   onOpenView,
+  onQuenchCache,
   onRefreshCache,
   open,
   savedSearches,
@@ -3838,6 +3841,7 @@ function CommandPalette({
   onClose: () => void;
   onHydrateCache: () => void;
   onOpenView: (view: View) => boolean | void | Promise<boolean | void>;
+  onQuenchCache: () => void;
   onRefreshCache: () => void;
   open: boolean;
   savedSearches: SavedSearch[];
@@ -3936,6 +3940,16 @@ function CommandPalette({
         run: onHydrateCache,
         section: "Actions",
       },
+      {
+        detail: cacheActionBusy ? "Cache action already running" : "Empty resident Valkey cache entries without touching PostgreSQL",
+        disabled: cacheActionBusy,
+        icon: Droplets,
+        id: "action-quench-cache",
+        keywords: ["quench", "clear", "empty", "cache", "valkey"],
+        label: "Quench Cache",
+        run: onQuenchCache,
+        section: "Actions",
+      },
     ];
     return [...workspaceItems, ...savedSearchItems, ...actionItems];
   }, [
@@ -3946,6 +3960,7 @@ function CommandPalette({
     onClearSearch,
     onHydrateCache,
     onOpenView,
+    onQuenchCache,
     onRefreshCache,
     savedSearchLookup,
     savedSearches,
@@ -6660,6 +6675,8 @@ function Header({
   backgroundJobs,
   cacheHydrating,
   cacheHydrateProgress,
+  cacheQuenchProgress,
+  cacheQuenching,
   cacheRefreshProgress,
   cacheRefreshing,
   cacheStatus,
@@ -6673,6 +6690,7 @@ function Header({
   onOpenSettings,
   onOpenStatus,
   onHydrateCache,
+  onQuenchCache,
   onRefreshCache,
   onReleaseUpgrade,
   query,
@@ -6687,6 +6705,8 @@ function Header({
   backgroundJobs: BackgroundJob[];
   cacheHydrating: boolean;
   cacheHydrateProgress: ActionProgressState;
+  cacheQuenchProgress: ActionProgressState;
+  cacheQuenching: boolean;
   cacheRefreshProgress: ActionProgressState;
   cacheRefreshing: boolean;
   cacheStatus?: CacheStatus;
@@ -6700,6 +6720,7 @@ function Header({
   onOpenSettings: () => void;
   onOpenStatus: () => void;
   onHydrateCache: () => void;
+  onQuenchCache: () => void;
   onRefreshCache: () => void;
   onReleaseUpgrade: () => void;
   query: string;
@@ -6755,6 +6776,9 @@ function Header({
   const hydrateCacheFromUserMenu = () => {
     onHydrateCache();
   };
+  const quenchCacheFromUserMenu = () => {
+    onQuenchCache();
+  };
   const clearGlobalSearch = () => {
     setQuery("");
     searchInputRef.current?.blur();
@@ -6767,14 +6791,15 @@ function Header({
   const cacheGlanceTone = valkeyResourceTone(cacheUsagePercent);
   const cacheGlanceMeterStyle = { "--user-cache-used": `${progressPercent(cacheUsagePercent ?? 0)}%` } as CSSProperties;
   const activeHydration = cacheStatus?.hydration?.active ? cacheStatus.hydration : null;
-  const cacheActionBusy = cacheRefreshing || cacheHydrating || Boolean(activeHydration);
+  const cacheActionBusy = cacheRefreshing || cacheHydrating || cacheQuenching || Boolean(activeHydration);
   const cacheRefreshPercent = cacheRefreshProgress.visible ? cacheRefreshProgress.progress : null;
   const cacheHydratePercent = cacheHydrateProgress.visible ? cacheHydrateProgress.progress : null;
+  const cacheQuenchPercent = cacheQuenchProgress.visible ? cacheQuenchProgress.progress : null;
   const cacheHydrateLabel =
     cacheHydratePercent !== null
       ? activeHydration?.status === "paused"
         ? `Hydrate Cache paused (${cacheHydratePercent}%)`
-        : `Hydrate Cache ${cacheHydratePercent}%`
+        : `Hydrate Cache (${cacheHydratePercent}%)`
       : "Hydrate Cache";
   const cacheHydrateTooltip =
     cacheHydratePercent !== null
@@ -6785,6 +6810,9 @@ function Header({
     : undefined;
   const cacheHydrateProgressStyle = cacheHydrateProgress.visible
     ? ({ "--user-cache-action-progress": `${cacheHydrateProgress.progress}%` } as CSSProperties)
+    : undefined;
+  const cacheQuenchProgressStyle = cacheQuenchProgress.visible
+    ? ({ "--user-cache-action-progress": `${cacheQuenchProgress.progress}%` } as CSSProperties)
     : undefined;
   const cacheGlance = cacheStatus
     ? cacheStatus.reachable
@@ -6913,6 +6941,30 @@ function Header({
                 <span className="user-options-menu-item-copy">
                   <span>{cacheHydrateLabel}</span>
                 </span>
+              </button>
+              <button
+                className={`user-options-menu-item user-options-cache-action${cacheQuenchProgress.visible ? " in-flight" : ""}`}
+                data-tooltip="Empty resident Valkey cache entries without changing PostgreSQL-backed source data."
+                disabled={cacheActionBusy}
+                onClick={quenchCacheFromUserMenu}
+                role="menuitem"
+                style={cacheQuenchProgressStyle}
+                type="button"
+              >
+                {cacheQuenchProgress.visible ? (
+                  <span
+                    aria-label={`Cache quench progress: ${cacheQuenchProgress.progress}%`}
+                    aria-valuemax={100}
+                    aria-valuemin={0}
+                    aria-valuenow={cacheQuenchProgress.progress}
+                    className="user-options-menu-item-progress"
+                    role="progressbar"
+                  >
+                    <span />
+                  </span>
+                ) : null}
+                <Droplets className={cacheQuenching ? "spin" : ""} size={16} aria-hidden="true" />
+                <span>{cacheQuenchPercent !== null ? `Quench Cache (${cacheQuenchPercent}%)` : "Quench Cache"}</span>
               </button>
               <div className="user-options-menu-divider" role="separator" />
               <button className="user-options-menu-item" onClick={openCommandPaletteFromUserMenu} role="menuitem" type="button">
@@ -24813,6 +24865,7 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
   const maintenanceRunFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const cacheRefreshFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const cacheHydrateFeedback = useAsyncActionFeedback({ errorMs: 9000 });
+  const cacheQuenchFeedback = useAsyncActionFeedback({ errorMs: 9000 });
   const containerStatus = useQuery({
     queryKey: ["container-footprint-status"],
     queryFn: api.containerFootprintStatus,
@@ -24907,6 +24960,21 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
       cacheHydrationPollUntilRef.current = Date.now() + ACTION_PROGRESS_COMPLETE_MS;
     },
   });
+  const quenchCache = useMutation<CacheQuenchResult, Error>({
+    mutationFn: api.quenchCache,
+    onSuccess: (result) => {
+      cacheQuenchFeedback.showSuccess();
+      queryClient.setQueryData(["cache-status"], result.after);
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["library-fun-stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "documents" || query.queryKey[0] === "document" });
+    },
+    onError: (error) => cacheQuenchFeedback.showError(actionFailureMessage("Could not quench cache", error)),
+  });
 
   const container = containerStatus.data;
   const database = databaseStatus.data;
@@ -24951,7 +25019,7 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
   const cacheHydrationActive = Boolean(cache?.hydration?.active);
   const cacheHydrationProgress = cacheHydrationActive ? progressPercent(cache?.hydration?.progress ?? 0) : undefined;
   const cacheHydrationButtonBusy = hydrateCache.isPending || cacheHydrationActive;
-  const cacheActionBusy = refreshCache.isPending || cacheHydrationButtonBusy;
+  const cacheActionBusy = refreshCache.isPending || cacheHydrationButtonBusy || quenchCache.isPending;
   const cacheValue = cache?.enabled
     ? cacheUsagePercent !== null
       ? formatPercent(cacheUsagePercent) || "0%"
@@ -25161,6 +25229,17 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
                       : hydrateCache.isPending
                         ? "Hydrating"
                         : "Hydrate"}
+                  </button>
+                </AsyncActionSlot>
+                <AsyncActionSlot busy={quenchCache.isPending} feedback={cacheQuenchFeedback.feedback} label="Cache quench in progress">
+                  <button
+                    className={asyncFeedbackClass("secondary-button compact", cacheQuenchFeedback.feedback, quenchCache.isPending)}
+                    disabled={cacheActionBusy}
+                    onClick={() => quenchCache.mutate()}
+                    type="button"
+                  >
+                    <Droplets className={quenchCache.isPending ? "spin" : ""} size={14} />
+                    {quenchCache.isPending ? "Quenching" : "Quench"}
                   </button>
                 </AsyncActionSlot>
                 <Database size={18} />
@@ -28266,6 +28345,19 @@ function AuthenticatedApp() {
       cacheHydrationPollUntilRef.current = Date.now() + ACTION_PROGRESS_COMPLETE_MS;
     },
   });
+  const quenchCache = useMutation<CacheQuenchResult, Error>({
+    mutationFn: api.quenchCache,
+    onSuccess: (result) => {
+      queryClient.setQueryData(["cache-status"], result.after);
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["library-fun-stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["domains"] });
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "documents" || query.queryKey[0] === "document" });
+    },
+  });
   const headerWorkControl = useMutation<WorkControlResult, Error, HeaderWorkControlRequest>({
     mutationFn: ({ group, action }) => {
       if (group === "cache-hydration") {
@@ -28304,6 +28396,7 @@ function AuthenticatedApp() {
   const cacheRefreshProgress = useActionProgress(refreshCache.isPending);
   const localCacheHydrateProgress = useActionProgress(hydrateCache.isPending);
   const cacheHydrateProgress = cacheHydrationActionProgress(localCacheHydrateProgress, cacheStatus.data?.hydration);
+  const cacheQuenchProgress = useActionProgress(quenchCache.isPending);
   const handleHeaderWorkControl = useCallback(
     async (group: WorkControlGroup, action: HeaderWorkControlAction) => {
       if (action.kind === "stop") {
@@ -29028,6 +29121,17 @@ function AuthenticatedApp() {
       createdAt: Number.isFinite(hydrationStartedAt) ? hydrationStartedAt : Date.now(),
     });
   }
+  if (cacheQuenchProgress.visible) {
+    cacheActionBackgroundJobs.push({
+      id: "cache-quench",
+      label: "Quench Cache",
+      detail: cacheQuenchProgress.running ? "Emptying resident Valkey cache entries" : "Finishing",
+      status: "running",
+      runningJobs: 1,
+      progress: cacheQuenchProgress.progress,
+      createdAt: Date.now(),
+    });
+  }
   const visibleBackgroundJobs = [
     ...cacheActionBackgroundJobs,
     ...activeBackupBackgroundJobs,
@@ -29051,6 +29155,8 @@ function AuthenticatedApp() {
         backgroundJobs={visibleBackgroundJobs}
         cacheHydrating={cacheHydrateProgress.running}
         cacheHydrateProgress={cacheHydrateProgress}
+        cacheQuenching={cacheQuenchProgress.running}
+        cacheQuenchProgress={cacheQuenchProgress}
         cacheRefreshProgress={cacheRefreshProgress}
         cacheRefreshing={refreshCache.isPending}
         cacheStatus={cacheStatus.data}
@@ -29064,6 +29170,7 @@ function AuthenticatedApp() {
         onOpenSettings={() => void requestActiveViewChange("settings")}
         onOpenStatus={() => void requestActiveViewChange("status")}
         onHydrateCache={() => hydrateCache.mutate()}
+        onQuenchCache={() => quenchCache.mutate()}
         onRefreshCache={() => refreshCache.mutate()}
         onReleaseUpgrade={handleReleaseUpgrade}
         query={query}
@@ -29321,7 +29428,7 @@ function AuthenticatedApp() {
       </main>
       <CommandPalette
         activeView={activeView}
-        cacheActionBusy={refreshCache.isPending || hydrateCache.isPending}
+        cacheActionBusy={refreshCache.isPending || hydrateCache.isPending || quenchCache.isPending}
         domains={domains.data || []}
         globalQuery={query}
         onApplySavedSearch={applySavedSearchFromCommandPalette}
@@ -29329,6 +29436,7 @@ function AuthenticatedApp() {
         onClose={() => setCommandPaletteOpen(false)}
         onHydrateCache={() => hydrateCache.mutate()}
         onOpenView={openViewFromCommandPalette}
+        onQuenchCache={() => quenchCache.mutate()}
         onRefreshCache={() => refreshCache.mutate()}
         open={commandPaletteOpen}
         savedSearches={savedSearches.data || []}
