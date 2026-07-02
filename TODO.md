@@ -305,6 +305,9 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 - [ ] Persist page-preview images as durable assets for CDN delivery.
   - Acceptance: import or Concordance can generate versioned page-preview PNG assets into GCS/local storage, store their `DocumentPage.image_uri` values, serve them through the asset CDN redirect path when configured, and invalidate/delete stale preview assets when source pages are replaced or permanently removed.
 
+- [ ] Add automatic renewal and expiry monitoring for the asset CDN certificate.
+  - Acceptance: `assets.medusa.evan.engineer` certificate renewal is automated or operationally checked well before the current `medusa-assets-cert-20260702b` managed certificate's 90-day expiry window; renewal status is visible in operational docs/status surfaces; failures alert the user before there is any risk of serving expired CDN TLS.
+
 - [ ] Add GCS manifest validation.
   - Acceptance: Medusa can check that every stored URI in Postgres exists in GCS/local storage and report missing objects.
 
