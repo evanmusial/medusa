@@ -4157,7 +4157,7 @@ textarea {
   align-content: center;
   grid-auto-rows: min-content;
   text-align: left;
-  padding: 10px 8px 10px 4px;
+  padding: 8px 8px 8px 4px;
   cursor: pointer;
 }
 
@@ -4170,7 +4170,7 @@ textarea {
 
 .library-density-reading .doc-row {
   grid-template-columns: 16px minmax(0, 1fr) minmax(250px, auto);
-  padding-block: 12px;
+  padding-block: 10px;
   row-gap: 7px;
 }
 
@@ -4287,7 +4287,7 @@ textarea {
   color: var(--document-title-ink);
   font-size: 16px;
   font-weight: 560;
-  line-height: 1.28;
+  line-height: 1.32;
 }
 
 .doc-row .doc-row-title > span {

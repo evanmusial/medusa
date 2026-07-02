@@ -482,14 +482,14 @@ const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
     expansive: { rowHeight: 58, summaryLines: 0, excerptChars: 0 },
   },
   comfortable: {
-    standard: { rowHeight: 96, summaryLines: 1, excerptChars: 240 },
-    roomy: { rowHeight: 96, summaryLines: 1, excerptChars: 300 },
-    expansive: { rowHeight: 96, summaryLines: 1, excerptChars: 360 },
+    standard: { rowHeight: 88, summaryLines: 1, excerptChars: 250 },
+    roomy: { rowHeight: 88, summaryLines: 1, excerptChars: 310 },
+    expansive: { rowHeight: 88, summaryLines: 1, excerptChars: 370 },
   },
   reading: {
-    standard: { rowHeight: 116, summaryLines: 2, excerptChars: 420 },
-    roomy: { rowHeight: 122, summaryLines: 2, excerptChars: 520 },
-    expansive: { rowHeight: 128, summaryLines: 2, excerptChars: 620 },
+    standard: { rowHeight: 108, summaryLines: 2, excerptChars: 420 },
+    roomy: { rowHeight: 114, summaryLines: 2, excerptChars: 520 },
+    expansive: { rowHeight: 120, summaryLines: 2, excerptChars: 620 },
   },
 };
 type DetailStickyField = "title" | "authors" | "year" | "doi" | "priority" | "status";
@@ -27940,6 +27940,35 @@ export default function App() {
       startedAt: Date.now(),
     });
   }, [releaseStatus.data, releaseUpgradeLock]);
+  useEffect(() => {
+    const status = releaseStatus.data;
+    if (!status?.browser_reload_recommended || releaseUpgradeLock || settingsDirty || releaseReloadScheduledRef.current) return;
+    let cancelled = false;
+    const reloadStaleBundle = async () => {
+      try {
+        const reloadUrl = releaseReloadUrl(status);
+        await waitForApplicationReadiness(reloadUrl);
+        if (cancelled || releaseReloadScheduledRef.current) return;
+        releaseReloadScheduledRef.current = true;
+        setReleaseUpgradeLock({
+          ...releaseUpgradeLockFromStatus(status),
+          detail: "A newer browser build is ready. Medusa is loading it now.",
+          message: "Reloading Medusa",
+          stage: "reloading",
+          startedAt: Date.now(),
+          targetVersion: status.running.version,
+        });
+        scheduleReleaseReloadUrl(reloadUrl);
+      } catch {
+        releaseReloadScheduledRef.current = false;
+      }
+    };
+    const timer = window.setTimeout(() => void reloadStaleBundle(), 1200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [releaseStatus.data, releaseUpgradeLock, settingsDirty]);
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => queryClient.clear(),
