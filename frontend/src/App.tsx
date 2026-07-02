@@ -12111,6 +12111,12 @@ function DocumentPanelContent({
     () => reviewItems.filter((item) => item.document_id === document.id && item.status === "needs_review"),
     [document.id, reviewItems],
   );
+  const documentNeedsCitationReview = document.citation_status === "needs_review" || documentReviewCandidates.length > 0;
+  const markCitationReviewed = () => {
+    if (documentLocked || updateDocument.isPending || document.citation_status === "verified") return;
+    setCitationReviewError(null);
+    updateDocument.mutate({ citation_status: "verified" });
+  };
   const pages = useMemo(
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
     [document.pages],
@@ -14705,73 +14711,155 @@ function DocumentPanelContent({
     );
   };
   const renderCitationReviewSection = () => {
-    if (!documentReviewCandidates.length) return null;
+    if (!documentNeedsCitationReview) return null;
+    const referenceText = citationText(document, "reference");
+    const inTextText = citationText(document, "in-text");
+    const hasCitationText = Boolean(referenceText.trim() || inTextText.trim());
+    const citationReviewSaving = updateDocument.isPending || updateReviewCandidate.isPending;
     return (
-      <section className="detail-section detail-citation-review-section">
+      <section className="detail-preview-review-section detail-citation-review-section" aria-label="Citation review">
         <div className="detail-section-title-row">
           <h3>
             Citation Review
-            <span className="detail-section-title-count">({documentReviewCandidates.length})</span>
+            {documentReviewCandidates.length ? <span className="detail-section-title-count">({documentReviewCandidates.length})</span> : null}
           </h3>
           <StatusPill value="needs_review" tone="warn" />
         </div>
-        <div className="detail-review-list">
-          {documentReviewCandidates.map((item) => {
-            const candidateTitle = candidateMetadataText(item, "title");
-            const showCandidateTitle = candidateTitle && candidateTitle !== document.title;
-            const reviewDate = citationCandidateReviewDate(item);
-            return (
-              <article key={item.id} className="review-card detail-review-card">
-                <div className="review-card-main">
-                  <div className="review-card-title">
-                    <div className="review-card-meta">
-                      <span>
-                        <FileText size={14} />
-                        {citationCandidateSourceLabel(item)}
-                      </span>
-                      {reviewDate ? <span>{reviewDate}</span> : null}
-                      {typeof item.confidence === "number" ? <span>{Math.round(item.confidence * 100)}% confidence</span> : null}
+        {documentReviewCandidates.length ? (
+          <div className="detail-review-list">
+            {documentReviewCandidates.map((item) => {
+              const candidateTitle = candidateMetadataText(item, "title");
+              const showCandidateTitle = candidateTitle && candidateTitle !== document.title;
+              const reviewDate = citationCandidateReviewDate(item);
+              return (
+                <article key={item.id} className="review-card detail-review-card">
+                  <div className="review-card-main">
+                    <div className="review-card-title">
+                      <div className="review-card-meta">
+                        <span>
+                          <FileText size={14} />
+                          {citationCandidateSourceLabel(item)}
+                        </span>
+                        {reviewDate ? <span>{reviewDate}</span> : null}
+                        {typeof item.confidence === "number" ? <span>{Math.round(item.confidence * 100)}% confidence</span> : null}
+                      </div>
+                      {showCandidateTitle ? <small>Candidate title: {candidateTitle}</small> : null}
                     </div>
-                    {showCandidateTitle ? <small>Candidate title: {candidateTitle}</small> : null}
+                    <div className="review-citation">
+                      <MarkdownBlock compact content={item.citation_text} empty="No candidate citation." />
+                    </div>
                   </div>
-                  <div className="review-citation">
-                    <MarkdownBlock compact content={item.citation_text} empty="No candidate citation." />
+                  <div className="review-actions">
+                    <button
+                      className="primary-button compact"
+                      data-disabled-reason={
+                        documentLocked
+                          ? documentLockedReason
+                          : updateReviewCandidate.isPending
+                            ? "a citation review update is already saving."
+                            : ""
+                      }
+                      data-tooltip="Accept this citation candidate, apply it to the document, mark the citation verified, and record document history."
+                      disabled={documentLocked || updateReviewCandidate.isPending}
+                      onClick={() => updateReviewCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
+                      type="button"
+                    >
+                      <CheckCircle2 size={14} />
+                      Accept
+                    </button>
+                    <button
+                      className="secondary-button compact"
+                      data-disabled-reason={updateReviewCandidate.isPending ? "a citation review update is already saving." : ""}
+                      data-tooltip="Reject this citation candidate and remove it from active review without changing the document."
+                      disabled={updateReviewCandidate.isPending}
+                      onClick={() => updateReviewCandidate.mutate({ id: item.id, status: "rejected" })}
+                      type="button"
+                    >
+                      <X size={14} />
+                      Reject
+                    </button>
                   </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            <p className="detail-review-note">This document is marked Needs Review.</p>
+            <div className="detail-review-current-grid">
+              <div className="detail-review-current-field">
+                <div className="detail-review-field-head">
+                  <strong>APA Reference List</strong>
+                  {renderVerificationControl("apa_citation")}
                 </div>
-                <div className="review-actions">
-                  <button
-                    className="primary-button compact"
-                    data-disabled-reason={
-                      documentLocked
-                        ? documentLockedReason
-                        : updateReviewCandidate.isPending
-                          ? "a citation review update is already saving."
-                          : ""
-                    }
-                    data-tooltip="Accept this citation candidate, apply it to the document, mark the citation verified, and record document history."
-                    disabled={documentLocked || updateReviewCandidate.isPending}
-                    onClick={() => updateReviewCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
-                    type="button"
-                  >
-                    <CheckCircle2 size={14} />
-                    Accept
-                  </button>
-                  <button
-                    className="secondary-button compact"
-                    data-disabled-reason={updateReviewCandidate.isPending ? "a citation review update is already saving." : ""}
-                    data-tooltip="Reject this citation candidate and remove it from active review without changing the document."
-                    disabled={updateReviewCandidate.isPending}
-                    onClick={() => updateReviewCandidate.mutate({ id: item.id, status: "rejected" })}
-                    type="button"
-                  >
-                    <X size={14} />
-                    Reject
-                  </button>
+                <MarkdownBlock compact content={referenceText} empty="No APA reference stored." />
+              </div>
+              <div className="detail-review-current-field">
+                <div className="detail-review-field-head">
+                  <strong>APA In-Text Citation</strong>
+                  {renderVerificationControl("apa_in_text_citation")}
                 </div>
-              </article>
-            );
-          })}
-        </div>
+                <MarkdownBlock compact content={inTextText} empty="No APA in-text citation stored." />
+              </div>
+            </div>
+            <div className="detail-review-toolbar">
+              <button
+                className="secondary-button compact"
+                data-disabled-reason={documentLocked ? documentLockedReason : updateCitation.isPending ? "a citation edit is already saving." : ""}
+                data-tooltip="Open the APA Reference List editor for this document."
+                disabled={documentLocked || updateCitation.isPending}
+                onClick={() => void startCitationEdit("reference")}
+                type="button"
+              >
+                <Edit3 size={14} />
+                Edit Reference
+              </button>
+              <button
+                className="secondary-button compact"
+                data-disabled-reason={documentLocked ? documentLockedReason : updateCitation.isPending ? "a citation edit is already saving." : ""}
+                data-tooltip="Open the APA In-Text Citation editor for this document."
+                disabled={documentLocked || updateCitation.isPending}
+                onClick={() => void startCitationEdit("in-text")}
+                type="button"
+              >
+                <Edit3 size={14} />
+                Edit In-Text
+              </button>
+              <AsyncActionSlot busy={citationBusy} feedback={citationRefreshFeedback.feedback} label="Citation refresh in progress" progress={citationProgress}>
+                <button
+                  className={asyncFeedbackClass("secondary-button compact", citationRefreshFeedback.feedback, citationBusy)}
+                  data-disabled-reason={citationBusyReason}
+                  data-tooltip="Queue one APA citation refresh that regenerates and validates both APA citation fields."
+                  disabled={documentLocked || citationBusy}
+                  onClick={() => void checkCitation()}
+                  type="button"
+                >
+                  <RefreshCw className={citationBusy ? "spin" : ""} size={14} />
+                  Refresh APA
+                </button>
+              </AsyncActionSlot>
+              <button
+                className="primary-button compact"
+                data-disabled-reason={
+                  documentLocked
+                    ? documentLockedReason
+                    : citationReviewSaving
+                      ? "the citation review is already saving."
+                      : !hasCitationText
+                        ? "there is no APA citation text to review."
+                        : ""
+                }
+                data-tooltip="Mark this document's citation review as complete and clear the Needs Review badge."
+                disabled={documentLocked || citationReviewSaving || !hasCitationText}
+                onClick={markCitationReviewed}
+                type="button"
+              >
+                <CheckCircle2 size={14} />
+                Mark Reviewed
+              </button>
+            </div>
+          </>
+        )}
         {citationReviewError ? <p className="form-error">{citationReviewError}</p> : null}
       </section>
     );
@@ -15892,6 +15980,7 @@ function DocumentPanelContent({
               </>
             )}
           </div>
+          {renderCitationReviewSection()}
         </div>
         {compositionOpen ? (
           <CompositionDialog
@@ -16114,7 +16203,6 @@ function DocumentPanelContent({
       {renderTagsSection()}
       {renderPublicationSection()}
       {renderDoiSection()}
-      {renderCitationReviewSection()}
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
       {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
       {renderSummarySection()}
