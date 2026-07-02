@@ -4153,8 +4153,8 @@ textarea {
   grid-template-columns: 16px minmax(0, 1fr) minmax(270px, auto);
   column-gap: 9px;
   row-gap: 6px;
-  align-items: center;
-  align-content: center;
+  align-items: start;
+  align-content: start;
   grid-auto-rows: min-content;
   text-align: left;
   padding: 8px 8px 8px 4px;
@@ -4247,7 +4247,7 @@ textarea {
 
 .doc-row-main {
   min-width: 0;
-  align-self: center;
+  align-self: start;
   display: grid;
   gap: 5px;
   border: 0;

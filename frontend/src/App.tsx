@@ -483,9 +483,9 @@ const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
     expansive: { rowHeight: 58 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 0, excerptChars: 0 },
   },
   comfortable: {
-    standard: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 1, excerptChars: 250 },
-    roomy: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 1, excerptChars: 310 },
-    expansive: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 1, excerptChars: 370 },
+    standard: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 420 },
+    roomy: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 520 },
+    expansive: { rowHeight: 88 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 620 },
   },
   reading: {
     standard: { rowHeight: 108 + LIBRARY_ROW_EXTRA_HEIGHT_PX, summaryLines: 2, excerptChars: 420 },
