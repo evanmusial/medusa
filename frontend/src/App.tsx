@@ -2923,9 +2923,10 @@ function ReleaseUpgradeButton({
   const maintenanceBusy = MAINTENANCE_BUSY_PHASES.has(status.maintenance_phase);
   const visible = status.browser_reload_recommended || status.update_available || phaseBusy || maintenanceBusy;
   if (!visible) return null;
+  const blockingMaintenanceBlockers = releaseUpgradeBlockingMaintenanceBlockers(status);
   const activeWorkBlocker =
-    !status.browser_reload_recommended && status.maintenance_blockers.length
-      ? `upgrade is blocked by ${status.maintenance_blockers.join("; ")}.`
+    !status.browser_reload_recommended && blockingMaintenanceBlockers.length
+      ? `upgrade is blocked by ${blockingMaintenanceBlockers.join("; ")}.`
       : undefined;
   const disabledReason = busy
     ? "upgrade request is already being sent."
@@ -2957,6 +2958,15 @@ function ReleaseUpgradeButton({
   );
 }
 
+function isActiveSessionMaintenanceBlocker(blocker: string) {
+  return /^\d+ active user sessions?$/.test(blocker.trim().toLowerCase());
+}
+
+function releaseUpgradeBlockingMaintenanceBlockers(status: ReleaseStatus) {
+  if (status.browser_reload_recommended) return [];
+  return status.maintenance_blockers.filter((blocker) => !isActiveSessionMaintenanceBlocker(blocker));
+}
+
 function releaseDateLabel(value?: string | null) {
   const text = (value || "").trim();
   if (!text) return "";
@@ -2978,6 +2988,8 @@ function releaseVersionLabel(version?: ReleaseStatus["running"] | null) {
 
 function releaseUpgradeTooltip(status: ReleaseStatus) {
   const target = status.browser_reload_recommended ? status.running : status.available;
+  const blockingMaintenanceBlockers = releaseUpgradeBlockingMaintenanceBlockers(status);
+  const activeSessionBlockers = status.maintenance_blockers.filter(isActiveSessionMaintenanceBlocker);
   const lines = [
     status.message || "Upgrade Medusa to the newest available release.",
     `Target: ${releaseVersionLabel(target)}`,
@@ -2998,7 +3010,8 @@ function releaseUpgradeTooltip(status: ReleaseStatus) {
   if (status.maintenance_phase) lines.push(`Maintenance: ${status.maintenance_phase.replaceAll("_", " ")}`);
   if (status.maintenance_update_classification) lines.push(`Classification: ${status.maintenance_update_classification.replaceAll("_", " ")}`);
   if (status.maintenance_backup_status) lines.push(`Backup gate: ${status.maintenance_backup_status.replaceAll("_", " ")}`);
-  if (status.maintenance_blockers.length) lines.push(`Blocked by: ${status.maintenance_blockers.join("; ")}`);
+  if (blockingMaintenanceBlockers.length) lines.push(`Blocked by: ${blockingMaintenanceBlockers.join("; ")}`);
+  if (activeSessionBlockers.length) lines.push("Active browser sessions will be locked during an approved upgrade.");
   if (status.docker_engine_version) lines.push(`Docker: ${status.docker_engine_version}`);
   if (status.docker_compose_version) lines.push(`Compose: ${status.docker_compose_version}`);
   if (status.dirty) lines.push("Server checkout has local changes.");
