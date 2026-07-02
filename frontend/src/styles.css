@@ -2641,19 +2641,19 @@ textarea {
 
 .tag-cloud-chip {
   --tag-cloud-chip-font-size: 13px;
-  --tag-cloud-chip-count-width: 36px;
+  --tag-cloud-chip-count-width: 32px;
   justify-self: start;
   width: fit-content;
   max-width: 100%;
   min-height: 28px;
   display: grid;
   grid-template-columns: var(--tag-cloud-chip-count-width) minmax(0, auto);
-  column-gap: 10px;
+  column-gap: 6px;
   align-items: center;
   padding: 3px 7px 3px 5px;
   border: 1px solid color-mix(in srgb, var(--button-line) 72%, transparent);
   border-radius: 7px;
-  background: color-mix(in srgb, var(--panel-2) 82%, var(--button-line));
+  background: color-mix(in srgb, var(--panel-2) 92%, var(--button-line));
   color: var(--muted);
   font-size: var(--tag-cloud-chip-font-size);
   box-sizing: border-box;
@@ -2677,7 +2677,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding-right: 10px;
+  padding-right: 5px;
   border-right: 1px solid color-mix(in srgb, var(--button-line) 34%, transparent);
   box-sizing: border-box;
   color: color-mix(in srgb, var(--ink) 74%, var(--muted));
@@ -2703,24 +2703,32 @@ textarea {
   font-size: 13px;
 }
 
-.domain-chip-list .domain-chip {
-  border: 0;
-  border-radius: 999px;
-  padding: 4px 8px;
-  font-size: 12px;
-  border-color: color-mix(in srgb, var(--domain-chip-color) 42%, var(--line));
-  background: color-mix(in srgb, var(--domain-chip-color) 18%, var(--panel));
-  color: color-mix(in srgb, var(--domain-chip-color) 58%, var(--ink));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--domain-chip-color) 12%, transparent);
-  font-weight: 750;
+.domain-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.domain-chip-list .domain-chip::before {
+:is(.domain-chip-list .domain-chip, .selected-chips button.domain-chip) {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--domain-chip-color) 38%, var(--button-line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--domain-chip-color) 14%, var(--panel-2));
+  color: color-mix(in srgb, var(--domain-chip-color) 58%, var(--ink));
+  padding: 3px 7px;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.2;
+}
+
+:is(.domain-chip-list .domain-chip, .selected-chips button.domain-chip)::before {
   content: "";
   display: inline-block;
   width: 7px;
   height: 7px;
-  margin-right: 5px;
   border-radius: 999px;
   background: var(--domain-chip-color);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--panel) 72%, transparent);
@@ -2852,15 +2860,16 @@ textarea {
 .active-result-chip,
 .active-result-clear {
   min-height: 26px;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--blue-soft) 64%, transparent);
-  color: color-mix(in srgb, var(--blue) 78%, var(--ink));
+  border: 1px solid color-mix(in srgb, var(--button-line) 62%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 92%, var(--button-line));
+  color: var(--muted);
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 0 8px;
-  font-size: 12px;
+  padding: 2px 7px;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .active-result-chip span {
@@ -2874,12 +2883,14 @@ textarea {
 .active-result-chip:focus-visible,
 .active-result-clear:hover,
 .active-result-clear:focus-visible {
-  background: var(--blue-soft);
-  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 34%, var(--button-line));
+  background: color-mix(in srgb, var(--blue-soft) 46%, var(--panel-2));
+  color: color-mix(in srgb, var(--blue) 72%, var(--ink));
   outline: 0;
 }
 
 .active-result-clear {
+  border-color: transparent;
   background: transparent;
   color: var(--muted);
   text-decoration: underline;
@@ -5663,17 +5674,19 @@ textarea {
 
 .detail-tag-chip,
 .detail-tags-empty {
-  min-height: 32px;
+  min-height: 28px;
   max-width: 100%;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--panel-2) 84%, transparent);
-  padding: 4px 5px 4px 8px;
-  color: var(--ink);
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--button-line) 62%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 92%, var(--button-line));
+  padding: 3px 5px 3px 7px;
+  color: var(--muted);
   font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .detail-tag-chip > span {
@@ -6509,14 +6522,14 @@ textarea {
 }
 
 .recommendation-reason-chips span {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel-2);
+  border: 1px solid color-mix(in srgb, var(--button-line) 62%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 92%, var(--button-line));
   color: var(--muted);
-  padding: 2px 7px;
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.35;
+  padding: 3px 7px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .recommendation-copy code {
@@ -7212,13 +7225,29 @@ pre {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--line));
-  border-radius: 999px;
-  background: var(--blue-soft);
-  color: var(--ink);
-  padding: 0 8px;
-  font-size: var(--button-font-size);
-  font-weight: var(--button-font-weight);
+  border: 1px solid color-mix(in srgb, var(--button-line) 62%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 92%, var(--button-line));
+  color: var(--muted);
+  padding: 3px 7px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.selected-chips button:not(.domain-chip):hover,
+.selected-chips button:not(.domain-chip):focus-visible {
+  border-color: color-mix(in srgb, var(--blue) 34%, var(--button-line));
+  background: color-mix(in srgb, var(--blue-soft) 46%, var(--panel-2));
+  color: color-mix(in srgb, var(--blue) 72%, var(--ink));
+  outline: 0;
+}
+
+.selected-chips button.domain-chip:hover,
+.selected-chips button.domain-chip:focus-visible {
+  border-color: color-mix(in srgb, var(--domain-chip-color) 48%, var(--button-line));
+  background: color-mix(in srgb, var(--domain-chip-color) 20%, var(--panel-2));
+  outline: 0;
 }
 
 .selected-chips button span {
@@ -13602,7 +13631,6 @@ pre {
 .recommendation-view-tabs button,
 .recommendation-family-tabs button,
 .bibliography-tabs button,
-.selected-chips button,
 .picker-options button,
 .tags-table-row > button,
 .tags-table-row.header button,
@@ -13653,10 +13681,6 @@ button.history-row,
   min-height: var(--button-compact-height);
   gap: var(--button-gap);
   padding-inline: var(--button-compact-horizontal-padding);
-}
-
-.selected-chips button {
-  min-height: var(--button-compact-height);
 }
 
 .select-all-row {

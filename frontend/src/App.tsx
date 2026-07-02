@@ -15723,6 +15723,7 @@ function DocumentPanelContent({
 type ImportPickerItem = {
   id: string;
   name: string;
+  color?: string | null;
   depth?: number;
   meta?: string;
 };
@@ -15733,6 +15734,7 @@ function ImportDefaultPicker({
   items,
   selectedIds,
   onChange,
+  chipTone = "neutral",
   createLabel,
   onCreate,
 }: {
@@ -15741,6 +15743,7 @@ function ImportDefaultPicker({
   items: ImportPickerItem[];
   selectedIds: string[];
   onChange: (ids: string[]) => void;
+  chipTone?: "neutral" | "domain";
   createLabel: string;
   onCreate?: (name: string) => Promise<void>;
 }) {
@@ -15798,8 +15801,10 @@ function ImportDefaultPicker({
         {selected.length ? (
           selected.map((item) => (
             <button
+              className={`selected-chip${chipTone === "domain" ? " domain-chip" : ""}`}
               key={item.id}
               data-tooltip={`Remove ${item.name} from the default ${title.toLocaleLowerCase()} applied to this import batch.`}
+              style={chipTone === "domain" ? ({ "--domain-chip-color": item.color || "var(--blue)" } as CSSProperties) : undefined}
               type="button"
               onClick={() => removeItem(item.id)}
             >
@@ -15864,6 +15869,7 @@ function domainPickerItems(domains: Domain[]): ImportPickerItem[] {
       return {
         id: domain.id,
         name: pathParts.join(" / "),
+        color: domain.color,
         depth: Math.max(0, pathParts.length - 1),
         meta: `${domain.document_count} documents`,
       };
@@ -18376,6 +18382,7 @@ function ImportView({
         ) : null}
         <div className="import-picker-grid">
           <ImportDefaultPicker
+            chipTone="domain"
             createLabel="New top-level domain"
             hint="Select knowledge domains or add a new top-level domain."
             items={domainItems}
