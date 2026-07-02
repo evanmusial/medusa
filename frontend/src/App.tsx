@@ -478,18 +478,18 @@ const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
 > = {
   compact: {
     standard: { rowHeight: 88, summaryLines: 1, excerptChars: 220 },
-    roomy: { rowHeight: 110, summaryLines: 2, excerptChars: 340 },
-    expansive: { rowHeight: 110, summaryLines: 2, excerptChars: 420 },
+    roomy: { rowHeight: 88, summaryLines: 1, excerptChars: 300 },
+    expansive: { rowHeight: 88, summaryLines: 1, excerptChars: 340 },
   },
   comfortable: {
     standard: { rowHeight: 118, summaryLines: 2, excerptChars: 320 },
-    roomy: { rowHeight: 144, summaryLines: 3, excerptChars: 560 },
-    expansive: { rowHeight: 170, summaryLines: 4, excerptChars: 760 },
+    roomy: { rowHeight: 126, summaryLines: 2, excerptChars: 420 },
+    expansive: { rowHeight: 126, summaryLines: 2, excerptChars: 520 },
   },
   reading: {
     standard: { rowHeight: 154, summaryLines: 3, excerptChars: 520 },
-    roomy: { rowHeight: 182, summaryLines: 4, excerptChars: 760 },
-    expansive: { rowHeight: 210, summaryLines: 5, excerptChars: 960 },
+    roomy: { rowHeight: 166, summaryLines: 3, excerptChars: 680 },
+    expansive: { rowHeight: 178, summaryLines: 4, excerptChars: 820 },
   },
 };
 type DetailStickyField = "title" | "authors" | "year" | "doi" | "priority" | "status";

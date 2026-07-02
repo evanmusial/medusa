@@ -4152,6 +4152,8 @@ textarea {
   grid-template-columns: 16px minmax(0, 1fr) minmax(270px, auto);
   gap: 8px;
   align-items: center;
+  align-content: start;
+  grid-auto-rows: min-content;
   text-align: left;
   padding: 11px 8px 11px 4px;
   cursor: pointer;
