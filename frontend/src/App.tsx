@@ -8869,14 +8869,13 @@ function LibraryView({
           {visibleKeywordTags.length ? (
             visibleKeywordTags.map((tag) => (
               <button
-                className={`tag-cloud-chip tag-count-chip${filters.tag_id === tag.id ? " active" : ""}`}
+                className={`tag-cloud-chip${filters.tag_id === tag.id ? " active" : ""}`}
                 data-tooltip={`Filter this Library result set to ${tag.name}.`}
                 key={tag.id}
                 onClick={() => setFilterValue("tag_id", filters.tag_id === tag.id ? "" : tag.id)}
                 type="button"
               >
-                <span className="tag-cloud-chip-count tag-count-chip-count">{formatWholeNumber(tag.count)}</span>
-                <span className="tag-cloud-chip-label tag-count-chip-label">{tag.name}</span>
+                <span className="tag-cloud-chip-label">{tag.name}</span>
               </button>
             ))
           ) : (
