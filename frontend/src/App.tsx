@@ -472,6 +472,7 @@ const LIBRARY_PREVIEW_CAPACITY_STANDARD_WIDTH = 960;
 const LIBRARY_PREVIEW_CAPACITY_STANDARD_HEIGHT = 840;
 const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_WIDTH = 1280;
 const LIBRARY_PREVIEW_CAPACITY_EXPANSIVE_HEIGHT = 1020;
+const LIBRARY_ROW_GAP_PX = 4;
 const LIBRARY_ROW_PREVIEW_BY_DENSITY: Record<
   LibraryDensity,
   Record<LibraryPreviewCapacity, { rowHeight: number; summaryLines: number; excerptChars: number }>
@@ -8503,7 +8504,7 @@ function LibraryView({
   const selectedRowViewportTopRef = useRef<{ documentId: string; top: number } | null>(null);
   const [rowsScrollTop, setRowsScrollTop] = useState(0);
   const rowsScrollTopRef = useRef(0);
-  const previousLibraryRowHeightRef = useRef<number | null>(null);
+  const previousLibraryRowPitchRef = useRef<number | null>(null);
   const [rowsViewportHeight, setRowsViewportHeight] = useState(0);
   const [rowsViewportWidth, setRowsViewportWidth] = useState(0);
   const [saveName, setSaveName] = useState("");
@@ -8713,6 +8714,7 @@ function LibraryView({
   const libraryPreviewCapacity = libraryPreviewCapacityForViewport(measuredRowsViewportWidth, measuredRowsViewportHeight);
   const libraryRowPreview = LIBRARY_ROW_PREVIEW_BY_DENSITY[libraryDensity][libraryPreviewCapacity];
   const libraryRowHeight = libraryRowPreview.rowHeight;
+  const libraryRowPitch = libraryRowHeight + LIBRARY_ROW_GAP_PX;
   const librarySummaryExcerptChars = libraryRowPreview.excerptChars;
   const paneStyle = {
     "--filter-pane-width": `${filterWidth}px`,
@@ -8744,13 +8746,13 @@ function LibraryView({
   const currentResultPage =
     totalDocumentCount > 0 ? Math.min(totalResultPages, Math.floor(pageOffset / effectivePageLimit) + 1) : 0;
   const pageCountLabel = `${formatWholeNumber(currentResultPage)} of ${formatWholeNumber(totalResultPages)}`;
-  const virtualSpacerHeight = sortedDocuments.length * libraryRowHeight;
-  const effectiveRowsViewportHeight = measuredRowsViewportHeight || libraryRowHeight * 12;
+  const virtualSpacerHeight = sortedDocuments.length ? sortedDocuments.length * libraryRowPitch - LIBRARY_ROW_GAP_PX : 0;
+  const effectiveRowsViewportHeight = measuredRowsViewportHeight || libraryRowPitch * 12;
   const boundedRowsScrollTop = Math.min(rowsScrollTop, Math.max(0, virtualSpacerHeight - effectiveRowsViewportHeight));
-  const virtualStartIndex = Math.max(0, Math.floor(boundedRowsScrollTop / libraryRowHeight) - LIBRARY_ROW_OVERSCAN);
+  const virtualStartIndex = Math.max(0, Math.floor(boundedRowsScrollTop / libraryRowPitch) - LIBRARY_ROW_OVERSCAN);
   const virtualEndIndex = Math.min(
     sortedDocuments.length,
-    Math.ceil((boundedRowsScrollTop + effectiveRowsViewportHeight) / libraryRowHeight) + LIBRARY_ROW_OVERSCAN,
+    Math.ceil((boundedRowsScrollTop + effectiveRowsViewportHeight) / libraryRowPitch) + LIBRARY_ROW_OVERSCAN,
   );
   const virtualDocuments = sortedDocuments.slice(virtualStartIndex, virtualEndIndex);
   const domainOptions = useMemo(() => domainPickerItems(domains), [domains]);
@@ -8829,32 +8831,32 @@ function LibraryView({
   }, [readerOpen]);
   useLayoutEffect(() => {
     if (readerOpen) {
-      previousLibraryRowHeightRef.current = libraryRowHeight;
+      previousLibraryRowPitchRef.current = libraryRowPitch;
       return;
     }
     const element = rowsViewportRef.current;
     if (!element) {
-      previousLibraryRowHeightRef.current = libraryRowHeight;
+      previousLibraryRowPitchRef.current = libraryRowPitch;
       return;
     }
-    const previousRowHeight = previousLibraryRowHeightRef.current || libraryRowHeight;
-    previousLibraryRowHeightRef.current = libraryRowHeight;
+    const previousRowPitch = previousLibraryRowPitchRef.current || libraryRowPitch;
+    previousLibraryRowPitchRef.current = libraryRowPitch;
     let targetScrollTop = element.scrollTop;
-    if (previousRowHeight > 0 && previousRowHeight !== libraryRowHeight) {
-      targetScrollTop = (targetScrollTop / previousRowHeight) * libraryRowHeight;
+    if (previousRowPitch > 0 && previousRowPitch !== libraryRowPitch) {
+      targetScrollTop = (targetScrollTop / previousRowPitch) * libraryRowPitch;
     }
     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     targetScrollTop = clampNumber(targetScrollTop, 0, maxScrollTop);
     if (Math.abs(element.scrollTop - targetScrollTop) > 1) element.scrollTop = targetScrollTop;
     if (Math.abs(rowsScrollTopRef.current - targetScrollTop) > 1) syncRowsScrollTop(targetScrollTop);
-  }, [libraryRowHeight, readerOpen, rowsViewportHeight, sortedDocuments.length, syncRowsScrollTop]);
+  }, [libraryRowPitch, readerOpen, rowsViewportHeight, sortedDocuments.length, syncRowsScrollTop]);
   useEffect(() => {
     if (readerOpen || !scrollTargetId) return;
     const element = rowsViewportRef.current;
     if (!element) return;
     const targetIndex = sortedDocuments.findIndex((item) => item.id === scrollTargetId);
     if (targetIndex < 0) return;
-    const rowTop = targetIndex * libraryRowHeight;
+    const rowTop = targetIndex * libraryRowPitch;
     const rowBottom = rowTop + libraryRowHeight;
     const visibleTop = element.scrollTop;
     const visibleBottom = visibleTop + element.clientHeight;
@@ -8875,7 +8877,7 @@ function LibraryView({
     syncRowsScrollTop(nextScrollTop);
     if (Math.abs(element.scrollTop - nextScrollTop) > 1) element.scrollTop = nextScrollTop;
     onScrollTargetHandled?.(scrollTargetId);
-  }, [libraryRowHeight, onScrollTargetHandled, readerOpen, scrollTargetId, sortedDocuments, rowsViewportHeight, syncRowsScrollTop]);
+  }, [libraryRowHeight, libraryRowPitch, onScrollTargetHandled, readerOpen, scrollTargetId, sortedDocuments, rowsViewportHeight, syncRowsScrollTop]);
   const hasBulkUpdate = selectedBulkDocument
     ? Boolean(
         bulkReadStatus ||
@@ -9039,7 +9041,7 @@ function LibraryView({
     if (!element || !selectedId) return;
     const selectedIndex = sortedDocuments.findIndex((item) => item.id === selectedId);
     if (selectedIndex < 0) return;
-    const rowTop = selectedIndex * libraryRowHeight;
+    const rowTop = selectedIndex * libraryRowPitch;
     selectedRowViewportTopRef.current = {
       documentId: selectedId,
       top: clampNumber(rowTop - element.scrollTop, 0, Math.max(0, element.clientHeight - libraryRowHeight)),
@@ -9622,7 +9624,7 @@ function LibraryView({
               key={item.id}
               className={`doc-row virtual-doc-row ${alternatingRows && actualIndex % 2 === 1 ? "even-row" : ""} ${selectedId === item.id ? "selected" : ""} ${draggedDocumentId === item.id ? "dragging" : ""}`}
               draggable={!item.is_locked}
-              style={{ height: libraryRowHeight, transform: `translateY(${actualIndex * libraryRowHeight}px)` }}
+              style={{ height: libraryRowHeight, transform: `translateY(${actualIndex * libraryRowPitch}px)` }}
               onDragEnd={() => setDraggedDocumentId(null)}
               onDragStart={(event) => {
                 if (item.is_locked) {
