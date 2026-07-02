@@ -2703,9 +2703,10 @@ textarea {
 }
 
 .tag-cloud {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 6px;
+  align-items: flex-start;
 }
 
 .tag-cloud-empty {
