@@ -399,6 +399,15 @@ textarea {
   color: var(--amber);
 }
 
+.backend-connection-dialog {
+  border-color: color-mix(in srgb, var(--blue) 42%, var(--line));
+}
+
+.backend-connection-emblem {
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel));
+  color: var(--blue);
+}
+
 .release-upgrade-copy {
   min-width: 0;
   display: grid;
@@ -428,6 +437,10 @@ textarea {
 .release-upgrade-error {
   color: var(--amber) !important;
   font-weight: 750;
+}
+
+.backend-connection-detail {
+  font-size: 13px !important;
 }
 
 .release-upgrade-track {

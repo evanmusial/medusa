@@ -110,7 +110,8 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { api, apiPath, ApiError } from "./lib/api";
+import { api, apiPath, ApiError, isLikelyBackendUnavailableError, subscribeBackendAvailability } from "./lib/api";
+import type { BackendAvailabilityEvent } from "./lib/api";
 import type {
   AccessorySummary,
   AIFailureNotice,
@@ -261,6 +262,17 @@ type ReleaseUpgradeLock = {
   startedAt: number;
   targetVersion?: string | null;
 };
+type BackendUnavailableEvent = Extract<BackendAvailabilityEvent, { type: "unavailable" }>;
+type BackendConnectionIssue = {
+  detail?: string;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  message: string;
+  minVisibleUntil?: number;
+  path?: string;
+  reason: BackendUnavailableEvent["reason"];
+  status?: number;
+};
 type LibraryPageTurnIntent = {
   offset: number;
   token: number;
@@ -385,6 +397,9 @@ const RELEASE_HEALTH_CHECK_DETAIL = "The update is applied. Verifying health and
 const RELEASE_RESTART_WAIT_MESSAGE = "Waiting for Medusa";
 const RELEASE_RESTART_WAIT_DETAIL =
   "Medusa may still be restarting. The app will stay locked until release status and health checks answer again.";
+const BACKEND_HEALTH_WATCH_INTERVAL_MS = 5000;
+const BACKEND_RECOVERY_POLL_INTERVAL_MS = 1000;
+const BACKEND_RESTART_MIN_LOCK_MS = 1800;
 const STARTUP_HEALTH_RETRY_LIMIT = 120;
 const ACTIVE_WORK_REFETCH_INTERVAL_MS = 4000;
 const IDLE_SHELL_REFETCH_INTERVAL_MS = 30000;
@@ -2796,6 +2811,41 @@ function releaseUpgradeLockFromStatus(status: ReleaseStatus): Pick<ReleaseUpgrad
   };
 }
 
+function backendConnectionMessage(event: BackendUnavailableEvent) {
+  if (event.reason === "restart") return event.message || "Backend restart requested. Waiting for Medusa to return.";
+  if (event.reason === "gateway") return "Medusa is not accepting requests yet.";
+  return "Medusa backend is not reachable.";
+}
+
+function backendConnectionDetail(event: BackendUnavailableEvent) {
+  const parts: string[] = [];
+  if (event.status && event.status > 0) parts.push(`HTTP ${event.status}`);
+  if (event.path) parts.push(`Last request: ${event.path}`);
+  if (event.reason !== "restart") parts.push("Controls are paused until health checks pass.");
+  return parts.join(" / ");
+}
+
+function backendIssueFromUnavailableEvent(event: BackendUnavailableEvent, current: BackendConnectionIssue | null) {
+  const observedAt = event.observedAt || Date.now();
+  return {
+    detail: backendConnectionDetail(event),
+    firstObservedAt: current?.firstObservedAt || observedAt,
+    lastObservedAt: observedAt,
+    message: backendConnectionMessage(event),
+    minVisibleUntil:
+      event.reason === "restart" ? Math.max(current?.minVisibleUntil || 0, observedAt + BACKEND_RESTART_MIN_LOCK_MS) : current?.minVisibleUntil,
+    path: event.path,
+    reason: event.reason,
+    status: event.status,
+  } satisfies BackendConnectionIssue;
+}
+
+function clearBackendIssueIfReady(current: BackendConnectionIssue | null, observedAt = Date.now()) {
+  if (!current) return null;
+  if (current.minVisibleUntil && observedAt < current.minVisibleUntil) return current;
+  return null;
+}
+
 function ReleaseUpgradeOverlay({ lock, onDismiss }: { lock: ReleaseUpgradeLock; onDismiss: () => void }) {
   const failed = lock.stage === "failed";
   const titleId = "release-upgrade-title";
@@ -2828,6 +2878,34 @@ function ReleaseUpgradeOverlay({ lock, onDismiss }: { lock: ReleaseUpgradeLock; 
             </button>
           </div>
         )}
+      </section>
+    </div>
+  );
+}
+
+function BackendUnavailableOverlay({ issue }: { issue: BackendConnectionIssue }) {
+  const titleId = "backend-unavailable-title";
+  const caption = issue.reason === "restart" ? "Backend restart" : "Backend connection";
+  return (
+    <div className="release-upgrade-backdrop backend-connection-backdrop" role="presentation">
+      <section
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="release-upgrade-dialog backend-connection-dialog"
+        role="alertdialog"
+      >
+        <div className="release-upgrade-emblem backend-connection-emblem" aria-hidden="true">
+          <RefreshCw className="spin" size={28} />
+        </div>
+        <div className="release-upgrade-copy">
+          <span>{caption}</span>
+          <h2 id={titleId}>Reconnecting to Medusa</h2>
+          <p>{issue.message}</p>
+          {issue.detail ? <p className="backend-connection-detail">{issue.detail}</p> : null}
+        </div>
+        <div className="release-upgrade-track backend-connection-track" aria-label="Medusa backend health check in progress" role="progressbar">
+          <span />
+        </div>
       </section>
     </div>
   );
@@ -3770,6 +3848,7 @@ async function waitForApplicationReadiness(targetUrl?: string, timeoutMs = RELEA
 }
 
 function isLikelyRestartInterruption(error: unknown) {
+  if (isLikelyBackendUnavailableError(error)) return true;
   const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
   return message.includes("failed to fetch") || message.includes("load failed") || message.includes("network") || message.includes("abort");
 }
@@ -26935,6 +27014,7 @@ export default function App() {
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const [backgroundReconcileNow, setBackgroundReconcileNow] = useState(() => Date.now());
   const [releaseUpgradeLock, setReleaseUpgradeLock] = useState<ReleaseUpgradeLock | null>(null);
+  const [backendConnectionIssue, setBackendConnectionIssue] = useState<BackendConnectionIssue | null>(null);
   const [dismissedIngestionHistoryIds, setDismissedIngestionHistoryIds] = useState<Set<string>>(() => readDismissedIngestionHistoryIds());
   const [dismissedAiFailureNoticeIds, setDismissedAiFailureNoticeIds] = useState<Set<string>>(() => readDismissedAiFailureNoticeIds());
   const [viewTitleSubjects, setViewTitleSubjects] = useState<Partial<Record<View, string>>>({});
@@ -26956,6 +27036,18 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.iconMotion = iconMotionStyle;
   }, [iconMotionStyle]);
+
+  useEffect(
+    () =>
+      subscribeBackendAvailability((event) => {
+        if (event.type === "available") {
+          setBackendConnectionIssue((current) => clearBackendIssueIfReady(current, event.observedAt));
+          return;
+        }
+        setBackendConnectionIssue((current) => backendIssueFromUnavailableEvent(event, current));
+      }),
+    [],
+  );
 
   const needsLibraryDocumentList = activeView === "library";
   const needsReferenceDocumentList = activeView === "domains" || activeView === "projects" || activeView === "notes";
@@ -26995,6 +27087,37 @@ export default function App() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [me.data]);
+  useEffect(() => {
+    if (!me.data) return;
+    let cancelled = false;
+    const checkHealth = async () => {
+      if (cancelled || (document.visibilityState !== "visible" && !backendConnectionIssue)) return;
+      try {
+        await api.health();
+        if (cancelled || !backendConnectionIssue) return;
+        void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        void queryClient.invalidateQueries({ queryKey: ["release-status", MEDUSA_BUILD_VERSION] });
+      } catch {
+        // The API helper broadcasts the unavailable state; this watchdog only sets cadence.
+      }
+    };
+    const interval = window.setInterval(
+      () => void checkHealth(),
+      backendConnectionIssue ? BACKEND_RECOVERY_POLL_INTERVAL_MS : BACKEND_HEALTH_WATCH_INTERVAL_MS,
+    );
+    const handleOnline = () => void checkHealth();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void checkHealth();
+    };
+    window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [backendConnectionIssue, me.data, queryClient]);
   const dashboard = useQuery({
     queryKey: ["dashboard"],
     queryFn: api.dashboard,
@@ -27224,6 +27347,7 @@ export default function App() {
   const releaseUpgradePollActive = Boolean(
     releaseUpgradeLock && releaseUpgradeLock.stage !== "failed" && releaseUpgradeLock.stage !== "reloading",
   );
+  const appInteractionLocked = releaseUpgradeLocked || Boolean(backendConnectionIssue);
   const releaseStatus = useQuery({
     queryKey: ["release-status", MEDUSA_BUILD_VERSION],
     queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
@@ -27388,7 +27512,7 @@ export default function App() {
   }, [settingsDirty]);
 
   useEffect(() => {
-    if (!releaseUpgradeLocked) return;
+    if (!appInteractionLocked) return;
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement) activeElement.blur();
     const blockKeyboardInput = (event: KeyboardEvent) => {
@@ -27401,7 +27525,7 @@ export default function App() {
     };
     window.addEventListener("keydown", blockKeyboardInput, true);
     return () => window.removeEventListener("keydown", blockKeyboardInput, true);
-  }, [releaseUpgradeLocked]);
+  }, [appInteractionLocked]);
 
   const handleReleaseUpgrade = useCallback(async () => {
     const status = releaseStatus.data;
@@ -28274,6 +28398,8 @@ export default function App() {
             setReleaseUpgradeLock(null);
           }}
         />
+      ) : backendConnectionIssue ? (
+        <BackendUnavailableOverlay issue={backendConnectionIssue} />
       ) : null}
       </div>
     </AppTooltipProvider>

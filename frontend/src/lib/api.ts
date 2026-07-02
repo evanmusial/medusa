@@ -113,7 +113,27 @@ export class ApiError extends Error {
   }
 }
 
+export type BackendAvailabilityEvent =
+  | {
+      type: "unavailable";
+      reason: "gateway" | "network" | "restart";
+      message: string;
+      observedAt: number;
+      path?: string;
+      status?: number;
+    }
+  | {
+      type: "available";
+      observedAt: number;
+      path?: string;
+    };
+
 const DEFAULT_API_PREFIX = "/api";
+const BACKEND_AVAILABILITY_EVENT = "medusa:backend-availability";
+const BACKEND_AVAILABILITY_CHANNEL = "medusa-backend-availability";
+const BACKEND_AVAILABILITY_STORAGE_KEY = "medusa-backend-availability";
+let backendAvailabilityChannel: BroadcastChannel | null | undefined;
+let lastBackendAvailabilityType: BackendAvailabilityEvent["type"] = "available";
 
 function normalizeApiPrefix(value: string | undefined) {
   const trimmed = (value || DEFAULT_API_PREFIX).trim();
@@ -128,17 +148,125 @@ export function apiPath(path: string) {
   return `${apiPrefix}${path.slice(DEFAULT_API_PREFIX.length)}`;
 }
 
+function getBackendAvailabilityChannel() {
+  if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return null;
+  if (backendAvailabilityChannel !== undefined) return backendAvailabilityChannel;
+  backendAvailabilityChannel = new BroadcastChannel(BACKEND_AVAILABILITY_CHANNEL);
+  return backendAvailabilityChannel;
+}
+
+function parseBackendAvailabilityEvent(value: unknown): BackendAvailabilityEvent | null {
+  if (!value || typeof value !== "object") return null;
+  const event = value as Partial<BackendAvailabilityEvent>;
+  if (event.type === "available" && typeof event.observedAt === "number") return event as BackendAvailabilityEvent;
+  if (
+    event.type === "unavailable" &&
+    typeof event.observedAt === "number" &&
+    typeof event.message === "string" &&
+    (event.reason === "gateway" || event.reason === "network" || event.reason === "restart")
+  ) {
+    return event as BackendAvailabilityEvent;
+  }
+  return null;
+}
+
+function emitBackendAvailabilityEvent(event: BackendAvailabilityEvent) {
+  if (typeof window === "undefined") return;
+  const shouldBroadcast = event.type === "unavailable" || lastBackendAvailabilityType === "unavailable";
+  lastBackendAvailabilityType = event.type;
+  window.dispatchEvent(new CustomEvent<BackendAvailabilityEvent>(BACKEND_AVAILABILITY_EVENT, { detail: event }));
+  if (!shouldBroadcast) return;
+  getBackendAvailabilityChannel()?.postMessage(event);
+  try {
+    window.localStorage.setItem(BACKEND_AVAILABILITY_STORAGE_KEY, JSON.stringify(event));
+  } catch {
+    // Storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+export function subscribeBackendAvailability(listener: (event: BackendAvailabilityEvent) => void) {
+  if (typeof window === "undefined") return () => undefined;
+  const notify = (event: BackendAvailabilityEvent) => {
+    lastBackendAvailabilityType = event.type;
+    listener(event);
+  };
+  const handleCustomEvent = (event: Event) => {
+    const parsed = parseBackendAvailabilityEvent((event as CustomEvent<BackendAvailabilityEvent>).detail);
+    if (parsed) notify(parsed);
+  };
+  const handleMessage = (event: MessageEvent) => {
+    const parsed = parseBackendAvailabilityEvent(event.data);
+    if (parsed) notify(parsed);
+  };
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key !== BACKEND_AVAILABILITY_STORAGE_KEY || !event.newValue) return;
+    try {
+      const parsed = parseBackendAvailabilityEvent(JSON.parse(event.newValue));
+      if (parsed) notify(parsed);
+    } catch {
+      // Ignore malformed cross-tab payloads.
+    }
+  };
+  const channel = getBackendAvailabilityChannel();
+  window.addEventListener(BACKEND_AVAILABILITY_EVENT, handleCustomEvent);
+  window.addEventListener("storage", handleStorage);
+  channel?.addEventListener("message", handleMessage);
+  return () => {
+    window.removeEventListener(BACKEND_AVAILABILITY_EVENT, handleCustomEvent);
+    window.removeEventListener("storage", handleStorage);
+    channel?.removeEventListener("message", handleMessage);
+  };
+}
+
+function isBackendUnavailableStatus(status: number) {
+  return status === 502 || status === 503 || status === 504;
+}
+
+export function isLikelyBackendUnavailableError(error: unknown) {
+  if (error instanceof ApiError) return error.status === 0 || isBackendUnavailableStatus(error.status);
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
+  return message.includes("failed to fetch") || message.includes("load failed") || message.includes("network");
+}
+
+function reportBackendUnavailable(event: Omit<Extract<BackendAvailabilityEvent, { type: "unavailable" }>, "type" | "observedAt">) {
+  emitBackendAvailabilityEvent({ ...event, type: "unavailable", observedAt: Date.now() });
+}
+
+function reportBackendAvailable(path?: string) {
+  emitBackendAvailabilityEvent({ type: "available", observedAt: Date.now(), path });
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiPath(path), {
-    ...init,
-    credentials: "include",
-    headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...init?.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(apiPath(path), {
+      ...init,
+      credentials: "include",
+      headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...init?.headers },
+    });
+  } catch {
+    reportBackendUnavailable({
+      message: "Medusa backend is not reachable.",
+      path,
+      reason: "network",
+      status: 0,
+    });
+    throw new ApiError("Medusa backend is not reachable.", 0, path);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
     const detail = typeof body.detail === "string" ? body.detail : response.statusText;
+    if (isBackendUnavailableStatus(response.status)) {
+      reportBackendUnavailable({
+        message: detail || response.statusText || `HTTP ${response.status}`,
+        path,
+        reason: "gateway",
+        status: response.status,
+      });
+    }
     throw new ApiError(detail || response.statusText || `HTTP ${response.status}`, response.status, path);
   }
+  reportBackendAvailable(path);
   return response.json() as Promise<T>;
 }
 
@@ -186,7 +314,16 @@ export const api = {
   backfillDocumentHashes: () =>
     request<DatabaseMaintenanceResult>("/api/utilities/document-hashes/backfill", { method: "POST" }),
   containerFootprintStatus: () => request<ContainerFootprintStatus>("/api/utilities/container/status"),
-  restartContainer: () => request<ContainerRestartResult>("/api/utilities/container/restart", { method: "POST" }),
+  restartContainer: async () => {
+    const path = "/api/utilities/container/restart";
+    const result = await request<ContainerRestartResult>(path, { method: "POST" });
+    reportBackendUnavailable({
+      message: result.message || "Backend restart requested. Waiting for Medusa to return.",
+      path,
+      reason: "restart",
+    });
+    return result;
+  },
   haproxyStatus: () => request<HAProxyStatsStatus>("/api/utilities/haproxy/status"),
   libraryFunStats: () => request<LibraryFunStats>("/api/status/library-fun"),
   slipstreamStatus: () => request<SlipstreamStatus>("/api/slipstream/status"),
@@ -486,12 +623,33 @@ export const api = {
   createPortfolioAssessment: (id: string, body: PortfolioAssessmentPayload = {}) =>
     request<PortfolioAssessmentRun>(`/api/portfolio/${id}/assessments`, { method: "POST", body: JSON.stringify(body) }),
   downloadPortfolioBundle: async (id: string) => {
-    const response = await fetch(apiPath(`/api/portfolio/${id}/bundle`), { method: "POST", credentials: "include" });
+    const path = `/api/portfolio/${id}/bundle`;
+    let response: Response;
+    try {
+      response = await fetch(apiPath(path), { method: "POST", credentials: "include" });
+    } catch {
+      reportBackendUnavailable({
+        message: "Medusa backend is not reachable.",
+        path,
+        reason: "network",
+        status: 0,
+      });
+      throw new ApiError("Medusa backend is not reachable.", 0, path);
+    }
     if (!response.ok) {
       const body = await response.json().catch(() => ({ detail: response.statusText }));
       const detail = typeof body.detail === "string" ? body.detail : response.statusText;
-      throw new ApiError(detail || response.statusText || `HTTP ${response.status}`, response.status, `/api/portfolio/${id}/bundle`);
+      if (isBackendUnavailableStatus(response.status)) {
+        reportBackendUnavailable({
+          message: detail || response.statusText || `HTTP ${response.status}`,
+          path,
+          reason: "gateway",
+          status: response.status,
+        });
+      }
+      throw new ApiError(detail || response.statusText || `HTTP ${response.status}`, response.status, path);
     }
+    reportBackendAvailable(path);
     const blob = await response.blob();
     const disposition = response.headers.get("content-disposition") || "";
     const match = disposition.match(/filename="?([^";]+)"?/i);
