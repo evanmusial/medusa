@@ -15,6 +15,7 @@ from app.models import ConcordanceJob, DocumentAccessorySummary, ImportJob, Proc
 from app.security import ensure_admin_user
 from app.services.cache import install_cache_revision_hooks
 from app.services.accessory_summaries import AccessorySummaryProcessor
+from app.services.assets import process_asset_deletion_queue
 from app.services.concordance import ConcordanceProcessor, refresh_concordance_run_progress
 from app.services.processing import DocumentProcessor, refresh_import_batch_progress
 from app.services.preferences import get_import_worker_concurrency
@@ -75,6 +76,11 @@ def vacuum_database_after_import_queue() -> None:
         logger.info("PostgreSQL VACUUM (ANALYZE) completed after import queue drain.")
     except Exception:
         logger.exception("PostgreSQL VACUUM (ANALYZE) failed after import queue drain.")
+
+
+def process_asset_deletions_once() -> dict[str, int]:
+    with session_scope() as db:
+        return process_asset_deletion_queue(db)
 
 
 def claim_concordance_job(db: Session, stale_after_seconds: int) -> str | None:
@@ -281,6 +287,7 @@ def main() -> None:
     settings = get_settings()
     inflight_imports: dict[threading.Thread, str] = {}
     processed_import_queue_since_vacuum = False
+    next_asset_cleanup_at = 0.0
     while running:
         finished_imports = collect_finished_imports(inflight_imports)
         worked = finished_imports
@@ -323,6 +330,13 @@ def main() -> None:
                 if accessory_summary_id:
                     process_accessory_summary(accessory_summary_id)
                     worked = True
+
+        if not inflight_imports and time.monotonic() >= next_asset_cleanup_at:
+            stats = process_asset_deletions_once()
+            next_asset_cleanup_at = time.monotonic() + max(60, settings.asset_cleanup_interval_seconds)
+            if stats.get("checked"):
+                logger.info("Asset deletion queue pass completed: %s", stats)
+                worked = True
 
         if not worked:
             time.sleep(settings.worker_poll_seconds)

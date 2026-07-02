@@ -124,6 +124,18 @@ GOOGLE_APPLICATION_CREDENTIALS=/app/data/secrets/service-account.json
 
 Put service-account JSON under ignored `data/secrets/`. Docker Compose mounts that directory read-only into backend and worker containers. Settings > Cloud Storage can also store an uploaded service-account JSON under ignored managed-secret storage and save only non-secret path/account metadata in PostgreSQL.
 
+Optional asset CDN:
+
+```bash
+deploy/gcp/assets-cdn.sh
+```
+
+The script creates or updates a global external Application Load Balancer backend bucket with Cloud CDN for the active GCS bucket, reserves one IPv4 address and one IPv6 address, creates a Cloud CDN signed-URL key, and grants the Cloud CDN cache-fill service account `storage.objectViewer` on the bucket. After creating the DNS `A` and `AAAA` records for the asset hostname, set the printed `MEDUSA_ASSET_CDN_*` variables in `.env` and restart backend/worker. With those variables present, authenticated original-PDF, figure-asset, and stored page-image routes redirect to short-lived signed CDN URLs instead of streaming large immutable assets through the app.
+
+The live Medusa asset host is `assets.medusa.evan.engineer` on GCP project `musial-medusa`, bucket `musial-medusa-assets`, URL map `medusa-assets-url-map`, and active managed certificate `medusa-assets-cert-20260702b`. The original `medusa-assets-cert` failed while DNS was not yet visible and should not be reattached. Future asset URL examples and implementation notes should use the asset-host scheme rather than origin-local byte-serving URLs.
+
+If you need a Let's Encrypt certificate specifically, obtain or renew it outside this script and pass `LE_CERTIFICATE_FILE=/path/to/fullchain.pem` plus `LE_PRIVATE_KEY_FILE=/path/to/privkey.pem`; otherwise the script creates a Google-managed certificate for the asset hostname.
+
 OpenAI and Gemini:
 
 ```bash

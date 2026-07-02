@@ -78,6 +78,30 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="GOOGLE_APPLICATION_CREDENTIALS",
     )
+    asset_cdn_base_url: str | None = Field(default=None, validation_alias="MEDUSA_ASSET_CDN_BASE_URL")
+    asset_cdn_signed_url_key_name: str | None = Field(
+        default=None,
+        validation_alias="MEDUSA_ASSET_CDN_SIGNED_URL_KEY_NAME",
+    )
+    asset_cdn_signed_url_key: str | None = Field(
+        default=None,
+        validation_alias="MEDUSA_ASSET_CDN_SIGNED_URL_KEY",
+    )
+    asset_cdn_signed_url_ttl_seconds: int = Field(
+        default=900,
+        validation_alias="MEDUSA_ASSET_CDN_SIGNED_URL_TTL_SECONDS",
+    )
+    asset_cdn_redirect_cache_seconds: int = Field(
+        default=300,
+        validation_alias="MEDUSA_ASSET_CDN_REDIRECT_CACHE_SECONDS",
+    )
+    asset_cdn_project: str | None = Field(default=None, validation_alias="MEDUSA_ASSET_CDN_PROJECT")
+    asset_cdn_url_map: str | None = Field(default=None, validation_alias="MEDUSA_ASSET_CDN_URL_MAP")
+    asset_cleanup_interval_seconds: int = Field(
+        default=3600,
+        validation_alias="MEDUSA_ASSET_CLEANUP_INTERVAL_SECONDS",
+    )
+    asset_cleanup_batch_size: int = Field(default=250, validation_alias="MEDUSA_ASSET_CLEANUP_BATCH_SIZE")
 
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.5", validation_alias="OPENAI_MODEL")
