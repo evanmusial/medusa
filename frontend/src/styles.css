@@ -4141,54 +4141,6 @@ textarea {
   will-change: transform;
 }
 
-.library-row-skeleton-list {
-  display: grid;
-  min-width: 100%;
-}
-
-.library-row-skeleton {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) minmax(74px, auto);
-  grid-template-areas:
-    "check title pill"
-    "check summary summary";
-  gap: 8px;
-  align-items: center;
-  padding: 11px 8px 11px 10px;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--line) 42%, transparent);
-}
-
-.library-row-skeleton-check {
-  grid-area: check;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-}
-
-.library-row-skeleton-title,
-.library-row-skeleton-meta {
-  grid-area: title;
-  height: 13px;
-}
-
-.library-row-skeleton-meta {
-  width: min(46%, 320px);
-  margin-top: 22px;
-}
-
-.library-row-skeleton-pill {
-  grid-area: pill;
-  width: 74px;
-  height: 20px;
-  border-radius: 999px;
-}
-
-.library-row-skeleton-summary {
-  grid-area: summary;
-  width: min(92%, 820px);
-  height: calc(15px * var(--library-summary-lines, 2));
-}
-
 .doc-row {
   width: 100%;
   border-bottom: 0;

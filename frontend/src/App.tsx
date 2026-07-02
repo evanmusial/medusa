@@ -666,24 +666,6 @@ function SkeletonBlock({ className = "" }: { className?: string }) {
   return <span aria-hidden="true" className={`skeleton-shimmer${className ? ` ${className}` : ""}`} />;
 }
 
-function LibraryRowsSkeleton({ count = 8, rowHeight }: { count?: number; rowHeight: number }) {
-  return (
-    <m.div className="library-row-skeleton-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      {Array.from({ length: count }).map((_, index) => (
-        <div className="library-row-skeleton" key={index} style={{ height: rowHeight }}>
-          <SkeletonBlock className="library-row-skeleton-check" />
-          <div>
-            <SkeletonBlock className="library-row-skeleton-title" />
-            <SkeletonBlock className="library-row-skeleton-meta" />
-          </div>
-          <SkeletonBlock className="library-row-skeleton-pill" />
-          <SkeletonBlock className="library-row-skeleton-summary" />
-        </div>
-      ))}
-    </m.div>
-  );
-}
-
 function DocumentDetailSkeleton() {
   return (
     <m.div className="document-detail-skeleton" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -9562,9 +9544,6 @@ function LibraryView({
           onScroll={(event) => syncRowsScrollTop(event.currentTarget.scrollTop)}
         >
           <ScrollProgressRail containerRef={rowsViewportRef} />
-          {loading && !hasVisibleDocumentRows ? (
-            <LibraryRowsSkeleton count={Math.min(9, Math.max(5, Math.ceil(effectiveRowsViewportHeight / libraryRowHeight)))} rowHeight={libraryRowHeight} />
-          ) : (
           <div className="virtual-rows-spacer" style={{ height: virtualSpacerHeight }}>
           {virtualDocuments.map((item, virtualIndex) => {
             const actualIndex = virtualStartIndex + virtualIndex;
@@ -9670,7 +9649,6 @@ function LibraryView({
             );
           })}
           </div>
-          )}
         </div>
       </section>
       <ResizeHandle
@@ -27940,12 +27918,11 @@ export default function App() {
     });
   }, []);
   const libraryPageData = libraryDocumentList.data;
-  const libraryPlaceholderOffsetMismatch = Boolean(libraryDocumentList.isPlaceholderData && libraryPageData && libraryPageData.offset !== libraryOffset);
-  const libraryRows = libraryPlaceholderOffsetMismatch ? EMPTY_LIBRARY_ROWS : libraryPageData?.items ?? EMPTY_LIBRARY_ROWS;
+  const libraryRows = libraryPageData?.items ?? EMPTY_LIBRARY_ROWS;
   const libraryTotalDocumentCount = libraryPageData?.total_count ?? dashboard.data?.documents ?? libraryRows.length;
   const libraryTotalPageCount = libraryPageData?.total_page_count ?? 0;
-  const libraryDisplayOffset = libraryPageTurnIntent?.offset ?? (libraryPlaceholderOffsetMismatch ? libraryOffset : libraryPageData?.offset ?? libraryOffset);
-  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryPlaceholderOffsetMismatch ? libraryPageSize : libraryPageData?.limit ?? libraryPageSize);
+  const libraryDisplayOffset = libraryPageData?.offset ?? libraryOffset;
+  const libraryDisplayLimit = Math.max(MIN_LIBRARY_PAGE_SIZE, libraryPageData?.limit ?? libraryPageSize);
   const libraryPageTurnPending = Boolean(libraryPageTurnIntent);
   const libraryHasMoreDocuments = libraryTotalDocumentCount > libraryDisplayOffset + libraryDisplayLimit;
   useEffect(() => {
