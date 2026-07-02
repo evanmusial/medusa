@@ -695,7 +695,7 @@ Consequences:
 
 ### 2026-06-25: Host-agent release refresh for portable servers
 
-Decision: Add a file-backed release status and upgrade-request contract for portable server deployments such as carrot.
+Decision: Add a file-backed release status and upgrade-request contract for portable server deployments.
 
 Why: Medusa should be able to show that newer code has been pushed and offer an authenticated `Upgrade Now` action without giving the web backend broad host control. The server needs a narrow boundary between browser consent, backend state, and host-owned git/Docker operations.
 
