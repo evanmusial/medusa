@@ -4240,12 +4240,13 @@ textarea {
 
 .doc-row-main {
   min-width: 0;
+  align-self: start;
   display: grid;
   gap: 7px;
   border: 0;
   background: transparent;
   color: var(--ink);
-  padding: 0;
+  padding: 3px 0 0;
   text-align: left;
   text-decoration: none;
 }
