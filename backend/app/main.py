@@ -343,6 +343,7 @@ from app.services.processing import (
     refresh_import_batch_progress,
 )
 from app.services.publications import (
+    PUBLICATION_VERIFIED_STATUS,
     apply_document_publication_patch,
     clear_document_publication_verification,
     document_publication_is_verified,
@@ -799,12 +800,14 @@ def warm_cache_payload_result(
     key_parts: dict[str, Any],
     loader,
 ) -> tuple[str, Any]:
-    _, _, key, _ = get_cached_payload(
+    status, payload, key, _ = get_cached_payload(
         db,
         family=family,
         revision_families=revision_families,
         key_parts=key_parts,
     )
+    if payload is not None:
+        return status, payload
     result = loader()
     return set_cached_payload(key, family, result), result
 
@@ -987,6 +990,29 @@ def project_refs_for_documents(db: Session, document_ids: list[str]) -> dict[str
     return refs
 
 
+def primary_publication_links_for_documents(db: Session, document_ids: list[str]) -> dict[str, DocumentPublication]:
+    unique_document_ids = unique_preserve_order(document_ids)
+    if not unique_document_ids:
+        return {}
+    rows = (
+        db.query(DocumentPublication)
+        .options(*document_list_publication_load_options())
+        .filter(DocumentPublication.document_id.in_(unique_document_ids))
+        .order_by(
+            DocumentPublication.document_id,
+            case((DocumentPublication.role == "primary", 0), else_=1),
+            DocumentPublication.role,
+            DocumentPublication.created_at,
+            DocumentPublication.id,
+        )
+        .all()
+    )
+    links: dict[str, DocumentPublication] = {}
+    for link in rows:
+        links.setdefault(str(link.document_id), link)
+    return links
+
+
 def figure_counts_for_documents(db: Session, document_ids: list[str]) -> dict[str, int]:
     unique_document_ids = unique_preserve_order(document_ids)
     if not unique_document_ids:
@@ -1126,8 +1152,12 @@ def document_list_row_load_options():
             Domain.name,
             Domain.color,
         ),
-        selectinload(Document.publication_links)
-        .load_only(
+    )
+
+
+def document_list_publication_load_options():
+    return (
+        load_only(
             DocumentPublication.id,
             DocumentPublication.document_id,
             DocumentPublication.publication_id,
@@ -1153,9 +1183,8 @@ def document_list_row_load_options():
             DocumentPublication.verified_at,
             DocumentPublication.verified_by,
             DocumentPublication.evidence,
-        )
-        .selectinload(DocumentPublication.publication)
-        .load_only(
+        ),
+        selectinload(DocumentPublication.publication).load_only(
             Publication.id,
             Publication.title,
             Publication.publication_type,
@@ -1486,18 +1515,37 @@ def document_has_verified_fields(document: Document) -> bool:
     )
 
 
+def document_publication_link_is_verified(link: DocumentPublication | None) -> bool:
+    return bool(link and link.verification_status == PUBLICATION_VERIFIED_STATUS and link.verified_at)
+
+
+def document_list_row_has_verified_fields(document: Document, *, has_verified_publication: bool = False) -> bool:
+    evidence = document.metadata_evidence or {}
+    for field, config in DOCUMENT_FIELD_VERIFICATION_CONFIG.items():
+        if field == "doi" and not document.doi:
+            continue
+        verification = evidence.get(str(config["metadata_key"]))
+        if not isinstance(verification, dict) or verification.get("status") != "verified":
+            continue
+        if parse_evidence_datetime(verification.get("verified_at")):
+            return True
+    return document_summary_is_validated(document) or has_verified_publication
+
+
 def document_list_row_out(
     document: Document,
     projects: list[DocumentListProjectOut] | None = None,
     figure_count: int = 0,
     has_active_work: bool = False,
+    publication: DocumentPublicationOut | None = None,
+    has_verified_publication: bool = False,
 ) -> DocumentListRow:
     return DocumentListRow(
         id=document.id,
         title=document.title,
         authors=document.authors or [],
         publication_year=document.publication_year,
-        publication=document_publication_out(primary_document_publication(document)),
+        publication=publication,
         rich_summary=document_list_summary_preview(document.rich_summary),
         citation_status=document.citation_status,
         no_doi=document_no_doi(document),
@@ -1506,7 +1554,10 @@ def document_list_row_out(
         processing_status=document.processing_status,
         read_status=document.read_status,
         priority=document.priority,
-        has_verified_fields=document_has_verified_fields(document),
+        has_verified_fields=document_list_row_has_verified_fields(
+            document,
+            has_verified_publication=has_verified_publication,
+        ),
         has_active_work=has_active_work,
         is_locked=document_is_locked(document),
         locked_at=document.locked_at,
@@ -3391,6 +3442,7 @@ def hydrate_cache_payloads(
         "finance_keys": 0,
         "job_keys": 0,
         "backup_keys": 0,
+        "cached_payloads": 0,
         "skipped_payloads": 0,
         "errored_payloads": 0,
     }
@@ -3429,11 +3481,25 @@ def hydrate_cache_payloads(
             }
 
         start_cache_hydration(planned_payloads=1, phase="Planning", detail="Sizing cache hydration payloads")
+        hydrated_payload_results: dict[str, Any | None] = {}
+
+        def hydration_payload_identity(family: str, revision_families: set[str], key_parts: dict[str, Any]) -> str:
+            return json.dumps(
+                {
+                    "family": family,
+                    "key_parts": key_parts,
+                    "revision_families": sorted(revision_families),
+                },
+                sort_keys=True,
+                default=str,
+            )
 
         def record_write_status(status: str, bucket: str) -> None:
             if status == "write":
                 counters["hydrated_keys"] += 1
                 counters[bucket] += 1
+            elif status == "hit":
+                counters["cached_payloads"] += 1
             elif status == "bypass":
                 counters["skipped_payloads"] += 1
             elif status == "error":
@@ -3447,6 +3513,9 @@ def hydrate_cache_payloads(
             loader,
             bucket: str,
         ) -> Any | None:
+            identity = hydration_payload_identity(family, revision_families, key_parts)
+            if identity in hydrated_payload_results:
+                return hydrated_payload_results[identity]
             status = "error"
             result = None
             try:
@@ -3458,6 +3527,8 @@ def hydrate_cache_payloads(
                     loader=loader,
                 )
                 record_write_status(status, bucket)
+                if status in {"write", "hit", "bypass"}:
+                    hydrated_payload_results[identity] = result
             except Exception:
                 counters["errored_payloads"] += 1
                 logger.debug("Cache hydration failed for %s %s", family, key_parts, exc_info=True)
@@ -3466,6 +3537,7 @@ def hydrate_cache_payloads(
                     phase=cache_hydration_phase(bucket),
                     detail=cache_hydration_detail(family, key_parts),
                     hydrated_keys=counters["hydrated_keys"],
+                    cached_payloads=counters["cached_payloads"],
                     skipped_payloads=counters["skipped_payloads"],
                     errored_payloads=counters["errored_payloads"],
                 )
@@ -3535,7 +3607,7 @@ def hydrate_cache_payloads(
             normalized = normalized_document_filters(filters)
             hydrate_payload(
                 family="documents:summary",
-                revision_families={"library", "organization", "jobs"},
+                revision_families={"library", "organization"},
                 key_parts=document_summary_cache_key_parts(q=q, **normalized),
                 loader=lambda normalized=normalized, q=q: document_summaries_out(db, q=q, **normalized),
                 bucket="saved_search_keys" if saved_search else "list_page_keys",
@@ -3554,7 +3626,7 @@ def hydrate_cache_payloads(
                 )
                 hydrate_payload(
                     family="documents:list",
-                    revision_families={"library", "organization", "jobs"},
+                    revision_families={"library", "organization"},
                     key_parts=key_parts,
                     loader=lambda normalized=normalized, q=q, sort=sort: document_list_rows_out(
                         db,
@@ -3609,15 +3681,44 @@ def hydrate_cache_payloads(
 
                         result = hydrate_payload(
                             family="documents:list",
-                            revision_families={"library", "organization", "jobs"},
+                            revision_families={"library", "organization"},
                             key_parts=key_parts,
                             loader=load_page,
                             bucket="saved_search_keys" if saved_search else "list_page_keys",
                         )
-                        if not result or not getattr(result, "has_more", False):
+                        if not result or not document_list_payload_has_more(result):
                             break
                         offset += list_page_size
                         page_index += 1
+
+        def document_list_payload_has_more(result: Any) -> bool:
+            if isinstance(result, dict):
+                return bool(result.get("has_more"))
+            return bool(getattr(result, "has_more", False))
+
+        def hydrate_landing_library_list_pages() -> None:
+            normalized = normalized_document_filters(None)
+            hydrate_document_summary(filters=normalized)
+            for list_page_size in library_page_sizes:
+                key_parts = document_list_cache_key_parts(offset=0, limit=list_page_size, sort="title", **normalized)
+
+                def load_landing_page(list_page_size: int = list_page_size, normalized: dict[str, str] = normalized) -> DocumentListOut:
+                    return document_list_rows_out(
+                        db,
+                        all_results=False,
+                        offset=0,
+                        limit=list_page_size,
+                        sort="title",
+                        **normalized,
+                    )
+
+                hydrate_payload(
+                    family="documents:list",
+                    revision_families={"library", "organization"},
+                    key_parts=key_parts,
+                    loader=load_landing_page,
+                    bucket="list_page_keys",
+                )
 
         base_warmers = [
             {
@@ -3873,6 +3974,12 @@ def hydrate_cache_payloads(
             detail=f"Preloading {max(1, estimated_payloads)} cache payloads",
         )
 
+        landing_core_endpoints = {"dashboard", "preferences", "domains", "tags", "projects", "saved_searches"}
+        for warmer in base_warmers:
+            if warmer["key_parts"].get("endpoint") in landing_core_endpoints:
+                hydrate_payload(**warmer)
+        hydrate_landing_library_list_pages()
+
         for warmer in base_warmers:
             hydrate_payload(**warmer)
 
@@ -3976,6 +4083,7 @@ def hydrate_cache_payloads(
 
         message = (
             f"Hydrated {counters['hydrated_keys']} cache payloads from PostgreSQL"
+            f" and reused {counters['cached_payloads']} already-hot payloads"
             f" for {document_count} document details."
         )
         get_cache_backend().remember_hydration(hydrated_at)
@@ -3983,6 +4091,7 @@ def hydrate_cache_payloads(
             status="complete",
             message=message,
             hydrated_keys=counters["hydrated_keys"],
+            cached_payloads=counters["cached_payloads"],
             skipped_payloads=counters["skipped_payloads"],
             errored_payloads=counters["errored_payloads"],
             document_count=document_count,
@@ -4003,6 +4112,7 @@ def hydrate_cache_payloads(
             message="Cache hydration failed.",
             detail=str(exc) or "Cache hydration failed.",
             hydrated_keys=counters["hydrated_keys"],
+            cached_payloads=counters["cached_payloads"],
             skipped_payloads=counters["skipped_payloads"],
             errored_payloads=counters["errored_payloads"],
             document_count=document_count,
@@ -4042,8 +4152,9 @@ def schedule_startup_cache_hydration() -> None:
                 sleep(CACHE_STARTUP_HYDRATE_RETRY_SECONDS)
             if result.get("status") == "complete":
                 logger.info(
-                    "Startup cache hydration complete: hydrated_keys=%s document_details=%s skipped_payloads=%s errored_payloads=%s",
+                    "Startup cache hydration complete: hydrated_keys=%s cached_payloads=%s document_details=%s skipped_payloads=%s errored_payloads=%s",
                     result.get("hydrated_keys"),
+                    result.get("cached_payloads"),
                     result.get("document_count"),
                     result.get("skipped_payloads"),
                     result.get("errored_payloads"),
@@ -5648,7 +5759,7 @@ def list_documents(
         db,
         response,
         family="documents:summary",
-        revision_families={"library", "organization", "jobs"},
+        revision_families={"library", "organization"},
         key_parts=document_summary_cache_key_parts(
             q=q,
             domain_id=domain_id,
@@ -5800,6 +5911,7 @@ def document_list_rows_out(
         documents = row_query.order_by(None).order_by(*order_columns).offset(offset).limit(limit).all()
     document_ids = [document.id for document in documents]
     project_map = project_refs_for_documents(db, document_ids)
+    publication_map = primary_publication_links_for_documents(db, document_ids)
     figure_count_map = figure_counts_for_documents(db, document_ids)
     active_work_document_ids = active_work_document_ids_for_documents(db, document_ids)
     revision_parts = [str(total_count), str(total_page_count), latest_updated.isoformat() if latest_updated else "none"]
@@ -5810,6 +5922,8 @@ def document_list_rows_out(
                 project_map.get(document.id, []),
                 figure_count=figure_count_map.get(document.id, 0),
                 has_active_work=document.id in active_work_document_ids,
+                publication=document_publication_out(publication_map.get(document.id)),
+                has_verified_publication=document_publication_link_is_verified(publication_map.get(document.id)),
             )
             for document in documents
         ],
@@ -5864,7 +5978,7 @@ def list_document_rows(
         db,
         response,
         family="documents:list",
-        revision_families={"library", "organization", "jobs"},
+        revision_families={"library", "organization"},
         key_parts=key_parts,
         loader=lambda: document_list_rows_out(
             db,

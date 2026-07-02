@@ -398,6 +398,8 @@ const DISMISSED_AI_FAILURE_NOTICE_KEY = "medusa-dismissed-ai-failure-notices";
 const DISMISSED_AI_FAILURE_NOTICE_MAX = 240;
 const COMPLETED_INGESTION_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
 const COMMAND_PALETTE_MAX_RESULTS = 14;
+const INITIAL_DETAIL_FIGURE_COUNT = 12;
+const DETAIL_FIGURE_BATCH_SIZE = 24;
 
 const APA_CITATION_MODEL_KEY = "apa_citation";
 const RAW_TEXT_EXTRACTION_MODEL_KEY = "raw_text_extraction";
@@ -1849,9 +1851,47 @@ function cacheHydrationActionProgress(localProgress: ActionProgressState, hydrat
   return localProgress;
 }
 
+function cacheHydrationPayloadCountText(hydration?: CacheHydrationStatus | null) {
+  if (!hydration?.active) return null;
+  const completed = Math.max(0, Math.min(hydration.completed_payloads || 0, hydration.planned_payloads || hydration.completed_payloads || 0));
+  const planned = Math.max(0, hydration.planned_payloads || 0);
+  if (planned > 0) return `${formatMetric(completed)} of ${formatMetric(planned)} payloads`;
+  if (completed > 0) return `${formatMetric(completed)} payloads`;
+  return null;
+}
+
+function cacheHydrationDocumentCountText(hydration?: CacheHydrationStatus | null) {
+  if (!hydration?.active || !hydration.document_count) return null;
+  return `${formatMetric(hydration.document_count)} ${hydration.document_count === 1 ? "document" : "documents"}`;
+}
+
+function cacheHydrationResultCountText(hydration?: CacheHydrationStatus | null) {
+  if (!hydration?.active) return null;
+  const pieces = [
+    hydration.hydrated_keys ? `${formatMetric(hydration.hydrated_keys)} written` : "",
+    hydration.cached_payloads ? `${formatMetric(hydration.cached_payloads)} hot` : "",
+    hydration.skipped_payloads ? `${formatMetric(hydration.skipped_payloads)} bypassed` : "",
+    hydration.errored_payloads ? `${formatMetric(hydration.errored_payloads)} errored` : "",
+  ].filter(Boolean);
+  return pieces.length ? pieces.join(" / ") : null;
+}
+
+function cacheHydrationMenuDetail(hydration?: CacheHydrationStatus | null) {
+  if (!hydration?.active) return null;
+  return [
+    cacheHydrationPayloadCountText(hydration),
+    cacheHydrationDocumentCountText(hydration),
+    cacheHydrationResultCountText(hydration),
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function cacheHydrationDetail(hydration?: CacheHydrationStatus | null) {
   if (!hydration?.active) return null;
-  return hydration.detail || hydration.phase || "Preloading cache entries";
+  const phaseDetail = hydration.detail || hydration.phase || "Preloading cache entries";
+  const progressDetail = cacheHydrationMenuDetail(hydration);
+  return [phaseDetail, progressDetail].filter(Boolean).join(" / ");
 }
 
 function AsyncActionSlot({
@@ -6157,8 +6197,14 @@ function Header({
   const cacheUsedMemoryLabel = formatCacheUsedMemory(cacheStatus?.used_memory_bytes);
   const cacheGlanceTone = valkeyResourceTone(cacheUsagePercent);
   const cacheGlanceMeterStyle = { "--user-cache-used": `${progressPercent(cacheUsagePercent ?? 0)}%` } as CSSProperties;
+  const activeHydration = cacheStatus?.hydration?.active ? cacheStatus.hydration : null;
   const cacheRefreshPercent = cacheRefreshProgress.visible ? cacheRefreshProgress.progress : null;
   const cacheHydratePercent = cacheHydrateProgress.visible ? cacheHydrateProgress.progress : null;
+  const cacheHydrateMenuStatus = activeHydration ? cacheHydrationMenuDetail(activeHydration) : null;
+  const cacheHydrateLabel = cacheHydratePercent !== null ? `Hydrate Cache ${cacheHydratePercent}%` : "Hydrate Cache";
+  const cacheHydrateTooltip = cacheHydrateMenuStatus
+    ? `${cacheHydrateLabel}. ${cacheHydrateMenuStatus}`
+    : "Preload safe PostgreSQL-derived cache payloads into Valkey.";
   const cacheRefreshProgressStyle = cacheRefreshProgress.visible
     ? ({ "--user-cache-action-progress": `${cacheRefreshProgress.progress}%` } as CSSProperties)
     : undefined;
@@ -6267,6 +6313,7 @@ function Header({
               </button>
               <button
                 className={`user-options-menu-item user-options-cache-action${cacheHydrateProgress.visible ? " in-flight" : ""}`}
+                data-tooltip={cacheHydrateTooltip}
                 disabled={cacheActionBusy}
                 onClick={hydrateCacheFromUserMenu}
                 role="menuitem"
@@ -6286,7 +6333,10 @@ function Header({
                   </span>
                 ) : null}
                 <UploadCloud className={cacheHydrating ? "spin" : ""} size={16} aria-hidden="true" />
-                <span>{cacheHydratePercent !== null ? `Hydrate Cache (${cacheHydratePercent}%)` : "Hydrate Cache"}</span>
+                <span className="user-options-menu-item-copy">
+                  <span>{cacheHydrateLabel}</span>
+                  {cacheHydrateMenuStatus ? <small>{cacheHydrateMenuStatus}</small> : null}
+                </span>
               </button>
               <div className="user-options-menu-divider" role="separator" />
               <button className="user-options-menu-item" onClick={openCommandPaletteFromUserMenu} role="menuitem" type="button">
@@ -10429,6 +10479,7 @@ function DocumentPanelContent({
   const [editingFigureId, setEditingFigureId] = useState<string | null>(null);
   const [figureDrafts, setFigureDrafts] = useState<Record<string, FigureEditDraft>>({});
   const [figureEditError, setFigureEditError] = useState<string | null>(null);
+  const [visibleFigureCount, setVisibleFigureCount] = useState(INITIAL_DETAIL_FIGURE_COUNT);
   const [editingDoi, setEditingDoi] = useState(false);
   const [doiDraft, setDoiDraft] = useState(document.doi || "");
   const [doiEditError, setDoiEditError] = useState<string | null>(null);
@@ -10459,6 +10510,8 @@ function DocumentPanelContent({
   const [formulaCaptureRunId, setFormulaCaptureRunId] = useState<string | null>(null);
   const [tagRefreshRunId, setTagRefreshRunId] = useState<string | null>(null);
   const trackedRunAcceptedAtRef = useRef<Record<string, number>>({});
+  const visibleFigures = document.figures.slice(0, visibleFigureCount);
+  const hiddenFigureCount = Math.max(0, document.figures.length - visibleFigures.length);
   const rememberTrackedRun = useCallback((run: ConcordanceRun) => {
     trackedRunAcceptedAtRef.current[run.id] = Date.now();
     return run.id;
@@ -10509,6 +10562,9 @@ function DocumentPanelContent({
     queryKey: ["annotations", document.id],
     queryFn: () => api.annotations(document.id),
   });
+  useEffect(() => {
+    setVisibleFigureCount(INITIAL_DETAIL_FIGURE_COUNT);
+  }, [document.id]);
   const finishBibliographyRefresh = useCallback(
     (failedMessage?: string) => {
       setBibliographyRunId(null);
@@ -15455,7 +15511,7 @@ function DocumentPanelContent({
         <h3>Figures</h3>
         {document.figures.length ? (
           <div className="figure-grid">
-            {document.figures.map((figure) => {
+            {visibleFigures.map((figure) => {
               const editingThisFigure = editingFigureId === figure.id;
               const figureDraft = figureDrafts[figure.id] || figureDraftFromFigure(figure);
               return (
@@ -15567,6 +15623,23 @@ function DocumentPanelContent({
                 </article>
               );
             })}
+            {hiddenFigureCount ? (
+              <div className="figure-grid-more">
+                <span>{`Showing ${visibleFigures.length} of ${document.figures.length}`}</span>
+                <button
+                  className="secondary-button compact"
+                  data-tooltip="Show more extracted figures for this document."
+                  onClick={() =>
+                    setVisibleFigureCount((current) =>
+                      Math.min(document.figures.length, current + DETAIL_FIGURE_BATCH_SIZE),
+                    )
+                  }
+                  type="button"
+                >
+                  Show {Math.min(DETAIL_FIGURE_BATCH_SIZE, hiddenFigureCount)} more
+                </button>
+              </div>
+            ) : null}
             {figureEditError ? <p className="field-error">{figureEditError}</p> : null}
           </div>
         ) : (
@@ -23864,6 +23937,7 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
     queryFn: () => api.releaseStatus(MEDUSA_BUILD_VERSION),
     refetchInterval: 30000,
   });
+  const cacheHydrationPollUntilRef = useRef(0);
   const libraryFunStats = useQuery({
     queryKey: ["library-fun-stats"],
     queryFn: api.libraryFunStats,
@@ -23872,7 +23946,10 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
   const cacheStatus = useQuery({
     queryKey: ["cache-status"],
     queryFn: api.cacheStatus,
-    refetchInterval: 30000,
+    refetchInterval: (query) => {
+      const current = query.state.data as CacheStatus | undefined;
+      return current?.hydration?.active || Date.now() < cacheHydrationPollUntilRef.current ? ACTIVE_WORK_REFETCH_INTERVAL_MS : 30000;
+    },
   });
   const requestReleaseCheck = useMutation({
     mutationFn: () => api.requestReleaseCheck(MEDUSA_BUILD_VERSION),
@@ -23920,12 +23997,19 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
   });
   const hydrateCache = useMutation<CacheHydrateResult, Error>({
     mutationFn: api.hydrateCache,
+    onMutate: () => {
+      cacheHydrationPollUntilRef.current = Date.now() + 10 * 60_000;
+      void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
+    },
     onSuccess: (result) => {
       cacheHydrateFeedback.showSuccess();
       queryClient.setQueryData(["cache-status"], result.after);
       void queryClient.invalidateQueries({ queryKey: ["cache-status"] });
     },
     onError: (error) => cacheHydrateFeedback.showError(actionFailureMessage("Could not hydrate cache", error)),
+    onSettled: () => {
+      cacheHydrationPollUntilRef.current = Date.now() + ACTION_PROGRESS_COMPLETE_MS;
+    },
   });
 
   const container = containerStatus.data;
@@ -23968,7 +24052,10 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
     .join(" / ");
   const cacheHitRatePercent = cache ? (cache.hit_rate || 0) * 100 : 0;
   const cacheUsagePercent = cacheMemoryPercent(cache);
-  const cacheActionBusy = refreshCache.isPending || hydrateCache.isPending;
+  const cacheHydrationActive = Boolean(cache?.hydration?.active);
+  const cacheHydrationProgress = cacheHydrationActive ? progressPercent(cache?.hydration?.progress ?? 0) : undefined;
+  const cacheHydrationButtonBusy = hydrateCache.isPending || cacheHydrationActive;
+  const cacheActionBusy = refreshCache.isPending || cacheHydrationButtonBusy;
   const cacheValue = cache?.enabled
     ? cacheUsagePercent !== null
       ? formatPercent(cacheUsagePercent) || "0%"
@@ -24160,15 +24247,24 @@ function StatusView({ dashboard, dialogs }: { dashboard?: Dashboard; dialogs: Ap
                     {refreshCache.isPending ? "Refreshing" : "Refresh"}
                   </button>
                 </AsyncActionSlot>
-                <AsyncActionSlot busy={hydrateCache.isPending} feedback={cacheHydrateFeedback.feedback} label="Cache hydration in progress">
+                <AsyncActionSlot
+                  busy={cacheHydrationButtonBusy}
+                  feedback={cacheHydrateFeedback.feedback}
+                  label="Cache hydration in progress"
+                  progress={cacheHydrationProgress}
+                >
                   <button
-                    className={asyncFeedbackClass("secondary-button compact", cacheHydrateFeedback.feedback, hydrateCache.isPending)}
+                    className={asyncFeedbackClass("secondary-button compact", cacheHydrateFeedback.feedback, cacheHydrationButtonBusy)}
                     disabled={cacheActionBusy}
                     onClick={() => hydrateCache.mutate()}
                     type="button"
                   >
-                    <UploadCloud className={hydrateCache.isPending ? "spin" : ""} size={14} />
-                    {hydrateCache.isPending ? "Hydrating" : "Hydrate"}
+                    <UploadCloud className={cacheHydrationButtonBusy ? "spin" : ""} size={14} />
+                    {cacheHydrationActive && cacheHydrationProgress !== undefined
+                      ? `Hydrating ${cacheHydrationProgress}%`
+                      : hydrateCache.isPending
+                        ? "Hydrating"
+                        : "Hydrate"}
                   </button>
                 </AsyncActionSlot>
                 <Database size={18} />
@@ -27852,11 +27948,12 @@ export default function App() {
     });
   }
   if (cacheHydrateProgress.visible) {
-    const hydrationStartedAt = cacheStatus.data?.hydration?.started_at ? Date.parse(cacheStatus.data.hydration.started_at) : Date.now();
+    const hydrationStatus = cacheStatus.data?.hydration;
+    const hydrationStartedAt = hydrationStatus?.started_at ? Date.parse(hydrationStatus.started_at) : Date.now();
     cacheActionBackgroundJobs.push({
       id: "cache-hydrate",
-      label: "Hydrate Cache",
-      detail: cacheHydrateProgress.running ? cacheHydrationDetail(cacheStatus.data?.hydration) || "Preloading common cache entries" : "Finishing",
+      label: cacheHydrateProgress.running ? `Hydrate Cache ${cacheHydrateProgress.progress}%` : "Hydrate Cache",
+      detail: cacheHydrateProgress.running ? cacheHydrationDetail(hydrationStatus) || "Preloading common cache entries" : "Finishing",
       status: "running",
       runningJobs: 1,
       progress: cacheHydrateProgress.progress,

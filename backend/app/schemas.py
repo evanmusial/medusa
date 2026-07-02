@@ -1645,6 +1645,7 @@ class CacheHydrationStatusOut(BaseModel):
     planned_payloads: int = 0
     completed_payloads: int = 0
     hydrated_keys: int = 0
+    cached_payloads: int = 0
     skipped_payloads: int = 0
     errored_payloads: int = 0
     document_count: int = 0
@@ -1702,6 +1703,7 @@ class CacheHydrateOut(BaseModel):
     message: str
     hydrated_at: datetime
     hydrated_keys: int = 0
+    cached_payloads: int = 0
     base_keys: int = 0
     document_count: int = 0
     document_detail_keys: int = 0

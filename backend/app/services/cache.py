@@ -116,6 +116,7 @@ _hydration_status: dict[str, Any] = {
     "planned_payloads": 0,
     "completed_payloads": 0,
     "hydrated_keys": 0,
+    "cached_payloads": 0,
     "skipped_payloads": 0,
     "errored_payloads": 0,
     "document_count": 0,
@@ -200,6 +201,7 @@ def start_cache_hydration(*, planned_payloads: int = 0, document_count: int = 0,
                 "planned_payloads": planned,
                 "completed_payloads": 0,
                 "hydrated_keys": 0,
+                "cached_payloads": 0,
                 "skipped_payloads": 0,
                 "errored_payloads": 0,
                 "document_count": max(0, int(document_count or 0)),
@@ -254,6 +256,7 @@ def advance_cache_hydration(
     phase: str | None = None,
     detail: str | None = None,
     hydrated_keys: int | None = None,
+    cached_payloads: int | None = None,
     skipped_payloads: int | None = None,
     errored_payloads: int | None = None,
 ) -> None:
@@ -269,6 +272,8 @@ def advance_cache_hydration(
             _hydration_status["detail"] = detail
         if hydrated_keys is not None:
             _hydration_status["hydrated_keys"] = max(0, int(hydrated_keys or 0))
+        if cached_payloads is not None:
+            _hydration_status["cached_payloads"] = max(0, int(cached_payloads or 0))
         if skipped_payloads is not None:
             _hydration_status["skipped_payloads"] = max(0, int(skipped_payloads or 0))
         if errored_payloads is not None:
@@ -284,6 +289,7 @@ def finish_cache_hydration(
     phase: str | None = None,
     detail: str | None = None,
     hydrated_keys: int | None = None,
+    cached_payloads: int | None = None,
     skipped_payloads: int | None = None,
     errored_payloads: int | None = None,
     document_count: int | None = None,
@@ -303,6 +309,8 @@ def finish_cache_hydration(
         _hydration_status["progress"] = 100 if status == "complete" else _hydration_progress(completed, planned, active=False)
         if hydrated_keys is not None:
             _hydration_status["hydrated_keys"] = max(0, int(hydrated_keys or 0))
+        if cached_payloads is not None:
+            _hydration_status["cached_payloads"] = max(0, int(cached_payloads or 0))
         if skipped_payloads is not None:
             _hydration_status["skipped_payloads"] = max(0, int(skipped_payloads or 0))
         if errored_payloads is not None:

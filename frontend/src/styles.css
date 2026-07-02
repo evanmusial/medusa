@@ -1275,6 +1275,24 @@ textarea {
   white-space: nowrap;
 }
 
+.user-options-menu-item > span.user-options-menu-item-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  overflow: hidden;
+  white-space: normal;
+}
+
+.user-options-menu-item > .user-options-menu-item-copy > span,
+.user-options-menu-item > .user-options-menu-item-copy > small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .user-options-menu-item-progress {
   position: absolute;
   z-index: 0;
@@ -6796,6 +6814,21 @@ textarea {
 
 .figure-grid > .field-error {
   grid-column: 1 / -1;
+}
+
+.figure-grid-more {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.figure-grid-more span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .empty-inline {

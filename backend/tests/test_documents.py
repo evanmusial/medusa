@@ -1033,30 +1033,40 @@ def test_document_list_rows_omits_heavy_text_columns(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.main import list_document_rows
-    from app.models import Document
+    from app.models import Document, DocumentPublication, Publication
 
     Session = make_session()
     with Session() as db:
-        db.add_all(
-            [
-                Document(
-                    title="Compact row",
-                    original_filename="compact-row.pdf",
-                    checksum_sha256="a" * 64,
-                    processing_status="ready",
-                    search_text="heavy search text " * 1000,
-                    bibliography="heavy bibliography " * 1000,
-                    apa_citation="heavy citation " * 1000,
-                    apa_in_text_citation="heavy in-text citation " * 1000,
-                ),
-                Document(
-                    title="Second row",
-                    original_filename="second-row.pdf",
-                    checksum_sha256="b" * 64,
-                    processing_status="ready",
-                    search_text="more heavy search text " * 1000,
-                ),
-            ]
+        compact_row = Document(
+            title="Compact row",
+            original_filename="compact-row.pdf",
+            checksum_sha256="a" * 64,
+            processing_status="ready",
+            search_text="heavy search text " * 1000,
+            bibliography="heavy bibliography " * 1000,
+            apa_citation="heavy citation " * 1000,
+            apa_in_text_citation="heavy in-text citation " * 1000,
+        )
+        second_row = Document(
+            title="Second row",
+            original_filename="second-row.pdf",
+            checksum_sha256="b" * 64,
+            processing_status="ready",
+            search_text="more heavy search text " * 1000,
+        )
+        publication = Publication(
+            title="Journal of Compact Rows",
+            normalized_title="journal of compact rows",
+            publication_type="journal",
+        )
+        db.add_all([compact_row, second_row, publication])
+        db.flush()
+        db.add(
+            DocumentPublication(
+                document_id=compact_row.id,
+                publication_id=publication.id,
+                role="primary",
+            )
         )
         db.commit()
 
@@ -1082,6 +1092,42 @@ def test_document_list_rows_omits_heavy_text_columns(monkeypatch, tmp_path):
     assert "documents.bibliography" not in row_select
     assert "documents.apa_citation" not in row_select
     assert "documents.apa_in_text_citation" not in row_select
+    all_selects = "\n".join(statements)
+    assert "documents.search_text" not in all_selects
+    assert "documents.bibliography" not in all_selects
+    assert "documents.apa_citation" not in all_selects
+    assert "documents.apa_in_text_citation" not in all_selects
+    publication_selects = [statement for statement in statements if " from document_publications " in statement]
+    assert len(publication_selects) <= 1
+
+
+def test_document_list_rows_cache_ignores_job_revision(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app import main
+
+    captured: dict[str, object] = {}
+
+    def fake_get_cached_payload(db, *, family, revision_families, key_parts):
+        del db, key_parts
+        captured["family"] = family
+        captured["revision_families"] = set(revision_families)
+        return (
+            "hit",
+            main.DocumentListOut(items=[], total_count=0, total_page_count=0, offset=0, limit=50, has_more=False, revision="test"),
+            "cache-key",
+            {},
+        )
+
+    monkeypatch.setattr(main, "get_cached_payload", fake_get_cached_payload)
+
+    Session = make_session()
+    with Session() as db:
+        result = main.list_document_rows(object(), db)
+
+    assert result.items == []
+    assert captured == {"family": "documents:list", "revision_families": {"library", "organization"}}
 
 
 def test_document_list_rows_marks_documents_with_verified_fields(monkeypatch, tmp_path):

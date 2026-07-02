@@ -316,7 +316,7 @@ def test_hydrate_cache_warms_current_postgres_payloads(monkeypatch, tmp_path):
                     processing_status="ready",
                     page_count=5,
                 ),
-                SavedSearch(name="High Priority", query=None, filters={"priority": "high"}),
+                SavedSearch(name="High Priority", query="alpha", filters={"priority": "high"}),
             ]
         )
         db.commit()
@@ -459,6 +459,116 @@ def test_hydrate_cache_default_includes_saved_library_page_size(monkeypatch, tmp
     }
     assert any(key["all"] and key["sort"] == "title" for key in recorded_document_list_keys)
     assert all("publication_id" in key for key in recorded_document_list_keys)
+
+
+def test_hydrate_cache_prioritizes_landing_library_page(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from app.models import Document, Tag
+    from app.services import cache as cache_service
+    from app import main
+
+    class RecordingCache:
+        def __init__(self):
+            self.data = {}
+            self.hydrated_at = None
+
+        def get_json(self, key, family):
+            return ("hit", self.data[key]) if key in self.data else ("miss", None)
+
+        def set_json(self, key, family, payload, ttl_seconds, max_payload_bytes):
+            del family, ttl_seconds, max_payload_bytes
+            self.data[key] = payload
+            return "write"
+
+        def remember_refresh(self, refreshed_at=None):
+            return None
+
+        def last_refresh_at(self):
+            return None
+
+        def remember_hydration(self, hydrated_at=None):
+            self.hydrated_at = hydrated_at
+
+        def last_hydration_at(self):
+            return self.hydrated_at
+
+        def status(self):
+            return {
+                "backend": "recording",
+                "enabled": True,
+                "reachable": True,
+                "mode": "online",
+                "message": "Recording cache online.",
+                "key_count": len(self.data),
+            }
+
+    cache = RecordingCache()
+    recorded_payloads = []
+    original_warm_cache_payload_result = main.warm_cache_payload_result
+
+    def recording_warm_cache_payload_result(db, *, family, revision_families, key_parts, loader):
+        recorded_payloads.append({"family": family, "key_parts": dict(key_parts)})
+        return original_warm_cache_payload_result(
+            db,
+            family=family,
+            revision_families=revision_families,
+            key_parts=key_parts,
+            loader=loader,
+        )
+
+    def unfiltered_first_library_page(payload):
+        key = payload["key_parts"]
+        return (
+            payload["family"] == "documents:list"
+            and key["offset"] == 0
+            and key["limit"] == 25
+            and key["sort"] == "title"
+            and not key["all"]
+            and not any(key[name] for name in ["domain_id", "tag_id", "publication_id", "read_status", "priority", "citation_status", "duplicate_status", "health_status"])
+        )
+
+    monkeypatch.setattr(cache_service, "_cache_backend", cache)
+    monkeypatch.setattr(main, "warm_cache_payload_result", recording_warm_cache_payload_result)
+
+    Session = make_session()
+    with Session() as db:
+        db.add_all(
+            [
+                Document(
+                    title="Alpha",
+                    original_filename="alpha.pdf",
+                    checksum_sha256="1" * 64,
+                    processing_status="ready",
+                    page_count=3,
+                ),
+                Document(
+                    title="Beta",
+                    original_filename="beta.pdf",
+                    checksum_sha256="2" * 64,
+                    processing_status="ready",
+                    page_count=5,
+                ),
+                Tag(name="Security"),
+            ]
+        )
+        db.commit()
+
+        result = main.hydrate_cache_payloads(db, include_document_details=False, include_saved_searches=False, page_size=25)
+
+    assert result["status"] == "complete"
+    landing_page_indexes = [index for index, payload in enumerate(recorded_payloads) if unfiltered_first_library_page(payload)]
+    assert len(landing_page_indexes) == 1
+    landing_page_index = landing_page_indexes[0]
+    library_fun_index = next(index for index, payload in enumerate(recorded_payloads) if payload["family"] == "status:library_fun")
+    tag_filter_index = next(
+        index
+        for index, payload in enumerate(recorded_payloads)
+        if payload["family"] == "documents:list" and payload["key_parts"]["tag_id"]
+    )
+    assert landing_page_index < library_fun_index
+    assert landing_page_index < tag_filter_index
 
 
 def test_hydrate_cache_default_document_limit_means_all(monkeypatch, tmp_path):

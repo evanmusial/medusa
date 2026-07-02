@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 
@@ -25,6 +26,10 @@ class StorageService:
 
     def delete_uri(self, uri: str) -> bool:
         raise NotImplementedError
+
+
+_storage_service_lock = Lock()
+_storage_service_cache: tuple[tuple[Any, ...], StorageService] | None = None
 
 
 def split_gs_uri(uri: str) -> tuple[str, str]:
@@ -107,18 +112,53 @@ class GcsStorageService(StorageService):
         return True
 
 
+def _credentials_cache_fingerprint(credentials_path: str | None) -> tuple[Any, ...]:
+    if not credentials_path:
+        return (None,)
+    path = Path(credentials_path).expanduser()
+    try:
+        stat = path.stat()
+    except OSError:
+        return (str(path), None, None)
+    return (str(path), stat.st_size, stat.st_mtime_ns)
+
+
+def _storage_cache_key(storage_settings: dict[str, Any]) -> tuple[Any, ...]:
+    settings = get_settings()
+    gcs_bucket = storage_settings.get("gcs_bucket")
+    if gcs_bucket:
+        return (
+            "gcs",
+            gcs_bucket,
+            storage_settings.get("gcs_prefix") or settings.gcs_prefix,
+            _credentials_cache_fingerprint(storage_settings.get("google_credentials_path")),
+        )
+    return ("local", str(settings.local_storage_dir))
+
+
 def get_storage_service() -> StorageService:
     settings = get_settings()
     storage_settings = get_active_storage_settings()
     gcs_bucket = storage_settings.get("gcs_bucket")
+    cache_key = _storage_cache_key(storage_settings)
+    global _storage_service_cache
+    with _storage_service_lock:
+        if _storage_service_cache and _storage_service_cache[0] == cache_key:
+            return _storage_service_cache[1]
     if gcs_bucket:
         try:
-            return GcsStorageService(
+            service = GcsStorageService(
                 gcs_bucket,
                 storage_settings.get("gcs_prefix") or settings.gcs_prefix,
                 storage_settings.get("google_credentials_path"),
             )
+            with _storage_service_lock:
+                _storage_service_cache = (cache_key, service)
+            return service
         except Exception:
             # The app must still boot and import locally if GCS credentials are not ready yet.
             return LocalStorageService(settings.local_storage_dir)
-    return LocalStorageService(settings.local_storage_dir)
+    service = LocalStorageService(settings.local_storage_dir)
+    with _storage_service_lock:
+        _storage_service_cache = (cache_key, service)
+    return service

@@ -198,6 +198,7 @@ export type CacheHydrationStatus = {
   planned_payloads: number;
   completed_payloads: number;
   hydrated_keys: number;
+  cached_payloads: number;
   skipped_payloads: number;
   errored_payloads: number;
   document_count: number;
@@ -376,6 +377,7 @@ export type CacheHydrateResult = {
   message: string;
   hydrated_at: string;
   hydrated_keys: number;
+  cached_payloads: number;
   base_keys: number;
   document_count: number;
   document_detail_keys: number;
