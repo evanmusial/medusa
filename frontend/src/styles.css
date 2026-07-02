@@ -480,6 +480,15 @@ textarea {
   box-shadow: var(--shadow);
 }
 
+.release-upgrade-dialog.loading {
+  width: min(92vw, 520px);
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: clamp(6px, 1.4vmin, 14px);
+  padding: 24px;
+  text-align: center;
+}
+
 .release-upgrade-dialog.failed {
   border-color: color-mix(in srgb, var(--amber) 54%, var(--line));
 }
@@ -499,19 +508,47 @@ textarea {
   color: var(--amber);
 }
 
-.backend-connection-dialog {
-  border-color: color-mix(in srgb, var(--blue) 42%, var(--line));
+.release-upgrade-lockup {
+  display: grid;
+  justify-items: center;
+  gap: clamp(4px, 1.2vmin, 10px);
 }
 
-.backend-connection-emblem {
-  background: color-mix(in srgb, var(--blue) 14%, var(--panel));
-  color: var(--blue);
+.release-upgrade-emblem-stage {
+  position: relative;
+  width: clamp(78px, 18vmin, 142px);
+  height: clamp(78px, 18vmin, 142px);
+  display: grid;
+  place-items: center;
+}
+
+.release-upgrade-emblem-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 14px 26px rgb(15 23 42 / 15%));
+}
+
+.brand-name.release-upgrade-wordmark {
+  color: var(--ink);
+  font-size: clamp(38px, 11vmin, 86px);
+  line-height: 0.88;
+}
+
+.backend-connection-dialog {
+  border-color: color-mix(in srgb, var(--blue) 42%, var(--line));
 }
 
 .release-upgrade-copy {
   min-width: 0;
   display: grid;
   gap: 6px;
+}
+
+.release-upgrade-dialog.loading .release-upgrade-copy {
+  justify-items: center;
+  max-width: 430px;
 }
 
 .release-upgrade-copy span {

@@ -3175,12 +3175,22 @@ function ReleaseUpgradeOverlay({ lock, onDismiss }: { lock: ReleaseUpgradeLock; 
       <section
         aria-labelledby={titleId}
         aria-modal="true"
-        className={`release-upgrade-dialog${failed ? " failed" : ""}`}
+        className={`release-upgrade-dialog${failed ? " failed" : " loading"}`}
         role="alertdialog"
       >
-        <div className="release-upgrade-emblem" aria-hidden="true">
-          {failed ? <AlertTriangle size={28} /> : <Rocket className={lock.stage === "reloading" ? "" : "spin"} size={28} />}
-        </div>
+        {failed ? (
+          <div className="release-upgrade-emblem" aria-hidden="true">
+            <AlertTriangle size={28} />
+          </div>
+        ) : (
+          <div className="release-upgrade-lockup" aria-hidden="true">
+            <AnimatedMedusaLockup
+              emblemClassName="release-upgrade-emblem-image"
+              emblemStageClassName="release-upgrade-emblem-stage"
+              wordmarkClassName="release-upgrade-wordmark"
+            />
+          </div>
+        )}
         <div className="release-upgrade-copy">
           <span>{lock.targetVersion ? `Target ${lock.targetVersion}` : "Medusa release"}</span>
           <h2 id={titleId}>{lock.message}</h2>
@@ -3212,11 +3222,15 @@ function BackendUnavailableOverlay({ issue }: { issue: BackendConnectionIssue })
       <section
         aria-labelledby={titleId}
         aria-modal="true"
-        className="release-upgrade-dialog backend-connection-dialog"
+        className="release-upgrade-dialog backend-connection-dialog loading"
         role="alertdialog"
       >
-        <div className="release-upgrade-emblem backend-connection-emblem" aria-hidden="true">
-          <RefreshCw className="spin" size={28} />
+        <div className="release-upgrade-lockup backend-connection-lockup" aria-hidden="true">
+          <AnimatedMedusaLockup
+            emblemClassName="release-upgrade-emblem-image"
+            emblemStageClassName="release-upgrade-emblem-stage"
+            wordmarkClassName="release-upgrade-wordmark"
+          />
         </div>
         <div className="release-upgrade-copy">
           <span>{caption}</span>
@@ -6478,15 +6492,35 @@ function HeaderStatusButton({
   );
 }
 
+function AnimatedMedusaLockup({
+  emblemClassName,
+  emblemStageClassName,
+  wordmarkClassName,
+}: {
+  emblemClassName: string;
+  emblemStageClassName: string;
+  wordmarkClassName: string;
+}) {
+  return (
+    <>
+      <span className={emblemStageClassName}>
+        <MedusaEmblemImage className={emblemClassName} />
+        <StartupHeadSnakeOverlay />
+      </span>
+      <strong className={`brand-name ${wordmarkClassName}`}>{MEDUSA_APP_NAME}</strong>
+    </>
+  );
+}
+
 function StartupLoadingScreen() {
   return (
     <div className="loading-screen">
       <section aria-label="Loading Medusa" aria-live="polite" className="loading-panel" role="status">
-        <span className="loading-emblem-stage">
-          <MedusaEmblemImage className="loading-emblem" />
-          <StartupHeadSnakeOverlay />
-        </span>
-        <strong className="brand-name loading-wordmark">{MEDUSA_APP_NAME}</strong>
+        <AnimatedMedusaLockup
+          emblemClassName="loading-emblem"
+          emblemStageClassName="loading-emblem-stage"
+          wordmarkClassName="loading-wordmark"
+        />
       </section>
     </div>
   );
@@ -6531,11 +6565,11 @@ function StartupAnimationPage() {
     <main className="startup-animation-page" aria-label="Medusa startup animation preview">
       <section className="startup-animation-stage" aria-label="Medusa startup animation">
         <div className="startup-animation-lockup">
-          <span className="startup-animation-emblem-stage">
-            <MedusaEmblemImage className="startup-animation-emblem" />
-            <StartupHeadSnakeOverlay />
-          </span>
-          <strong className="brand-name startup-animation-wordmark">{MEDUSA_APP_NAME}</strong>
+          <AnimatedMedusaLockup
+            emblemClassName="startup-animation-emblem"
+            emblemStageClassName="startup-animation-emblem-stage"
+            wordmarkClassName="startup-animation-wordmark"
+          />
         </div>
       </section>
     </main>
