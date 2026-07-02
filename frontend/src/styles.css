@@ -4142,28 +4142,29 @@ textarea {
 }
 
 .doc-row {
+  position: relative;
   width: 100%;
   border-bottom: 0;
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--line) 42%, transparent);
   background: transparent;
   color: var(--ink);
   display: grid;
-  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(270px, auto);
+  grid-template-columns: 16px minmax(0, 1fr) minmax(270px, auto);
   gap: 8px;
   align-items: center;
   text-align: left;
-  padding: 11px 8px 11px 10px;
+  padding: 11px 8px 11px 4px;
   cursor: pointer;
 }
 
 .library-density-compact .doc-row {
-  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(220px, auto);
+  grid-template-columns: 16px minmax(0, 1fr) minmax(220px, auto);
   gap: 8px;
   padding-block: 8px;
 }
 
 .library-density-reading .doc-row {
-  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(250px, auto);
+  grid-template-columns: 16px minmax(0, 1fr) minmax(250px, auto);
   align-items: start;
   padding-block: 14px;
 }
@@ -4186,10 +4187,11 @@ textarea {
 }
 
 .doc-row-work-indicator {
-  align-self: start;
+  position: absolute;
+  top: 14px;
+  left: 28px;
   width: 16px;
   height: 16px;
-  margin-top: 3px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4249,6 +4251,10 @@ textarea {
   padding: 3px 0 0;
   text-align: left;
   text-decoration: none;
+}
+
+.doc-row:has(.doc-row-work-indicator.active) .doc-row-main {
+  padding-left: 22px;
 }
 
 .doc-row-title,
@@ -15694,12 +15700,12 @@ button.history-row,
   }
 
   .doc-row {
-    grid-template-columns: 16px 18px minmax(0, 1fr);
+    grid-template-columns: 16px minmax(0, 1fr);
   }
 
   .row-meta,
   .doc-row-summary {
-    grid-column: 3 / -1;
+    grid-column: 2 / -1;
   }
 
   .row-meta {
