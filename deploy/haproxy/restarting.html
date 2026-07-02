@@ -49,23 +49,17 @@
         width: min(360px, calc(100vw - 32px));
         display: grid;
         justify-items: center;
-        gap: 12px;
+        gap: 10px;
         text-align: center;
       }
 
       .emblem-stage {
         position: relative;
-        isolation: isolate;
-        width: 136px;
-        height: 112px;
+        width: 92px;
+        height: 84px;
         display: grid;
         place-items: center;
-        margin-bottom: -2px;
-      }
-
-      .emblem-stage picture {
-        position: relative;
-        z-index: 3;
+        margin-bottom: 0;
       }
 
       .emblem {
@@ -94,185 +88,119 @@
       .activity {
         position: relative;
         width: 100%;
-        height: 14px;
+        height: 48px;
         overflow: hidden;
-        border-radius: 999px;
-        background: var(--track);
-        box-shadow: inset 0 0 0 1px var(--line);
-      }
-
-      .snake,
-      .orbit-snake {
-        --snake-band: #22c55e;
-        --snake-head: 14px;
-        --snake-height: 8px;
-        --snake-ink: var(--accent);
-        --snake-width: 78px;
-        position: absolute;
-        display: block;
-        width: var(--snake-width);
-        height: var(--snake-height);
-        border-radius: 999px;
-        background:
-          radial-gradient(circle at calc(100% - 6px) 50%, #f8fafc 0 1px, transparent 1.6px),
-          repeating-linear-gradient(90deg, var(--snake-ink) 0 9px, var(--snake-band) 9px 18px);
-        box-shadow: 0 0 10px rgba(37, 99, 235, 0.34);
-        pointer-events: none;
-      }
-
-      .snake::before,
-      .orbit-snake::before {
-        content: "";
-        position: absolute;
-        right: -6px;
-        top: 50%;
-        width: var(--snake-head);
-        height: var(--snake-head);
-        border-radius: 50%;
-        background: var(--snake-ink);
-        box-shadow:
-          -2px 0 0 var(--snake-band),
-          0 0 10px rgba(37, 99, 235, 0.34);
-        transform: translateY(-50%);
-      }
-
-      .snake::after,
-      .orbit-snake::after {
-        content: "";
-        position: absolute;
-        right: -13px;
-        top: 50%;
-        width: 10px;
-        height: 2px;
-        border-radius: 999px;
-        background: #ef4444;
-        transform: translateY(-50%) scaleX(0.8);
-        transform-origin: left center;
-        animation: snake-tongue 0.42s ease-in-out infinite;
-      }
-
-      .orbit-snake {
-        left: 50%;
-        top: 50%;
-        z-index: 1;
-        animation: orbit-slither var(--orbit-duration, 4.2s) ease-in-out infinite;
-        transform: translate(calc(-50% + var(--orbit-x)), calc(-50% + var(--orbit-y))) rotate(var(--orbit-rotation));
-      }
-
-      .orbit-snake.primary {
-        --orbit-duration: 4.35s;
-        --orbit-rotation: -16deg;
-        --orbit-rotation-mid: 14deg;
-        --orbit-rotation-late: -28deg;
-        --orbit-x: -48px;
-        --orbit-x-mid: 18px;
-        --orbit-x-late: 45px;
-        --orbit-y: -34px;
-        --orbit-y-mid: -46px;
-        --orbit-y-late: 12px;
-        --snake-head: 15px;
-        --snake-height: 9px;
-        --snake-width: 64px;
-      }
-
-      .orbit-snake.secondary {
-        --orbit-duration: 3.8s;
-        --orbit-rotation: 30deg;
-        --orbit-rotation-mid: -12deg;
-        --orbit-rotation-late: 22deg;
-        --orbit-x: 42px;
-        --orbit-x-mid: -8px;
-        --orbit-x-late: -54px;
-        --orbit-y: -14px;
-        --orbit-y-mid: 28px;
-        --orbit-y-late: -3px;
-        --snake-band: #60a5fa;
-        --snake-head: 13px;
-        --snake-height: 7px;
-        --snake-ink: #0f9f8d;
-        --snake-width: 48px;
-        z-index: 4;
-        animation-delay: -1.2s;
-      }
-
-      .orbit-snake.tertiary {
-        --orbit-duration: 4.9s;
-        --orbit-rotation: 4deg;
-        --orbit-rotation-mid: 25deg;
-        --orbit-rotation-late: -9deg;
-        --orbit-x: -18px;
-        --orbit-x-mid: 52px;
-        --orbit-x-late: -42px;
-        --orbit-y: 42px;
-        --orbit-y-mid: 26px;
-        --orbit-y-late: -22px;
-        --snake-band: #60a5fa;
-        --snake-head: 16px;
-        --snake-height: 10px;
-        --snake-width: 74px;
-        animation-delay: -2.5s;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        -webkit-mask-image: linear-gradient(to right, transparent 0, #000 11%, #000 89%, transparent 100%);
+        mask-image: linear-gradient(to right, transparent 0, #000 11%, #000 89%, transparent 100%);
       }
 
       .snake {
-        top: calc(50% + var(--snake-track-y, 0px));
-        transform: translate(-140px, -50%);
-        animation: snake-slither var(--snake-speed, 1.75s) ease-in-out infinite;
-      }
-
-      .snake.primary {
-        --snake-head: 17px;
-        --snake-height: 10px;
-        --snake-track-y: -2px;
-        --snake-width: 112px;
+        --snake-band: #22c55e;
+        --snake-height: 44px;
+        --snake-ink: var(--accent);
+        --snake-speed: 4.4s;
+        --snake-top: 1px;
+        --snake-width: 190px;
+        position: absolute;
+        top: var(--snake-top);
+        left: calc(-1 * var(--snake-width));
+        display: block;
+        width: var(--snake-width);
+        height: var(--snake-height);
+        overflow: visible;
+        color: var(--snake-ink);
+        filter: drop-shadow(0 7px 10px rgba(37, 99, 235, 0.28));
+        pointer-events: none;
+        animation: snake-travel var(--snake-speed) linear infinite;
+        animation-delay: var(--snake-delay, 0s);
       }
 
       .snake.secondary {
-        --snake-head: 14px;
-        --snake-height: 8px;
-        --snake-speed: 2.05s;
-        --snake-track-y: 3px;
-        --snake-width: 82px;
+        --snake-band: #60a5fa;
+        --snake-height: 38px;
+        --snake-ink: #0f9f8d;
+        --snake-speed: 5.2s;
+        --snake-top: 12px;
+        --snake-width: 158px;
         opacity: 0.82;
-        animation-delay: -0.82s;
-        filter: saturate(0.9);
+        animation-delay: -1.6s;
       }
 
       .snake.tertiary {
         --snake-band: #60a5fa;
-        --snake-head: 12px;
-        --snake-height: 7px;
-        --snake-ink: #0f9f8d;
-        --snake-speed: 2.35s;
-        --snake-width: 58px;
-        opacity: 0.7;
-        animation-delay: -1.44s;
+        --snake-height: 32px;
+        --snake-speed: 3.85s;
+        --snake-top: 18px;
+        --snake-width: 132px;
+        opacity: 0.66;
+        animation-delay: -2.55s;
       }
 
-      @keyframes orbit-slither {
-        0%,
-        100% {
-          transform: translate(calc(-50% + var(--orbit-x)), calc(-50% + var(--orbit-y))) rotate(var(--orbit-rotation)) scaleX(0.82) scaleY(1);
-        }
-        28% {
-          transform: translate(calc(-50% + var(--orbit-x-mid)), calc(-50% + var(--orbit-y-mid))) rotate(var(--orbit-rotation-mid)) scaleX(1.1) scaleY(0.82);
-        }
-        62% {
-          transform: translate(calc(-50% + var(--orbit-x-late)), calc(-50% + var(--orbit-y-late))) rotate(var(--orbit-rotation-late)) scaleX(0.94) scaleY(1.12);
-        }
+      .snake-body,
+      .snake-scales {
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
-      @keyframes snake-slither {
+      .snake-body {
+        stroke: var(--snake-ink);
+        stroke-width: 10px;
+      }
+
+      .snake-scales {
+        stroke: var(--snake-band);
+        stroke-width: 10px;
+        stroke-dasharray: 8 14;
+        animation: snake-scales 0.7s linear infinite;
+      }
+
+      .snake-head {
+        fill: var(--snake-ink);
+      }
+
+      .snake-head-mark {
+        fill: var(--snake-band);
+        opacity: 0.9;
+      }
+
+      .snake-eye {
+        fill: #f8fafc;
+      }
+
+      .snake-tongue {
+        fill: none;
+        stroke: #ef4444;
+        stroke-width: 2px;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        transform-origin: 183px 22px;
+        animation: snake-tongue 0.42s ease-in-out infinite;
+      }
+
+      @keyframes snake-travel {
         0% {
-          transform: translate(-140px, -50%) rotate(0deg) scaleY(1);
+          left: calc(-1 * var(--snake-width));
+          transform: translateY(0);
         }
-        32% {
-          transform: translate(82px, -50%) rotate(1.6deg) scaleY(0.72);
+        34% {
+          transform: translateY(-1px);
         }
-        67% {
-          transform: translate(235px, -50%) rotate(-1.4deg) scaleY(1.12);
+        68% {
+          transform: translateY(1px);
         }
         100% {
-          transform: translate(390px, -50%) rotate(0deg) scaleY(1);
+          left: 100%;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes snake-scales {
+        to {
+          stroke-dashoffset: -22;
         }
       }
 
@@ -280,11 +208,11 @@
         0%,
         100% {
           opacity: 0.15;
-          transform: translateY(-50%) scaleX(0.35);
+          transform: scaleX(0.35);
         }
         50% {
           opacity: 1;
-          transform: translateY(-50%) scaleX(1);
+          transform: scaleX(1);
         }
       }
     </style>
@@ -329,16 +257,46 @@
           <source srcset="/medusa-emblem-night.png" media="(prefers-color-scheme: dark)">
           <img class="emblem" src="/medusa-emblem.png" alt="" aria-hidden="true">
         </picture>
-        <span class="orbit-snake primary" aria-hidden="true"></span>
-        <span class="orbit-snake secondary" aria-hidden="true"></span>
-        <span class="orbit-snake tertiary" aria-hidden="true"></span>
       </div>
       <strong class="wordmark">MEDUSA</strong>
       <div class="progress-group">
         <div class="activity" aria-label="Loading" role="progressbar">
-          <span class="snake primary"></span>
-          <span class="snake secondary"></span>
-          <span class="snake tertiary"></span>
+          <svg class="snake primary" aria-hidden="true" focusable="false" viewBox="0 0 190 44">
+            <path class="snake-body" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
+              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
+            </path>
+            <path class="snake-scales" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
+              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
+            </path>
+            <circle class="snake-head" cx="176" cy="22" r="8.5"></circle>
+            <circle class="snake-head-mark" cx="171" cy="20" r="2.2"></circle>
+            <circle class="snake-eye" cx="178.5" cy="18.8" r="1.2"></circle>
+            <path class="snake-tongue" d="M183 22 L190 19 M183 22 L190 25"></path>
+          </svg>
+          <svg class="snake secondary" aria-hidden="true" focusable="false" viewBox="0 0 190 44">
+            <path class="snake-body" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
+              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
+            </path>
+            <path class="snake-scales" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
+              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
+            </path>
+            <circle class="snake-head" cx="176" cy="22" r="8.5"></circle>
+            <circle class="snake-head-mark" cx="171" cy="20" r="2.2"></circle>
+            <circle class="snake-eye" cx="178.5" cy="18.8" r="1.2"></circle>
+            <path class="snake-tongue" d="M183 22 L190 19 M183 22 L190 25"></path>
+          </svg>
+          <svg class="snake tertiary" aria-hidden="true" focusable="false" viewBox="0 0 190 44">
+            <path class="snake-body" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
+              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
+            </path>
+            <path class="snake-scales" d="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22">
+              <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values="M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22;M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22;M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22;M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22"></animate>
+            </path>
+            <circle class="snake-head" cx="176" cy="22" r="8.5"></circle>
+            <circle class="snake-head-mark" cx="171" cy="20" r="2.2"></circle>
+            <circle class="snake-eye" cx="178.5" cy="18.8" r="1.2"></circle>
+            <path class="snake-tongue" d="M183 22 L190 19 M183 22 L190 25"></path>
+          </svg>
         </div>
       </div>
     </main>

@@ -6245,22 +6245,41 @@ function HeaderStatusButton({
   );
 }
 
+const LOADING_SNAKE_WAVE_A = "M5 22 C22 8 38 8 54 22 S86 36 102 22 S134 8 150 22 S166 32 174 22";
+const LOADING_SNAKE_WAVE_B = "M5 22 C22 36 38 36 54 22 S86 8 102 22 S134 36 150 22 S166 12 174 22";
+const LOADING_SNAKE_WAVE_C = "M5 22 C22 12 42 34 58 22 S90 10 106 22 S138 34 154 22 S168 16 174 22";
+const LOADING_SNAKE_WAVE_VALUES = `${LOADING_SNAKE_WAVE_A};${LOADING_SNAKE_WAVE_B};${LOADING_SNAKE_WAVE_C};${LOADING_SNAKE_WAVE_A}`;
+
+function LoadingSnakeGraphic({ className }: { className: string }) {
+  return (
+    <svg aria-hidden="true" className={className} focusable="false" viewBox="0 0 190 44">
+      <path className="loading-snake-body" d={LOADING_SNAKE_WAVE_A}>
+        <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values={LOADING_SNAKE_WAVE_VALUES} />
+      </path>
+      <path className="loading-snake-scales" d={LOADING_SNAKE_WAVE_A}>
+        <animate attributeName="d" dur="0.92s" repeatCount="indefinite" values={LOADING_SNAKE_WAVE_VALUES} />
+      </path>
+      <circle className="loading-snake-head" cx="176" cy="22" r="8.5" />
+      <circle className="loading-snake-head-mark" cx="171" cy="20" r="2.2" />
+      <circle className="loading-snake-eye" cx="178.5" cy="18.8" r="1.2" />
+      <path className="loading-snake-tongue" d="M183 22 L190 19 M183 22 L190 25" />
+    </svg>
+  );
+}
+
 function StartupLoadingScreen() {
   return (
     <div className="loading-screen">
       <section aria-live="polite" className="loading-panel">
         <div className="loading-emblem-stage">
           <MedusaEmblemImage className="loading-emblem" />
-          <span aria-hidden="true" className="loading-orbit-snake loading-orbit-snake-primary" />
-          <span aria-hidden="true" className="loading-orbit-snake loading-orbit-snake-secondary" />
-          <span aria-hidden="true" className="loading-orbit-snake loading-orbit-snake-tertiary" />
         </div>
         <strong className="loading-wordmark">MEDUSA</strong>
         <div className="loading-progress-group">
           <div className="loading-activity" aria-label="Loading..." role="progressbar">
-            <span className="loading-snake loading-snake-primary" />
-            <span className="loading-snake loading-snake-secondary" />
-            <span className="loading-snake loading-snake-tertiary" />
+            <LoadingSnakeGraphic className="loading-snake loading-snake-primary" />
+            <LoadingSnakeGraphic className="loading-snake loading-snake-secondary" />
+            <LoadingSnakeGraphic className="loading-snake loading-snake-tertiary" />
           </div>
         </div>
       </section>
