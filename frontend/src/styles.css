@@ -10460,6 +10460,32 @@ pre {
   gap: 8px;
 }
 
+.detail-review-list {
+  display: grid;
+  gap: 0;
+}
+
+.detail-review-card {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 2px 0 0;
+}
+
+.detail-review-card .review-card-meta span {
+  min-height: 24px;
+  padding-inline: 7px;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.detail-review-card .review-citation {
+  max-width: none;
+}
+
+.detail-review-card .review-actions {
+  justify-content: flex-start;
+}
+
 .empty-note {
   margin: 0;
   color: var(--muted);

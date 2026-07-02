@@ -8446,6 +8446,7 @@ function LibraryView({
   dialogs,
   documents,
   document,
+  reviewItems,
   detailLoading = false,
   selectedId,
   setSelectedId,
@@ -8486,6 +8487,7 @@ function LibraryView({
   dialogs: AppDialogController;
   documents: LibraryDocumentRow[];
   document?: DocumentDetail;
+  reviewItems: CitationCandidate[];
   detailLoading?: boolean;
   selectedId?: string;
   setSelectedId: (id: string, options?: { updateUrl?: boolean }) => void;
@@ -9096,6 +9098,7 @@ function LibraryView({
           concordanceRuns={concordanceRuns}
           dialogs={dialogs}
           document={document}
+          reviewItems={reviewItems}
           domains={domains}
           onCloseReader={() => onCloseReader()}
           onTrashDocument={trashFocusedDocument}
@@ -9757,6 +9760,7 @@ function LibraryView({
         concordanceRuns={concordanceRuns}
         dialogs={dialogs}
         document={document}
+        reviewItems={reviewItems}
         loading={detailLoading}
         domains={domains}
         onTrashDocument={trashFocusedDocument}
@@ -10029,6 +10033,7 @@ function DocumentPanel({
   concordanceRuns,
   dialogs,
   document,
+  reviewItems,
   loading = false,
   domains,
   onCloseReader,
@@ -10047,6 +10052,7 @@ function DocumentPanel({
   concordanceRuns: ConcordanceRun[];
   dialogs: AppDialogController;
   document?: DocumentDetail;
+  reviewItems: CitationCandidate[];
   loading?: boolean;
   domains: Domain[];
   onCloseReader?: () => void;
@@ -10083,6 +10089,7 @@ function DocumentPanel({
       concordanceRuns={concordanceRuns}
       dialogs={dialogs}
       document={document}
+      reviewItems={reviewItems}
       domains={domains}
       onCloseReader={onCloseReader}
       onOpenReader={onOpenReader}
@@ -10977,6 +10984,7 @@ function DocumentPanelContent({
   concordanceRuns,
   dialogs,
   document,
+  reviewItems,
   domains,
   onCloseReader,
   onOpenReader,
@@ -10994,6 +11002,7 @@ function DocumentPanelContent({
   concordanceRuns: ConcordanceRun[];
   dialogs: AppDialogController;
   document: DocumentDetail;
+  reviewItems: CitationCandidate[];
   domains: Domain[];
   onCloseReader?: () => void;
   onOpenReader?: () => void;
@@ -11117,6 +11126,7 @@ function DocumentPanelContent({
   const [selectedHistoryVersionId, setSelectedHistoryVersionId] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [historyRestoreError, setHistoryRestoreError] = useState<string | null>(null);
+  const [citationReviewError, setCitationReviewError] = useState<string | null>(null);
   const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
   const { copiedKey, copyToClipboard } = useClipboardNotice();
   const queryClient = useQueryClient();
@@ -11133,6 +11143,20 @@ function DocumentPanelContent({
   const accessorySummaryFeedback = useAsyncActionFeedback();
   const visualPageScanFeedback = useAsyncActionFeedback();
   const replacementFeedback = useAsyncActionFeedback();
+  const updateReviewCandidate = useMutation({
+    mutationFn: ({ id, status, apply }: { id: string; status: string; apply?: boolean }) =>
+      api.updateCitationCandidate(id, { status, apply_to_document: Boolean(apply) }),
+    onSuccess: () => {
+      setCitationReviewError(null);
+      void queryClient.invalidateQueries({ queryKey: ["review"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["document"] });
+      void queryClient.invalidateQueries({ queryKey: ["document-composition", document.id] });
+      refreshActiveDocumentDetail(queryClient, document.id);
+    },
+    onError: (error) => setCitationReviewError(actionFailureMessage("Could not update citation review", error)),
+  });
   const composition = useQuery({
     queryKey: ["document-composition", document.id],
     queryFn: () => api.documentComposition(document.id),
@@ -11942,6 +11966,7 @@ function DocumentPanelContent({
     setCitationDrafts({ reference: document.apa_citation || "", "in-text": document.apa_in_text_citation || "" });
     setCitationVerifiedEditConfirmed({ reference: false, "in-text": false });
     setCitationEditError(null);
+    setCitationReviewError(null);
     setSelectedHistoryVersionId(null);
     setHistoryExpanded(false);
     setHistoryRestoreError(null);
@@ -12035,6 +12060,10 @@ function DocumentPanelContent({
   const copyDoi = () => {
     if (document.doi) void copyToClipboard("document-doi", document.doi);
   };
+  const documentReviewCandidates = useMemo(
+    () => reviewItems.filter((item) => item.document_id === document.id && item.status === "needs_review"),
+    [document.id, reviewItems],
+  );
   const pages = useMemo(
     () => [...(document.pages || [])].sort((left, right) => left.page_number - right.page_number),
     [document.pages],
@@ -14628,6 +14657,78 @@ function DocumentPanelContent({
       </section>
     );
   };
+  const renderCitationReviewSection = () => {
+    if (!documentReviewCandidates.length) return null;
+    return (
+      <section className="detail-section detail-citation-review-section">
+        <div className="detail-section-title-row">
+          <h3>
+            Citation Review
+            <span className="detail-section-title-count">({documentReviewCandidates.length})</span>
+          </h3>
+          <StatusPill value="needs_review" tone="warn" />
+        </div>
+        <div className="detail-review-list">
+          {documentReviewCandidates.map((item) => {
+            const candidateTitle = candidateMetadataText(item, "title");
+            const showCandidateTitle = candidateTitle && candidateTitle !== document.title;
+            const reviewDate = citationCandidateReviewDate(item);
+            return (
+              <article key={item.id} className="review-card detail-review-card">
+                <div className="review-card-main">
+                  <div className="review-card-title">
+                    <div className="review-card-meta">
+                      <span>
+                        <FileText size={14} />
+                        {citationCandidateSourceLabel(item)}
+                      </span>
+                      {reviewDate ? <span>{reviewDate}</span> : null}
+                      {typeof item.confidence === "number" ? <span>{Math.round(item.confidence * 100)}% confidence</span> : null}
+                    </div>
+                    {showCandidateTitle ? <small>Candidate title: {candidateTitle}</small> : null}
+                  </div>
+                  <div className="review-citation">
+                    <MarkdownBlock compact content={item.citation_text} empty="No candidate citation." />
+                  </div>
+                </div>
+                <div className="review-actions">
+                  <button
+                    className="primary-button compact"
+                    data-disabled-reason={
+                      documentLocked
+                        ? documentLockedReason
+                        : updateReviewCandidate.isPending
+                          ? "a citation review update is already saving."
+                          : ""
+                    }
+                    data-tooltip="Accept this citation candidate, apply it to the document, mark the citation verified, and record document history."
+                    disabled={documentLocked || updateReviewCandidate.isPending}
+                    onClick={() => updateReviewCandidate.mutate({ id: item.id, status: "accepted", apply: true })}
+                    type="button"
+                  >
+                    <CheckCircle2 size={14} />
+                    Accept
+                  </button>
+                  <button
+                    className="secondary-button compact"
+                    data-disabled-reason={updateReviewCandidate.isPending ? "a citation review update is already saving." : ""}
+                    data-tooltip="Reject this citation candidate and remove it from active review without changing the document."
+                    disabled={updateReviewCandidate.isPending}
+                    onClick={() => updateReviewCandidate.mutate({ id: item.id, status: "rejected" })}
+                    type="button"
+                  >
+                    <X size={14} />
+                    Reject
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+        {citationReviewError ? <p className="form-error">{citationReviewError}</p> : null}
+      </section>
+    );
+  };
   const renderCitationSection = (kind: CitationKind, title: string, empty: string) => {
     const text = citationText(document, kind);
     const isEditing = editingCitation === kind;
@@ -15966,6 +16067,7 @@ function DocumentPanelContent({
       {renderTagsSection()}
       {renderPublicationSection()}
       {renderDoiSection()}
+      {renderCitationReviewSection()}
       {renderCitationSection("reference", "APA Reference List", "Needs review.")}
       {renderCitationSection("in-text", "APA In-Text Citation", "Needs review.")}
       {renderSummarySection()}
@@ -27927,8 +28029,9 @@ function AuthenticatedApp() {
   const review = useQuery({
     queryKey: ["review"],
     queryFn: api.reviewQueue,
-    enabled: Boolean(me.data && (activeView === "queue" || activeView === "activity")),
-    refetchInterval: activeView === "queue" || activeView === "activity" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
+    enabled: Boolean(me.data && (activeView === "library" || activeView === "queue" || activeView === "activity")),
+    refetchInterval:
+      activeView === "library" || activeView === "queue" || activeView === "activity" ? WORKSPACE_REFETCH_INTERVAL_MS : false,
   });
   const stashes = useQuery({
     queryKey: ["doi-stashes"],
@@ -28851,6 +28954,7 @@ function AuthenticatedApp() {
             dialogs={appDialogs}
             documents={libraryRows}
             document={selectedDocument.data}
+            reviewItems={review.data || []}
             detailLoading={Boolean(selectedId && selectedDocument.isFetching && !selectedDocument.data)}
             selectedId={selectedId}
             setSelectedId={(id, options) => {
