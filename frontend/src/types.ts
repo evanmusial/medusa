@@ -124,6 +124,7 @@ export type Dashboard = {
   import_progress_completed: number;
   import_progress_failed: number;
   import_active_step?: string | null;
+  import_active_page_count?: number | null;
   import_active_elapsed_seconds?: number | null;
   import_active_cost_usd: number;
   active_concordance_jobs: number;

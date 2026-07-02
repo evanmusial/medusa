@@ -557,6 +557,100 @@ def test_ai_metadata_extraction_routes_summary_and_keywords_to_cheaper_text_only
     assert all(record["input_file_bytes"] == 0 for record in usage_records[1:])
 
 
+def test_ai_metadata_extraction_retries_text_only_when_pdf_context_is_too_large(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    from app.config import get_settings
+    from app.services.ai import AiService
+    from app.services.analysis_models import (
+        MODEL_APA_CITATION,
+        MODEL_KEYWORDS_TOPICS,
+        MODEL_METADATA,
+        MODEL_SUMMARY,
+    )
+    from app.services.openai_usage import OpenAIUsageContext
+
+    class FakeResponses:
+        def __init__(self):
+            self.calls: list[tuple[str, bool]] = []
+
+        def create(self, *, model, input, text, timeout, prompt_cache_key=None, prompt_cache_retention=None):
+            del model, timeout, prompt_cache_key, prompt_cache_retention
+            schema_name = text["format"]["name"]
+            has_file = any(item.get("type") == "input_file" for item in input[1]["content"])
+            self.calls.append((schema_name, has_file))
+            if schema_name == "medusa_document_metadata" and has_file:
+                raise RuntimeError("context_length_exceeded: input exceeds the context window")
+            payloads = {
+                "medusa_document_metadata": {
+                    "title": "Long Book",
+                    "subtitle": None,
+                    "authors": [],
+                    "universities": [],
+                    "publication_year": 2019,
+                    "journal": None,
+                    "publisher": "Example Press",
+                    "doi": None,
+                    "abstract": None,
+                    "confidence": 0.78,
+                    "needs_review_reasons": ["PDF file context was too large; extracted text was used."],
+                },
+                "medusa_document_summary": {
+                    "rich_summary": "This book studies digital institutions.",
+                    "confidence": 0.76,
+                    "needs_review_reasons": [],
+                },
+                "medusa_keywords_topics": {
+                    "topics": ["digital institutions"],
+                    "keywords": ["surveillance"],
+                    "confidence": 0.8,
+                    "needs_review_reasons": [],
+                },
+            }
+            return SimpleNamespace(
+                id=f"resp_{schema_name}",
+                output_text=json.dumps(payloads[schema_name]),
+                usage=SimpleNamespace(input_tokens=40, output_tokens=10, total_tokens=50),
+            )
+
+    get_settings.cache_clear()
+    service = AiService()
+    responses = FakeResponses()
+    service.client = SimpleNamespace(responses=responses)
+    usage_records: list[dict] = []
+
+    metadata = service.extract_metadata(
+        "long-book.pdf",
+        "Extracted text " * 200,
+        pdf_bytes=b"%PDF-1.4" * 200,
+        models={
+            MODEL_METADATA: "gpt-5.2",
+            MODEL_SUMMARY: "gpt-5.4",
+            MODEL_APA_CITATION: "gpt-5.5",
+            MODEL_KEYWORDS_TOPICS: "gpt-5.4-mini",
+        },
+        usage_context=OpenAIUsageContext(document_id="doc-long", source="test", recorder=usage_records.append),
+        prompt_cache_key="medusa-doc:long",
+    )
+
+    assert metadata["title"] == "Long Book"
+    assert metadata["_openai"]["used_pdf_file"] is False
+    assert metadata["_openai"]["pdf_file_retry_without_file"] is True
+    assert metadata["_openai"]["pdf_file_fallback_reason"] == "context_length_exceeded"
+    assert responses.calls == [
+        ("medusa_document_metadata", True),
+        ("medusa_document_metadata", False),
+        ("medusa_document_summary", False),
+        ("medusa_keywords_topics", False),
+    ]
+    assert [record["status"] for record in usage_records] == ["failed", "success", "success", "success"]
+    assert usage_records[0]["task_key"] == MODEL_METADATA
+    assert usage_records[0]["input_file_bytes"] == len(b"%PDF-1.4" * 200)
+    assert all(record["input_file_bytes"] == 0 for record in usage_records[1:])
+
+
 def test_ai_responses_cache_retention_is_omitted_when_sdk_lacks_parameter(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))

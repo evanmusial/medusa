@@ -1556,6 +1556,7 @@ class DashboardOut(BaseModel):
     import_progress_completed: int
     import_progress_failed: int
     import_active_step: str | None = None
+    import_active_page_count: int | None = None
     import_active_elapsed_seconds: int | None = None
     import_active_cost_usd: float = 0.0
     active_concordance_jobs: int

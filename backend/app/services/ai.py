@@ -820,6 +820,15 @@ def sorted_bibliography_entries(entries: list[Any]) -> list[str]:
     return sorted((entry for entry in cleaned_entries if entry), key=bibliography_entry_sort_key)
 
 
+def is_context_length_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "context_length_exceeded" in message
+        or "exceeds the context window" in message
+        or "input exceeds" in message
+    )
+
+
 @contextmanager
 def hard_timeout(seconds: float):
     if seconds <= 0 or threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
@@ -948,19 +957,45 @@ class AiService:
                 # Preserve import durability: if the legacy combined response path fails, retry the routed calls.
                 pass
 
-        return self._extract_metadata_routed(
-            filename=filename,
-            text=text,
-            input_content=input_content,
-            input_text_characters=input_text_characters,
-            input_file_bytes=input_file_bytes,
-            used_pdf_file=used_pdf_file,
-            models=models,
-            pdf_bytes=pdf_bytes,
-            usage_context=usage_context,
-            prompt_cache_key=prompt_cache_key,
-            existing_tags=existing_tags,
-        )
+        try:
+            return self._extract_metadata_routed(
+                filename=filename,
+                text=text,
+                input_content=input_content,
+                input_text_characters=input_text_characters,
+                input_file_bytes=input_file_bytes,
+                used_pdf_file=used_pdf_file,
+                models=models,
+                pdf_bytes=pdf_bytes,
+                usage_context=usage_context,
+                prompt_cache_key=prompt_cache_key,
+                existing_tags=existing_tags,
+            )
+        except Exception as exc:
+            if not used_pdf_file or not is_context_length_error(exc):
+                raise
+            text_only_content, _, text_only_characters, _ = self._document_input_content(
+                filename,
+                text,
+                None,
+            )
+            metadata = self._extract_metadata_routed(
+                filename=filename,
+                text=text,
+                input_content=text_only_content,
+                input_text_characters=text_only_characters,
+                input_file_bytes=0,
+                used_pdf_file=False,
+                models=models,
+                pdf_bytes=None,
+                usage_context=usage_context,
+                prompt_cache_key=prompt_cache_key,
+                existing_tags=existing_tags,
+            )
+            openai_evidence = metadata.setdefault("_openai", {})
+            openai_evidence["pdf_file_retry_without_file"] = True
+            openai_evidence["pdf_file_fallback_reason"] = "context_length_exceeded"
+            return metadata
 
     def extract_document_identity(
         self,

@@ -3298,6 +3298,7 @@ def dashboard_out(db: Session) -> DashboardOut:
         import_progress_completed=import_progress_completed,
         import_progress_failed=import_progress_failed,
         import_active_step=active_import_job.current_step if active_import_job else None,
+        import_active_page_count=document_estimated_page_count(active_import_job.document) if active_import_job else None,
         import_active_elapsed_seconds=active_elapsed_seconds,
         import_active_cost_usd=active_import_cost_usd(db, active_import_job_ids),
         active_concordance_jobs=active_concordance_jobs,

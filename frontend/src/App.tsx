@@ -2788,12 +2788,13 @@ function HeaderWorkProgress({
       activeClass === "paused"
         ? `Imports paused (${formatMetric(dashboard.import_paused_jobs || dashboard.active_import_jobs)})`
         : display.total > 0
-          ? `Importing ${display.displayed} of ${display.total} (${display.percent}%)`
+          ? `Importing ${display.displayed} of ${display.total}`
           : "Importing";
-    const activeStep = dashboard.import_active_step?.replaceAll("_", " ");
+    const activeStep = importStepStage(dashboard.import_active_step, dashboard.import_active_page_count);
+    const backgroundDetail = dashboardBackgroundWorkDetail(dashboard);
     const activeEta = formatEtaMinutes(display.etaSeconds);
     const activeCost = dashboard.import_active_cost_usd > 0 ? formatUsd(dashboard.import_active_cost_usd) : "";
-    detail = [activeStep, activeEta, activeCost].filter(Boolean).join(" - ");
+    detail = [activeStep, backgroundDetail, activeEta, activeCost].filter(Boolean).join(" - ");
     if (!detail) {
       detail = [
         `${dashboard.import_running_jobs} importing`,
@@ -2916,12 +2917,18 @@ function ReleaseUpgradeButton({
   const maintenanceBusy = MAINTENANCE_BUSY_PHASES.has(status.maintenance_phase);
   const visible = status.browser_reload_recommended || status.update_available || phaseBusy || maintenanceBusy;
   if (!visible) return null;
+  const activeWorkBlocker =
+    !status.browser_reload_recommended && status.maintenance_blockers.length
+      ? `upgrade is blocked by ${status.maintenance_blockers.join("; ")}.`
+      : undefined;
   const disabledReason = busy
     ? "upgrade request is already being sent."
     : maintenanceBusy
       ? status.maintenance_message || "maintenance is already in progress."
     : phaseBusy
       ? status.message || "upgrade is already in progress."
+      : activeWorkBlocker
+        ? activeWorkBlocker
       : status.browser_reload_recommended
         ? undefined
         : !status.apply_available
@@ -4280,13 +4287,17 @@ function importProgressDisplay(dashboard: Dashboard) {
   const total = Math.max(0, dashboard.import_progress_total || dashboard.active_import_jobs || 0);
   const finished = Math.min(total, Math.max(0, dashboard.import_progress_completed + dashboard.import_progress_failed));
   const inProgress = Math.min(Math.max(0, dashboard.import_running_jobs), Math.max(0, total - finished));
+  const activeStepProgress = dashboard.import_running_jobs > 0
+    ? importStepProgress("running", dashboard.import_active_step, dashboard.import_active_page_count)
+    : 0;
   const displayed = Math.min(total, finished + inProgress);
-  const percent = total > 0 ? Math.round((displayed / total) * 100) : 0;
+  const progressUnits = Math.min(total, finished + (inProgress ? activeStepProgress / 100 : 0));
+  const percent = total > 0 ? Math.round((progressUnits / total) * 100) : 0;
   const progress = Math.max(0, Math.min(100, dashboard.import_running_jobs > 0 && percent === 0 ? 6 : percent));
   let etaSeconds: number | null = null;
   const elapsed = dashboard.import_active_elapsed_seconds;
-  if (elapsed !== undefined && elapsed !== null && elapsed > 0 && total > 0 && displayed > 0 && displayed < total) {
-    etaSeconds = (elapsed / displayed) * (total - displayed);
+  if (elapsed !== undefined && elapsed !== null && elapsed > 0 && total > 0 && progressUnits > 0 && progressUnits < total) {
+    etaSeconds = (elapsed / progressUnits) * (total - progressUnits);
   }
   return { total, finished, displayed, percent, progress, etaSeconds };
 }
@@ -4516,16 +4527,16 @@ function CompositionPipelineNodeView({ data }: NodeProps<CompositionPipelineNode
   );
 }
 
-function importJobProgress(job: ImportJob) {
-  if (job.status === "complete") return 100;
-  if (job.status === "failed") return 100;
-  if (job.status === "staged") return 0;
-  if (job.status === "queued") return 0;
-  const step = job.current_step || "stored";
+function importStepProgress(status: string, currentStep?: string | null, documentPageCount?: number | null) {
+  if (status === "complete") return 100;
+  if (status === "failed") return 100;
+  if (status === "staged") return 0;
+  if (status === "queued") return 0;
+  const step = currentStep || "stored";
   const pageMatch = step.match(/^normalizing_page_(\d+)$/);
   if (pageMatch) {
     const pageNumber = Number(pageMatch[1]);
-    const pageCount = Math.max(1, job.document_page_count || pageNumber);
+    const pageCount = Math.max(1, documentPageCount || pageNumber);
     return Math.min(58, 12 + Math.round((Math.min(pageNumber, pageCount) / pageCount) * 42));
   }
   const progressByStep: Record<string, number> = {
@@ -4541,7 +4552,11 @@ function importJobProgress(job: ImportJob) {
     indexed: 95,
     cleaning_cache: 97,
   };
-  return progressByStep[step] ?? (job.status === "running" ? 8 : 0);
+  return progressByStep[step] ?? (status === "running" ? 8 : 0);
+}
+
+function importJobProgress(job: ImportJob) {
+  return importStepProgress(job.status, job.current_step, job.document_page_count);
 }
 
 function importJobSortPriority(job: ImportJob) {
@@ -4582,20 +4597,52 @@ function visibleImportJobs(jobs: ImportJob[], now: number, limit = IMPORT_JOB_LI
   return orderedImportJobs(jobs.filter((job) => !isImportCompletedRowExpired(job, now))).slice(0, limit);
 }
 
-function importJobStage(job: ImportJob) {
-  const pageMatch = job.current_step.match(/^normalizing_page_(\d+)$/);
+function importStepStage(currentStep?: string | null, documentPageCount?: number | null) {
+  const step = currentStep || "stored";
+  const pageMatch = step.match(/^normalizing_page_(\d+)$/);
   if (pageMatch) {
-    const pageCount = job.document_page_count ? `/${job.document_page_count}` : "";
+    const pageCount = documentPageCount ? `/${documentPageCount}` : "";
     return `normalizing page ${pageMatch[1]}${pageCount}`;
   }
-  if (job.current_step === "staged") return "staged";
-  return job.current_step.replaceAll("_", " ");
+  if (step === "staged") return "staged";
+  return step.replaceAll("_", " ");
+}
+
+function importJobStage(job: ImportJob) {
+  return importStepStage(job.current_step, job.document_page_count);
 }
 
 function importJobLabel(job: ImportJob) {
   const name = job.original_filename || job.document_title || job.current_step || "Import";
   const size = formatFileSize(job.file_size_bytes);
   return `${name}${size ? ` (${size})` : ""}${job.status === "complete" ? " (done)" : ""}`;
+}
+
+function concordanceCapabilityLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function concordanceQueueJobProgress(job: ConcordanceJob) {
+  if (job.status === "complete" || job.status === "failed") return 100;
+  if (job.status === "running") return 55;
+  if (job.status === "paused") return 18;
+  return 12;
+}
+
+function concordanceQueueJobLabel(job: ConcordanceJob, run?: ConcordanceRun) {
+  const capability = concordanceCapabilityLabel(job.capability_key);
+  if (run?.label) return `${run.label}: ${capability}`;
+  return `${capability} v${job.target_version}`;
+}
+
+function concordanceQueueJobDetail(job: ConcordanceJob, run?: ConcordanceRun) {
+  return [
+    run ? scopeLabel(run.scope_type) : "",
+    job.execution_location,
+    job.next_stage,
+  ]
+    .filter(Boolean)
+    .join(" - ");
 }
 
 function candidateMetadataText(candidate: CitationCandidate, key: string) {
@@ -20705,18 +20752,28 @@ function ProjectsView({
 }
 
 function QueueView({
+  concordanceJobs,
+  concordanceJobsError,
+  concordanceJobsLoading,
+  concordanceRuns,
   ingestionHistory,
   items,
   jobs,
   jobsError,
   jobsLoading,
+  knownConcordanceCount,
   knownQueueCount,
 }: {
+  concordanceJobs: ConcordanceJob[];
+  concordanceJobsError?: unknown;
+  concordanceJobsLoading?: boolean;
+  concordanceRuns: ConcordanceRun[];
   ingestionHistory: IngestionHistory[];
   items: CitationCandidate[];
   jobs: ImportJob[];
   jobsError?: unknown;
   jobsLoading?: boolean;
+  knownConcordanceCount?: number;
   knownQueueCount?: number;
 }) {
   const queryClient = useQueryClient();
@@ -20783,6 +20840,28 @@ function QueueView({
   const costPreviewQueueJobs = queueJobs.filter(isImportCostPreviewJob);
   const failedQueueJobs = queueJobs.filter((job) => job.status === "failed");
   const clearableQueueJobs = queueJobs.filter((job) => job.status !== "running");
+  const visibleConcordanceJobs = concordanceJobs.filter((job) => job.status !== "complete");
+  const concordanceRunsById = new Map(concordanceRuns.map((run) => [run.id, run]));
+  const knownConcordanceIsEmpty = typeof knownConcordanceCount === "number" && knownConcordanceCount === 0;
+  const concordanceLoadCount = Math.max(knownConcordanceCount ?? 0, visibleConcordanceJobs.length);
+  const concordanceLoadLabel = concordanceLoadCount
+    ? `Loading ${formatMetric(concordanceLoadCount)} Concordance job${concordanceLoadCount === 1 ? "" : "s"}`
+    : "Loading Concordance jobs";
+  const showConcordanceLoading = Boolean(concordanceJobsLoading && !visibleConcordanceJobs.length && !knownConcordanceIsEmpty);
+  const concordanceLoadError =
+    concordanceJobsError && !visibleConcordanceJobs.length && !knownConcordanceIsEmpty
+      ? actionFailureMessage("Could not load Concordance jobs", concordanceJobsError)
+      : "";
+  const activeConcordanceCount = visibleConcordanceJobs.filter((job) => isActiveConcordanceStatus(job.status)).length;
+  const failedConcordanceCount = visibleConcordanceJobs.filter((job) => job.status === "failed").length;
+  const concordanceStatusText = showConcordanceLoading
+    ? concordanceLoadLabel
+    : concordanceLoadError || (visibleConcordanceJobs.length
+      ? [
+          activeConcordanceCount ? `${formatMetric(activeConcordanceCount)} active` : "",
+          failedConcordanceCount ? `${formatMetric(failedConcordanceCount)} failed` : "",
+        ].filter(Boolean).join("; ")
+      : "No Concordance jobs waiting");
   const processStagedUploads = useMutation({
     mutationFn: api.processStagedImportJobs,
     onSuccess: (result) => {
@@ -20934,6 +21013,47 @@ function QueueView({
           {showQueueLoading ? <p className="empty-note">{queueLoadLabel}...</p> : null}
           {!showQueueLoading && queueLoadError ? <p className="empty-note">{queueLoadError}</p> : null}
           {!showQueueLoading && !queueLoadError && !queueJobs.length ? <p className="empty-note">The import queue is clear.</p> : null}
+        </div>
+      </section>
+      <section className="queue-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Concordance Queue</h2>
+            <span>{concordanceStatusText}</span>
+          </div>
+          <RefreshCw size={20} />
+        </div>
+        <div className="queue-job-list" aria-busy={showConcordanceLoading || undefined}>
+          {visibleConcordanceJobs.map((job) => {
+            const run = concordanceRunsById.get(job.run_id);
+            const progress = concordanceQueueJobProgress(job);
+            return (
+              <article
+                className={`job-row concordance-queue-row ${job.status}`}
+                key={job.id}
+                style={{ "--job-progress": `${progress}%` } as CSSProperties}
+                title={`${concordanceQueueJobLabel(job, run)}: ${progress}%`}
+              >
+                <div className="job-copy">
+                  <strong>{concordanceQueueJobLabel(job, run)}</strong>
+                  <span>{concordanceQueueJobDetail(job, run)}</span>
+                  {job.last_error ? <small>{job.last_error}</small> : null}
+                </div>
+                <span className="job-actions">
+                  <span className="job-status-cluster">
+                    {isActiveConcordanceStatus(job.status) ? <Orbit aria-hidden="true" className="job-activity-glyph" size={15} /> : null}
+                    <StatusPill value={job.status} tone={activityConcordanceTone(job.status)} />
+                  </span>
+                  <span>Attempt {job.attempts}</span>
+                </span>
+              </article>
+            );
+          })}
+          {showConcordanceLoading ? <p className="empty-note">{concordanceLoadLabel}...</p> : null}
+          {!showConcordanceLoading && concordanceLoadError ? <p className="empty-note">{concordanceLoadError}</p> : null}
+          {!showConcordanceLoading && !concordanceLoadError && !visibleConcordanceJobs.length ? (
+            <p className="empty-note">No Concordance jobs waiting.</p>
+          ) : null}
         </div>
       </section>
       <section className="queue-panel">
@@ -27578,6 +27698,7 @@ export default function App() {
   const needsImportJobs = needsImportJobsSurface;
   const needsConcordanceData =
     activeView === "settings" ||
+    activeView === "queue" ||
     activeView === "activity" ||
     activeView === "health" ||
     activeLocalBackgroundJobs ||
@@ -28806,11 +28927,16 @@ export default function App() {
         ) : null}
         {activeView === "queue" ? (
           <QueueView
+            concordanceJobs={concordanceJobs.data || []}
+            concordanceJobsError={concordanceJobs.error}
+            concordanceJobsLoading={concordanceJobs.isFetching && !concordanceJobs.data}
+            concordanceRuns={concordanceRuns.data || []}
             ingestionHistory={ingestionHistory.data || []}
             items={review.data || []}
             jobs={jobs.data || []}
             jobsError={jobs.error}
             jobsLoading={jobs.isFetching && !jobs.data}
+            knownConcordanceCount={dashboard.data?.active_concordance_jobs}
             knownQueueCount={dashboard.data?.queue_import_jobs}
           />
         ) : null}

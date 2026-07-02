@@ -421,6 +421,7 @@ def test_release_agent_reaches_pull_refresh_without_backup_when_not_required(mon
     monkeypatch.setattr(agent, "build_status", lambda *_args, **_kwargs: dict(status_payload))
     monkeypatch.setattr(agent, "update_maintenance_status", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(agent, "check_maintenance_readiness", lambda *_args, **_kwargs: {"idle": True, "blockers": []})
+    monkeypatch.setattr(agent, "maintenance_readiness_payload", lambda *_args, **_kwargs: {"idle": True, "blockers": []})
 
     def fail_if_backup_runs(*_args, **_kwargs):
         raise AssertionError("backup should not run")
@@ -463,10 +464,72 @@ def test_release_agent_reaches_pull_refresh_without_backup_when_not_required(mon
             "docker-compose.yml",
             "-f",
             "docker-compose.server.yml",
+            "pull",
+            "--ignore-buildable",
+            "--policy",
+            "always",
+        ],
+        [
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "docker-compose.server.yml",
+            "build",
+            "--pull",
+        ],
+        [
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "docker-compose.server.yml",
             "up",
             "-d",
-            "--build",
-            "--pull",
-            "always",
-        ]
+            "--no-build",
+        ],
     ]
+
+
+def test_release_agent_rechecks_readiness_after_build_before_replacement(monkeypatch, tmp_path):
+    agent = load_release_agent()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    args = SimpleNamespace(repo=tmp_path, compose_file=["docker-compose.yml"], idle_grace_seconds=300)
+    compose_calls = []
+
+    def fake_run_command(command, **_kwargs):
+        if command[:2] == ["docker", "compose"]:
+            compose_calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent, "run_command", fake_run_command)
+    monkeypatch.setattr(agent, "maintenance_readiness_payload", lambda *_args, **_kwargs: {"idle": False, "blockers": ["1 active import job"]})
+
+    with pytest.raises(RuntimeError, match="1 active import job"):
+        agent.run_compose_refresh(args, readiness_context="Upgrade became blocked before replacing Medusa services")
+
+    assert compose_calls == [["docker", "compose", "-f", "docker-compose.yml", "build"]]
+
+
+def test_release_agent_compose_passthrough_blocks_rebuild_with_active_work(monkeypatch, tmp_path, capsys):
+    agent = load_release_agent()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    args = SimpleNamespace(
+        repo=tmp_path,
+        compose_file=["docker-compose.yml"],
+        compose_args=["--", "up", "-d", "--build"],
+        idle_grace_seconds=300,
+        skip_readiness=False,
+    )
+
+    monkeypatch.setattr(agent, "maintenance_readiness_payload", lambda *_args, **_kwargs: {"idle": False, "blockers": ["2 active import jobs"]})
+
+    def fail_if_compose_runs(*_args, **_kwargs):
+        raise AssertionError("docker compose should not run")
+
+    monkeypatch.setattr(agent.subprocess, "run", fail_if_compose_runs)
+
+    assert agent.compose_passthrough(args) == 1
+    assert "2 active import jobs" in capsys.readouterr().err

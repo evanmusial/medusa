@@ -676,7 +676,7 @@ def run_backend_json(args: argparse.Namespace, command_args: list[str], *, allow
     return payload
 
 
-def check_maintenance_readiness(args: argparse.Namespace, *, ignore_active_sessions: bool = False) -> dict[str, Any]:
+def maintenance_readiness_payload(args: argparse.Namespace, *, ignore_active_sessions: bool = False) -> dict[str, Any]:
     command = [
         "python",
         "-m",
@@ -687,10 +687,37 @@ def check_maintenance_readiness(args: argparse.Namespace, *, ignore_active_sessi
     ]
     if ignore_active_sessions:
         command.append("--ignore-active-sessions")
-    payload = run_backend_json(args, command, allow_error_payload=True)
+    return run_backend_json(args, command, allow_error_payload=True)
+
+
+def maintenance_blocker_text(payload: dict[str, Any]) -> str:
+    blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
+    blocker_text = "; ".join(str(blocker) for blocker in blockers if str(blocker).strip())
+    return blocker_text or "Medusa is not idle."
+
+
+def check_maintenance_readiness(args: argparse.Namespace, *, ignore_active_sessions: bool = False) -> dict[str, Any]:
+    payload = maintenance_readiness_payload(args, ignore_active_sessions=ignore_active_sessions)
     if not payload.get("idle"):
-        blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
-        raise RuntimeError("; ".join(str(blocker) for blocker in blockers) or "Medusa is not idle.")
+        raise RuntimeError(maintenance_blocker_text(payload))
+    return payload
+
+
+def require_runtime_replacement_readiness(
+    args: argparse.Namespace,
+    *,
+    context: str,
+    allow_unavailable_backend: bool = False,
+) -> dict[str, Any] | None:
+    try:
+        payload = maintenance_readiness_payload(args, ignore_active_sessions=True)
+    except RuntimeError as exc:
+        if allow_unavailable_backend:
+            print(f"Skipping Medusa active-work gate because the backend is not available: {exc}", file=sys.stderr)
+            return None
+        raise
+    if not payload.get("idle"):
+        raise RuntimeError(f"{context}: {maintenance_blocker_text(payload)}")
     return payload
 
 
@@ -800,6 +827,48 @@ def compose_up_command(args: argparse.Namespace, *, pull_always: bool = False) -
     return command
 
 
+def compose_pull_command(args: argparse.Namespace) -> list[str]:
+    return [*compose_base_command(args), "pull", "--ignore-buildable", "--policy", "always"]
+
+
+def compose_build_command(args: argparse.Namespace, *, pull: bool = False) -> list[str]:
+    command = [*compose_base_command(args), "build"]
+    if pull:
+        command.append("--pull")
+    return command
+
+
+def compose_start_command(args: argparse.Namespace) -> list[str]:
+    return [*compose_base_command(args), "up", "-d", "--no-build"]
+
+
+def run_compose_refresh(
+    args: argparse.Namespace,
+    *,
+    env: dict[str, str] | None = None,
+    pull_always: bool = False,
+    readiness_context: str,
+) -> None:
+    repo = args.repo.resolve()
+    if pull_always:
+        run_command(compose_pull_command(args), cwd=repo, env=env)
+    run_command(compose_build_command(args, pull=pull_always), cwd=repo, env=env)
+    require_runtime_replacement_readiness(args, context=readiness_context)
+    run_command(compose_start_command(args), cwd=repo, env=env)
+
+
+def compose_passthrough_requires_idle_gate(compose_args: list[str]) -> bool:
+    if not compose_args:
+        return False
+    command = compose_args[0]
+    if command == "restart":
+        return True
+    if command != "up":
+        return False
+    replacement_flags = {"--build", "--force-recreate", "--always-recreate-deps", "--renew-anon-volumes"}
+    return any(arg in replacement_flags or arg == "--pull" or arg.startswith("--pull=") for arg in compose_args[1:])
+
+
 def compose_passthrough(args: argparse.Namespace) -> int:
     compose_args = list(args.compose_args)
     if compose_args and compose_args[0] == "--":
@@ -807,6 +876,16 @@ def compose_passthrough(args: argparse.Namespace) -> int:
     if not compose_args:
         print("No docker compose arguments supplied.", file=sys.stderr)
         return 2
+    if not getattr(args, "skip_readiness", False) and compose_passthrough_requires_idle_gate(compose_args):
+        try:
+            require_runtime_replacement_readiness(
+                args,
+                context="Refusing to replace Medusa runtime services while active work is running",
+                allow_unavailable_backend=True,
+            )
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     command = [*compose_base_command(args), *compose_args]
     return subprocess.run(command, cwd=str(args.repo.resolve())).returncode
 
@@ -950,7 +1029,12 @@ def auto_maintenance(args: argparse.Namespace) -> int:
             backup_status=backup_status,
             backup_run_id=backup.get("id") if backup else None,
         )
-        run_command(compose_up_command(args, pull_always=True), cwd=repo, env=env)
+        run_compose_refresh(
+            args,
+            env=env,
+            pull_always=True,
+            readiness_context="Maintenance became blocked before replacing Medusa services",
+        )
         update_maintenance_status(
             args,
             "verifying",
@@ -1088,7 +1172,12 @@ def apply(args: argparse.Namespace) -> int:
             backup_status=backup_status,
             backup_run_id=backup.get("id") if backup else None,
         )
-        run_command(compose_up_command(args, pull_always=args.pull_always), cwd=repo, env=env)
+        run_compose_refresh(
+            args,
+            env=env,
+            pull_always=args.pull_always,
+            readiness_context="Upgrade became blocked before replacing Medusa services",
+        )
         write_phase(args, "verifying", "Waiting for Medusa health after upgrade.")
         wait_for_health(repo, args.health_timeout_seconds)
         payload = build_status(args, fetch=False, phase="complete", message=f"Medusa upgraded to {target['version']}.")
@@ -1157,6 +1246,11 @@ def parser() -> argparse.ArgumentParser:
             default=None,
             help="Compose file to include for apply; repeat for overrides. Defaults to docker-compose.yml.",
         )
+    subcommands.choices["compose"].add_argument(
+        "--skip-readiness",
+        action="store_true",
+        help="Bypass the active-work gate for emergency host-level Compose operations.",
+    )
     subcommands.choices["compose"].add_argument("compose_args", nargs=argparse.REMAINDER, help="Arguments passed through to docker compose.")
     subcommands.choices["check"].add_argument("--no-fetch", action="store_true", help="Do not fetch before checking.")
     subcommands.choices["apply"].add_argument("--force", action="store_true", help="Apply even when no request file exists.")
