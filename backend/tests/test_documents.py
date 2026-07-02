@@ -1476,16 +1476,7 @@ def test_delete_figure_removes_row_and_records_history(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
 
     from app.main import delete_figure
-    from app.models import Document, DocumentPage, DocumentVersion, Figure
-
-    deleted_assets = []
-
-    class FakeStorage:
-        def delete_uri(self, uri):
-            deleted_assets.append(uri)
-            return True
-
-    monkeypatch.setattr("app.main.get_storage_service", lambda: FakeStorage())
+    from app.models import AssetDeletionQueue, Document, DocumentPage, DocumentVersion, Figure
 
     Session = make_session()
     with Session() as db:
@@ -1524,7 +1515,11 @@ def test_delete_figure_removes_row_and_records_history(monkeypatch, tmp_path):
         assert updated.figures == []
         assert db.query(Figure).count() == 0
         assert "medusa-figure:" not in (page.text or "")
-        assert deleted_assets == ["gs://bucket/figures/figure-4.png"]
+        queued_delete = db.query(AssetDeletionQueue).one()
+        assert queued_delete.storage_uri == "gs://bucket/figures/figure-4.png"
+        assert queued_delete.source_kind == "figure"
+        assert queued_delete.source_id == figure.id
+        assert queued_delete.status == "queued"
         assert "Extra extraction" not in (document.search_text or "")
         assert len(versions) == 1
         assert versions[0].change_note == "Deleted extracted figure Figure 4"

@@ -302,6 +302,9 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
   - Acceptance: soft-deleted documents can be restored, and permanent deletion can optionally remove original/assets after confirmation.
   - Completed: Library selection and detail/Reader Trash actions move ready Library documents to soft-deleted Trash with history/composition audit while preserving originals and stored assets.
 
+- [ ] Persist page-preview images as durable assets for CDN delivery.
+  - Acceptance: import or Concordance can generate versioned page-preview PNG assets into GCS/local storage, store their `DocumentPage.image_uri` values, serve them through the asset CDN redirect path when configured, and invalidate/delete stale preview assets when source pages are replaced or permanently removed.
+
 - [ ] Add GCS manifest validation.
   - Acceptance: Medusa can check that every stored URI in Postgres exists in GCS/local storage and report missing objects.
 

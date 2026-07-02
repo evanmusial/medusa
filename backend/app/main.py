@@ -19,6 +19,7 @@ from urllib.parse import quote
 from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.responses import Response as FastAPIResponse
 from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.orm import Session, joinedload, load_only, selectinload
@@ -261,6 +262,7 @@ from app.services.analysis_models import (
     MODEL_SUMMARY,
     MODEL_TEXT_CHUNK_ENCODING,
 )
+from app.services.assets import asset_cdn_url_for_storage_uri, enqueue_asset_deletion
 from app.services.backups import (
     create_database_backup_run,
     create_restore_run,
@@ -8991,15 +8993,27 @@ def document_original(
         raise HTTPException(status_code=404, detail="Document not found")
     if not document.gcs_uri:
         raise HTTPException(status_code=404, detail="Original document is unavailable")
-    try:
-        data = get_storage_service().get_bytes(document.gcs_uri)
-    except Exception as exc:
-        raise HTTPException(status_code=404, detail="Original document is unavailable") from exc
     filename = (
         render_download_filename(document, get_download_naming_template(db))
         if download
         else document.original_filename.replace('"', "")
     )
+    cdn_query = (
+        {"response-content-disposition": content_disposition_header("attachment", filename)}
+        if download
+        else None
+    )
+    cdn_url = asset_cdn_url_for_storage_uri(document.gcs_uri, query=cdn_query)
+    if cdn_url:
+        response = RedirectResponse(cdn_url, status_code=302)
+        response.headers["Cache-Control"] = (
+            f"private, max-age={max(0, get_settings().asset_cdn_redirect_cache_seconds)}"
+        )
+        return response
+    try:
+        data = get_storage_service().get_bytes(document.gcs_uri)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Original document is unavailable") from exc
     return FastAPIResponse(
         content=data,
         media_type=document.content_type or "application/pdf",
@@ -9024,6 +9038,19 @@ def document_page_image(
         raise HTTPException(status_code=404, detail="Page image not found")
     if not document.gcs_uri:
         raise HTTPException(status_code=404, detail="Original document is unavailable")
+    stored_page = (
+        db.query(DocumentPage)
+        .filter(DocumentPage.document_id == document.id, DocumentPage.page_number == page_number)
+        .first()
+    )
+    if stored_page and stored_page.image_uri:
+        cdn_url = asset_cdn_url_for_storage_uri(stored_page.image_uri)
+        if cdn_url:
+            response = RedirectResponse(cdn_url, status_code=302)
+            response.headers["Cache-Control"] = (
+                f"private, max-age={max(0, get_settings().asset_cdn_redirect_cache_seconds)}"
+            )
+            return response
     try:
         import fitz
 
@@ -9160,6 +9187,13 @@ def figure_asset(
     figure = db.get(Figure, figure_id)
     if not figure or not figure.asset_uri:
         raise HTTPException(status_code=404, detail="Figure asset not found")
+    cdn_url = asset_cdn_url_for_storage_uri(figure.asset_uri)
+    if cdn_url:
+        response = RedirectResponse(cdn_url, status_code=302)
+        response.headers["Cache-Control"] = (
+            f"private, max-age={max(0, get_settings().asset_cdn_redirect_cache_seconds)}"
+        )
+        return response
     try:
         data = get_storage_service().get_bytes(figure.asset_uri, timeout=5, retry=None)
     except Exception as exc:
@@ -9296,12 +9330,15 @@ def delete_figure(
         message=f"Deleted extracted figure {label}",
         metadata={"operation": "figure_delete", "figure": deleted_figure},
     )
+    enqueue_asset_deletion(
+        db,
+        asset_uri,
+        source_kind="figure",
+        source_id=deleted_figure["id"],
+        document_id=document.id,
+        metadata={"figure_label": label, "page_number": figure.page_number},
+    )
     db.commit()
-    if asset_uri:
-        try:
-            get_storage_service().delete_uri(asset_uri)
-        except Exception:
-            pass
     db.refresh(document)
     return document_detail_out(document, db)
 
