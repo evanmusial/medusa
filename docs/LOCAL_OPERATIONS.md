@@ -134,6 +134,8 @@ The script creates or updates a global external Application Load Balancer backen
 
 The live Medusa asset host is `assets.medusa.evan.engineer` on GCP project `musial-medusa`, bucket `musial-medusa-assets`, URL map `medusa-assets-url-map`, and active managed certificate `medusa-assets-cert-20260702b`. The original `medusa-assets-cert` failed while DNS was not yet visible and should not be reattached. Future asset URL examples and implementation notes should use the asset-host scheme rather than origin-local byte-serving URLs.
 
+When checking production asset delivery, verify both hops. The browser-visible URL for figures and originals may still begin with authenticated Medusa `/api/...` routes because those routes are the authorization gate. A healthy CDN-backed figure or original-PDF request returns `302` from `medusa.evan.engineer` to a signed `https://assets.medusa.evan.engineer/...` URL, and a `HEAD` or range request to that signed URL returns the final `image/png` or `application/pdf` bytes. Do not print `MEDUSA_ASSET_CDN_SIGNED_URL_KEY`; verify it by presence/length only. PDF page preview URLs redirect only when the page has a stored `DocumentPage.image_uri`; otherwise they return `200 image/png` from the app renderer. On 2026-07-02, live spot checks confirmed figure and original-PDF CDN redirects while the live database still had zero stored page-preview image rows, so random PDF page snapshots were expected to remain app-rendered.
+
 If you need a Let's Encrypt certificate specifically, obtain or renew it outside this script and pass `LE_CERTIFICATE_FILE=/path/to/fullchain.pem` plus `LE_PRIVATE_KEY_FILE=/path/to/privkey.pem`; otherwise the script creates a Google-managed certificate for the asset hostname.
 
 OpenAI and Gemini:

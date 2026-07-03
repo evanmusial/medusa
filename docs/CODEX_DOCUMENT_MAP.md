@@ -27,6 +27,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 | Docker Compose startup, TLS certificate setup, login defaults | `docs/QUICK_START.md` and `docs/LOCAL_OPERATIONS.md` | Quick Start owns the shortest happy path; Local Operations owns the full runbook. |
 | HAProxy, Valkey, metrics, cache hydration, operational env vars | `docs/LOCAL_OPERATIONS.md` | Server-specific variants belong in `docs/PORTABLE_DEPLOYMENT.md`. |
 | GCS, OpenAI, Gemini, recommendation, DOI, and credential settings | `docs/LOCAL_OPERATIONS.md` | Exact env-var examples live here; routing strategy and model choices belong in `docs/AI_COST_ROUTING.md`. |
+| GCS asset CDN setup, signed URL env, and live CDN spot checks | `docs/LOCAL_OPERATIONS.md`, `docs/ARCHITECTURE.md`, and `TODO.md` | Local Operations owns setup and verification; Architecture owns the authenticated-gate-plus-CDN design; TODO owns unfinished page-preview and certificate-renewal gaps. |
 | Detailed AI behavior, citation/tag/summary defaults, provider-routing rationale, and cost strategy | `docs/ARCHITECTURE.md` and `docs/AI_COST_ROUTING.md` | Use architecture for current behavior contracts and cost-routing for model strategy. |
 | Slipstream local/remote runner commands and worker recovery settings | `docs/LOCAL_OPERATIONS.md` | Architecture-level Slipstream contracts remain in `docs/ARCHITECTURE.md`; unfinished Slipstream work stays in `TODO.md`. |
 | Cloud container worker pools, Cloud Run defaults, IAM, cost model, and command snippets | `docs/CLOUD_RUN_WORKER_POOL.md` | Runtime command snippets are also summarized in `docs/LOCAL_OPERATIONS.md`; current architecture contracts still belong in `docs/ARCHITECTURE.md`. |
@@ -66,6 +67,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 - Put broad future ideas in `docs/NATURAL_EXTENSIONS.md` until they graduate into the architecture record or TODO ledger.
 - Put feature-specific roadmaps in a named feature document when the scope is too large for one TODO item.
 - Put local commands, environment variables, startup/shutdown, credential placement, backup/restore drills, and developer commands in `docs/LOCAL_OPERATIONS.md`.
+- Put GCS asset-CDN setup and live verification notes in `docs/LOCAL_OPERATIONS.md`; put the durable signed-URL design contract in `docs/ARCHITECTURE.md`; keep unfinished persisted page-preview assets and certificate-renewal work in `TODO.md`.
 - Put server move, host-agent, certbot, and systemd details in `docs/PORTABLE_DEPLOYMENT.md`.
 - Put cost/model/provider strategy in `docs/AI_COST_ROUTING.md`.
 - Keep `README.md` focused on what Medusa is, what it helps with, and which features are worth showing off.

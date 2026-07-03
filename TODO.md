@@ -304,6 +304,7 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Persist page-preview images as durable assets for CDN delivery.
   - Acceptance: import or Concordance can generate versioned page-preview PNG assets into GCS/local storage, store their `DocumentPage.image_uri` values, serve them through the asset CDN redirect path when configured, and invalidate/delete stale preview assets when source pages are replaced or permanently removed.
+  - Notes: Figures and original PDFs already use the CDN redirect path when CDN env is present. As of the 2026-07-02 production spot check, PDF page snapshots still render from the app because there are no persisted page-preview image assets.
 
 - [ ] Add automatic renewal and expiry monitoring for the asset CDN certificate.
   - Acceptance: `assets.medusa.evan.engineer` certificate renewal is automated or operationally checked well before the current `medusa-assets-cert-20260702b` managed certificate's 90-day expiry window; renewal status is visible in operational docs/status surfaces; failures alert the user before there is any risk of serving expired CDN TLS.
