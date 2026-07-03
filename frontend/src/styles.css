@@ -4369,8 +4369,8 @@ textarea {
 }
 
 .doc-row-title-icons {
-  margin-left: auto;
   flex: 0 0 auto;
+  width: 33px;
   display: inline-grid;
   grid-template-columns: 14px 14px;
   align-items: center;
@@ -4378,6 +4378,10 @@ textarea {
   gap: 5px;
   color: var(--accent);
   line-height: 1;
+}
+
+.doc-row-title-icons.empty {
+  visibility: hidden;
 }
 
 .doc-row .doc-row-title-icons,
@@ -4489,11 +4493,21 @@ textarea {
 
 .row-meta {
   align-self: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 33px;
+  align-items: start;
   gap: 5px;
-  justify-content: flex-end;
   min-width: 270px;
   padding-top: 1px;
+}
+
+.doc-row-status-pills {
+  min-width: 0;
+  display: flex;
   flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+  align-items: center;
 }
 
 .library-density-compact .row-meta {
@@ -15880,8 +15894,11 @@ button.history-row,
   }
 
   .row-meta {
-    justify-content: flex-start;
     min-width: 0;
+  }
+
+  .doc-row-status-pills {
+    justify-content: flex-start;
   }
 
   .bulk-multi-select,

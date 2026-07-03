@@ -9814,25 +9814,31 @@ function LibraryView({
                 </span>
               </a>
               <div className="row-meta">
-                {showLibraryPriorityPill(item.priority) ? <PriorityPill value={item.priority} /> : null}
-                {item.no_doi ? <MissingDoiPill /> : null}
-                {item.duplicate_count > 0 ? (
-                  <span data-tooltip={duplicateTooltip(item.duplicate_reasons)}>
-                    <StatusPill value={duplicateBadgeLabel(item.duplicate_count)} tone="warn" />
-                  </span>
-                ) : null}
-                {showLibraryStatusPill(item.processing_status, "ready") ? <StatusPill value={item.processing_status} tone="blue" /> : null}
-                {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
-                {hasVerifiedFields || item.is_locked ? (
-                  <span className="doc-row-title-icons" role="img" aria-label={titleIconLabel} data-tooltip={titleIconLabel}>
-                    <span className={`doc-row-title-icon-slot${hasVerifiedFields ? "" : " empty"}`} aria-hidden="true">
-                      {hasVerifiedFields ? <BadgeCheck size={14} /> : null}
+                <span className="doc-row-status-pills">
+                  {showLibraryPriorityPill(item.priority) ? <PriorityPill value={item.priority} /> : null}
+                  {item.no_doi ? <MissingDoiPill /> : null}
+                  {item.duplicate_count > 0 ? (
+                    <span data-tooltip={duplicateTooltip(item.duplicate_reasons)}>
+                      <StatusPill value={duplicateBadgeLabel(item.duplicate_count)} tone="warn" />
                     </span>
-                    <span className={`doc-row-title-icon-slot${item.is_locked ? "" : " empty"}`} aria-hidden="true">
-                      {item.is_locked ? <Lock size={14} /> : null}
-                    </span>
+                  ) : null}
+                  {showLibraryStatusPill(item.processing_status, "ready") ? <StatusPill value={item.processing_status} tone="blue" /> : null}
+                  {showLibraryStatusPill(item.citation_status, "verified") ? <StatusPill value={item.citation_status} tone="warn" /> : null}
+                </span>
+                <span
+                  className={`doc-row-title-icons${titleIconLabel ? "" : " empty"}`}
+                  role={titleIconLabel ? "img" : undefined}
+                  aria-label={titleIconLabel || undefined}
+                  aria-hidden={titleIconLabel ? undefined : true}
+                  data-tooltip={titleIconLabel || undefined}
+                >
+                  <span className={`doc-row-title-icon-slot${hasVerifiedFields ? "" : " empty"}`} aria-hidden="true">
+                    {hasVerifiedFields ? <BadgeCheck size={14} /> : null}
                   </span>
-                ) : null}
+                  <span className={`doc-row-title-icon-slot${item.is_locked ? "" : " empty"}`} aria-hidden="true">
+                    {item.is_locked ? <Lock size={14} /> : null}
+                  </span>
+                </span>
               </div>
               <div className="doc-row-summary">
                 <MarkdownBlock compact content={markdownExcerpt(item.rich_summary || "", librarySummaryExcerptChars)} empty="Summary pending." />
