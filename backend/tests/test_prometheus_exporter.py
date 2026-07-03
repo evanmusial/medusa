@@ -3,6 +3,7 @@ import json
 import time
 
 import pytest
+from sqlalchemy.orm import Session
 
 
 class DummyRequest:
@@ -86,7 +87,17 @@ def test_backend_snapshot_metrics_are_promtool_friendly(monkeypatch, tmp_path):
                 "container": {"cpu_usage_seconds": 9},
                 "cache": {
                     "request_metrics": [
-                        {"route": "/api/health", "count": 2, "average_ms": 120, "p95_ms": 250, "slow_count": 0, "last_status": 200}
+                        {
+                            "route": "/api/health",
+                            "count": 2,
+                            "average_ms": 120,
+                            "p50_ms": 100,
+                            "p90_ms": 220,
+                            "p95_ms": 250,
+                            "p99_ms": 280,
+                            "slow_count": 0,
+                            "last_status": 200,
+                        }
                     ]
                 },
             }
@@ -100,7 +111,10 @@ def test_backend_snapshot_metrics_are_promtool_friendly(monkeypatch, tmp_path):
 
     assert "medusa_backend_cpu_usage_seconds_total 9" in rendered
     assert 'medusa_backend_route_average_duration_seconds{route="/api/health"} 0.12' in rendered
+    assert 'medusa_backend_route_p50_duration_seconds{route="/api/health"} 0.1' in rendered
+    assert 'medusa_backend_route_p90_duration_seconds{route="/api/health"} 0.22' in rendered
     assert 'medusa_backend_route_p95_duration_seconds{route="/api/health"} 0.25' in rendered
+    assert 'medusa_backend_route_p99_duration_seconds{route="/api/health"} 0.28' in rendered
     assert "quantile=" not in rendered
 
 
@@ -126,6 +140,74 @@ def test_database_collector_handles_empty_schema(monkeypatch, tmp_path):
     rendered = writer.render()
     assert "medusa_database_table_rows" in rendered
     assert "medusa_library_documents 0" in rendered
+
+
+def test_database_collector_counts_confirmed_no_doi_as_doi_covered(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("MEDUSA_DATA_DIR", str(tmp_path / "data"))
+
+    from sqlalchemy import create_engine
+
+    from app.config import get_settings
+    from app.database import Base
+    from app.models import Document
+    from app.tools import prometheus_exporter
+
+    get_settings.cache_clear()
+    test_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        session.add_all(
+            [
+                Document(
+                    title="Has DOI",
+                    original_filename="has-doi.pdf",
+                    checksum_sha256="a" * 64,
+                    page_count=10,
+                    processing_status="ready",
+                    citation_status="verified",
+                    doi="10.1234/example",
+                ),
+                Document(
+                    title="Confirmed No DOI",
+                    original_filename="no-doi.pdf",
+                    checksum_sha256="b" * 64,
+                    page_count=20,
+                    processing_status="ready",
+                    citation_status="verified",
+                    metadata_evidence={"no_doi": {"status": "confirmed", "source": "manual"}},
+                ),
+                Document(
+                    title="Unresolved DOI",
+                    original_filename="unresolved.pdf",
+                    checksum_sha256="c" * 64,
+                    page_count=30,
+                    processing_status="ready",
+                    citation_status="needs_review",
+                ),
+                Document(
+                    title="Queued DOI Excluded",
+                    original_filename="queued.pdf",
+                    checksum_sha256="d" * 64,
+                    page_count=40,
+                    processing_status="queued",
+                    citation_status="verified",
+                    doi="10.1234/queued",
+                ),
+            ]
+        )
+        session.commit()
+    monkeypatch.setattr(prometheus_exporter, "engine", test_engine)
+
+    writer = prometheus_exporter.MetricWriter()
+    prometheus_exporter.collect_database_metrics(writer)
+
+    rendered = writer.render()
+    assert "medusa_library_documents 3" in rendered
+    assert "medusa_library_pages 60" in rendered
+    assert "medusa_library_doi_records 1" in rendered
+    assert "medusa_library_doi_covered_records 2" in rendered
+    assert "medusa_library_verified_citations 2" in rendered
 
 
 def test_collector_partial_failure_still_renders(monkeypatch, tmp_path):

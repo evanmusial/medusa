@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     )
     metrics_heavy_ttl_seconds: int = Field(default=900, validation_alias="MEDUSA_METRICS_HEAVY_TTL_SECONDS")
     metrics_docker_socket_path: str | None = Field(default=None, validation_alias="MEDUSA_METRICS_DOCKER_SOCKET_PATH")
+    metrics_tls_cert_targets: str = Field(default="", validation_alias="MEDUSA_METRICS_TLS_CERT_TARGETS")
+    metrics_tls_timeout_seconds: float = Field(default=4.0, validation_alias="MEDUSA_METRICS_TLS_TIMEOUT_SECONDS")
 
     gcs_bucket: str | None = Field(default=None, validation_alias="GCS_BUCKET")
     gcs_prefix: str = Field(default="medusa", validation_alias="GCS_PREFIX")

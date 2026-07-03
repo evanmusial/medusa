@@ -1612,7 +1612,10 @@ class CacheFamilyStatsOut(BaseModel):
 class CacheRequestMetricOut(BaseModel):
     route: str
     count: int = 0
+    p50_ms: float = 0.0
+    p90_ms: float = 0.0
     p95_ms: float = 0.0
+    p99_ms: float = 0.0
     average_ms: float = 0.0
     slow_count: int = 0
     last_status: int | None = None

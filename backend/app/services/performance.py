@@ -4,6 +4,7 @@ import re
 from collections import defaultdict, deque
 from contextvars import ContextVar
 from dataclasses import dataclass
+from math import ceil
 from time import perf_counter
 from typing import Any
 
@@ -52,19 +53,28 @@ def record_route_performance(path: str, elapsed_ms: float, status_code: int, slo
         _route_slow_counts[route] += 1
 
 
+def _nearest_rank_percentile(sorted_values: list[float], quantile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    index = min(len(sorted_values) - 1, max(0, ceil(len(sorted_values) * quantile) - 1))
+    return sorted_values[index]
+
+
 def route_performance_summary(limit: int = 8) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for route, samples in _route_samples.items():
         if not samples:
             continue
         durations = sorted(value for value, _ in samples)
-        p95_index = min(len(durations) - 1, max(0, int(round(len(durations) * 0.95)) - 1))
         average_ms = sum(durations) / len(durations)
         rows.append(
             {
                 "route": route,
                 "count": len(samples),
-                "p95_ms": durations[p95_index],
+                "p50_ms": _nearest_rank_percentile(durations, 0.50),
+                "p90_ms": _nearest_rank_percentile(durations, 0.90),
+                "p95_ms": _nearest_rank_percentile(durations, 0.95),
+                "p99_ms": _nearest_rank_percentile(durations, 0.99),
                 "average_ms": average_ms,
                 "slow_count": _route_slow_counts.get(route, 0),
                 "last_status": _route_last_status.get(route),

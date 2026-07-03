@@ -180,7 +180,10 @@ export type CacheFamilyStats = {
 export type CacheRequestMetric = {
   route: string;
   count: number;
+  p50_ms: number;
+  p90_ms: number;
   p95_ms: number;
+  p99_ms: number;
   average_ms: number;
   slow_count: number;
   last_status?: number | null;

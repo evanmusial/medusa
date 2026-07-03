@@ -12,6 +12,7 @@ This is the routing map for future Codex work in Medusa. The README is intention
 - `docs/ARCHITECTURE.md`: living product, UX, backend, persistence, processing, storage, safety, and operational architecture record. Update this when implementation changes materially affect app behavior or system design.
 - `TODO.md`: planned-work ledger for unfinished work, acceptance criteria, partial-completion notes, and explicitly deferred implementation.
 - `docs/LOCAL_OPERATIONS.md`: local setup, credentials, runtime commands, development commands, tests, backup/restore, metrics, local workers, cloud worker pools, Slipstream, and safety operations.
+- `docs/OBSERVABILITY.md`: Prometheus metric catalog, Grafana dashboard contract, current scrape-state notes, and observability validation checks.
 
 ## README Cleanup Map
 
@@ -25,7 +26,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 | README screenshots | `docs/assets/screenshots/*.png` | Optimized public showcase screenshots used only by `README.md`; keep captions in README and avoid adding operating notes around the images. |
 | Long implemented-feature inventory | `docs/ARCHITECTURE.md` | The architecture record owns current feature contracts and behavior details. |
 | Docker Compose startup, TLS certificate setup, login defaults | `docs/QUICK_START.md` and `docs/LOCAL_OPERATIONS.md` | Quick Start owns the shortest happy path; Local Operations owns the full runbook. |
-| HAProxy, Valkey, metrics, cache hydration, operational env vars | `docs/LOCAL_OPERATIONS.md` | Server-specific variants belong in `docs/PORTABLE_DEPLOYMENT.md`. |
+| HAProxy, Valkey, metrics, cache hydration, operational env vars | `docs/LOCAL_OPERATIONS.md` and `docs/OBSERVABILITY.md` | Local Operations owns setup/runbook commands; Observability owns the metric catalog and Grafana dashboard. Server-specific variants belong in `docs/PORTABLE_DEPLOYMENT.md`. |
 | GCS, OpenAI, Gemini, recommendation, DOI, and credential settings | `docs/LOCAL_OPERATIONS.md` | Exact env-var examples live here; routing strategy and model choices belong in `docs/AI_COST_ROUTING.md`. |
 | GCS asset CDN setup, signed URL env, and live CDN spot checks | `docs/LOCAL_OPERATIONS.md`, `docs/ARCHITECTURE.md`, and `TODO.md` | Local Operations owns setup and verification; Architecture owns the authenticated-gate-plus-CDN design; TODO owns unfinished page-preview and certificate-renewal gaps. |
 | Detailed AI behavior, citation/tag/summary defaults, provider-routing rationale, and cost strategy | `docs/ARCHITECTURE.md` and `docs/AI_COST_ROUTING.md` | Use architecture for current behavior contracts and cost-routing for model strategy. |
@@ -58,6 +59,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 
 - `docs/LOCAL_OPERATIONS.md`: day-to-day local run and development operations.
 - `docs/PORTABLE_DEPLOYMENT.md`: moving Medusa between hosts, server-specific Compose overlays, certbot, release-agent, systemd, and portability checks.
+- `docs/OBSERVABILITY.md`: Prometheus metric catalog, Grafana dashboard JSON ownership, scrape-health notes, and dashboard validation checks.
 - `docs/DEPENDENCY_UPDATE_PLAN.md`: Renovate and dependency maintenance policy.
 
 ## Where New Notes Belong
@@ -68,6 +70,7 @@ The README was intentionally narrowed to product orientation. Keep using this ro
 - Put feature-specific roadmaps in a named feature document when the scope is too large for one TODO item.
 - Put local commands, environment variables, startup/shutdown, credential placement, backup/restore drills, and developer commands in `docs/LOCAL_OPERATIONS.md`.
 - Put GCS asset-CDN setup and live verification notes in `docs/LOCAL_OPERATIONS.md`; put the durable signed-URL design contract in `docs/ARCHITECTURE.md`; keep unfinished persisted page-preview assets and certificate-renewal work in `TODO.md`.
+- Put Prometheus metric semantics, Grafana dashboard design, and observability validation checks in `docs/OBSERVABILITY.md`.
 - Put server move, host-agent, certbot, and systemd details in `docs/PORTABLE_DEPLOYMENT.md`.
 - Put cost/model/provider strategy in `docs/AI_COST_ROUTING.md`.
 - Keep `README.md` focused on what Medusa is, what it helps with, and which features are worth showing off.

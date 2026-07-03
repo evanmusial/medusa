@@ -7,6 +7,7 @@ import re
 import secrets
 import signal
 import socket
+import ssl
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import text
@@ -196,6 +198,69 @@ def _label_value(value: Any) -> str:
         return "true" if value else "false"
     text_value = str(value).strip()
     return text_value if text_value else "unknown"
+
+
+def _target_label(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return normalized or "target"
+
+
+def _parse_tls_target(label: str, raw_target: str, *, default_port: int = 443) -> dict[str, Any] | None:
+    target = raw_target.strip()
+    if not target:
+        return None
+    parsed = urlparse(target if "://" in target else f"https://{target}")
+    host = parsed.hostname
+    if not host:
+        return None
+    port = parsed.port or default_port or 443
+    return {"target": _target_label(label), "host": host, "port": int(port)}
+
+
+def _tls_certificate_targets() -> list[dict[str, Any]]:
+    settings = get_settings()
+    explicit_targets = (settings.metrics_tls_cert_targets or "").strip()
+    targets: list[dict[str, Any]] = []
+    if explicit_targets:
+        for index, part in enumerate(re.split(r"[,\s]+", explicit_targets)):
+            item = part.strip()
+            if not item:
+                continue
+            if "=" in item:
+                label, raw_target = item.split("=", 1)
+            else:
+                raw_target = item
+                parsed = urlparse(raw_target if "://" in raw_target else f"https://{raw_target}")
+                label = parsed.hostname or f"target_{index + 1}"
+            parsed_target = _parse_tls_target(label, raw_target)
+            if parsed_target:
+                targets.append(parsed_target)
+        return targets
+
+    public_host = (settings.public_host or "").strip()
+    if public_host:
+        default_port = int(settings.public_port or 443)
+        parsed_target = _parse_tls_target("app", public_host, default_port=default_port)
+        if parsed_target:
+            targets.append(parsed_target)
+
+    cdn_base_url = (settings.asset_cdn_base_url or "").strip()
+    if cdn_base_url:
+        parsed_target = _parse_tls_target("cdn", cdn_base_url, default_port=443)
+        if parsed_target:
+            targets.append(parsed_target)
+    return targets
+
+
+def _tls_certificate_expiry_timestamp(host: str, port: int, timeout: float) -> float:
+    context = ssl.create_default_context()
+    with socket.create_connection((host, port), timeout=timeout) as raw_socket:
+        with context.wrap_socket(raw_socket, server_hostname=host) as tls_socket:
+            cert = tls_socket.getpeercert()
+    not_after = cert.get("notAfter") if isinstance(cert, dict) else None
+    if not not_after:
+        raise ValueError("certificate missing notAfter")
+    return datetime.strptime(str(not_after), "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc).timestamp()
 
 
 def _storage_area(label: Any) -> str:
@@ -441,6 +506,10 @@ def collect_database_metrics(writer: MetricWriter) -> None:
             )
         writer.add("document_soft_deleted_count", _scalar(conn, "SELECT count(*) FROM documents WHERE deleted_at IS NOT NULL"), help_text="Current soft-deleted document count.")
 
+        no_doi_confirmed_sql = "(metadata_evidence #>> '{no_doi,status}' = 'confirmed' OR metadata_evidence #>> '{no_doi,confirmed}' = 'true')"
+        if dialect == "sqlite":
+            no_doi_confirmed_sql = "(json_extract(metadata_evidence, '$.no_doi.status') = 'confirmed' OR json_extract(metadata_evidence, '$.no_doi.confirmed') = 1)"
+
         library = dict(
             conn.execute(
                 text(
@@ -449,6 +518,7 @@ def collect_database_metrics(writer: MetricWriter) -> None:
                       count(*) AS document_count,
                       coalesce(sum(page_count), 0) AS page_count,
                       coalesce(sum(CASE WHEN nullif(trim(coalesce(doi, '')), '') IS NOT NULL THEN 1 ELSE 0 END), 0) AS doi_count,
+                      coalesce(sum(CASE WHEN nullif(trim(coalesce(doi, '')), '') IS NOT NULL OR (nullif(trim(coalesce(doi, '')), '') IS NULL AND {no_doi_confirmed_sql}) THEN 1 ELSE 0 END), 0) AS doi_covered_count,
                       coalesce(sum(CASE WHEN citation_status = 'verified' THEN 1 ELSE 0 END), 0) AS verified_citation_count,
                       coalesce(sum(CASE WHEN citation_status = 'needs_review' THEN 1 ELSE 0 END), 0) AS needs_review_citation_count,
                       coalesce(sum(CASE WHEN rich_summary IS NULL OR trim(rich_summary) = '' THEN 1 ELSE 0 END), 0) AS missing_summary_count,
@@ -912,7 +982,10 @@ def collect_backend_snapshot_metrics(writer: MetricWriter) -> None:
         labels = {"route": route.get("route", "unknown")}
         writer.add("backend_route_sample_count", route.get("count"), labels, help_text="Backend route timing sample count.")
         writer.add("backend_route_average_duration_seconds", (route.get("average_ms") or 0) / 1000.0, labels, help_text="Backend route average duration in seconds.")
+        writer.add("backend_route_p50_duration_seconds", (route.get("p50_ms") or 0) / 1000.0, labels, help_text="Backend route p50 duration in seconds.")
+        writer.add("backend_route_p90_duration_seconds", (route.get("p90_ms") or 0) / 1000.0, labels, help_text="Backend route p90 duration in seconds.")
         writer.add("backend_route_p95_duration_seconds", (route.get("p95_ms") or 0) / 1000.0, labels, help_text="Backend route p95 duration in seconds.")
+        writer.add("backend_route_p99_duration_seconds", (route.get("p99_ms") or 0) / 1000.0, labels, help_text="Backend route p99 duration in seconds.")
         writer.add("backend_route_slow_count", route.get("slow_count"), labels, help_text="Backend route slow request count.")
         writer.add("backend_route_last_status", route.get("last_status"), labels, help_text="Backend route latest HTTP status code.")
 
@@ -929,6 +1002,27 @@ def collect_backend_snapshot_metrics(writer: MetricWriter) -> None:
     writer.add("release_dirty", _bool_number(release.get("dirty")), {"phase": release.get("phase") or "unknown"}, help_text="Whether the host release status reports a dirty checkout.")
     writer.add("maintenance_idle", _bool_number(release.get("maintenance_idle", True)), {"phase": release.get("maintenance_phase") or "unknown"}, help_text="Whether release maintenance reports an idle app.")
     writer.add("maintenance_active_session_count", release.get("maintenance_active_session_count"), {"phase": release.get("maintenance_phase") or "unknown"}, help_text="Active session count reported by maintenance readiness.")
+
+
+def collect_tls_certificate_metrics(writer: MetricWriter) -> None:
+    settings = get_settings()
+    targets = _tls_certificate_targets()
+    if not targets:
+        writer.add("tls_certificate_probe_up", 0, {"target": "none", "host": "none", "port": "0", "reason": "not_configured"}, help_text="Whether a TLS certificate expiry probe succeeded.")
+        return
+
+    timeout = max(0.5, float(settings.metrics_tls_timeout_seconds or 4.0))
+    now = time.time()
+    for target in targets:
+        labels = {"target": target["target"], "host": target["host"], "port": str(target["port"])}
+        try:
+            expires_at = _tls_certificate_expiry_timestamp(str(target["host"]), int(target["port"]), timeout)
+        except Exception as exc:
+            writer.add("tls_certificate_probe_up", 0, {**labels, "reason": exc.__class__.__name__}, help_text="Whether a TLS certificate expiry probe succeeded.")
+            continue
+        writer.add("tls_certificate_probe_up", 1, {**labels, "reason": "ok"}, help_text="Whether a TLS certificate expiry probe succeeded.")
+        writer.add("tls_certificate_expires_timestamp_seconds", expires_at, labels, help_text="Unix timestamp when the observed TLS certificate expires.")
+        writer.add("tls_certificate_days_remaining", (expires_at - now) / 86400.0, labels, help_text="Days remaining before the observed TLS certificate expires.")
 
 
 def _docker_socket_path() -> Path | None:
@@ -1056,6 +1150,7 @@ def _live_collectors() -> list[tuple[str, Collector]]:
         ("valkey", collect_valkey_metrics),
         ("haproxy", collect_haproxy_metrics),
         ("backend_snapshot", collect_backend_snapshot_metrics),
+        ("tls_certificates", collect_tls_certificate_metrics),
     ]
 
 

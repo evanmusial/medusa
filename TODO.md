@@ -1,6 +1,6 @@
 # Medusa TODO
 
-Last updated: 2026-07-01
+Last updated: 2026-07-02
 
 This is the planned-work ledger for Medusa. Keep this file focused on work that is not done yet. Architectural rationale belongs in `docs/ARCHITECTURE.md`; this file is for actionable backlog items and acceptance notes.
 
@@ -323,6 +323,10 @@ Roadmap: `docs/PORTFOLIO_ROADMAP.md`.
 
 - [ ] Add OCR cost/status dashboard coverage.
   - Acceptance: Settings shows queued/completed/failed OCR work, page counts, provider status, and recent OCR errors once OCR processing is wired into imports/Concordance.
+
+- [ ] Decouple metrics scrape availability from backend snapshot/cache churn.
+  - Acceptance: Prometheus target availability reflects whether the public metrics endpoint/exporter is reachable; backend restarts, backend snapshot timeouts, and cache refresh/hydration work are represented as separate backend/cache health signals without making the exporter slow enough to threaten normal scrapes. `/metrics` responds comfortably inside the Prometheus scrape timeout during cache refreshes and deploy settling; the exporter caches, skips, or fail-fast records private backend snapshot failures instead of blocking the whole scrape; the Grafana dashboard keeps scrape pulse distinct from backend snapshot freshness.
+  - Notes: On 2026-07-02, a short scrape-pulse drop aligned with a backend restart and a recovered scrape that reported `medusa_backend_snapshot_up{reason="ReadTimeout"}=0`; `/api/internal/metrics/snapshot` p95 was about 4.12s against the exporter's 4s backend snapshot timeout. Cache refresh was also heavy, but the observed `up=0` samples aligned with restart timing rather than the earlier refresh timestamp.
 
 - [ ] Replace FastAPI startup event with lifespan handler.
   - Acceptance: startup logic avoids current deprecation warnings while preserving admin bootstrap behavior.

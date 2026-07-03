@@ -106,7 +106,15 @@ docker compose -f docker-compose.yml -f docker-compose.server.yml -f docker-comp
 
 The exporter serves `/metrics` and `/healthz` from `python -m app.tools.prometheus_exporter`, defaulting to port `43737` inside Docker. On a server, `docker-compose.metrics.yml` lets HAProxy publish `MEDUSA_METRICS_BIND_IP:MEDUSA_METRICS_PORT` and terminate TLS with the existing Medusa certificate.
 
+For Grafana certificate countdowns, set explicit public TLS targets when Cloudflare or a CDN is in front of the origin:
+
+```bash
+MEDUSA_METRICS_TLS_CERT_TARGETS=app=https://medusa.evan.engineer,cdn=https://assets.medusa.evan.engineer
+```
+
 Keep the Docker socket mount in `docker-compose.metrics.yml` commented out unless container-level Docker Engine metrics are worth the host-control trust boundary.
+
+The full Prometheus metric catalog, dashboard ownership notes, and Grafana validation checklist live in `docs/OBSERVABILITY.md`. The maintained Grafana dashboard JSON is source-controlled at `deploy/grafana/medusa-dashboard.json`; never store Grafana service-account tokens in the repo.
 
 ## Credentials
 
