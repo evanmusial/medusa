@@ -3674,6 +3674,40 @@ function MissingDoiPill() {
   return <span className="pill warn doi-gap-pill">No DOI</span>;
 }
 
+const MAGIC_DOCUMENT_TAG_ORDER = ["breakfix", "replace"] as const;
+type MagicDocumentTagKey = (typeof MAGIC_DOCUMENT_TAG_ORDER)[number];
+type MagicDocumentTagLike = {
+  id: string;
+  name: string;
+};
+
+function magicDocumentTagKey(value?: string | null): MagicDocumentTagKey | null {
+  const normalized = (value || "").trim().toLocaleLowerCase();
+  return MAGIC_DOCUMENT_TAG_ORDER.includes(normalized as MagicDocumentTagKey) ? (normalized as MagicDocumentTagKey) : null;
+}
+
+function magicDocumentTagClass(value?: string | null) {
+  const key = magicDocumentTagKey(value);
+  return key ? `magic-tag-${key}` : "";
+}
+
+function magicDocumentTags<T extends MagicDocumentTagLike>(tags: T[]) {
+  const byKey = new Map<MagicDocumentTagKey, T>();
+  tags.forEach((tag) => {
+    const key = magicDocumentTagKey(tag.name);
+    if (key && !byKey.has(key)) byKey.set(key, tag);
+  });
+  return MAGIC_DOCUMENT_TAG_ORDER.flatMap((key) => {
+    const tag = byKey.get(key);
+    return tag ? [tag] : [];
+  });
+}
+
+function MagicDocumentTagPill({ tag }: { tag: MagicDocumentTagLike }) {
+  const className = magicDocumentTagClass(tag.name);
+  return className ? <span className={`magic-tag-pill ${className}`}>{tag.name}</span> : null;
+}
+
 function documentDetailHasVerifiedFields(document: DocumentDetail) {
   return Boolean(
     document.has_verified_fields ||
@@ -9742,6 +9776,7 @@ function LibraryView({
             const figureCount = figureCountMarker(item);
             const hasVerifiedFields = Boolean(item.has_verified_fields);
             const hasActiveWork = documentRowHasActiveWork(item, citationJobs, backgroundJobs);
+            const magicTags = magicDocumentTags(item.tags);
             const titleIconLabel = [
               hasVerifiedFields ? "Has verified fields" : "",
               item.is_locked ? "Locked for editing" : "",
@@ -9816,6 +9851,9 @@ function LibraryView({
               <div className="row-meta">
                 <span className="doc-row-status-pills">
                   {showLibraryPriorityPill(item.priority) ? <PriorityPill value={item.priority} /> : null}
+                  {magicTags.map((tag) => (
+                    <MagicDocumentTagPill key={tag.id} tag={tag} />
+                  ))}
                   {item.no_doi ? <MissingDoiPill /> : null}
                   {item.duplicate_count > 0 ? (
                     <span data-tooltip={duplicateTooltip(item.duplicate_reasons)}>
@@ -13896,22 +13934,25 @@ function DocumentPanelContent({
         </div>
         <div className="detail-tag-list">
           {sortedDocumentTags.length ? (
-            sortedDocumentTags.map((tag) => (
-              <span className="detail-tag-chip tag-count-chip" key={tag.id}>
-                <span className="tag-count-chip-count">{formatWholeNumber(tag.document_count)}</span>
-                <span className="tag-count-chip-label">{tag.name}</span>
-                <button
-                  aria-label={`Remove ${tag.name}`}
-                  data-disabled-reason={tagUpdateBusyReason}
-                  data-tooltip={`Remove the ${tag.name} tag from this document.`}
-                  disabled={tagUpdateBusy}
-                  onClick={() => removeDocumentTag(tag.name)}
-                  type="button"
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            ))
+            sortedDocumentTags.map((tag) => {
+              const magicTagClass = magicDocumentTagClass(tag.name);
+              return (
+                <span className={`detail-tag-chip tag-count-chip${magicTagClass ? ` magic-tag-chip ${magicTagClass}` : ""}`} key={tag.id}>
+                  <span className="tag-count-chip-count">{formatWholeNumber(tag.document_count)}</span>
+                  <span className="tag-count-chip-label">{tag.name}</span>
+                  <button
+                    aria-label={`Remove ${tag.name}`}
+                    data-disabled-reason={tagUpdateBusyReason}
+                    data-tooltip={`Remove the ${tag.name} tag from this document.`}
+                    disabled={tagUpdateBusy}
+                    onClick={() => removeDocumentTag(tag.name)}
+                    type="button"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              );
+            })
           ) : (
             <span className="detail-tags-empty">No tags yet.</span>
           )}

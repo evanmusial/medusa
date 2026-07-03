@@ -4594,6 +4594,39 @@ textarea {
   text-transform: none;
 }
 
+.magic-tag-breakfix {
+  --magic-tag-color: var(--danger);
+  --magic-tag-bg: color-mix(in srgb, var(--danger) 12%, var(--panel));
+  --magic-tag-border: color-mix(in srgb, var(--danger) 26%, transparent);
+}
+
+.magic-tag-replace {
+  --magic-tag-color: #167a3b;
+  --magic-tag-bg: color-mix(in srgb, #22c55e 13%, var(--panel));
+  --magic-tag-border: color-mix(in srgb, #22c55e 30%, transparent);
+}
+
+:root[data-theme="night"] .magic-tag-replace {
+  --magic-tag-color: #6ee7a8;
+  --magic-tag-bg: color-mix(in srgb, #22c55e 16%, var(--panel));
+  --magic-tag-border: color-mix(in srgb, #22c55e 34%, transparent);
+}
+
+.magic-tag-pill {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 8px;
+  border: 1px solid var(--magic-tag-border);
+  background: var(--magic-tag-bg);
+  color: var(--magic-tag-color);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-transform: none;
+}
+
 .pill.blue {
   color: var(--blue);
   background: var(--blue-soft);
@@ -7838,6 +7871,28 @@ pre {
   font-weight: 400 !important;
   line-height: inherit;
   text-align: left;
+}
+
+.detail-tag-chip.magic-tag-chip {
+  border-color: var(--magic-tag-border);
+  background: var(--magic-tag-bg);
+  color: color-mix(in srgb, var(--magic-tag-color) 86%, var(--ink));
+}
+
+.detail-tag-chip.magic-tag-chip:hover,
+.detail-tag-chip.magic-tag-chip:focus-visible {
+  border-color: color-mix(in srgb, var(--magic-tag-color) 42%, var(--button-line));
+  background: color-mix(in srgb, var(--magic-tag-color) 16%, var(--panel));
+  color: var(--magic-tag-color);
+}
+
+.detail-tag-chip.magic-tag-chip .tag-count-chip-count {
+  border-right-color: color-mix(in srgb, var(--magic-tag-color) 28%, transparent);
+  color: color-mix(in srgb, var(--magic-tag-color) 72%, var(--ink));
+}
+
+.detail-tag-chip.magic-tag-chip .tag-count-chip-label {
+  color: inherit;
 }
 
 .picker-options {
